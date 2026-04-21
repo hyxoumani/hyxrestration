@@ -22,7 +22,7 @@ A local system that runs on a single workstation (RTX 5090, 32GB RAM) and autono
 2. Produce signals per ticker from several specialist agents
 3. Aggregate signals + portfolio state into candidate orders (deterministic code)
 4. An LLM reviews candidates against qualitative context (news, events) and passes / vetoes / adjusts
-5. Approved orders go to the Alpaca paper account
+5. Approved orders go to a paper brokerage (provider TBD at slice 8)
 6. Everything logged to a local DuckDB file
 
 Later (conditional stretch): overnight DPO training on accumulated trade outcomes.
@@ -75,8 +75,9 @@ The original project proposal had three long-running daemons (`hyx-ingest`, `hyx
      ┌─────┴─────────────────────────────────┐
      ▼                                       ▼
  Pull from external APIs          Read existing DuckDB state
- (Alpaca, USDA, NOAA, CBOT,
-  FRED, local GPU inference)
+ (yfinance, Alpaca news,
+  USDA, NOAA, CBOT, FRED,
+  local GPU inference)
      │                                       │
      └─────────────┬─────────────────────────┘
                    ▼
@@ -109,7 +110,7 @@ Split Meta architecture (A11). Each component has the simplest implementation th
 ```
 Sentiment agent  ─┐
 Domain agent      │
-Technical feats   ├──► Quant Meta ──► candidate_orders ──► LLM Meta ──► Alpaca orders
+Technical feats   ├──► Quant Meta ──► candidate_orders ──► LLM Meta ──► broker orders
 Macro agent       │      + Risk                               │
 Portfolio state  ─┘                                           ▼
                                                        reasoning trace
@@ -130,8 +131,9 @@ All decisions co-designed 2026-04-19 / 2026-04-20.
 | ML framework | PyTorch via HuggingFace `transformers` | 1 |
 | Base LLM | Qwen 2.5 7B Instruct (Apache 2.0, digit-level tokenization) | 5 |
 | Sentiment baseline | FinBERT `yiyanghkust/finbert-tone` | 1 |
-| Brokerage SDK | `alpaca-py` (official) | 1 |
-| Paper/live broker | Alpaca | 1 (data), 8 (execution) |
+| OHLCV source | `yfinance` (free, no account, 10+ yr depth, adj-close built-in) | 1 |
+| News source | Alpaca Benzinga feed via `alpaca-py` (free account, symbol-tagged, ~2021+) | 1 |
+| Broker | **TBD at slice 8.** No broker integration in slices 1–7 or 9. | 8 |
 | Secrets | `.env` + `python-dotenv`, gitignored | 1 |
 | Retry | 3× exponential backoff (1s / 2s / 4s), then crash | 1 |
 | Logging | `print()` for humans + DuckDB `audit_log` append-only table | 1 |
@@ -170,7 +172,7 @@ Each slice owns its DDL additions. New tables land in the owning slice's migrati
 - `macro_signals`: `date`
 - `ag_conditions`: defined at slice 3
 
-A `fetch_state(source, ticker NULL, last_fetched_at)` table tracks last-seen timestamps so incremental pulls resume correctly. **First-run backfill: 5 years** (bounded by Alpaca's news history, which started ~2021). CLI override: `--backfill-since=YYYY-MM-DD`.
+A `fetch_state(source, ticker NULL, last_fetched_at)` table tracks last-seen timestamps so incremental pulls resume correctly. **First-run backfill: 5 years for OHLCV** (yfinance has 10+ years so this is a conservative default); **news backfill is bounded by Alpaca's Benzinga history, which started ~2021** (effectively ~4y). CLI override: `--backfill-since=YYYY-MM-DD`.
 
 ### 3.4 Error policy
 
@@ -186,15 +188,18 @@ Slices 1–4 data is mostly immutable: OHLCV bars don't retroactively change, Al
 
 ### 3.6 Data sources
 
-| Source | Data | Cadence | First slice |
-|---|---|---|---|
-| Alpaca | Daily OHLCV bars, ag-sector news | Daily | 1 |
-| USDA QuickStats (REST API) | Crop production, yield, planting, WASDE | Monthly + ad-hoc | 3 |
-| NOAA Drought Monitor | US drought intensity by state | Weekly CSV | 3 |
-| CME / CBOT | Corn, soybean, wheat futures settlements | Daily CSVs | 3 |
-| FRED | VIX, 2s10s spread, DXY, FOMC calendar | Daily | 4 |
+| Source | Data | Cadence | Account required | First slice |
+|---|---|---|---|---|
+| yfinance | Daily OHLCV bars + adjusted close | Daily | no | 1 |
+| Alpaca (Benzinga) | Ag-sector news, symbol-tagged | Daily | free | 1 |
+| USDA QuickStats (REST API) | Crop production, yield, planting, WASDE | Monthly + ad-hoc | free | 3 |
+| NOAA Drought Monitor | US drought intensity by state | Weekly CSV | no | 3 |
+| CME / CBOT | Corn, soybean, wheat futures settlements | Daily CSVs | no | 3 |
+| FRED | VIX, 2s10s spread, DXY, FOMC calendar | Daily | free | 4 |
 
 All free. Paid-data budget is $0 until concrete ROI argument emerges.
+
+**Decoupling note:** Alpaca is a *news source* in this architecture, not a broker commitment. The original proposal (A10 in `decisions.md` pre-2026-04-21) used Alpaca for both data and execution under "single-provider consistency." That benefit is thin for daily-bar swing trading — feed divergence between broker and data vendor only matters at microsecond timescales, and our eval harness (slice 9) validates against historical DB data, not live broker fills. Broker choice is deferred to slice 8 and evaluated on execution-quality criteria (fee tiers, fill quality, short locate, tax reporting) rather than being locked in now.
 
 ### 3.7 On-disk layout
 
@@ -291,7 +296,7 @@ Designed at slice 7. Lean: `decisions(candidate_order_id, llm_action, adjusted_s
 
 ## 6. Execution
 
-Slice 8. Alpaca paper via `alpaca-py`. Bracket orders with server-side ATR stops. Full audit trail in `executions` + `fills` tables. GTC for entries (24h), market-close for urgent exits (T07).
+Slice 8. Paper brokerage TBD — candidates: Alpaca, IBKR, Tradier, tastytrade. Evaluation criteria: fee model, fill quality on small-cap ag equities, short locate availability (post-T1), bracket-order support, tax-reporting export. Bracket orders with server-side ATR stops. Full audit trail in `executions` + `fills` tables. GTC for entries (24h), market-close for urgent exits (T07).
 
 Slippage model for backtest: midpoint + 2 bps + simulated 100ms latency (T08).
 
@@ -330,7 +335,7 @@ Neither stretch goal blocks the core path (slices 1–9).
 
 ### 8.2 Stretch — Sentiment LoRA (slice 5b)
 
-Training data: ag-news corpus (Alpaca + supplementary) with forward-return labels. Method: QLoRA via `peft` + `bitsandbytes` on Qwen 2.5 7B. Validation: A/B OOS vs FinBERT on held-out slice.
+Training data: ag-news corpus (Alpaca Benzinga feed + supplementary) with forward-return labels. Method: QLoRA via `peft` + `bitsandbytes` on Qwen 2.5 7B. Validation: A/B OOS vs FinBERT on held-out slice.
 
 ### 8.3 Stretch — Meta LoRA (slice 10b)
 
@@ -344,7 +349,7 @@ Vertical-slice build (A06). Each slice ships end-to-end. Core path is 9 slices (
 
 | Slice | Deliverable | Status |
 |---|---|---|
-| 1 | DE baseline — daily OHLCV + news + FinBERT → DuckDB + MD/CSV report | ✅ spec locked |
+| 1 | DE baseline — OHLCV via yfinance + Alpaca news + FinBERT → DuckDB + MD/CSV report | ✅ spec locked |
 | 2 | Universe expansion to 14 ag tickers, sequential loop | ✅ spec locked |
 | 3 | Domain context — USDA / NOAA / CBOT → `ag_conditions` | ✅ spec locked |
 | 4 | Macro (rules) — VIX / 2s10s / DXY / FOMC → `macro_signals` | ✅ spec locked |
@@ -352,7 +357,7 @@ Vertical-slice build (A06). Each slice ships end-to-end. Core path is 9 slices (
 | 5b | Sentiment LoRA (conditional stretch) | Deferred |
 | 6 | Risk + Quant Meta with technical features inlined. Candidate orders. Paper-log only. | 🔄 (features/threshold/Kelly locked; aggregation weights + risk numbers open) |
 | 7 | LLM Meta — Qwen + prompt, pass/veto/adjust + reasoning trace | 🔄 |
-| 8 | Paper-trade execution via Alpaca bracket orders | 🔄 |
+| 8 | Paper-trade execution via chosen broker (bracket orders) | 🔄 |
 | 9 | Eval harness + walk-forward validation | 🔄 |
 | 10b | DPO training loop (conditional stretch, was slice 10) | Deferred |
 | 11 | (Optional) Rust GPU scheduler | Deferred, possibly never |

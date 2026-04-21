@@ -60,7 +60,7 @@ Items marked 🔄 were written into the project doc but never actually co-design
 | A07 | Concurrency: **sequential loops, no asyncio**. 14 tickers × ~1s each is fast enough without async. Revisit if/when a slice demonstrates a real need. | ✅ co-designed 2026-04-20 (supersedes prior `asyncio`-default) |
 | A08 | Hard adapter swap initially (~50–100ms swap); X-LoRA / LoRA-Switch deferred until adapter chain latency matters | 🔄 |
 | A09 | DPO via `trl` on LoRA adapters; trade outcomes as preference pairs | 🔄 |
-| A10 | Alpaca paper brokerage for data + execution | 🔄 |
+| A10 | ~~Alpaca paper brokerage for data + execution~~ **Superseded 2026-04-21.** Split into three: (a) **yfinance** for daily OHLCV (free, no account, 10+ yr depth incl. adj close); (b) **Alpaca Benzinga feed** for symbol-tagged ag news (free account; data-only, not a broker commitment); (c) **broker TBD at slice 8** — evaluated against execution-quality criteria (fees, fills, short locate, bracket orders) when we actually need execution. Rationale: "single-provider consistency" was the original argument but feed-divergence only matters at microseconds for daily-bar swing trading, and slice 9 eval is against historical DB, not live broker fills. | ✅ co-designed 2026-04-21 |
 | **A11** | **Meta architecture: split into two layers.** **Quant Meta** = deterministic code (normalize agent signals → aggregate with hand-picked weights, upgrade to tiny logreg when outcome data exists → Kelly-size → risk-filter → candidate orders table). **LLM Meta** = Qwen reads candidate orders + news + upcoming events → `pass` / `veto` / `adjust` per candidate + reasoning trace (becomes DPO training data later). LLMs are bad at precise numerics; split puts the right tool on each half of the job. | ✅ co-designed 2026-04-20 |
 
 ---
@@ -112,7 +112,7 @@ Slice 4 pulled forward from Technical to Macro (Technical collapsed to inline fe
 | 5 | Qwen + LoRA Sentiment (replaces FinBERT); A/B OOS vs baseline | 🔄 |
 | 6 | Risk + Quant Meta — technical features inlined; deterministic aggregation → candidate orders | 🔄 |
 | 7 | LLM Meta — Qwen reads candidate orders + news + events → pass/veto/adjust + reasoning trace | 🔄 |
-| 8 | Paper-trade execution via Alpaca bracket orders | 🔄 |
+| 8 | Paper-trade execution via chosen broker (bracket orders; provider TBD — see A10) | 🔄 |
 | 9 | Eval harness + walk-forward validation (DuckDB is already primary; no layer addition needed) | 🔄 |
 | 10 | DPO training loop on Sentiment LoRA; shadow-deploy + auto-rollback | 🔄 |
 | 11 | (Optional) Rust GPU scheduler — skip unless Python insufficient or explicit learning exercise | 🔄 |
@@ -126,10 +126,10 @@ Slice 4 pulled forward from Technical to Macro (Technical collapsed to inline fe
 
 **Slice 1 — DE baseline**
 - Command: `python -m hyx.slice1` (manual, daily)
-- Pull: OHLCV daily + news for DE via Alpaca
+- Pull: OHLCV daily via yfinance (no account); news for DE via Alpaca Benzinga feed (free account)
 - Score: FinBERT (GPU inference) over headlines
 - Write: DuckDB + `reports/slice1/YYYY-MM-DD.{md,csv}`
-- Schema: `ohlcv_daily(ticker, date, O/H/L/C, volume)` · `news(id, ticker, published_at, headline, url, summary)` · `news_sentiment(news_id, model, label, score, scored_at)`
+- Schema: `ohlcv_daily(ticker, date, O/H/L/C, adj_close, volume)` PK (ticker, date) · `news(news_id, published_at, headline, summary, url, source)` PK news_id · `news_tickers(news_id, ticker)` PK (news_id, ticker) — many-to-many so one article tagging NTR+MOS+CF stays one `news` row · `news_sentiment(news_id, model, label, score, score_pos, score_neg, score_neu, scored_at)` PK (news_id, model) — `model` column lets FinBERT and slice-5 Qwen zero-shot coexist without migration
 - Files: `hyx/slice1.py`, `hyx/db.py`, `hyx/config.py`
 - Config: `.env` → `ALPACA_KEY`, `ALPACA_SECRET`
 - Failure: crash loudly
