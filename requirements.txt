@@ -1,0 +1,16 @@
+# Core runtime deps for hyxrestration slice 1.
+# PyTorch with cu128 wheels for RTX 5090 (Blackwell sm_120) — see README for install line.
+
+duckdb>=1.1.0
+python-dotenv>=1.0.1
+alpaca-py>=0.33.0
+pytz>=2024.1          # alpaca-py pulls this but doesn't hard-depend on it
+transformers>=4.46.0
+torch>=2.7.0
+numpy>=2.0.0
+pandas>=2.2.0
+tqdm>=4.66.0
+
+# Dev
+pytest>=8.3.0
+ruff>=0.8.0
