@@ -7,8 +7,9 @@ from pathlib import Path
 
 import duckdb
 
-from hyx.alpaca_client import NewsRow, OhlcvRow
 from hyx.db.migrate import migrate
+from hyx.news import NewsRow
+from hyx.prices import OhlcvRow
 from hyx.report import TickerReport, write_report
 from hyx.sentiment import MODEL_TAG
 from hyx.slice1 import _build_ticker_report, _persist_news, _persist_ohlcv
@@ -48,11 +49,11 @@ def test_build_ticker_report_aggregates_sentiment():
     conn = duckdb.connect(":memory:")
     migrate(conn)
 
-    # Seed OHLCV
+    # Seed OHLCV (note: new schema has adj_close)
     _persist_ohlcv(
         conn,
         [
-            OhlcvRow("DE", datetime(2026, 4, 20, tzinfo=UTC), 100.0, 101.0, 99.0, 100.5, 500_000),
+            OhlcvRow("DE", date(2026, 4, 20), 100.0, 101.0, 99.0, 100.5, 100.2, 500_000),
         ],
     )
 

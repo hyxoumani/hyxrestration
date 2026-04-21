@@ -1,10 +1,16 @@
-"""Slice 1 orchestrator — DE OHLCV + news + FinBERT sentiment.
+"""Slice 1 orchestrator — DE OHLCV (yfinance) + news (Alpaca) + FinBERT sentiment.
 
-Pulls daily bars and news for DE via Alpaca, scores headlines with FinBERT,
-persists everything to DuckDB, and writes a daily MD/CSV report.
+Pulls daily bars from yfinance and news from the Alpaca Benzinga feed, scores
+headlines with FinBERT, persists everything to DuckDB, and writes a daily
+MD/CSV report.
 
-Incremental + idempotent: rerunning the same day is a no-op. First run backfills
-5 years (OHLCV) / Alpaca's news history window (~2021+). CLI override:
+Incremental + idempotent: rerunning the same day is a no-op. First run
+backfills 5 years of OHLCV (yfinance has more; 5y is our conservative default)
+and ~4 years of news (Alpaca's Benzinga history starts ~2021).
+
+CLI:
+    python -m hyx.slice1                           # full run (needs Alpaca key for news)
+    python -m hyx.slice1 --skip-news               # OHLCV + report only, no creds needed
     python -m hyx.slice1 --backfill-since 2024-01-01
 """
 
@@ -17,11 +23,12 @@ from pathlib import Path
 
 import duckdb
 
-from hyx.alpaca_client import AlpacaDataClient, NewsRow, OhlcvRow
 from hyx.audit import audit
 from hyx.config import Config
 from hyx.db import connection
 from hyx.db.migrate import migrate
+from hyx.news import AlpacaNewsClient, NewsRow
+from hyx.prices import OhlcvRow, fetch_daily_bars
 from hyx.report import TickerReport, write_report
 from hyx.sentiment import MODEL_TAG, score_headlines
 
@@ -62,9 +69,7 @@ def _resolve_start(
     if backfill_since is not None:
         return backfill_since
     cursor = _source_cursor(conn, source, ticker)
-    if cursor is None:
-        return default_backfill
-    return cursor
+    return cursor if cursor is not None else default_backfill
 
 
 # --------------------------------------------------------------- persistence
@@ -76,10 +81,10 @@ def _persist_ohlcv(conn: duckdb.DuckDBPyConnection, rows: Iterable[OhlcvRow]) ->
         conn.execute(
             """
             INSERT OR IGNORE INTO ohlcv_daily
-                (ticker, date, open, high, low, close, volume)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (ticker, date, open, high, low, close, adj_close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [r.ticker, r.date.date(), r.open, r.high, r.low, r.close, r.volume],
+            [r.ticker, r.date, r.open, r.high, r.low, r.close, r.adj_close, r.volume],
         )
     after = conn.execute("SELECT COUNT(*) FROM ohlcv_daily").fetchone()[0]
     return after - before
@@ -204,79 +209,107 @@ def _build_ticker_report(
 # ------------------------------------------------------------------- entry
 
 
-def run(backfill_since: datetime | None = None, db_path: Path | None = None) -> int:
-    """Run slice 1 end-to-end. Returns process exit code."""
-    cfg = Config.load(require_alpaca=True)
+def run(
+    backfill_since: datetime | None = None,
+    db_path: Path | None = None,
+    skip_news: bool = False,
+) -> int:
+    """Run slice 1 end-to-end. Returns process exit code.
+
+    skip_news=True allows exercising the OHLCV + report path without Alpaca
+    credentials — useful in dev before news access is provisioned.
+    """
+    cfg = Config.load(require_alpaca=not skip_news)
     db = db_path or cfg.db_path
     now = datetime.now(tz=UTC)
     default_backfill = now - timedelta(days=365 * BACKFILL_YEARS)
 
     with connection(db) as conn:
         applied = migrate(conn)
-        audit(conn, slice=SLICE_NAME, level="info", event="migrate", payload={"applied": applied})
+        audit(
+            conn,
+            slice=SLICE_NAME,
+            level="info",
+            event="migrate",
+            payload={"applied": applied},
+        )
 
-        client = AlpacaDataClient(cfg.alpaca_key, cfg.alpaca_secret)
-
-        # --- OHLCV ---
+        # --- OHLCV (yfinance, no account) ---
         ohlcv_new = 0
         for tkr in TICKERS:
-            start = _resolve_start(conn, "alpaca_ohlcv", tkr, backfill_since, default_backfill)
+            start_ts = _resolve_start(conn, "yfinance_ohlcv", tkr, backfill_since, default_backfill)
             audit(
                 conn,
                 slice=SLICE_NAME,
                 level="info",
                 event="ohlcv.fetch_start",
-                payload={"ticker": tkr, "start": start.isoformat()},
+                payload={"ticker": tkr, "start": start_ts.isoformat()},
             )
-            rows = client.fetch_ohlcv_daily([tkr], start=start, end=now)
+            rows = fetch_daily_bars([tkr], start=start_ts.date(), end=now.date())
             ingested = _persist_ohlcv(conn, rows)
             ohlcv_new += ingested
-            _update_cursor(conn, "alpaca_ohlcv", tkr, now)
+            _update_cursor(conn, "yfinance_ohlcv", tkr, now)
             audit(
                 conn,
                 slice=SLICE_NAME,
                 level="info",
                 event="ohlcv.fetched",
-                payload={"ticker": tkr, "rows_returned": len(rows), "rows_new": ingested},
-            )
-
-        # --- News ---
-        news_new = 0
-        for tkr in TICKERS:
-            start = _resolve_start(conn, "alpaca_news", tkr, backfill_since, default_backfill)
-            audit(
-                conn,
-                slice=SLICE_NAME,
-                level="info",
-                event="news.fetch_start",
-                payload={"ticker": tkr, "start": start.isoformat()},
-            )
-            fetched = list(client.fetch_news([tkr], start=start, end=now))
-            articles_new, tags_new = _persist_news(conn, fetched)
-            news_new += articles_new
-            _update_cursor(conn, "alpaca_news", tkr, now)
-            audit(
-                conn,
-                slice=SLICE_NAME,
-                level="info",
-                event="news.fetched",
                 payload={
                     "ticker": tkr,
-                    "rows_returned": len(fetched),
-                    "articles_new": articles_new,
-                    "tag_rows_new": tags_new,
+                    "rows_returned": len(rows),
+                    "rows_new": ingested,
                 },
             )
 
-        # --- Sentiment ---
-        scored = _score_unscored(conn, TICKERS)
-        audit(
-            conn,
-            slice=SLICE_NAME,
-            level="info",
-            event="sentiment.scored",
-            payload={"model": MODEL_TAG, "headlines_scored": scored},
-        )
+        # --- News (Alpaca Benzinga, free account) ---
+        news_new = 0
+        scored = 0
+        if not skip_news:
+            news_client = AlpacaNewsClient(cfg.alpaca_key, cfg.alpaca_secret)
+            for tkr in TICKERS:
+                start_ts = _resolve_start(
+                    conn, "alpaca_news", tkr, backfill_since, default_backfill
+                )
+                audit(
+                    conn,
+                    slice=SLICE_NAME,
+                    level="info",
+                    event="news.fetch_start",
+                    payload={"ticker": tkr, "start": start_ts.isoformat()},
+                )
+                fetched = list(news_client.fetch([tkr], start=start_ts, end=now))
+                articles_new, tags_new = _persist_news(conn, fetched)
+                news_new += articles_new
+                _update_cursor(conn, "alpaca_news", tkr, now)
+                audit(
+                    conn,
+                    slice=SLICE_NAME,
+                    level="info",
+                    event="news.fetched",
+                    payload={
+                        "ticker": tkr,
+                        "rows_returned": len(fetched),
+                        "articles_new": articles_new,
+                        "tag_rows_new": tags_new,
+                    },
+                )
+
+            scored = _score_unscored(conn, TICKERS)
+            audit(
+                conn,
+                slice=SLICE_NAME,
+                level="info",
+                event="sentiment.scored",
+                payload={"model": MODEL_TAG, "headlines_scored": scored},
+            )
+        else:
+            audit(
+                conn,
+                slice=SLICE_NAME,
+                level="info",
+                event="news.skipped",
+                payload={"reason": "--skip-news"},
+            )
 
         # --- Report ---
         per_ticker = [
@@ -293,6 +326,8 @@ def run(backfill_since: datetime | None = None, db_path: Path | None = None) -> 
             f"Sentiment model: {MODEL_TAG}",
             f"Headlines scored this run: {scored}",
         ]
+        if skip_news:
+            notes.append("News ingest skipped (--skip-news).")
         md_path, csv_path = write_report(cfg.reports_dir, 1, now.date(), per_ticker, notes=notes)
         audit(
             conn,
@@ -304,16 +339,25 @@ def run(backfill_since: datetime | None = None, db_path: Path | None = None) -> 
     return 0
 
 
+def _parse_date(s: str) -> datetime:
+    return datetime.fromisoformat(s).replace(tzinfo=UTC)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="hyx.slice1")
     p.add_argument(
         "--backfill-since",
-        type=lambda s: datetime.fromisoformat(s).replace(tzinfo=UTC),
+        type=_parse_date,
         default=None,
         help="ISO date (YYYY-MM-DD) to force a backfill start. Default: fetch_state or today-5y.",
     )
+    p.add_argument(
+        "--skip-news",
+        action="store_true",
+        help="Skip Alpaca news + sentiment; exercise OHLCV + report only. No Alpaca creds needed.",
+    )
     args = p.parse_args()
-    return run(backfill_since=args.backfill_since)
+    return run(backfill_since=args.backfill_since, skip_news=args.skip_news)
 
 
 if __name__ == "__main__":

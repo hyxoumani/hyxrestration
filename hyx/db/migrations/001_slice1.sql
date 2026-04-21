@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS ohlcv_daily (
     high        DOUBLE    NOT NULL,
     low         DOUBLE    NOT NULL,
     close       DOUBLE    NOT NULL,
+    adj_close   DOUBLE    NOT NULL,    -- yfinance split/dividend-adjusted close
     volume      BIGINT    NOT NULL,
     fetched_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (ticker, date)

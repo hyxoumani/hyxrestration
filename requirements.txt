@@ -3,8 +3,9 @@
 
 duckdb>=1.1.0
 python-dotenv>=1.0.1
-alpaca-py>=0.33.0
-pytz>=2024.1          # alpaca-py pulls this but doesn't hard-depend on it
+yfinance>=0.2.40           # OHLCV source — no account needed
+alpaca-py>=0.33.0          # news source only (A10) — not a broker commitment
+pytz>=2024.1               # alpaca-py pulls this but doesn't hard-depend on it
 transformers>=4.46.0
 torch>=2.7.0
 numpy>=2.0.0

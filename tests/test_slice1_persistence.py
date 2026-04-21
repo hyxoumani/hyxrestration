@@ -1,17 +1,18 @@
 """Persistence idempotency tests for slice 1.
 
-Uses synthetic OhlcvRow/NewsRow fixtures so the tests don't depend on Alpaca
-credentials. FinBERT scoring is exercised separately via its own test.
+Uses synthetic OhlcvRow/NewsRow fixtures so the tests don't depend on the
+network or on Alpaca credentials. FinBERT scoring is exercised separately.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import duckdb
 
-from hyx.alpaca_client import NewsRow, OhlcvRow
 from hyx.db.migrate import migrate
+from hyx.news import NewsRow
+from hyx.prices import OhlcvRow
 from hyx.slice1 import (
     _persist_news,
     _persist_ohlcv,
@@ -29,11 +30,12 @@ def _fresh_db() -> duckdb.DuckDBPyConnection:
 def _ohlcv(ticker: str, year: int, month: int, day: int) -> OhlcvRow:
     return OhlcvRow(
         ticker=ticker,
-        date=datetime(year, month, day, tzinfo=UTC),
+        date=date(year, month, day),
         open=100.0,
         high=105.0,
         low=99.0,
         close=102.0,
+        adj_close=101.5,
         volume=1_000_000,
     )
 
@@ -60,6 +62,13 @@ def test_persist_ohlcv_insert_or_ignore():
     assert _persist_ohlcv(conn, [_ohlcv("DE", 2024, 1, 4)]) == 1
 
 
+def test_persist_ohlcv_stores_adj_close():
+    conn = _fresh_db()
+    _persist_ohlcv(conn, [_ohlcv("DE", 2024, 1, 2)])
+    row = conn.execute("SELECT close, adj_close FROM ohlcv_daily WHERE ticker = 'DE'").fetchone()
+    assert row == (102.0, 101.5)
+
+
 def test_persist_news_dedupes_articles_and_tags():
     conn = _fresh_db()
     t = datetime(2024, 2, 1, tzinfo=UTC)
@@ -79,13 +88,12 @@ def test_persist_news_dedupes_articles_and_tags():
 
 def test_fetch_cursor_roundtrip():
     conn = _fresh_db()
-    assert _source_cursor(conn, "alpaca_ohlcv", "DE") is None
+    assert _source_cursor(conn, "yfinance_ohlcv", "DE") is None
     ts = datetime(2024, 3, 1, 12, 0, tzinfo=UTC)
-    _update_cursor(conn, "alpaca_ohlcv", "DE", ts)
-    got = _source_cursor(conn, "alpaca_ohlcv", "DE")
+    _update_cursor(conn, "yfinance_ohlcv", "DE", ts)
+    got = _source_cursor(conn, "yfinance_ohlcv", "DE")
     assert got is not None
-    # DuckDB may strip tz on round-trip; compare naive equality on the calendar day
-    assert got.replace(tzinfo=UTC) == ts or got.year == 2024 and got.month == 3 and got.day == 1
+    assert got.year == 2024 and got.month == 3 and got.day == 1
 
 
 def test_audit_log_autoincrement():
