@@ -3,3 +3,22 @@ results.tsv
 run.log
 evals/results/
 *.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Secrets
+.env
+
+# Slice outputs (DuckDB + per-run reports)
+data/
+reports/
+
+# Phase 0 research artefacts (pre-slice-1 falsification tests)
+phase0/data/
+phase0/results/
