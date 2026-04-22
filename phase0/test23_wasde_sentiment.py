@@ -221,8 +221,7 @@ def evaluate_verdict(results: list[CellResult]) -> TestVerdict:
         if (
             "upside" in ds
             and "downside" in ds
-            and np.sign(ds["upside"].beta_interaction)
-            == -np.sign(ds["downside"].beta_interaction)
+            and np.sign(ds["upside"].beta_interaction) == -np.sign(ds["downside"].beta_interaction)
         ):
             # Opposite-signed interactions on the same (cat, horizon, line_item)
             # triple flag an inconsistent mechanism — pre-registration strict.

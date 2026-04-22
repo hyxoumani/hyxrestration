@@ -15,10 +15,18 @@ __pycache__/
 # Secrets
 .env
 
-# Slice outputs (DuckDB + per-run reports)
-data/
-reports/
+# Slice outputs (DuckDB + per-run reports) — rooted so they don't match phase0/data
+/data/
+/reports/
 
-# Phase 0 data dumps — reproducible from yfinance, not committed
-phase0/data/
+# Phase 0 data
+# XLS blobs are large and reproducible via phase0.wasde_scraper — not committed
+phase0/data/wasde_xls/
+# Raw yfinance price caches — reproducible via phase0/data_loaders.py
+phase0/data/prices.csv
+# News + scores are account-gated + huge — not committed
+phase0/data/alpaca_news.csv
+phase0/data/finbert_scores.csv
+# The parsed WASDE table IS committed so Test 2+3 is reproducible end-to-end
+# without re-scraping 132 XLS files. Regenerate via phase0.wasde_scraper.
 # phase0/results/ IS committed — the falsification record is the deliverable

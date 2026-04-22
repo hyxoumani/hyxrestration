@@ -30,7 +30,7 @@ from phase0.data_loaders import load_adj_close
 from phase0.events import build_event_panel
 from phase0.surprise import compute_trend_residual
 from phase0.test23_wasde_sentiment import TICKER_CATEGORIES, run
-from phase0.wasde_loader import generate_synthetic_wasde
+from phase0.wasde_loader import WASDE_CSV, generate_synthetic_wasde, load_wasde
 
 REGRESSION_TICKERS: tuple[str, ...] = tuple(
     t for group in TICKER_CATEGORIES.values() for t in group
@@ -115,16 +115,26 @@ def _inject_return_signal(panel: pd.DataFrame, seed: int = 11) -> pd.DataFrame:
     return panel
 
 
-def run_synthetic(mode: str = "null") -> None:
-    print(f"[smoke] mode = {mode!r}")
+def run_synthetic(mode: str = "null", wasde_source: str = "auto") -> None:
+    print(f"[smoke] mode = {mode!r}  wasde = {wasde_source!r}")
 
     # --- real prices (cached from Test 1)
     all_needed = tuple({*REGRESSION_TICKERS, "SPY"})
     prices = load_adj_close(all_needed, start="2014-01-01", end="2025-01-01")
     prices = prices.sort_index()
 
-    # --- synthetic WASDE + real surprise computation
-    wasde = generate_synthetic_wasde(start="2014-01-10", end="2024-12-31")
+    # --- WASDE: real scraped data if CSV exists or explicitly requested, else synthetic
+    use_real = wasde_source == "real" or (wasde_source == "auto" and WASDE_CSV.exists())
+    if use_real:
+        wasde = load_wasde()
+        print(
+            f"[smoke] using REAL WASDE ({len(wasde)} rows, "
+            f"{wasde['release_date'].nunique()} releases, "
+            f"{wasde['release_date'].min().date()} → {wasde['release_date'].max().date()})"
+        )
+    else:
+        wasde = generate_synthetic_wasde(start="2014-01-10", end="2024-12-31")
+        print(f"[smoke] using SYNTHETIC WASDE ({len(wasde)} rows)")
     surprises = compute_trend_residual(wasde)
 
     # --- synthetic sentiment on the real trading-day calendar
@@ -175,8 +185,14 @@ def run_synthetic(mode: str = "null") -> None:
 def main() -> int:
     p = argparse.ArgumentParser(prog="test23_synthetic_smoke")
     p.add_argument("--mode", choices=["null", "positive"], default="null")
+    p.add_argument(
+        "--wasde",
+        choices=["auto", "real", "synthetic"],
+        default="auto",
+        help="auto = real if phase0/data/wasde_releases.csv exists, else synthetic.",
+    )
     args = p.parse_args()
-    run_synthetic(args.mode)
+    run_synthetic(args.mode, args.wasde)
     return 0
 
 
