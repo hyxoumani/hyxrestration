@@ -19,6 +19,6 @@ __pycache__/
 data/
 reports/
 
-# Phase 0 research artefacts (pre-slice-1 falsification tests)
+# Phase 0 data dumps — reproducible from yfinance, not committed
 phase0/data/
-phase0/results/
+# phase0/results/ IS committed — the falsification record is the deliverable
