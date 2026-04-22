@@ -149,6 +149,103 @@ Partial pass (1–2 surviving combinations, or magnitude below 30 bps) is explic
 
 ---
 
+## 2.7 Interim Test 3-standalone
+
+**Added 2026-04-22.** Not part of the original §2 pre-registration. Added as an interim
+falsification step while Test 2+3's sentiment arm is blocked on news-source
+availability (Alpaca signup errored on the user's attempt; Tiingo free plan does not
+include News API, and paid Tiingo caps news history at 3 months per its published
+pricing — unsuitable for a multi-year regression).
+
+### 2.7.1 Purpose
+
+Tests ONE component of L01 — whether WASDE surprises alone predict ag-equity returns
+at swing horizons — without the sentiment arm. Reuses WASDE data already in hand
+(`phase0/data/wasde_releases.csv`, 132 releases × 3 crops × 3 line items,
+2014-01-10 → 2024-12-10) and Test 1's price data. Zero external-data dependencies,
+zero dollars, runnable immediately.
+
+### 2.7.2 What this does NOT test
+
+**The L01 cross-modal claim.** L01 is fundamentally about integration across information
+sources, not any single source in isolation. Test 3-standalone can tell us whether
+WASDE surprises contribute anything, not whether the LLM-specific cross-modal layer
+adds value. A full L01 falsification still requires the combined Test 2+3 once a news
+source unblocks.
+
+### 2.7.3 Hypothesis
+
+Public USDA WASDE surprises on (production, ending_stocks, yield) of
+(corn, soybeans, wheat) predict market-beta-adjusted forward returns on downstream ag
+equity categories (fertilizer, equipment, processors) at 5-day and 10-day swing horizons.
+
+### 2.7.4 Design
+
+**Data:** same WASDE and price data as §2.3. Sentiment arm is omitted entirely.
+
+**Surprise:** stage-1 trend-residual proxy (phase0_data_sources.md §5.3), unchanged.
+
+**Regression per (category, direction, horizon, line_item):**
+
+```
+excess_return[D, D+h] ~ α + β_surprise · |surprise_magnitude| + ε
+```
+
+HC3 robust standard errors. `excess_return` is the same beta-adjusted construction as
+§2.3 — 252-day strictly-trailing OLS for beta, non-trading-day releases rolled to the
+next trading day.
+
+**Regression matrix:** 3 categories × 2 directions (upside/downside; neutral excluded)
+× 2 horizons × 3 line_items = **36 primaries**. Matches the combined-test FDR family size
+so the pass bar is comparable.
+
+**Multiple testing:** Benjamini-Hochberg FDR correction at q = 0.10 on the 36
+`β_surprise` p-values.
+
+### 2.7.5 Pass criterion (pre-registered)
+
+All three must hold:
+
+1. After BH-FDR correction at q = 0.10, ≥ 3 combinations show `β_surprise` t-stat > 2.
+2. **Directional consistency.** For any (category, horizon, line_item) triple where
+   both upside AND downside directions produce surviving `β_surprise`, the two β signs
+   must be **opposite** on the `|surprise_magnitude|` regressor. (Upside β and
+   downside β both positive on absolute magnitudes would mean "more surprise of any
+   kind → returns move the same way" — a volatility response, not a directional one.)
+3. **Economic magnitude.** At 1σ of `|surprise|`, implied excess return from
+   `β_surprise` ≥ 30 bps (cost-overcomable at Test 1's 5 bps/side).
+
+**Partial pass** (1–2 surviving combinations, or magnitude below 30 bps, or
+sign-inconsistent) is explicitly **not** a pass — treated as underpowered evidence,
+not validation. Mirrors §2.4's rigor.
+
+### 2.7.6 Outcome interpretation
+
+| Outcome | Implication |
+|---|---|
+| **Pass** | WASDE surprises aren't fully arbitraged at swing horizons. A tradable single-modal signal exists. Does NOT validate L01 (cross-modal). Either pivot to a simpler WASDE-event capture system (making hyxrestration's LLM layer a secondary question) or still run Test 2+3 when a news source unblocks, to test whether sentiment adds marginal value above the main effect. |
+| **Fail** | WASDE surprises are fully arbitraged at swing horizons. Weakens one L01 pillar but does NOT falsify the cross-modal claim — the interaction could still exist. L01 verdict still requires Test 2+3 with news. Combined with Test 1's fail, moves us toward the §4 "Test 1 fail + Test 2+3 fail → kill trading-P&L goal" branch. |
+| **Partial** | Do not promote. Treat as fail. Redesign or abandon, per §4's bold "partial pass is the highest-risk outcome because it's the easiest to rationalize" principle. |
+
+### 2.7.7 Deliverable
+
+`phase0/test3_wasde_standalone.py` + `phase0/results/test3_YYYY-MM-DD.md` with the
+full 36-row regression table, surviving-FDR subset, economic-magnitude flags,
+pre-registration locking commit SHA cited in the results header, and a plain-English
+verdict paragraph.
+
+### 2.7.8 Pre-registration lock
+
+This subsection's thresholds (§2.7.5), regression structure (§2.7.4), and decision
+rubric (§2.7.6) are locked by the commit that introduces §2.7 and
+`phase0/test3_wasde_standalone.py` together. Subsequent edits to those subsections
+require the `[pre-registration-violation]` commit-subject marker per §0.1, with a
+paragraph in the commit body explaining what changed and why.
+
+The locking commit SHA is cited in the results file header at run time.
+
+---
+
 ## 3. Test 4 — Drought Monitor (deferred)
 
 Originally scoped as a fourth test. Deferred because:
