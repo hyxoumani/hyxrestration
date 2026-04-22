@@ -136,7 +136,7 @@ Slice 4 pulled forward from Technical to Macro (Technical collapsed to inline fe
 
 **Slice 2 — Universe expansion**
 - Command: `python -m hyx.slice2`
-- 14 tickers: NTR, MOS, CF, CTVA, FMC, ADM, BG, DE, AGCO, CNHI, DBA, CORN, WEAT, SOYB
+- 14 tickers: NTR, MOS, CF, CTVA, FMC, ADM, BG, DE, AGCO, CNH, DBA, CORN, WEAT, SOYB (CNH supersedes CNHI post-Jan-2024 restructuring; yfinance only carries continuous 2013→2024 history under CNH)
 - Sequential loop, no asyncio
 - Schema addition: `universe(ticker, added_at, active)`
 - Per-ticker rows in report

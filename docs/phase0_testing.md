@@ -48,7 +48,7 @@ Equal-weight portfolio of the top-5 trailing-6-month momentum names in the 10-eq
 ### 1.3 Design
 
 - Data: daily adjusted OHLCV for 10 equities + SPY, 2014–2024 (yfinance, free).
-- Universe: **10 ag equities only** — NTR, MOS, CF, CTVA, FMC, ADM, BG, DE, AGCO, CNHI. Commodity ETFs (DBA/CORN/WEAT/SOYB) are explicitly excluded so Test 1 remains composable with Test 2+3, which also excludes them as first-order / fully-arbitraged (see §2.3). Tickers that didn't exist in a given period (CTVA pre-June-2019 spin) are held as cash for that period — no survivorship pretending.
+- Universe: **10 ag equities only** — NTR, MOS, CF, CTVA, FMC, ADM, BG, DE, AGCO, CNH. (CNH is the post-2024 continuation ticker for CNHI; yfinance carries restated 2013→2024 adj-close under CNH only.) Commodity ETFs (DBA/CORN/WEAT/SOYB) are explicitly excluded so Test 1 remains composable with Test 2+3, which also excludes them as first-order / fully-arbitraged (see §2.3). Tickers that didn't exist in a given period (CTVA pre-June-2019 spin) are held as cash for that period — no survivorship pretending.
 - Signal: trailing 126-trading-day return per ticker, computed on the month-end close.
 - Portfolio: hold top-5 at **20% per name** for the next month, matching the T02 concentration cap from `decisions.md` so Test 1's result is directly interpretable under the production risk constraint. Rebalance on first trading day of the month at that day's close.
 - Costs: 5 bps per side per rebalance (conservative for large-cap ag).
@@ -110,7 +110,7 @@ FinBERT sentiment on news about ticker T in the `[D-1, D+2]` window around a WAS
 
 - Downstream ticker categories:
   - Fertilizer: NTR, MOS, CF
-  - Equipment: DE, AGCO, CNHI
+  - Equipment: DE, AGCO, CNH
   - Processors: ADM, BG
   - (Commodity ETFs CORN/WEAT/SOYB/DBA excluded — first-order effect, fully arbitraged, diagnostic only.)
 - Forward returns: market-beta-adjusted `[D, D+5]` and `[D, D+10]` closes.

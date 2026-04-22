@@ -30,7 +30,7 @@ Later (conditional stretch): overnight DPO training on accumulated trade outcome
 ### 1.2 Scope constraints
 
 - **Niche:** Agriculture specialist, variant B — crop-side (fertilizer + seeds + processors + equipment + ag-commodity ETFs). Final sub-niche re-lockable after Phase 0 domain substrate (~slice 3).
-- **Universe:** 14 tickers — `NTR, MOS, CF, CTVA, FMC, ADM, BG, DE, AGCO, CNHI, DBA, CORN, WEAT, SOYB`.
+- **Universe:** 14 tickers — `NTR, MOS, CF, CTVA, FMC, ADM, BG, DE, AGCO, CNH, DBA, CORN, WEAT, SOYB`. (CNH = continuation ticker for what was CNHI prior to the Jan 2024 Iveco spin-out; yfinance carries the restated adj-close series back to 2013 under CNH only.)
 - **Trading style:** Swing 1–5 day holds. Long-only at start. Shorts only post-T1.
 - **Tier target:** T2 — OOS walk-forward Sharpe beats SPY across ≥3 regimes.
 - **Paper-only:** Until explicit user authorization. Minimum bar for real money: 3+ months consistent paper AND T2 gate passed.

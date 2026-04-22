@@ -30,7 +30,7 @@ Total Phase 0 data-acquisition budget: ≤ 3 days of setup before any test runs.
 
 ```python
 import yfinance as yf
-tickers = ["NTR","MOS","CF","CTVA","FMC","ADM","BG","DE","AGCO","CNHI","SPY"]
+tickers = ["NTR","MOS","CF","CTVA","FMC","ADM","BG","DE","AGCO","CNH","SPY"]
 df = yf.download(tickers, start="2014-01-01", end="2024-12-31",
                  auto_adjust=False)  # keep raw + adj close both
 ```
@@ -40,7 +40,7 @@ df = yf.download(tickers, start="2014-01-01", end="2024-12-31",
 ### 2.2 Known gotchas
 
 - **CTVA didn't exist pre-June 2019** (spun from DowDuPont). yfinance returns NaN for pre-spin dates — correct behavior. Backtest holds cash for CTVA's slot when NaN.
-- **CNHI restructured January 2024** (spun Iveco). Continuation ticker handled automatically; adjusted close around the split needs an eyeball sanity check.
+- **CNHI → CNH, January 2024** (spun Iveco). Continuation ticker is **not** handled automatically by yfinance — the old CNHI symbol returns 404 ("possibly delisted"). Use **`CNH`** throughout; yfinance carries restated adj-close back to 2013 under that ticker. Verified 2026-04-22 running Test 1.
 - **Use adjusted close for returns.** Dividends and splits matter over 10-year windows. Raw close only for intraday mechanics you're not modeling.
 - **Point-in-time universe.** The 10 equities were chosen in 2026. Pretending they were chosen in 2014 is survivorship bias in disguise. Document that selection is ex-post and report sensitivity to dropping the 2 most ex-post-obvious picks.
 
@@ -63,7 +63,7 @@ from datetime import datetime
 
 client = NewsClient(api_key=..., secret_key=...)
 req = NewsRequest(
-    symbols=["NTR","MOS","CF","CTVA","FMC","ADM","BG","DE","AGCO","CNHI"],
+    symbols=["NTR","MOS","CF","CTVA","FMC","ADM","BG","DE","AGCO","CNH"],
     start=datetime(2021, 1, 1),
     end=datetime(2025, 12, 31),
     limit=50,  # max per page
@@ -75,7 +75,7 @@ for page in client.get_news(req):
 ### 3.2 Coverage and limits
 
 - **History starts ~January 2021.** This truncates Test 2+3's sample vs Test 1's 2014–2024 window. Acknowledged in phase0_testing.md §2.3.
-- **Source is Benzinga.** Widely consumed, not proprietary. Coverage on major names (NTR, DE, ADM) is dense; on smaller names (AGCO, CNHI, FMC) noticeably thinner.
+- **Source is Benzinga.** Widely consumed, not proprietary. Coverage on major names (NTR, DE, ADM) is dense; on smaller names (AGCO, CNH, FMC) noticeably thinner.
 - **Rate limit: 200 req/min on free tier.** 4 years × 10 tickers with 50/page pagination is well under a day of walltime including backoff.
 - **No article body.** Headlines + summary only. This is what FinBERT operates on anyway.
 
@@ -226,7 +226,7 @@ For each CSV, one short paragraph answering:
 
 Example entry:
 
-> **`alpaca_news.csv`** — Pulled 2026-04-23 from Alpaca news endpoint via `alpaca-py` v0.x. Coverage: 2021-01-01 to pull date, 10 ag equities. Known: headline count per month ranges from ~40 (NTR) to ~4 (AGCO) — AGCO and CNHI rows flagged in test23 notebook as underpowered. Multi-ticker articles counted once per tagged ticker. De-duped on `news_id`. Refresh: `python phase0/notebooks/00_data_loaders.py --refresh news`.
+> **`alpaca_news.csv`** — Pulled 2026-04-23 from Alpaca news endpoint via `alpaca-py` v0.x. Coverage: 2021-01-01 to pull date, 10 ag equities. Known: headline count per month ranges from ~40 (NTR) to ~4 (AGCO) — AGCO and CNH rows flagged in test23 notebook as underpowered. Multi-ticker articles counted once per tagged ticker. De-duped on `news_id`. Refresh: `python phase0/notebooks/00_data_loaders.py --refresh news`.
 
 Future-you debugging test results needs this. Every time this discipline has been skipped on past projects, debugging a failed test has cost more time than the README would have taken.
 
@@ -257,7 +257,7 @@ Pull one month of recent Alpaca news for all 10 ag equities. Per-ticker monthly 
 - **5–20/month:** usable but high variance; flag in test.
 - **< 5/month:** sentiment on this ticker is noise, drop or flag.
 
-Outcome determines how many of the 10 tickers actually participate in Test 2+3's regression matrix. Test 2+3 regresses on 8 of the 10 (fertilizer NTR/MOS/CF, equipment DE/AGCO/CNHI, processors ADM/BG). If more than ~3 of those 8 fall under 5/month, Test 2+3's statistical power is worse than assumed and the test design needs revision.
+Outcome determines how many of the 10 tickers actually participate in Test 2+3's regression matrix. Test 2+3 regresses on 8 of the 10 (fertilizer NTR/MOS/CF, equipment DE/AGCO/CNH, processors ADM/BG). If more than ~3 of those 8 fall under 5/month, Test 2+3's statistical power is worse than assumed and the test design needs revision.
 
 ### 7.2 WASDE consensus feasibility check
 
