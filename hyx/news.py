@@ -68,7 +68,7 @@ class AlpacaNewsClient:
 
         while True:
             req = NewsRequest(
-                symbols=list(tickers),
+                symbols=",".join(tickers),
                 start=start,
                 end=end,
                 limit=page_size,
