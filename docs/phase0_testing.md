@@ -246,6 +246,114 @@ The locking commit SHA is cited in the results file header at run time.
 
 ---
 
+## 2.8 Interim Test 2-standalone (daily sentiment-alone)
+
+**Added 2026-04-22** after Test 2+3 iter 3 produced a `WASDE-only pass` verdict (0/36
+β_interaction survive FDR, 0/36 β_sentiment survive at raw p<0.05, β_surprise
+significant in multiple cells). That result leaves one question unanswered: does
+FinBERT-on-ag-news sentiment contain *any* predictive signal for these tickers at
+swing horizons, or is the sentiment arm contributing no information at all?
+
+If sentiment is **predictive** on its own → the §2.5 "WASDE-only pass" interpretation
+stands cleanly: FinBERT captures real signal, the cross-modal interaction specifically
+doesn't multiply that signal with WASDE surprises. L01's cross-modal claim is
+falsified, §2.5's prescription (demote sentiment, simplify architecture) is defensible.
+
+If sentiment is **null** on its own → FinBERT-on-ag-news may be the bottleneck rather
+than the thesis. Qwen zero-shot re-scoring (slice 5's planned A/B, pulled forward)
+becomes a load-bearing sensitivity check before locking the pivot.
+
+The combined Test 2+3 cannot distinguish these interpretations on its own. §2.8 does.
+
+### 2.8.1 Purpose
+
+Confirm or falsify the premise that FinBERT-scored sentiment on Alpaca-Benzinga
+ag-ticker headlines contains any predictive information on forward returns at
+1d/5d/10d horizons, independent of WASDE event conditioning.
+
+### 2.8.2 What this does NOT test
+
+Same disclaimer as §2.7: this is a component diagnostic, not a full L01 test. L01's
+load-bearing claim is cross-modal integration, not sentiment alone. Sentiment-alone
+signal would be consistent with a pure news-flow thesis that many institutional
+equity desks have priced, not an L01-specific edge.
+
+### 2.8.3 Hypothesis
+
+Daily FinBERT-aggregated sentiment on ag-ticker headlines 2021-2024 predicts
+market-beta-adjusted forward returns on the pooled ticker-category panel at 1d / 5d
+/ 10d horizons.
+
+### 2.8.4 Design
+
+**Data:** reuses the corpus fetched for Test 2+3 iter 3.
+- `phase0/data/alpaca_news.csv` — 3,744 Alpaca-Benzinga articles, 2021-2024
+- `phase0/data/finbert_scores.csv` — FinBERT scores on all 3,744 articles
+- `phase0/data/prices.csv` — cached yfinance Adj Close for the universe + SPY
+
+No new data fetching, no new model inference.
+
+**Daily sentiment:** per (ticker, trading day t),
+`sentiment[t] = (pos_count − neg_count) / total_count` over headlines tagged to
+the ticker on day t. Days without news have undefined sentiment and are excluded.
+
+**Forward return:** `excess[t, t+h] = r[ticker, t, t+h] − β[t] · r[SPY, t, t+h]`,
+with β from 252-day strictly-trailing OLS of ticker daily returns on SPY returns
+(same construction as §2.3).
+
+**Regression per (category, horizon):** pool the category's tickers, regress
+```
+excess_return[t, t+h] ~ α + β · sentiment[t] + ε
+```
+
+Standard errors: **Newey-West HAC with bandwidth = h**, correcting for overlap in
+the forward-return windows at h ≥ 2 (consecutive daily observations at h=5 share
+4 days of return).
+
+**Regression matrix:**
+- Categories: fertilizer (NTR, MOS, CF), equipment (DE, AGCO; CNH excluded per §7.1),
+  processors (ADM, BG).
+- Horizons: 1, 5, 10 trading days.
+- 3 categories × 3 horizons = **9 primaries**.
+
+**Multiple testing:** Benjamini-Hochberg FDR at q = 0.10 on the 9 p-values.
+
+### 2.8.5 Pass criterion (pre-registered)
+
+All three must hold:
+
+1. After BH-FDR correction at q = 0.10, **≥ 1 of 9** regressions shows β t-stat > 2.
+2. **Directional consistency.** Within a category, the signs of surviving β
+   across horizons must agree. If β at 1d is positive and β at 5d is negative
+   (both surviving), the sentiment effect isn't monotone across horizons —
+   consistent with noise, not signal.
+3. **Economic magnitude.** At 1σ of sentiment, implied excess return from β
+   ≥ 30 bps on at least one surviving cell.
+
+### 2.8.6 Outcome interpretation
+
+| Outcome | Implication for the §2.5 interpretation |
+|---|---|
+| **Pass** | FinBERT captures real ag-ticker signal at daily swing horizons. The Test 2+3 `WASDE-only pass` finding is robust: the interaction specifically is zero, not the sentiment arm broadly. §2.5's architectural prescription (demote sentiment agent, delete slice 5b) stands. Qwen re-scoring becomes a lower-priority second-order sensitivity, not a pivot-blocker. |
+| **Fail** | FinBERT-on-ag-news sentiment shows no standalone predictive signal either. FinBERT is the live candidate for "bottleneck model, not bottleneck thesis." Qwen zero-shot re-scoring becomes load-bearing before §2.5's pivot is executed. The cross-modal claim cannot be cleanly falsified on FinBERT data alone. |
+| **Partial** | 1-2 survivors with inconsistent signs or below economic-magnitude threshold. Treat as fail for decision-making per the partial-pass principle (§2.4). |
+
+### 2.8.7 Deliverable
+
+`phase0/test2_sentiment_standalone.py` + `phase0/results/test2_YYYY-MM-DD.md` with
+the full 9-row regression table, FDR-corrected p-values, surviving cells, economic
+magnitudes, pre-registration locking commit SHA in the header, and verdict.
+
+### 2.8.8 Pre-registration lock
+
+This subsection's thresholds (§2.8.5), regression structure (§2.8.4), and decision
+rubric (§2.8.6) are locked by the commit that introduces §2.8 and
+`phase0/test2_sentiment_standalone.py` together. Subsequent edits to those
+subsections require the `[pre-registration-violation]` commit-subject marker per
+§0.1.
+
+---
+
 ## 3. Test 4 — Drought Monitor (deferred)
 
 Originally scoped as a fourth test. Deferred because:
