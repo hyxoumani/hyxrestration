@@ -15,7 +15,12 @@ downstream phase 0 scripts don't re-hit the API.
 
 from __future__ import annotations
 
+import json
 import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +30,7 @@ from dotenv import load_dotenv
 from phase0.data_loaders import DATA_DIR
 
 NEWS_CSV = DATA_DIR / "alpaca_news.csv"
+NEWS_ENDPOINT = "https://data.alpaca.markets/v1beta1/news"
 
 # Phase 0 universe per §2.3 — 10 ag equities, ETFs excluded.
 PHASE0_UNIVERSE: tuple[str, ...] = (
@@ -41,9 +47,7 @@ PHASE0_UNIVERSE: tuple[str, ...] = (
 )
 
 
-def _client():
-    from alpaca.data.historical.news import NewsClient
-
+def _auth_headers() -> dict[str, str]:
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     key = os.environ.get("ALPACA_KEY", "").strip()
     secret = os.environ.get("ALPACA_SECRET", "").strip()
@@ -52,7 +56,23 @@ def _client():
             "ALPACA_KEY / ALPACA_SECRET not set. Copy .env.example to .env "
             "and populate with free paper-trading credentials from alpaca.markets."
         )
-    return NewsClient(key, secret)
+    return {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
+
+
+def _fetch_page(params: dict[str, str], headers: dict[str, str]) -> dict:
+    """One REST call with one retry on transient 5xx. Returns parsed JSON."""
+    url = NEWS_ENDPOINT + "?" + urllib.parse.urlencode(params)
+    for attempt in (1, 2):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if 500 <= e.code < 600 and attempt == 1:
+                time.sleep(1.0)
+                continue
+            raise RuntimeError(f"alpaca news HTTP {e.code}: {e.read().decode()[:200]}") from e
+    raise AssertionError("unreachable")
 
 
 def fetch_news(
@@ -64,43 +84,51 @@ def fetch_news(
     """Pull Alpaca news in [start, end), return a DataFrame shaped per §3.4.
 
     One row per (news_id, tagged_ticker). Articles with N symbols become N rows.
-    """
-    from alpaca.data.requests import NewsRequest
 
+    Hits the REST endpoint directly rather than going through alpaca-py —
+    the SDK's pagination broke at 50 articles on our version (issue hit
+    during iter 3 first real run), and the REST shape is stable.
+    """
     start = start or datetime(2021, 1, 1, tzinfo=UTC)
     end = end or datetime.now(tz=UTC)
+    headers = _auth_headers()
 
-    client = _client()
+    base_params = {
+        "symbols": ",".join(tickers),
+        "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "limit": str(page_size),
+    }
+
     rows: list[dict[str, object]] = []
     page_token: str | None = None
-
+    pages = 0
     while True:
-        req = NewsRequest(
-            symbols=",".join(tickers),
-            start=start,
-            end=end,
-            limit=page_size,
-            include_content=False,
-            page_token=page_token,
-        )
-        news_set = client.get_news(req)
-        for article in news_set.data.get("news", []):
-            for sym in article.symbols or ():
+        params = dict(base_params)
+        if page_token:
+            params["page_token"] = page_token
+        resp = _fetch_page(params, headers)
+        articles = resp.get("news", [])
+        for art in articles:
+            for sym in art.get("symbols") or ():
                 if sym not in tickers:
                     continue
                 rows.append(
                     {
-                        "news_id": str(article.id),
+                        "news_id": str(art.get("id")),
                         "ticker": sym,
-                        "timestamp": article.created_at,
-                        "headline": article.headline or "",
-                        "summary": article.summary or "",
-                        "source": article.source or "",
+                        "timestamp": art.get("created_at"),
+                        "headline": art.get("headline") or "",
+                        "summary": art.get("summary") or "",
+                        "source": art.get("source") or "",
                     }
                 )
-        page_token = news_set.next_page_token
+        pages += 1
+        page_token = resp.get("next_page_token")
         if not page_token:
             break
+        if pages > 5000:
+            raise RuntimeError(f"runaway pagination at {pages} pages")
 
     return pd.DataFrame(rows)
 

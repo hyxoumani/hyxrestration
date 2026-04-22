@@ -44,7 +44,14 @@ def daily_ticker_sentiment(
     simple calendar-date grouping; the caller aligns to its own trading
     calendar downstream.
     """
-    # Inner-join news ↔ scores on news_id (some may be unscored if scorer ran partial)
+    # Inner-join news ↔ scores on news_id (some may be unscored if scorer ran partial).
+    # Coerce both sides to string — news_id comes off Alpaca as a huge int but pandas
+    # may read it back as int64 from one CSV and object from the other, breaking the
+    # merge with "str and int64" errors.
+    news = news.copy()
+    scores = scores.copy()
+    news["news_id"] = news["news_id"].astype(str)
+    scores["news_id"] = scores["news_id"].astype(str)
     merged = news.merge(scores[["news_id", "label"]], on="news_id", how="inner")
     merged["date"] = pd.to_datetime(merged["timestamp"]).dt.tz_convert("UTC").dt.date
     merged["date"] = pd.to_datetime(merged["date"])
