@@ -1,5 +1,5 @@
 ---
-PRE_REGISTERED: false
+PRE_REGISTERED: true
 ---
 
 # Phase 0 — Edge discovery tests
