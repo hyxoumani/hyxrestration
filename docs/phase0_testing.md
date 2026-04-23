@@ -447,6 +447,135 @@ by the commit that introduces §2.9 and `phase0/sentiment_qwen.py` +
 
 ---
 
+## 2.10 Interim expanded grid — horizons × aggregators
+
+**Added 2026-04-23** after §2.9 produced the (Fail, Fail) Qwen A/B outcome.
+Final sensitivity pass before the architectural pivot: does the null result
+hold across a broader set of horizons and sentiment-aggregation schemas, or
+does a different configuration reveal buried signal that the pre-registered
+3-horizon / single-aggregator design missed?
+
+### 2.10.1 Purpose
+
+Confirm (or falsify) the robustness of the null result across **all plausible
+single-axis variations** of the prior tests. Expanded on two axes:
+
+- **Horizons:** add 3d (intraday-reaction window) and 20d (monthly drift) to
+  the existing 1d / 5d / 10d set. Total = 5 horizons for Test 2-standalone.
+- **Aggregators:** three daily-sentiment aggregation schemas, specified in
+  §2.10.3 below.
+
+Run on Qwen 2.5 7B scores (the stronger instrument from §2.9). FinBERT
+expansion deliberately omitted — that adds FDR load without new information,
+since §2.9 already established instrument-level null agreement.
+
+### 2.10.2 Pre-registered commitment (load-bearing)
+
+**This is the final sensitivity test.** The architectural decision is binding
+on the outcome:
+
+- **If any cell survives family-wide BH-FDR at q=0.10 AND economic magnitude
+  ≥ 50 bps at 1σ AND signs are directionally consistent across the category's
+  surviving cells:** we treat it as evidence worth further investigation and
+  discuss architectural implications before pivoting. Legitimate partial-pass
+  outcome worthy of follow-up.
+- **If no cell survives the joint bar:** we execute §2.5's pivot (or Options
+  B / C from the post-iter-3 decision set) immediately. **No further test
+  configurations will be added.** Any further expansion of Test 2 / Test 2+3
+  after §2.10 requires a `[pre-registration-violation]` commit per §0.1, with
+  explicit justification visible in history.
+
+This commitment is the distinguishing feature between a principled robustness
+test and garden-of-forking-paths post-hoc search. Without the commitment, this
+test has no scientific value and would inflate our false-positive rate.
+
+### 2.10.3 Aggregators (pre-registered)
+
+Three daily-ticker sentiment aggregation schemas. All operate on the same
+`scores` DataFrame (`news_id, label, score, pos, neg, neu`) joined to news
+on news_id. Daily aggregation is per (ticker, trading date):
+
+**A1 — `mean_label` (current default, §2.8 baseline):**
+```
+sentiment = (pos_count − neg_count) / total_count
+```
+where counts are over headlines with `label == "positive" / "negative"`
+(argmax over the three probabilities).
+
+**A2 — `conf_weighted`:**
+```
+sentiment = mean(P_positive − P_negative)
+```
+averaged across that day's headlines. Uses the softmax probabilities directly,
+not argmax labels. Picks up subtleties where one model is confident-positive
+and another is barely-positive — treats them differently.
+
+**A3 — `volume_normalized`:**
+```
+sentiment = (pos_count − neg_count) / log(1 + total_count)
+```
+Same numerator as A1, but log-dampened denominator. Rationale: on heavy-news
+days (e.g., earnings), total count spikes and the A1 denominator can produce
+unstable sentiment magnitudes. A3 softens this.
+
+### 2.10.4 Tests and dimensions
+
+**§2.10-A — Test 2-standalone expanded:**
+- Categories: 3 (fertilizer, equipment, processors)
+- Horizons: 5 (1d, 3d, 5d, 10d, 20d)
+- Aggregators: 3 (A1, A2, A3)
+- **Total: 45 cells**
+
+Regression per (category, horizon, aggregator):
+```
+excess_return[t, t+h] ~ α + β · sentiment[t] + ε
+```
+Newey-West HAC SEs with maxlags=h (as in §2.8.4).
+
+**§2.10-B — Test 2+3 combined expanded:**
+- Cells: 36 base × 3 aggregators = **108 cells**
+- Horizons kept at §2.3's 5d / 10d (not expanded on both axes simultaneously —
+  keeps FDR load tractable while still swapping aggregators)
+- Regression unchanged from §2.3 (HC3 SEs, surprise × sentiment interaction
+  is still the load-bearing coefficient)
+
+### 2.10.5 Pass criteria (pre-registered, elevated)
+
+Both expanded tests share the same elevated bar, deliberately stricter than
+§2.4/§2.8.5 because we're explicitly in multiple-testing territory:
+
+1. After BH-FDR correction at q=0.10 **across the full test family** (not
+   per-subset), ≥ 1 cell surviving. For §2.10-A, FDR across all 45; for
+   §2.10-B, FDR across all 108.
+2. **Economic magnitude ≥ 50 bps at 1σ** (was 30 in §2.4/§2.8.5). Elevated
+   because a genuine signal robust across configurations should have stronger
+   economic footprint; one-cell survivors right at the 30 bps edge under a
+   larger family are more likely noise artifacts.
+3. **Directional consistency.** Within a category, the signs of surviving β
+   across horizons/aggregators must agree. Sign-flipping across
+   configurations within the same category is the classical garden-of-forking-
+   paths artifact.
+
+Partial pass (1-2 surviving but below magnitude, or sign-inconsistent) is
+explicitly NOT a pass per §0.1's pre-registration spirit.
+
+### 2.10.6 Deliverables
+
+- `phase0/aggregators.py` — the three aggregator functions, §2.10.3.
+- `phase0/test210_expanded_grid.py` — driver that runs both §2.10-A and
+  §2.10-B, writes two results files.
+- `phase0/results/test210_expanded_2026-04-XX.md` — unified report with
+  both expanded panels, surviving cells, full 45+108 tables, verdict.
+
+### 2.10.7 Pre-registration lock
+
+Aggregator specifications (§2.10.3), test dimensions (§2.10.4), pass criteria
+(§2.10.5), and the commitment clause (§2.10.2) are locked by the commit that
+introduces §2.10 + the implementation files. The `[pre-registration-violation]`
+marker is required for any subsequent edit to §2.10.2-5.
+
+---
+
 ## 3. Test 4 — Drought Monitor (deferred)
 
 Originally scoped as a fourth test. Deferred because:
