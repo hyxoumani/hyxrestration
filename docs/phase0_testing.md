@@ -354,6 +354,99 @@ subsections require the `[pre-registration-violation]` commit-subject marker per
 
 ---
 
+## 2.9 Interim Qwen sentiment A/B
+
+**Added 2026-04-23** after Test 2-standalone (§2.8) produced a FAIL verdict —
+FinBERT captures no standalone predictive signal on the 2021-2024 ag corpus.
+Per §2.8.6, this makes Qwen zero-shot re-scoring load-bearing before executing
+§2.5's architectural pivot: we need to rule out FinBERT being the measurement
+bottleneck rather than the thesis being wrong.
+
+### 2.9.1 Purpose
+
+Swap the sentiment scorer (FinBERT → Qwen 2.5 7B Instruct, zero-shot) and re-run
+the same pre-registered tests that already ran on FinBERT data: Test 2-standalone
+(§2.8) and Test 2+3 combined (§2). All other pipeline components are identical —
+same news corpus, same prices, same WASDE surprises, same regressions, same FDR.
+
+### 2.9.2 What this does NOT test
+
+Not a fine-tune. Not a prompt sweep. A single pre-registered zero-shot prompt with
+greedy decoding. The whole point is a clean single-variable A/B against FinBERT.
+
+### 2.9.3 Model and prompt (pre-registered)
+
+**Model:** `Qwen/Qwen2.5-7B-Instruct` from HuggingFace, loaded in fp16 on GPU.
+
+**Prompt** (applied via Qwen's chat template with `add_generation_prompt=True`):
+
+```
+System: You are a financial sentiment classifier. Classify news headlines
+about publicly traded agricultural companies as positive, negative, or
+neutral, based on their likely short-term impact on the company's stock
+price.
+
+User: Headline: "{headline}"
+
+Respond with exactly one letter: P (positive), N (negative), or Z (neutral).
+```
+
+**Decoding:** greedy (`do_sample=False`), max_new_tokens=1.
+
+**Label extraction:** at the first generated-token position, extract logits for
+the single-token IDs of "P", "N", "Z". Softmax over those three logits to obtain
+(pos, neg, neu) probabilities. Argmax = predicted label.
+
+**Output schema:** same as `phase0/data/finbert_scores.csv` — `news_id, label,
+score, pos, neg, neu, scored_at` — so downstream code is scorer-agnostic.
+
+### 2.9.4 Tests re-run
+
+Both tests executed with the Qwen-derived scores, same pre-registered pass
+criteria:
+
+- **Test 2-standalone (§2.8)** — 9 regressions on daily sentiment × forward
+  returns, Newey-West HAC SEs, BH-FDR at q=0.10. Pass criteria: §2.8.5.
+- **Test 2+3 combined (§2)** — 36 regressions on surprise × sentiment ×
+  interaction, HC3 SEs, BH-FDR at q=0.10 on β_interaction. Pass criteria: §2.4.
+
+Same ticker universe (CNH excluded per §7.1), same 2021-2024 window, same
+corpus of 3,744 articles.
+
+### 2.9.5 Outcome interpretation (combined)
+
+Four outcomes from the two tests (Pass/Fail for each):
+
+| Qwen Test 2-standalone | Qwen Test 2+3 | Interpretation |
+|---|---|---|
+| Pass | Pass | **Full L01 validation.** Qwen captures ag-news sentiment with a cross-modal interaction that survives FDR. Stop the §2.5 pivot; build as originally designed with Qwen sentiment from slice 1. |
+| Pass | Fail | **§2.5 pivot is robust.** Sentiment arm works (Qwen captures signal), but the cross-modal interaction specifically is zero. Demote sentiment agent to context-only per §2.5. FinBERT was a weaker instrument but the cross-modal falsification stands. |
+| Fail | Pass | **Surprising.** Cross-modal interaction picks up signal neither arm does alone — a classic cross-modal effect that Test 2-standalone can't see. Treat as L01 validation with a specific mechanism and investigate further before locking architecture. |
+| Fail | Fail | **Thesis robustly falsified.** Both the stronger and the weaker instruments show no signal. §2.5 pivot proceeds with maximum confidence. Sentiment arm is definitively not contributing on this universe. |
+
+The (Fail, Fail) outcome is the cleanest kill. The (Pass, Pass) outcome is the
+cleanest save. The cross-configuration outcomes require architectural discussion
+before locking.
+
+### 2.9.6 Deliverable
+
+`phase0/sentiment_qwen.py` (scorer) + `phase0/test29_qwen_ab.py` (driver), and
+two result files:
+- `phase0/results/test2_qwen_YYYY-MM-DD.md` — Test 2-standalone on Qwen scores
+- `phase0/results/test23_qwen_YYYY-MM-DD.md` — Test 2+3 combined on Qwen scores
+
+Both cite this commit's SHA in their header as the pre-registration lock.
+
+### 2.9.7 Pre-registration lock
+
+Model choice (§2.9.3), prompt template (§2.9.3), decoding parameters (§2.9.3),
+label-extraction rule (§2.9.3), and outcome interpretation (§2.9.5) are locked
+by the commit that introduces §2.9 and `phase0/sentiment_qwen.py` +
+`phase0/test29_qwen_ab.py`. Subsequent edits require the
+`[pre-registration-violation]` marker per §0.1.
+
+---
+
 ## 3. Test 4 — Drought Monitor (deferred)
 
 Originally scoped as a fourth test. Deferred because:
