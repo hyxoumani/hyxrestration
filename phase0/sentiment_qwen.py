@@ -50,11 +50,14 @@ def _loaded_model():
     tok.padding_side = "left"  # decoder-only: pad prepended so logits[-1] = next-token
     if tok.pad_token_id is None:
         tok.pad_token_id = tok.eos_token_id
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        torch_dtype=torch.float16,
-        device_map="cuda",
-    ).eval()
+    model = (
+        AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            dtype=torch.float16,
+        )
+        .to("cuda")
+        .eval()
+    )
 
     # Resolve P/N/Z token ids. In Qwen's BPE these are single tokens ("P", "N", "Z");
     # we resolve by looking up with a leading space (assistant responses typically
