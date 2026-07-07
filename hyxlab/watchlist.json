@@ -1,0 +1,10 @@
+{
+  "_comment": "Collector watchlist. kalshi_series are polled open+settled each cycle; polymarket_pairs are CLOB token pairs [market_id, yes_token, no_token] added manually when a cross-venue pair is human-verified; nws_stations are keys into hyxlab.venues.nws.STATIONS.",
+  "kalshi_series": [
+    "KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHAUS", "KXHIGHDEN",
+    "KXCPI", "KXCPIYOY", "KXFED", "KXPAYROLLS", "KXJOBLESSCLAIMS", "KXU3"
+  ],
+  "polymarket_pairs": [],
+  "cross_venue_pairs": [],
+  "nws_stations": ["NYC", "CHI", "MIA", "AUS", "DEN"]
+}
