@@ -53,6 +53,12 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
   market timeline, doctor. Single-file read-only local web app.
 - **Streaming (B7, promoted)**: WS daemons are the only as-if-live
   source; both venues' handshakes proven (Kalshi needs RSA auth).
+- **Collection/sim split (2026-07-07, user-approved infra-first)**:
+  logical boundary enforced by tests/test_boundaries.py; physical
+  deployment separated (daemons run from the `stable` worktree via
+  `scripts/promote.sh`). Full package split deferred to the Pi
+  migration, where collection moves to the Pi and the DB sync doubles
+  as off-box backup.
 - No LLM in the signal path until deterministic signals prove out.
 - GPU is irrelevant here — everything is network/IO-bound; portable to
   a Pi (repo + venv + duckdb + .secrets + 2 systemd timers).

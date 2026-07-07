@@ -36,6 +36,20 @@ the next snapshot re-seeds).
   (forecast runtime, vintage release, poll time). The no-lookahead
   boundary is enforced by this column, not convention.
 
+## Deployment (stable worktree — since 2026-07-07)
+
+All three systemd units run from `/home/devs/workspace/hyxrestration-stable`,
+a git worktree pinned to the `stable` branch with its own venv
+(`scripts/requirements-stable.txt`) and symlinks to the dev tree's
+`data/`, `.env`, `.secrets`. Dev-tree churn can therefore never break
+running capture (daemons restart into whatever code is on disk).
+**Ship collection changes ONLY via `scripts/promote.sh`** — it runs the
+suite, fast-forwards `stable`, syncs deps, smoke-imports, restarts the
+stream daemon. The import boundary (tests/test_boundaries.py) keeps
+collection deployable without sim-side churn: collection ↛ sim, sim ↛
+collection, both may use the kernel (models, store, streamstore, fees,
+migrate, watchlist, stations).
+
 ## Running pieces
 
 - `hyxlab-collect.timer` (systemd user, 5 min): `collect --once` —

@@ -1,0 +1,7 @@
+# Runtime deps for the STABLE deployment worktree (collection side only —
+# no pytest/ruff; the suite runs in the dev tree before promotion).
+# Bump pins here, then run scripts/promote.sh.
+cryptography==49.0.0
+duckdb==1.5.2
+requests==2.33.1
+websockets==16.0
