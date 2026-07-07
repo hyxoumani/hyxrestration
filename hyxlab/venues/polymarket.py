@@ -9,7 +9,7 @@ via POST /books so one call covers the whole watchlist.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
@@ -18,7 +18,7 @@ GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 VENUE = "polymarket"
 
-from hyxlab.models import MarketInfo, Snapshot  # noqa: E402
+from hyxlab.models import Snapshot  # noqa: E402
 
 
 def get_gamma_markets(
@@ -79,7 +79,7 @@ def pair_snapshot(
     return Snapshot(
         venue=VENUE,
         market_id=market_id,
-        ts=ts or datetime.now(timezone.utc),
+        ts=ts or datetime.now(UTC),
         yes_bid=yes_bid,
         yes_ask=yes_ask,
         no_bid=no_bid,

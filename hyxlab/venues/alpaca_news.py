@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
@@ -65,8 +65,8 @@ def get_news(
         "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET"],
     }
     params: dict[str, Any] = {
-        "start": start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "end": end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "start": start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end": end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "limit": limit,
         "sort": "asc",
     }

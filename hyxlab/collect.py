@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
@@ -37,7 +37,7 @@ def load_watchlist(path: str | Path = DEFAULT_WATCHLIST) -> dict:
 def collect_once(store: Store, watchlist: dict, session: requests.Session | None = None) -> dict:
     sess = session or requests.Session()
     counts = {"kalshi_snaps": 0, "kalshi_markets": 0, "poly_snaps": 0, "forecasts": 0, "errors": 0}
-    ts = datetime.now(timezone.utc)
+    ts = datetime.now(UTC)
 
     for series in watchlist.get("kalshi_series", []):
         try:
@@ -97,7 +97,7 @@ def main() -> None:
         while True:
             counts = collect_once(store, watchlist, session=sess)
             print(
-                f"[collect] {datetime.now(timezone.utc).isoformat()} {counts} db={store.counts()}"
+                f"[collect] {datetime.now(UTC).isoformat()} {counts} db={store.counts()}"
             )
             if args.once:
                 break

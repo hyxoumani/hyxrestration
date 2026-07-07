@@ -13,7 +13,7 @@ measured local date as e.g. "KXHIGHNY-26JUL07".
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 import requests
@@ -111,7 +111,7 @@ def candle_row(series: str, m: dict[str, Any], c: dict[str, Any], period_s: int)
     return (
         VENUE,
         m["ticker"],
-        datetime.fromtimestamp(c["end_period_ts"], tz=timezone.utc),
+        datetime.fromtimestamp(c["end_period_ts"], tz=UTC),
         period_s,
         d(price, "open_dollars"),
         d(price, "high_dollars"),
@@ -188,7 +188,7 @@ def to_snapshot(m: dict[str, Any], ts: datetime | None = None) -> Snapshot:
     return Snapshot(
         venue=VENUE,
         market_id=m["ticker"],
-        ts=ts or datetime.now(timezone.utc),
+        ts=ts or datetime.now(UTC),
         yes_bid=_dollars(m, "yes_bid_dollars"),
         yes_ask=_dollars(m, "yes_ask_dollars"),
         no_bid=_dollars(m, "no_bid_dollars"),

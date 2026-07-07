@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import requests
 
@@ -123,7 +123,7 @@ def main() -> None:
 
     store = Store(args.db)
     sess = requests.Session()
-    end = datetime.now(timezone.utc).date()
+    end = datetime.now(UTC).date()
     start = end - timedelta(days=args.days)
     try:
         if not args.skip_iem:

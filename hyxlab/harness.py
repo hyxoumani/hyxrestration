@@ -12,7 +12,7 @@ import hashlib
 import json
 import subprocess
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from hyxlab.models import Snapshot
@@ -49,7 +49,7 @@ def write_manifest(
     runs_dir: str | Path = "data/runs",
 ) -> Path:
     body = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "git_rev": _git_rev(),
         "strategies": strategies,
         "data": fingerprint,
@@ -59,7 +59,7 @@ def write_manifest(
     digest = hashlib.sha256(
         json.dumps([strategies, fingerprint], sort_keys=True, default=str).encode()
     ).hexdigest()[:8]
-    run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}_{digest}"
+    run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%S}_{digest}"
     out = Path(runs_dir) / run_id
     out.mkdir(parents=True, exist_ok=True)
     (out / "manifest.json").write_text(json.dumps(body, indent=1, default=str))

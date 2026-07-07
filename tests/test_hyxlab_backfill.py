@@ -1,7 +1,6 @@
 """Backfill parsing: IEM MOS CSV conventions, Kalshi candles, Tier-1 snapshots."""
 
-import io
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from unittest.mock import patch
 
 from hyxlab.store import Store
@@ -32,7 +31,7 @@ def test_mos_parsing_keeps_00z_maxes_only():
     # n_x at ftime 00Z July 2 = daytime max for July 1.
     assert fcs[0].target_date == date(2025, 7, 1)
     assert fcs[0].high_f == 86
-    assert fcs[0].fetched_at == datetime(2025, 7, 1, 0, 0, tzinfo=timezone.utc)
+    assert fcs[0].fetched_at == datetime(2025, 7, 1, 0, 0, tzinfo=UTC)
     assert fcs[1].target_date == date(2025, 7, 2)
     assert fcs[1].high_f == 85
 
@@ -54,7 +53,7 @@ def test_candle_row_flattens_api_shape():
     row = candle_row("KXHIGHNY", {"ticker": "KXHIGHNY-26JUL05-T91"}, c, 3600)
     assert row[0] == "kalshi"
     assert row[1] == "KXHIGHNY-26JUL05-T91"
-    assert row[2] == datetime.fromtimestamp(1783177200, tz=timezone.utc)
+    assert row[2] == datetime.fromtimestamp(1783177200, tz=UTC)
     assert row[7] == 0.02  # price_close
     assert row[8] == 0.01  # yes_bid_close
     assert row[9] == 0.02  # yes_ask_close
@@ -63,8 +62,8 @@ def test_candle_row_flattens_api_shape():
 
 def test_candles_as_snapshots_complement_and_order(tmp_path):
     store = Store(tmp_path / "t.duckdb")
-    ts1 = datetime(2026, 7, 1, 12, tzinfo=timezone.utc)
-    ts0 = datetime(2026, 7, 1, 11, tzinfo=timezone.utc)
+    ts1 = datetime(2026, 7, 1, 12, tzinfo=UTC)
+    ts0 = datetime(2026, 7, 1, 11, tzinfo=UTC)
     store.insert_candles(
         [
             ("kalshi", "M1", ts1, 3600, None, None, None, 0.30, 0.29, 0.31, None, None, 10.0, 5.0),

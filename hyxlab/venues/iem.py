@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import requests
 
@@ -91,10 +91,10 @@ def get_mos_forecasts(
         n_x = row.get("n_x")
         if not n_x:
             continue
-        ftime = datetime.fromisoformat(row["ftime"]).replace(tzinfo=timezone.utc)
+        ftime = datetime.fromisoformat(row["ftime"]).replace(tzinfo=UTC)
         if ftime.hour != 0:
             continue  # 12Z ftimes carry overnight minimums
-        runtime = datetime.fromisoformat(row["runtime"]).replace(tzinfo=timezone.utc)
+        runtime = datetime.fromisoformat(row["runtime"]).replace(tzinfo=UTC)
         out.append(
             Forecast(
                 station=station,

@@ -12,7 +12,7 @@ serve forecasts as-of a snapshot's timestamp (no lookahead).
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import requests
 
@@ -57,7 +57,7 @@ def get_daily_highs(station: str, session: requests.Session | None = None) -> li
     url = forecast_url(cfg["lat"], cfg["lon"], session=sess)
     resp = sess.get(url, timeout=30)
     resp.raise_for_status()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     out: list[Forecast] = []
     for period in resp.json()["properties"]["periods"]:
         if not period.get("isDaytime"):
