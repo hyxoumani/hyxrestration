@@ -24,8 +24,8 @@ import math
 from datetime import timedelta
 
 from hyxlab.models import MarketInfo, Order, Snapshot
+from hyxlab.stations import SERIES_TO_STATION
 from hyxlab.strategy import Context, Strategy
-from hyxlab.venues.nws import SERIES_TO_STATION
 
 
 def _phi(z: float) -> float:

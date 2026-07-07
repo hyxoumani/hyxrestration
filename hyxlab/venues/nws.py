@@ -17,19 +17,12 @@ from datetime import UTC, date, datetime
 import requests
 
 from hyxlab.models import Forecast
+from hyxlab.stations import SERIES_TO_STATION, STATIONS
+
+__all__ = ["SERIES_TO_STATION", "STATIONS", "forecast_url", "get_daily_highs"]
 
 BASE = "https://api.weather.gov"
 USER_AGENT = "hyxlab-research (educationemail123452@gmail.com)"
-
-STATIONS: dict[str, dict] = {
-    "NYC": {"lat": 40.783, "lon": -73.967, "series": "KXHIGHNY"},
-    "CHI": {"lat": 41.786, "lon": -87.752, "series": "KXHIGHCHI"},
-    "MIA": {"lat": 25.788, "lon": -80.317, "series": "KXHIGHMIA"},
-    "AUS": {"lat": 30.321, "lon": -97.760, "series": "KXHIGHAUS"},
-    "DEN": {"lat": 39.847, "lon": -104.656, "series": "KXHIGHDEN"},
-}
-
-SERIES_TO_STATION: dict[str, str] = {v["series"]: k for k, v in STATIONS.items()}
 
 _gridpoint_cache: dict[str, str] = {}
 

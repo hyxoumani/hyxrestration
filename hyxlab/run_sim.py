@@ -12,11 +12,11 @@ import argparse
 import json
 
 from hyxlab.capabilities import live_feed_caps, partition_runnable
-from hyxlab.collect import DEFAULT_WATCHLIST, load_watchlist
 from hyxlab.sim import Simulator
 from hyxlab.store import Store
 from hyxlab.strategies import CrossVenueArb, IntramarketRebalance, WeatherNWS
 from hyxlab.strategies.cross_venue import Pair
+from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
 
 def main() -> None:

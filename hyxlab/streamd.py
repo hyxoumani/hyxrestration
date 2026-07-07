@@ -266,7 +266,7 @@ def main() -> None:
     args = ap.parse_args()
 
     load_env()
-    from hyxlab.collect import DEFAULT_WATCHLIST, load_watchlist
+    from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
     watchlist = load_watchlist(args.watchlist or str(DEFAULT_WATCHLIST))
     store = StreamStore(args.db)

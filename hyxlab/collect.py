@@ -16,22 +16,16 @@ Run:
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 
 import requests
 
 from hyxlab.store import Store
 from hyxlab.venues import kalshi, nws, polymarket
+from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
-DEFAULT_WATCHLIST = Path(__file__).parent / "watchlist.json"
-
-
-def load_watchlist(path: str | Path = DEFAULT_WATCHLIST) -> dict:
-    with open(path) as f:
-        return json.load(f)
+__all__ = ["DEFAULT_WATCHLIST", "collect_once", "load_watchlist", "main"]
 
 
 def collect_once(store: Store, watchlist: dict, session: requests.Session | None = None) -> dict:
@@ -96,9 +90,7 @@ def main() -> None:
     try:
         while True:
             counts = collect_once(store, watchlist, session=sess)
-            print(
-                f"[collect] {datetime.now(UTC).isoformat()} {counts} db={store.counts()}"
-            )
+            print(f"[collect] {datetime.now(UTC).isoformat()} {counts} db={store.counts()}")
             if args.once:
                 break
             time.sleep(args.interval)
