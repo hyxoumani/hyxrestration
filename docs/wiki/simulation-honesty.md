@@ -23,6 +23,20 @@ up empty), forecasts served strictly as-of the snapshot timestamp.
   sweeps + pessimism haircuts + persistence filters; the residual is
   delegated to the tier ladder (candles → book replay → live shadow).
 
+## Queue-position bounds (design input for Tier-2 WalkBookFill, 2026-07-07)
+
+B7 stream data (gap-free L2 deltas + trade tape, venue ms timestamps)
+supports FIFO queue tracking for a simulated maker order: queue-ahead at
+entry = level total (exact); fills = decrements coinciding with trade
+prints, consume from the front (exact); **cancels are anonymous in L2**
+— can't tell ahead vs behind, so the fill model must run BOTH bounds
+(pessimistic: all cancels behind us; optimistic: all ahead) and report
+the pessimistic one. Thin books narrow the bracket via exact-size
+cancel↔placement matching. Preconditions: subscribe at market birth
+(hourly ticker refresh may miss up to 1h — tighten when building this)
+and verify Kalshi's documented price-time priority empirically before
+trusting it.
+
 ## Runtime accounting invariants
 
 Checked after EVERY event, hard abort (`SimAccountingError`):
