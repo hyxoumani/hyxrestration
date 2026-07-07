@@ -349,10 +349,18 @@ class Store:
         strategies must self-limit via max_qty — an optimistic fill model,
         which is why Tier 1 can kill strategies but not green-light them.
         """
+        # Correctness gate (2026-07-07): candle bid/ask closes are sampled
+        # at different sub-hour moments and can be crossed (bid > ask) or
+        # carry empty-book sentinels (ask=1 with bid=0) — verified sums
+        # ranged 0.11–2.00. Filling at such phantom quotes is fiction, so
+        # they are excluded from replay.
         rows = self.conn.execute(
             "SELECT venue, market_id, end_ts, yes_bid_close, yes_ask_close,"
-            " price_close, volume, open_interest"
-            " FROM candles ORDER BY end_ts, venue, market_id"
+            " price_close, volume, open_interest FROM candles"
+            " WHERE yes_bid_close IS NULL OR yes_ask_close IS NULL"
+            "    OR (yes_bid_close <= yes_ask_close"
+            "        AND NOT (yes_ask_close >= 0.999 AND yes_bid_close <= 0.001))"
+            " ORDER BY end_ts, venue, market_id"
         ).fetchall()
         inf = float("inf")
         out: list[Snapshot] = []
