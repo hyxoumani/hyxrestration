@@ -21,17 +21,26 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
 - `hyxlab/models.py` — typed records (Snapshot, MarketInfo, Order incl.
   open/close + GTC/IOC, Cancel, Fill, Forecast, EconVintage, NewsItem).
 - `hyxlab/venues/` — kalshi, polymarket, nws, iem, alfred, alpaca_news
-  (pure fetch→records; sessions injected; fixtures in tests/fixtures/).
+  (pure fetch→records; sessions injected; fixtures in tests/fixtures/);
+  kalshi_ws + polymarket_ws (WS auth/payloads/parsers, no sockets).
 - `hyxlab/store.py` — schema, naive-UTC, insert_new dedup, watermarks,
-  candles_as_snapshots (with crossed-candle gate).
+  candles_as_snapshots (with crossed-candle gate), mirror tripwire.
+- `hyxlab/streamstore.py` — stream archive (own DuckDB: book_events,
+  stream_trades, stream_gaps; buffered flush bursts).
+- `hyxlab/streamd.py` — stream daemon (asyncio, reconnect/re-seed/
+  gap-marking; systemd `hyxlab-stream.service`).
 - `hyxlab/sweep.py` — exchange-wide archival sweep + `--doctor`.
 - `hyxlab/sim.py` — event loop, order lifecycle, runtime invariants.
-- `hyxlab/strategy.py` — Strategy ABC + Context (hides settlements,
-  as-of forecasts, open_orders for Cancel).
+- `hyxlab/strategy.py` — Strategy ABC (+ `requires` capability
+  declaration) + Context (hides settlements, as-of forecasts,
+  open_orders for Cancel).
+- `hyxlab/capabilities.py` — strategy↔data capability contract
+  (vacuous backtests raise instead of returning zero).
 - `hyxlab/fees.py` — parabolic models, per-series `kalshi_model()`.
 - `hyxlab/harness.py` — run manifests (git rev, params, fingerprint).
 - `hyxlab/migrate.py` — numbered migrations.
-- Entrypoints: `collect`, `sweep`, `backfill`, `run_sim`, `run_backtest`.
+- Entrypoints: `collect`, `sweep`, `backfill`, `run_sim`, `run_backtest`,
+  `streamd`.
 
 ## Key decisions
 
@@ -50,10 +59,10 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
 
 ## Build state (2026-07-07)
 
-B1 archive+sweep ✅, B2 sim v2 ✅, B3 self-tests ✅ (73 tests),
-crossed-candle gate ✅. Next: mirror tripwire + capability guard →
-stream daemon → trade tape (B3.5) → debug frontend → B4 signals →
-B5 walk-forward/DSR → B6 calibration atlas → first pre-reg strategy.
+B1 archive+sweep ✅, B2 sim v2 ✅, B3 self-tests ✅, crossed-candle
+gate ✅, mirror tripwire + capability guard ✅, B7 stream daemon ✅
+LIVE (96 tests). Next: trade tape (B3.5) → debug frontend → B4 signals
+→ B5 walk-forward/DSR → B6 calibration atlas → first pre-reg strategy.
 
 ## Related
 - [data-pipeline](data-pipeline.md) · [simulation-honesty](simulation-honesty.md)

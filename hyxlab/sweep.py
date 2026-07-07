@@ -23,6 +23,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import duckdb
 import requests
 
 from hyxlab.store import Store
@@ -164,6 +165,18 @@ def doctor(store: Store) -> None:
     print(json.dumps(store.counts(), indent=1))
     mv = store.mirror_violations()
     print(f"kalshi mirror violations: {mv}" + (" <-- PIPELINE CORRUPTION" if mv else ""))
+    stream_db = Path("data/hyxstream.duckdb")
+    if stream_db.exists():
+        size_mb = stream_db.stat().st_size / 1e6
+        try:
+            with duckdb.connect(str(stream_db), read_only=True) as sconn:
+                counts = {
+                    t: sconn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                    for t in ("book_events", "stream_trades", "stream_gaps")
+                }
+            print(f"stream archive: {counts} ({size_mb:.0f} MB)")
+        except Exception as exc:  # daemon mid-flush holds the writer lock
+            print(f"stream archive: busy ({type(exc).__name__}) ({size_mb:.0f} MB)")
     rows = store.conn.execute(
         "SELECT status, count(*) FROM sweep_log"
         " WHERE swept_at > now() - INTERVAL 2 DAY GROUP BY status"

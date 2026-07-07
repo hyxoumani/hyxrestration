@@ -44,6 +44,17 @@ Format: what happened → root cause → error type → prevention tier
    was noise. Type: `process-slip`. Prevention: gotcha — pipeline smoke
    tests on synthetic data only.
 
+9. **Kalshi WS parsers built on assumed cents-integer fields.** First
+   stream-daemon smoke run captured ZERO rows: live frames use
+   string-dollar fields (`yes_price_dollars`, `count_fp`, `delta_fp`,
+   `{yes,no}_dollars_fp`), not the cents shapes assumed from memory.
+   Root cause: probe-before-build skipped because the protocol was
+   "already verified" — but the spike only verified auth + channel
+   behavior, not field-level schemas. Type: `wrong-assumption`.
+   Prevention: gotcha — a probe must capture the exact frames the
+   parser will eat; caught same-session because the smoke test asserts
+   rows landed, which is the cheap tripwire to keep.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

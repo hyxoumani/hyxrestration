@@ -1,6 +1,6 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-07** (correctness gates finale landed; B7 next).
+Updated: **2026-07-07** (gates finale + B7 stream daemon LIVE; B3.5 next).
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-07-09.md` (full operational handoff, gitignored).
 
@@ -39,9 +39,12 @@ purge makes self-archiving the moat; candle bid/asks can be crossed
    tripwire (`Store.mirror_violations`, in doctor, 0 live violations) +
    capability guard (`hyxlab/capabilities.py`; vacuous backtests raise
    `VacuousBacktestError`). See [simulation-honesty](simulation-honesty.md).
-2. **Stream daemon (B7)** — both venues, reconnect/re-seed/gap-marking,
-   systemd service → `book_events`/`stream_trades`. Highest urgency:
-   stream data is unrecoverable.
+2. ~~Stream daemon (B7)~~ LIVE 2026-07-07: `hyxlab-stream.service`
+   (Restart=always) → `data/hyxstream.duckdb` via `streamd.py`. Kalshi
+   trade firehose + watchlist books (hourly ticker refresh, seq-gap →
+   reconnect+re-seed, gap log); Poly books idle until pairs land. First
+   minute live: ~17.5k rows, 0 gaps. Doctor covers both archives.
+   Watch: disk growth (est. low-single-GB/day), box uptime now matters.
 3. **Trade tape (B3.5)** — Kalshi retro-pass over 35k archived markets
    (races retention), Polymarket prints + volume, first hand-verified
    cross-venue pairs.

@@ -1,7 +1,10 @@
 # Data pipeline (hyxlab archive)
 
-One DuckDB file (`data/hyxlab.duckdb`, gitignored, **irreplaceable — needs
-off-box backup**) fed by collectors/sweeps; read by sim and research.
+Two DuckDB files (gitignored, **irreplaceable — need off-box backup**):
+`data/hyxlab.duckdb` (polled archive; collectors/sweeps write, sim reads)
+and `data/hyxstream.duckdb` (WS stream archive; the stream daemon is its
+sole writer — separate file because DuckDB's single-writer rule would
+deadlock a long-lived daemon against the 5-min collector).
 
 ## Tables
 
@@ -10,6 +13,13 @@ Append-only facts: `candles` (hourly price+bid/ask OHLC, volume, OI),
 time), `observations` (climate-report highs). Reference: `markets`
 (metadata + settlement result), `series` (category/fee metadata),
 `sweep_log`, `watermarks`, `schema_meta`.
+
+Stream archive (`streamstore.py`): `book_events` (kalshi snap qty =
+absolute level, delta qty = SIGNED change; poly delta qty = new ABSOLUTE
+size; poly market_id = CLOB token id), `stream_trades`, `stream_gaps`
+(closed intervals of broken coverage — reconnects, Kalshi seq jumps,
+daemon downtime; replay must treat books as unknown inside a gap until
+the next snapshot re-seeds).
 
 ## Key decisions
 
@@ -33,8 +43,17 @@ time), `observations` (climate-report highs). Reference: `markets`
 - `hyxlab-sweep.timer` (daily 06:10 UTC): `sweep --days 2` incremental,
   category allowlist (8 categories ≈ 2,240 series; sports/entertainment/
   politics excluded — they dominate settle volume).
+- `hyxlab-stream.service` (long-running, Restart=always, live since
+  2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
+  trade firehose (~105 ev/s) + orderbook_delta for watchlist series'
+  open markets (re-resolved hourly, reconnect re-seeds books); Poly
+  books idle until `polymarket_pairs` lands (B3.5). Flushes every 15 s;
+  `--smoke N` for a bounded live test. **Watch disk**: observed rate
+  extrapolates to low-single-GB/day; parquet rotation is the lever if
+  it bites. Box uptime now matters — stream data is unrecoverable.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,
-  2.6M candles. `python -m hyxlab.sweep --doctor` = health check.
+  2.6M candles. `python -m hyxlab.sweep --doctor` = health check for
+  BOTH archives (includes mirror tripwire + stream counts/size).
 - Backfills: `python -m hyxlab.backfill` (Kalshi candles + IEM).
 - Migrations: `python -m hyxlab.migrate` (numbered, schema_meta-gated).
 
@@ -49,10 +68,18 @@ time), `observations` (climate-report highs). Reference: `markets`
   gate in `candles_as_snapshots` — see [simulation-honesty](simulation-honesty.md).
 - Data written before 2026-07-06 tz fix was box-local; already migrated.
 
+## Gotchas (stream)
+
+- Kalshi WS frames use STRING-DOLLAR fields (`yes_price_dollars`,
+  `count_fp`, `price_dollars`, `delta_fp`, `{yes,no}_dollars_fp`) — NOT
+  the integer cents older docs suggest. Re-probed live 2026-07-07; the
+  first build assumed cents and captured zero rows.
+- Polymarket WS has no sequence numbers: disconnects are the only
+  detectable gaps; every reconnect logs one and the fresh `book` re-seeds.
+
 ## Next (planned, user-approved)
 
-Stream daemon (B7): both venues' WS → `book_events`/`stream_trades` +
-gap log; then trade-tape retro-pass (races retention); then ALFRED/GDELT
+Trade-tape retro-pass B3.5 (races retention); then ALFRED/GDELT
 ingestion behind a `FeatureView` as-of API.
 
 ## Related
