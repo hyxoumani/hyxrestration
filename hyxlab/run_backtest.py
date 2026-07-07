@@ -16,10 +16,10 @@ import json
 from collections import defaultdict
 from datetime import timedelta
 
+from hyxlab.capabilities import candle_feed_caps
 from hyxlab.sim import Simulator
 from hyxlab.store import Store
-from hyxlab.strategies import IntramarketRebalance, WeatherNWS
-from hyxlab.venues.iem import STATION_ICAO
+from hyxlab.strategies import WeatherNWS
 
 
 def forecast_diagnostic(store: Store) -> dict[str, dict[str, float]]:
@@ -86,7 +86,15 @@ def main() -> None:
     weather = WeatherNWS(
         sigma=args.sigma, bias=args.bias, min_edge=args.min_edge, max_qty=args.max_qty
     )
-    sim = Simulator(markets, [weather, IntramarketRebalance()], forecasts=forecasts)
+    # No IntramarketRebalance here: candle snapshots derive NO as the YES
+    # complement, so its trigger can never fire — the capability guard
+    # would (rightly) refuse the run.
+    sim = Simulator(
+        markets,
+        [weather],
+        forecasts=forecasts,
+        data_capabilities=candle_feed_caps(snapshots),
+    )
     result = sim.run(snapshots)
     print(json.dumps(result.metrics, indent=2, default=str))
 

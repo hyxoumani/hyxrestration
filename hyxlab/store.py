@@ -11,7 +11,7 @@ rule) holds three tables:
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import duckdb
@@ -114,7 +114,7 @@ def _naive_utc(dt: datetime | None) -> datetime | None:
         return None
     if dt.tzinfo is None:
         return dt
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.astimezone(UTC).replace(tzinfo=None)
 
 
 class Store:
@@ -162,7 +162,7 @@ class Store:
     # -- writes ---------------------------------------------------------
 
     def upsert_markets(self, infos: list[MarketInfo]) -> None:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         rows = [
             (
                 i.venue,
@@ -205,7 +205,7 @@ class Store:
 
     def upsert_series(self, rows: list[tuple]) -> None:
         """(venue, ticker, title, category, fee_type, fee_multiplier, frequency)."""
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        now = datetime.now(UTC).replace(tzinfo=None)
         self.conn.executemany(
             "INSERT OR REPLACE INTO series VALUES (?,?,?,?,?,?,?,?)",
             [(*r, now) for r in rows],
@@ -254,7 +254,7 @@ class Store:
             "INSERT INTO sweep_log VALUES (?,?,?,?,?,?,?,?)",
             [
                 series,
-                datetime.now(timezone.utc).replace(tzinfo=None),
+                datetime.now(UTC).replace(tzinfo=None),
                 _naive_utc(min_close),
                 _naive_utc(max_close),
                 n_markets,
@@ -391,6 +391,24 @@ class Store:
             "SELECT station, obs_date, high_f FROM observations WHERE high_f IS NOT NULL"
         ).fetchall()
         return {(r[0], r[1]): r[2] for r in rows}
+
+    def mirror_violations(self, tol: float = 0.005) -> int:
+        """Kalshi mirror-invariant tripwire.
+
+        Kalshi runs ONE mirrored book: no_ask ≡ 1 − yes_bid and
+        no_bid ≡ 1 − yes_ask by venue construction (0 violations observed
+        live). A violation therefore never signals opportunity — it means
+        the pipeline corrupted quote fields (swapped sides, stale merge,
+        unit slip). Checked by `sweep --doctor`; nonzero = investigate.
+        """
+        return self.conn.execute(
+            "SELECT count(*) FROM snapshots WHERE venue = 'kalshi' AND ("
+            " (no_ask IS NOT NULL AND yes_bid IS NOT NULL"
+            "  AND abs(no_ask - (1 - yes_bid)) > ?)"
+            " OR (no_bid IS NOT NULL AND yes_ask IS NOT NULL"
+            "  AND abs(no_bid - (1 - yes_ask)) > ?))",
+            [tol, tol],
+        ).fetchone()[0]
 
     def counts(self) -> dict[str, int]:
         return {

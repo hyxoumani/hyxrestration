@@ -7,14 +7,18 @@ sweep releases the DB writer lock.)
 
 import json
 import random
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
+from hyxlab.capabilities import INDEPENDENT_NO_BOOK
 from hyxlab.models import Forecast, MarketInfo, Order, Snapshot
 from hyxlab.sim import Simulator
 from hyxlab.strategies import IntramarketRebalance
 from hyxlab.strategy import Strategy
 
-T0 = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+# Declared for tests whose synthetic snapshots carry genuinely independent
+# YES/NO quotes (built directly, not via the complement snap() helper).
+INDEP = {"kalshi": frozenset({INDEPENDENT_NO_BOOK})}
 
 
 def snap(mid, ts, yes_bid, yes_ask, size=100.0):
@@ -74,10 +78,30 @@ def test_adversarial_peeker_sees_nothing():
 
 
 def test_determinism_same_inputs_same_metrics():
+    # Independent YES/NO books (0.45 + 0.45 = 0.90) so the strategy really
+    # fills — a determinism probe over zero fills would prove nothing.
+    # (The complement-deriving snap() helper above caused exactly that
+    # vacuousness before the capability guard existed.)
     def one_run():
         markets = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="yes")}
-        snaps = [snap("M1", T0 + timedelta(minutes=i), 0.44, 0.45) for i in range(5)]
-        res = Simulator(markets, [IntramarketRebalance()]).run(snaps)
+        snaps = [
+            Snapshot(
+                venue="kalshi",
+                market_id="M1",
+                ts=T0 + timedelta(minutes=i),
+                yes_bid=0.43,
+                yes_ask=0.45,
+                no_bid=0.43,
+                no_ask=0.45,
+                yes_bid_size=100,
+                yes_ask_size=100,
+                no_bid_size=100,
+                no_ask_size=100,
+            )
+            for i in range(5)
+        ]
+        res = Simulator(markets, [IntramarketRebalance()], data_capabilities=INDEP).run(snaps)
+        assert res.fills  # non-vacuous: the probe exercised real fills
         return json.dumps(res.metrics, sort_keys=True, default=str)
 
     assert one_run() == one_run()
@@ -158,7 +182,7 @@ def test_golden_synthetic_arb_episode_exact_pnl():
             no_ask_size=100,
         )
     ]
-    res = Simulator(markets, [IntramarketRebalance()]).run(snaps)
+    res = Simulator(markets, [IntramarketRebalance()], data_capabilities=INDEP).run(snaps)
     # 100 YES @0.45 + 100 NO @0.45; fees ceil(0.07*100*0.45*0.55)=1.74 each leg;
     # settlement pays the NO side 100. PnL = 100 - 90 - 3.48 = 6.52 exactly.
     assert round(res.metrics["rebalance"]["settled_net_pnl"], 2) == 6.52

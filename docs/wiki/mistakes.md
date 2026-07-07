@@ -18,8 +18,11 @@ Format: what happened → root cause → error type → prevention tier
    on complement-book data where its trigger is impossible by
    construction; sim returned polite zero fills. Root cause: no
    contract between strategy assumptions and data capabilities. Type:
-   `wrong-assumption`. Prevention: capability guard (pending) — a test
-   that cannot fail must be an error. PENDING ESCALATION.
+   `wrong-assumption`. Prevention: RULE — capability guard
+   (`hyxlab/capabilities.py`, enforced in `Simulator.__init__`): a test
+   that cannot fail is an error. Landing it exposed two more instances
+   (vacuous determinism self-test; dead rebalance run in
+   run_backtest.py). ESCALATED (2026-07-07).
 4. **`pgrep -f` self-match.** Monitoring/kill commands matched their own
    cmdline; reported dead sweep as alive; pkill killed its own shell.
    Type: `tooling-footgun`. Prevention: gotcha — quote patterns / match
@@ -46,5 +49,6 @@ Format: what happened → root cause → error type → prevention tier
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
 system semantics went unverified until they bit. Systemic fix already
 adopted: **probe-before-build** (the data_contracts.md live-validation
-pass) — keep applying it to every new source/driver. Items 2+3 justify
-the pending capability-guard work; item 3 escalates when it lands.
+pass) — keep applying it to every new source/driver. Items 2+3 justified
+the capability guard, which landed 2026-07-07 and immediately caught two
+further latent instances of item 3's pattern.

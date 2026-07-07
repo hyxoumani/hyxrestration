@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from hyxlab.capabilities import live_feed_caps
 from hyxlab.collect import DEFAULT_WATCHLIST, load_watchlist
 from hyxlab.sim import Simulator
 from hyxlab.store import Store
@@ -39,7 +40,12 @@ def main() -> None:
         pairs = [Pair(*p) for p in pairs_cfg]
         strategies.append(CrossVenueArb(pairs))
 
-    sim = Simulator(markets, strategies, forecasts=forecasts)
+    sim = Simulator(
+        markets,
+        strategies,
+        forecasts=forecasts,
+        data_capabilities=live_feed_caps(snapshots),
+    )
     result = sim.run(snapshots)
 
     print(json.dumps(result.metrics, indent=2, default=str))

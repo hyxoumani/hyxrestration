@@ -1,7 +1,8 @@
 """Simulator + baseline strategies on synthetic snapshots (no network)."""
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
+from hyxlab.capabilities import INDEPENDENT_NO_BOOK
 from hyxlab.models import Forecast, MarketInfo, Order, Snapshot
 from hyxlab.sim import Simulator
 from hyxlab.strategies import IntramarketRebalance, WeatherNWS
@@ -9,8 +10,12 @@ from hyxlab.strategies.cross_venue import CrossVenueArb, Pair
 from hyxlab.strategy import Strategy
 from hyxlab.venues.kalshi import parse_event_date, to_market_info, to_snapshot
 
-TS0 = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
-TS1 = datetime(2026, 7, 6, 12, 5, tzinfo=timezone.utc)
+TS0 = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+TS1 = datetime(2026, 7, 6, 12, 5, tzinfo=UTC)
+# The snap() helper below builds genuinely independent YES/NO quotes, so
+# the synthetic feed provides what IntramarketRebalance requires — the
+# capability declaration describes the data, not the venue label.
+INDEP = {"kalshi": frozenset({INDEPENDENT_NO_BOOK})}
 
 
 def snap(venue, mid, ts, yes_bid, yes_ask, no_bid, no_ask, size=100.0):
@@ -37,7 +42,7 @@ def test_rebalance_captures_discount_and_settles():
     # YES 0.45 + NO 0.45 = 0.90 -> guaranteed $1 payout; fees can't eat 10c.
     markets = {("kalshi", "M1"): market("kalshi", "M1", result="yes")}
     snaps = [snap("kalshi", "M1", TS0, 0.44, 0.45, 0.44, 0.45)]
-    sim = Simulator(markets, [IntramarketRebalance()])
+    sim = Simulator(markets, [IntramarketRebalance()], data_capabilities=INDEP)
     res = sim.run(snaps)
     assert len(res.fills) == 2  # one YES + one NO
     m = res.metrics["rebalance"]
@@ -51,7 +56,7 @@ def test_rebalance_skips_fee_negative_discount():
     # 0.49 + 0.50 = 0.99: 1c gross < ~3.5c fees -> no trade.
     markets = {("kalshi", "M1"): market("kalshi", "M1")}
     snaps = [snap("kalshi", "M1", TS0, 0.48, 0.49, 0.49, 0.50)]
-    res = Simulator(markets, [IntramarketRebalance()]).run(snaps)
+    res = Simulator(markets, [IntramarketRebalance()], data_capabilities=INDEP).run(snaps)
     assert res.fills == []
 
 
@@ -61,7 +66,7 @@ def test_rebalance_fires_once_per_market():
         snap("kalshi", "M1", TS0, 0.44, 0.45, 0.44, 0.45),
         snap("kalshi", "M1", TS1, 0.44, 0.45, 0.44, 0.45),
     ]
-    res = Simulator(markets, [IntramarketRebalance()]).run(snaps)
+    res = Simulator(markets, [IntramarketRebalance()], data_capabilities=INDEP).run(snaps)
     assert len(res.fills) == 2
 
 

@@ -11,11 +11,16 @@ invitation to chase millisecond bots.
 
 from __future__ import annotations
 
+from hyxlab.capabilities import INDEPENDENT_NO_BOOK
 from hyxlab.models import Order, Snapshot
 from hyxlab.strategy import Context, Strategy
 
 
 class IntramarketRebalance(Strategy):
+    # The trigger (YES ask + NO ask < $1 − fees) is impossible on mirrored
+    # or complement-derived books, where the sum is ≥ 1 by construction.
+    requires = frozenset({INDEPENDENT_NO_BOOK})
+
     def __init__(self, min_edge: float = 0.005, max_qty: float = 100.0) -> None:
         self.name = "rebalance"
         self.min_edge = min_edge

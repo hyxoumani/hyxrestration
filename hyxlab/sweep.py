@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -67,11 +67,11 @@ def sweep_series(
     store: Store, series_ticker: str, days: int, session: requests.Session
 ) -> tuple[int, int]:
     """Capture settled markets + candles for one series since its watermark."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     floor_ts = now - timedelta(days=days)
     wm = store.watermark(series_ticker)
     if wm is not None:
-        floor_ts = max(floor_ts, wm.replace(tzinfo=timezone.utc) + timedelta(seconds=1))
+        floor_ts = max(floor_ts, wm.replace(tzinfo=UTC) + timedelta(seconds=1))
 
     markets = kalshi.get_markets(
         series_ticker=series_ticker,
@@ -109,7 +109,7 @@ def sweep_series(
         n_candles += store.insert_candles(
             [kalshi.candle_row(series_ticker, m, c, 3600) for c in candles]
         )
-        close_dt = datetime.fromtimestamp(close_ts, tz=timezone.utc)
+        close_dt = datetime.fromtimestamp(close_ts, tz=UTC)
         max_close = max(max_close, close_dt)
         time.sleep(CANDLES_PAUSE_S)
 
@@ -162,6 +162,8 @@ def run_sweep(
 def doctor(store: Store) -> None:
     """Archive health at a glance."""
     print(json.dumps(store.counts(), indent=1))
+    mv = store.mirror_violations()
+    print(f"kalshi mirror violations: {mv}" + (" <-- PIPELINE CORRUPTION" if mv else ""))
     rows = store.conn.execute(
         "SELECT status, count(*) FROM sweep_log"
         " WHERE swept_at > now() - INTERVAL 2 DAY GROUP BY status"

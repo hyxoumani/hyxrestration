@@ -26,10 +26,11 @@ violation (an accounting bug must never be reportable as PnL):
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable, Iterable
 
+from hyxlab.capabilities import check_capabilities
 from hyxlab.fees import FEE_MODELS, FeeModel
 from hyxlab.models import Cancel, Fill, MarketInfo, Order, Snapshot
 from hyxlab.strategy import Context, Strategy
@@ -63,7 +64,12 @@ class Simulator:
         forecasts: list | None = None,
         fee_models: dict[str, FeeModel] | None = None,
         fee_resolver: Callable[[str, str], FeeModel] | None = None,
+        data_capabilities: dict[str, frozenset[str]] | None = None,
     ) -> None:
+        # Capability guard: refuse vacuous backtests up front. Strategies
+        # with requirements need a feed declaration (hyxlab.capabilities
+        # helpers) — undeclared counts as absent.
+        check_capabilities(strategies, data_capabilities)
         self.markets = markets
         self.strategies = strategies
         self.fee_models = fee_models or FEE_MODELS

@@ -40,12 +40,19 @@ open/close/IOC orders must never trip them.
 - **Crossed-candle gate**: Kalshi candle bid/ask closes can be crossed
   or sentinel (34,055 rows = 1.3%); excluded at replay. Weather-v1
   re-run through clean data: FAIL confirmed slightly worse (−$425).
-- **Mirror invariant** (pending as permanent test): Kalshi
-  no_ask ≡ 1−yes_bid; violation = corrupt pipeline.
-- **Capability guard** (pending): strategies declare book-structure
-  needs; harness refuses mismatched data. Motivated by a vacuous PoC —
-  rebalance arb run on Kalshi candles can NEVER fire (complement books),
-  and the sim returned a polite zero instead of an error.
+- **Mirror invariant** (landed 2026-07-07): Kalshi no_ask ≡ 1−yes_bid;
+  violation = corrupt pipeline, never opportunity.
+  `Store.mirror_violations()` runs in `sweep --doctor` (0 on the live
+  archive) + synthetic corruption tests.
+- **Capability guard** (landed 2026-07-07): strategies declare
+  book-structure needs (`Strategy.requires`); callers declare feed
+  capabilities (`hyxlab/capabilities.py` helpers); `Simulator.__init__`
+  raises `VacuousBacktestError` on mismatch — undeclared counts as
+  absent. Motivated by a vacuous PoC — rebalance arb on Kalshi candles
+  can NEVER fire (complement books), and the sim returned a polite zero
+  instead of an error. The guard also flushed out a vacuous determinism
+  self-test (rebalance over complement quotes = zero fills) and removed
+  the same dead rebalance run from `run_backtest.py`.
 
 ## Pinning & reproducibility
 

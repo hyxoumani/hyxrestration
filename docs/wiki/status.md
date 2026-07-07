@@ -1,6 +1,6 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-07** (end of the two-day hyxlab build marathon).
+Updated: **2026-07-07** (correctness gates finale landed; B7 next).
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-07-09.md` (full operational handoff, gitignored).
 
@@ -35,8 +35,10 @@ purge makes self-archiving the moat; candle bid/asks can be crossed
 
 ## Execution queue (user-approved order)
 
-1. Correctness gates finale: mirror-invariant tripwire test +
-   strategy↔data **capability guard** (vacuous tests must refuse to run).
+1. ~~Correctness gates finale~~ DONE 2026-07-07: mirror-invariant
+   tripwire (`Store.mirror_violations`, in doctor, 0 live violations) +
+   capability guard (`hyxlab/capabilities.py`; vacuous backtests raise
+   `VacuousBacktestError`). See [simulation-honesty](simulation-honesty.md).
 2. **Stream daemon (B7)** — both venues, reconnect/re-seed/gap-marking,
    systemd service → `book_events`/`stream_trades`. Highest urgency:
    stream data is unrecoverable.
