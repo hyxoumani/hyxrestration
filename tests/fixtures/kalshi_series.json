@@ -1,0 +1,54 @@
+{
+ "series": [
+  {
+   "additional_prohibitions": [
+    "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+    "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+   ],
+   "category": "Economics",
+   "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/ECONSTAT.pdf",
+   "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/ECONSTAT.pdf",
+   "fee_multiplier": 1,
+   "fee_type": "quadratic",
+   "frequency": "monthly",
+   "last_updated_ts": "2026-07-06T15:36:55.41822Z",
+   "settlement_sources": [
+    {
+     "name": "Bureau of Labor Statistics- Employment Situation",
+     "url": "https://www.bls.gov/news.release/empsit.nr0.htm"
+    },
+    {
+     "name": "Bureau of Labor Statistics- Consumer Price Index",
+     "url": "https://www.bls.gov/news.release/cpi.nr0.htm"
+    }
+   ],
+   "tags": [
+    "Jobs & Economy"
+   ],
+   "ticker": "KXCHCUTS",
+   "title": "US Challenger job cuts in [month]"
+  },
+  {
+   "additional_prohibitions": [
+    "Persons who are employed by any of the Source Agencies are not permitted to trade on the Contract.",
+    "Persons who hold any material, non-public information on the Underlying are not permitted to trade on the Contract."
+   ],
+   "category": "Climate and Weather",
+   "contract_terms_url": "https://kalshi-public-docs.s3.amazonaws.com/contract_terms/CITYLOW.pdf",
+   "contract_url": "https://kalshi-public-docs.s3.us-east-1.amazonaws.com/regulatory/product-certifications/CITYLOW.pdf",
+   "fee_multiplier": 1,
+   "fee_type": "quadratic",
+   "frequency": "daily",
+   "last_updated_ts": "2026-02-26T08:50:31.901806Z",
+   "settlement_sources": [
+    {
+     "name": "National Weather Service",
+     "url": "https://www.weather.gov/srh/nwsoffices"
+    }
+   ],
+   "tags": null,
+   "ticker": "KXLOWPHIL",
+   "title": "Lowest temperature in Philadelphia"
+  }
+ ]
+}
