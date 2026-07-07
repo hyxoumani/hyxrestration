@@ -68,6 +68,22 @@ CREATE TABLE IF NOT EXISTS observations (
     high_f      INTEGER,
     PRIMARY KEY (station, obs_date)
 );
+CREATE TABLE IF NOT EXISTS trades (
+    venue      VARCHAR NOT NULL,
+    market_id  VARCHAR NOT NULL,
+    trade_id   VARCHAR NOT NULL,
+    ts         TIMESTAMP NOT NULL,
+    yes_price  DOUBLE NOT NULL,
+    qty        DOUBLE NOT NULL,
+    taker_side VARCHAR,
+    is_block   BOOLEAN
+);
+CREATE TABLE IF NOT EXISTS trades_swept (
+    market_id VARCHAR PRIMARY KEY,
+    swept_at  TIMESTAMP,
+    n_trades  INTEGER,
+    status    VARCHAR
+);
 CREATE TABLE IF NOT EXISTS series (
     venue          VARCHAR NOT NULL,
     ticker         VARCHAR NOT NULL,
@@ -275,6 +291,20 @@ class Store:
         rows = [(r[0], r[1], _naive_utc(r[2]), *r[3:]) for r in rows]
         return self.insert_new("candles", rows, ["venue", "market_id", "end_ts", "period_s"])
 
+    def insert_trades(self, rows: list[tuple]) -> int:
+        """(venue, market_id, trade_id, ts, yes_price, qty, taker_side,
+        is_block); dedup on trade_id so retro-pass re-runs are safe."""
+        return self.insert_new("trades", rows, ["trade_id"])
+
+    def mark_trades_swept(self, market_id: str, n_trades: int, status: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO trades_swept VALUES (?,?,?,?)",
+            [market_id, datetime.now(UTC).replace(tzinfo=None), n_trades, status],
+        )
+
+    def trades_swept_ids(self) -> set[str]:
+        return {r[0] for r in self.conn.execute("SELECT market_id FROM trades_swept").fetchall()}
+
     def upsert_observations(self, rows: list[tuple[str, date, int | None]]) -> None:
         self.conn.executemany("INSERT OR REPLACE INTO observations VALUES (?,?,?)", rows)
 
@@ -413,7 +443,7 @@ class Store:
     def counts(self) -> dict[str, int]:
         return {
             t: self.conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
-            for t in ("markets", "snapshots", "nws_forecasts", "candles", "observations")
+            for t in ("markets", "snapshots", "nws_forecasts", "candles", "trades", "observations")
         }
 
 

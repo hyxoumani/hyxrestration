@@ -17,6 +17,7 @@ COLLECTION = {
     "collect",
     "sweep",
     "backfill",
+    "trades_backfill",
     "streamd",
     "venues",  # all venue clients (REST + WS)
 }

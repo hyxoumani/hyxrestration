@@ -66,6 +66,50 @@ def get_markets(
     return out
 
 
+def get_trades(
+    ticker: str,
+    limit: int = 1000,
+    max_pages: int = 100,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
+    """All public trade prints for one market (cursor-paginated).
+
+    Probed 2026-07-07: same string-dollar shape as the WS trade channel
+    (trade_id, created_time ISO, yes_price_dollars, count_fp, taker_side,
+    is_block_trade). Retention purges prints ~64 days after close —
+    markets closed ≤2026-05-01 already return empty.
+    """
+    sess = session or requests.Session()
+    out: list[dict[str, Any]] = []
+    cursor = ""
+    for _ in range(max_pages):
+        params: dict[str, Any] = {"ticker": ticker, "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = sess.get(f"{BASE}/markets/trades", params=params, timeout=30)
+        resp.raise_for_status()
+        body = resp.json()
+        out.extend(body.get("trades", []))
+        cursor = body.get("cursor") or ""
+        if not cursor or not body.get("trades"):
+            break
+    return out
+
+
+def trade_row(t: dict[str, Any]) -> tuple:
+    """Flatten one API trade into the store's trades-table column order."""
+    return (
+        VENUE,
+        t["ticker"],
+        t["trade_id"],
+        _parse_ts(t.get("created_time")),
+        float(t["yes_price_dollars"]),
+        float(t.get("count_fp") or 0.0),
+        t.get("taker_side") or None,
+        bool(t.get("is_block_trade", False)),
+    )
+
+
 def get_series_list(session: requests.Session | None = None) -> list[dict[str, Any]]:
     """All series with category/fee metadata. Verified 2026-07-06: the
     endpoint returns the full set (~11k) in one unpaginated response."""

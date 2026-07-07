@@ -95,3 +95,40 @@ def test_watermarks_roundtrip(tmp_path):
     store.set_watermark("KXCPI", TS)
     assert store.watermark("KXCPI") == TS.replace(tzinfo=None)
     store.close()
+
+
+def test_insert_trades_dedups_on_trade_id(tmp_path):
+    from hyxlab.venues.kalshi import trade_row
+
+    # Live REST shape, probed 2026-07-07.
+    api_trade = {
+        "trade_id": "d763a421-6682-5bce-7e71-0ef65e5756f8",
+        "ticker": "KXHIGHTLV-26JUL06-T111",
+        "created_time": "2026-07-06T17:21:56.956835Z",
+        "yes_price_dollars": "0.0100",
+        "no_price_dollars": "0.9900",
+        "count_fp": "9.35",
+        "taker_side": "yes",
+        "taker_outcome_side": "yes",
+        "taker_book_side": "bid",
+        "is_block_trade": False,
+    }
+    row = trade_row(api_trade)
+    assert row[4] == 0.01  # yes_price in dollars
+    assert row[5] == 9.35  # fractional qty preserved
+    store = Store(tmp_path / "t.duckdb")
+    assert store.insert_trades([row]) == 1
+    assert store.insert_trades([row]) == 0  # retro-pass re-run is safe
+    assert store.counts()["trades"] == 1
+    store.close()
+
+
+def test_trades_swept_tracks_progress(tmp_path):
+    store = Store(tmp_path / "t.duckdb")
+    assert store.trades_swept_ids() == set()
+    store.mark_trades_swept("M1", 0, "empty")
+    store.mark_trades_swept("M2", 12, "ok")
+    assert store.trades_swept_ids() == {"M1", "M2"}
+    store.mark_trades_swept("M1", 3, "ok")  # re-mark replaces, no dup
+    assert store.conn.execute("SELECT count(*) FROM trades_swept").fetchone()[0] == 2
+    store.close()

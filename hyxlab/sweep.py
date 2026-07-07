@@ -110,6 +110,14 @@ def sweep_series(
         n_candles += store.insert_candles(
             [kalshi.candle_row(series_ticker, m, c, 3600) for c in candles]
         )
+        # Trade tape rides along (B3.5): prints purge on the same
+        # retention clock as candles, so capture them at first sight.
+        try:
+            rows = [kalshi.trade_row(t) for t in kalshi.get_trades(m["ticker"], session=session)]
+            store.insert_trades(rows)
+            store.mark_trades_swept(m["ticker"], len(rows), "ok" if rows else "empty")
+        except requests.HTTPError:
+            pass  # stays unmarked; the retro-pass or next sweep retries
         close_dt = datetime.fromtimestamp(close_ts, tz=UTC)
         max_close = max(max_close, close_dt)
         time.sleep(CANDLES_PAUSE_S)
