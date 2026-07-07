@@ -3,6 +3,9 @@
 Knowledge base maintained by the context-keeper. Pages are synthesized from
 session findings, reviewer feedback, experiments, and architectural decisions.
 
+**Start here → [Status & next steps](status.md)** (living page: build
+state, session findings, execution queue).
+
 ## Current focus: hyxlab (prediction-market strategy lab)
 
 - [hyxlab architecture](hyxlab-architecture.md) — layers, module map, build state, tier ladder
