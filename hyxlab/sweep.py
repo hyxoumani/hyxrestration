@@ -210,7 +210,18 @@ def main() -> None:
     args = ap.parse_args()
 
     lock = Path(args.db + ".lock")
-    store = Store(args.db, read_only=args.doctor)
+    store = None
+    for attempt in range(5):
+        try:
+            store = Store(args.db, read_only=args.doctor)
+            break
+        except duckdb.Error:
+            # A writer (collector/tradepass flush) holds the file; those
+            # bursts last ~seconds.
+            if attempt == 4:
+                print("archive busy (writer active); try again in a few seconds")
+                return
+            time.sleep(2)
     try:
         if args.doctor:
             doctor(store)
