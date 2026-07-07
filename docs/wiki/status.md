@@ -1,6 +1,7 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-07** (gates finale + B7 stream daemon LIVE; B3.5 next).
+Updated: **2026-07-07 late** (infra-first: stable deployment + boundary
+enforced; B3.5 retro-pass RUNNING overnight).
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-07-09.md` (full operational handoff, gitignored).
 
@@ -45,14 +46,24 @@ purge makes self-archiving the moat; candle bid/asks can be crossed
    reconnect+re-seed, gap log); Poly books idle until pairs land. First
    minute live: ~17.5k rows, 0 gaps. Doctor covers both archives.
    Watch: disk growth (est. low-single-GB/day), box uptime now matters.
-3. **Trade tape (B3.5)** — Kalshi retro-pass over 35k archived markets
-   (races retention), Polymarket prints + volume, first hand-verified
-   cross-venue pairs.
-4. **Debug frontend** — decision replay / market timeline / doctor;
-   single-file read-only local web app.
-5. B4 signals (ALFRED vintages, GDELT, FeatureView) → B5 harness (purged
-   walk-forward, sweeps, DSR) → B6 calibration atlas → **pre-registered
-   favorite-longshot backtest** (first strategy through the full lab).
+**Direction change (user, 2026-07-07): data plumbing & infra first,
+strategies after.** Landed same evening: collection/sim import boundary
+(tests/test_boundaries.py) + stable deployment worktree
+(`scripts/promote.sh` — the only shipping path for collection code).
+
+3. **Trade tape (B3.5)** — Kalshi side RUNNING (hyxlab-tradepass
+   transient unit, 35,179 settled markets oldest-first; probed retention
+   boundary: closed ≤2026-05-01 already purged, ~64-day window). Sweep
+   now captures prints for newly settled markets. Still pending:
+   Polymarket prints/volume sampling + first hand-verified cross-venue
+   pairs.
+4. **Daily stream QA job** — promote the audit (seq holes, negative
+   books, latency, disk) into a scheduled check.
+5. **BookReplayer + latency-aware fills** → **shadow harness (Tier-3
+   paper trading)** — one arc, shares stream-replay plumbing.
+6. B4 signals (ALFRED vintages, GDELT, FeatureView) → B5 harness (purged
+   walk-forward, sweeps, DSR) → B6 calibration atlas → debug frontend.
+7. Strategy work (favorite-longshot pre-reg etc.) AFTER the plumbing.
 
 ## Standing user items (non-blocking)
 
