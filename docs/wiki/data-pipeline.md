@@ -70,6 +70,15 @@ the next snapshot re-seeds).
 
 ## Gotchas (stream)
 
+- **Box clock is ~20 s fast; NTP is OFF** (found by the 2026-07-07 stream
+  audit: recv_ts − src_ts constant ≈ +19.5 s across trades AND deltas;
+  confirmed vs Kalshi HTTP Date). All box-generated timestamps
+  (recv_ts, collector snapshot ts) carry this skew until the user runs
+  `sudo timedatectl set-ntp true`. Venue-sourced timestamps (src_ts,
+  candle end_ts) are true time — prefer src_ts for stream analysis.
+  When NTP lands, the daemon's clock tripwire logs the backward step as
+  a `clock_step_*` gap row.
+
 - Kalshi WS frames use STRING-DOLLAR fields (`yes_price_dollars`,
   `count_fp`, `price_dollars`, `delta_fp`, `{yes,no}_dollars_fp`) — NOT
   the integer cents older docs suggest. Re-probed live 2026-07-07; the

@@ -56,10 +56,12 @@ purge makes self-archiving the moat; candle bid/asks can be crossed
 
 ## Standing user items (non-blocking)
 
-`git restore .claude/skills/compact/SKILL.md`; DuckDB off-box backup;
-rotate Kalshi API key (transited chat); optional FRED key (helps B4);
-Pi migration whenever (fully portable); box uptime matters once the
-stream daemon runs.
+**`sudo timedatectl set-ntp true`** — box clock is ~20 s fast, NTP off
+(stream audit finding; daemon logs the correction as a clock_step gap);
+`git restore .claude/skills/compact/SKILL.md`; DuckDB off-box backup
+(both files); rotate Kalshi API key (transited chat); optional FRED key
+(helps B4); Pi migration whenever (fully portable); box uptime matters —
+the stream daemon is live and its data unrecoverable.
 
 ## Hard rules in force
 

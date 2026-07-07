@@ -50,18 +50,35 @@ def candle_feed_caps(snapshots: Iterable[Snapshot]) -> dict[str, frozenset[str]]
     return {v: frozenset() for v in {s.venue for s in snapshots}}
 
 
+def _unsatisfied(strat, caps: dict) -> frozenset[str]:
+    req = frozenset(getattr(strat, "requires", ()) or ())
+    if not req or any(req <= venue_caps for venue_caps in caps.values()):
+        return frozenset()
+    return req
+
+
 def check_capabilities(strategies: Iterable, data_capabilities: dict | None) -> None:
     """Raise VacuousBacktestError for any strategy whose requirements no
     venue in the declared feed can satisfy."""
     caps = data_capabilities or {}
     for strat in strategies:
-        req = frozenset(getattr(strat, "requires", ()) or ())
-        if not req:
-            continue
-        if not any(req <= venue_caps for venue_caps in caps.values()):
+        req = _unsatisfied(strat, caps)
+        if req:
             declared = {v: sorted(c) for v, c in caps.items()} or "nothing"
             raise VacuousBacktestError(
                 f"strategy '{getattr(strat, 'name', strat)}' requires {sorted(req)} "
                 f"but the feed declares {declared}; this backtest could never "
                 "produce a fill — refusing to run a test that cannot fail"
             )
+
+
+def partition_runnable(strategies: Iterable, data_capabilities: dict | None) -> tuple[list, list]:
+    """(runnable, refused) split for multi-strategy runners: they should
+    skip impossible strategies LOUDLY and still run the rest, rather than
+    die on the first vacuous one. Direct Simulator construction stays a
+    hard error."""
+    caps = data_capabilities or {}
+    runnable, refused = [], []
+    for strat in strategies:
+        (refused if _unsatisfied(strat, caps) else runnable).append(strat)
+    return runnable, refused

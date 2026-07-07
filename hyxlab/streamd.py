@@ -92,6 +92,15 @@ class Daemon:
         self.store.append_gap(venue, channel, since or now, now, reason)
         _log(f"{venue}/{channel} GAP ({reason})")
 
+    def _clock_check(self, venue: str, channel: str, recv_ts: datetime, last: datetime | None):
+        """recv_ts moving backwards = the system clock stepped (e.g. NTP
+        kicking in on a skewed box). Not lost coverage, but timestamps
+        around the step are non-monotonic — record it so replay knows."""
+        if last is not None and recv_ts < last:
+            self._gap(
+                venue, channel, recv_ts, f"clock_step_{(recv_ts - last).total_seconds():.1f}s"
+            )
+
     # -- connection loops --------------------------------------------------
 
     async def kalshi_trades(self) -> None:
@@ -151,6 +160,7 @@ class Daemon:
                                 break  # reconnect with the new ticker set
                             continue
                         recv_ts = datetime.now(UTC)
+                        self._clock_check("kalshi", channel, recv_ts, last_recv)
                         frame = json.loads(raw)
                         # Continuity check on the raw frame (sid/seq are
                         # frame-level); a jump means missed messages, so
@@ -195,6 +205,7 @@ class Daemon:
                             await ws.send("PING")  # idle keepalive
                             continue
                         recv_ts = datetime.now(UTC)
+                        self._clock_check("polymarket", "market", recv_ts, last_recv)
                         events, trades = polymarket_ws.parse_message(raw, recv_ts)
                         if events:
                             self.store.append_events(events)

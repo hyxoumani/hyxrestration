@@ -177,6 +177,32 @@ def test_poly_last_trade_price_becomes_trade():
     assert (t.price, t.qty, t.taker_side) == (0.45, 33.0, "buy")
 
 
+# -- daemon clock tripwire ----------------------------------------------------
+
+
+def test_clock_step_logged_as_gap(tmp_path):
+    from datetime import timedelta
+
+    from hyxlab.streamd import Daemon
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    d = Daemon(store, watchlist={})
+    d._clock_check("kalshi", "trades", RECV, RECV - timedelta(seconds=1))  # forward: fine
+    assert store.pending == 0
+    d._clock_check("kalshi", "trades", RECV - timedelta(seconds=20), RECV)  # backward step
+    assert store.pending == 1
+    store.flush()
+    reason = duckdb_reason(tmp_path / "s.duckdb")
+    assert reason.startswith("clock_step_-20")
+
+
+def duckdb_reason(path):
+    import duckdb
+
+    with duckdb.connect(str(path), read_only=True) as conn:
+        return conn.execute("SELECT reason FROM stream_gaps").fetchone()[0]
+
+
 # -- stream store -------------------------------------------------------------
 
 

@@ -75,6 +75,19 @@ def test_strategy_without_requirements_runs_undeclared():
     assert res.fills == []  # no forecast -> no trade; the point is no raise
 
 
+def test_partition_runnable_splits_loudly_skippable_strategies():
+    from hyxlab.capabilities import partition_runnable
+
+    reb, weather = IntramarketRebalance(), WeatherNWS()
+    runnable, refused = partition_runnable([reb, weather], {"kalshi": frozenset()})
+    assert runnable == [weather]  # weather has no requirements
+    assert refused == [reb]  # rebalance impossible on a kalshi-only feed
+    runnable, refused = partition_runnable(
+        [reb, weather], {"polymarket": frozenset({INDEPENDENT_NO_BOOK})}
+    )
+    assert refused == []
+
+
 def test_candle_feed_caps_strip_independence_even_for_polymarket():
     # Candle-derived NO is synthesized as the complement regardless of the
     # venue's live book structure.

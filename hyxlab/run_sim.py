@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from hyxlab.capabilities import live_feed_caps
+from hyxlab.capabilities import live_feed_caps, partition_runnable
 from hyxlab.collect import DEFAULT_WATCHLIST, load_watchlist
 from hyxlab.sim import Simulator
 from hyxlab.store import Store
@@ -40,11 +40,19 @@ def main() -> None:
         pairs = [Pair(*p) for p in pairs_cfg]
         strategies.append(CrossVenueArb(pairs))
 
+    caps = live_feed_caps(snapshots)
+    strategies, refused = partition_runnable(strategies, caps)
+    for strat in refused:
+        print(
+            f"SKIPPED {strat.name}: requires {sorted(strat.requires)}, feed provides "
+            f"{ {v: sorted(c) for v, c in caps.items()} } — would be a vacuous run"
+        )
+
     sim = Simulator(
         markets,
         strategies,
         forecasts=forecasts,
-        data_capabilities=live_feed_caps(snapshots),
+        data_capabilities=caps,
     )
     result = sim.run(snapshots)
 
