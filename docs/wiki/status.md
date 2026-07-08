@@ -1,6 +1,7 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-08 early** (DATA LAYER COMPLETE — sim platform next).
+Updated: **2026-07-08** (data layer complete; sim platform underway —
+simui replay terminal shipped).
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-07-14.md` (operational handoff, gitignored).
 
@@ -51,7 +52,13 @@ Tier-2 sweep: 1s latency ≈ +0.4¢/contract). 128 tests green.
 4. **B5 iteration machinery** — purged walk-forward, sweeps, DSR
    deflation with family-wide trial counting.
 5. **B6 calibration atlas** + event study v1.
-6. **Debug frontend** — decision replay / market timeline / doctor.
+6. ~~Debug frontend~~ **simui v1 SHIPPED 2026-07-08**: interactive
+   market-replay terminal (`python -m hyxlab.simui`,
+   localhost:8877) — archived events replay like a live venue UI;
+   user buy/sell + attached strategies fill through the real
+   Simulator; per-account profile (cash/equity/positions/fills).
+   Stream-tier Kalshi only. Later: decision-replay overlay, doctor
+   view, candle-tier + Polymarket replay.
 7. **Strategies** (only after 2–6): favorite-longshot pre-reg first;
    weather v2 and econ-print candidates behind it.
 

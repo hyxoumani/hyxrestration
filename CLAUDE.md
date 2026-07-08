@@ -24,6 +24,9 @@ record under `phase0/` — do not build on it.
 .venv/bin/python -m hyxlab.sweep --doctor
 .venv/bin/python -m hyxlab.collect --once
 .venv/bin/python -m hyxlab.run_backtest
+
+# Interactive market-replay UI (paper trading; http://127.0.0.1:8877)
+.venv/bin/python -m hyxlab.simui
 ```
 
 Scheduled: systemd user timers `hyxlab-collect` (5 min) and

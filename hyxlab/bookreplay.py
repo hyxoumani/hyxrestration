@@ -109,6 +109,22 @@ class BookReplayer:
             return self._snapshot(market_id, book.snap_ts, after)
         return None
 
+    def depth(self, market_id: str) -> dict[str, list[tuple[float, float]]] | None:
+        """Full displayed ladder for a SEEDED market: resting yes/no bids
+        as (price, qty), best first. None while the book is unknown
+        (pre-seed or mid-gap). Read-only view for display consumers
+        (simui); fills still go through Snapshot tops only."""
+        book = self._books.get(market_id)
+        if book is None or not book.seeded:
+            return None
+        return {
+            side: sorted(
+                ((p, q) for p, q in book.levels[side].items() if q > 0),
+                key=lambda pq: -pq[0],
+            )
+            for side in ("yes", "no")
+        }
+
     def _finalizable_top(self, book: _Book) -> tuple | None:
         """Top for delta comparison: if an image is still open (caller
         skipped finalize), its pre-image top is the last EMITTED state."""

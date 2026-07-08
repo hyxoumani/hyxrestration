@@ -33,6 +33,7 @@ SIM = {
     "shadow",
     "run_sim",
     "run_backtest",
+    "simui",
 }
 # Shared kernel (either side may import): models, store, streamstore,
 # fees, migrate, watchlist.

@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hyxsim — market replay</title>
+<style>
+  /* Dark trading terminal — deliberately single-mode.
+     Palette: dataviz reference (dark-surface validated steps). */
+  :root {
+    --surface-0: #111110;
+    --surface-1: #1a1a19;
+    --surface-2: #242422;
+    --border:    #383835;
+    --text-1:    #ffffff;
+    --text-2:    #c3c2b7;
+    --text-3:    #8a897f;
+    --blue:      #3987e5;   /* price line / "you" */
+    --violet:    #9085e9;   /* strategy accounts */
+    --good:      #0ca30c;   /* YES / buys */
+    --critical:  #d03b3b;   /* NO / sells */
+    --warning:   #fab219;   /* gap badge */
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--surface-0); color: var(--text-1);
+    font: 13px/1.45 system-ui, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+  button { font: inherit; color: inherit; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { border-color: var(--text-3); }
+  button:disabled { opacity: .4; cursor: default; }
+  select, input { font: inherit; color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+  input[type=range] { padding: 0; }
+  table { border-collapse: collapse; width: 100%; }
+  th { color: var(--text-3); font-weight: 500; text-align: left; padding: 2px 8px; font-size: 11px; }
+  td { padding: 3px 8px; border-top: 1px solid var(--surface-2); }
+
+  header {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 14px; background: var(--surface-1); border-bottom: 1px solid var(--border);
+  }
+  header .brand { font-weight: 700; letter-spacing: .04em; }
+  header .brand span { color: var(--blue); }
+  #clock { font-size: 15px; color: var(--text-1); min-width: 175px; }
+  #gapBadge { display: none; color: #111; background: var(--warning); border-radius: 5px; padding: 1px 8px; font-weight: 600; }
+  #gapBadge.on { display: inline-block; }
+  #timeline { flex: 1 1 160px; min-width: 120px; accent-color: var(--blue); }
+  #wsdot { width: 9px; height: 9px; border-radius: 50%; background: var(--critical); }
+  #wsdot.on { background: var(--good); }
+
+  main { flex: 1; display: grid; grid-template-columns: 250px 1fr 300px; min-height: 0; }
+  main > section { min-height: 0; overflow-y: auto; border-right: 1px solid var(--border); }
+
+  /* market strip */
+  #markets .mkt { padding: 8px 12px; border-bottom: 1px solid var(--surface-2); cursor: pointer; }
+  #markets .mkt:hover { background: var(--surface-1); }
+  #markets .mkt.focus { background: var(--surface-2); border-left: 3px solid var(--blue); padding-left: 9px; }
+  #markets .mkt .strike { font-weight: 600; }
+  #markets .mkt .px { float: right; }
+  #markets .mkt .sub { color: var(--text-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* center */
+  #center { display: flex; flex-direction: column; }
+  #chartwrap { position: relative; flex: 0 0 46%; min-height: 220px; padding: 8px 10px 0; }
+  #chart { width: 100%; height: 100%; display: block; }
+  #tooltip { position: absolute; display: none; pointer-events: none; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; z-index: 5; }
+  #tapewrap { flex: 1; overflow-y: auto; border-top: 1px solid var(--border); }
+  #tape td { border-top: 1px solid var(--surface-1); }
+  .side-yes { color: var(--good); font-weight: 600; }
+  .side-no { color: var(--critical); font-weight: 600; }
+
+  /* ladder + ticket */
+  #right { display: flex; flex-direction: column; border-right: none !important; }
+  #ladder { flex: 1; overflow-y: auto; padding: 6px 0; }
+  .lrow { display: grid; grid-template-columns: 60px 1fr 70px; padding: 1px 12px; position: relative; cursor: pointer; }
+  .lrow:hover { outline: 1px solid var(--text-3); }
+  .lrow .bar { position: absolute; top: 2px; bottom: 2px; right: 0; opacity: .16; }
+  .lrow.ask .bar { background: var(--critical); }
+  .lrow.bid .bar { background: var(--good); }
+  .lrow.ask .p { color: var(--critical); }
+  .lrow.bid .p { color: var(--good); }
+  .spread { text-align: center; color: var(--text-3); font-size: 11px; padding: 4px 0; border: solid var(--surface-2); border-width: 1px 0; }
+  #ladder.stale { opacity: .35; }
+  #ticket { border-top: 1px solid var(--border); padding: 10px 12px; display: grid; gap: 8px; }
+  .seg { display: flex; }
+  .seg button { flex: 1; border-radius: 0; }
+  .seg button:first-child { border-radius: 6px 0 0 6px; }
+  .seg button:last-child { border-radius: 0 6px 6px 0; }
+  .seg button.on.yes { background: var(--good); color: #fff; border-color: var(--good); }
+  .seg button.on.no { background: var(--critical); color: #fff; border-color: var(--critical); }
+  .seg button.on.dir { background: var(--surface-0); border-color: var(--text-2); }
+  .trow { display: flex; gap: 8px; align-items: center; }
+  .trow label { color: var(--text-3); width: 44px; font-size: 11px; }
+  .trow input { width: 90px; }
+  #place { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 600; padding: 8px; }
+  #est { color: var(--text-3); font-size: 11px; }
+
+  /* profile */
+  #profile { border-top: 1px solid var(--border); background: var(--surface-1); height: 240px; display: flex; min-height: 240px; }
+  #profile .col { flex: 1; min-width: 0; overflow-y: auto; border-right: 1px solid var(--border); }
+  #profile h3 { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; padding: 8px 10px 4px; position: sticky; top: 0; background: var(--surface-1); }
+  #acctTabs { display: flex; gap: 6px; padding: 8px 10px 0; }
+  #acctTabs button.on { border-color: var(--blue); color: var(--blue); }
+  #stats { display: flex; gap: 18px; padding: 10px; flex-wrap: wrap; }
+  .stat .k { color: var(--text-3); font-size: 11px; }
+  .stat .v { font-size: 17px; }
+  .pnl-pos { color: var(--good); } .pnl-neg { color: var(--critical); }
+  #spark { width: 100%; height: 70px; display: block; padding: 0 10px; }
+  #toasts { position: fixed; right: 14px; bottom: 254px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
+  .toast { background: var(--surface-2); border: 1px solid var(--border); border-left: 3px solid var(--blue); border-radius: 6px; padding: 7px 12px; max-width: 340px; }
+  .toast.err { border-left-color: var(--critical); }
+  #setup { padding: 40px; max-width: 640px; margin: 0 auto; }
+  #setup h1 { margin-bottom: 6px; } #setup p { color: var(--text-2); margin-bottom: 18px; }
+  #setup .trow { margin-bottom: 10px; } #setup .trow label { width: 110px; }
+  #evsel { max-width: 420px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<header id="hdr" class="hidden">
+  <div class="brand">hyx<span>sim</span></div>
+  <div id="evtitle" style="color:var(--text-2)"></div>
+  <div id="clock" class="num">—</div>
+  <span id="gapBadge">coverage gap</span>
+  <button id="playBtn">▶</button>
+  <select id="speedSel">
+    <option value="1">1×</option><option value="5">5×</option>
+    <option value="10" selected>10×</option><option value="30">30×</option>
+    <option value="60">60×</option><option value="300">300×</option>
+    <option value="900">900×</option><option value="3600">3600×</option>
+  </select>
+  <input id="timeline" type="range" min="0" max="1000" value="0">
+  <button id="newBtn" title="new session">new</button>
+  <div id="wsdot" title="connection"></div>
+</header>
+
+<div id="setup">
+  <h1>hyx<span style="color:var(--blue)">sim</span></h1>
+  <p>Replay a captured market as if live and trade it — your orders and any
+     attached strategies fill through the same no-lookahead simulator that
+     scores backtests. Paper only, by construction.</p>
+  <div class="trow"><label>Event</label><select id="evsel"></select></div>
+  <div class="trow"><label>Strategies</label><span id="strats"></span></div>
+  <div class="trow"><label>Latency</label><input id="latIn" type="number" value="2.0" step="0.5" min="0"> <span style="color:var(--text-3)">seconds (order → exchange)</span></div>
+  <div class="trow"><label>Start cash</label><input id="cashIn" type="number" value="1000" step="100" min="1"></div>
+  <div class="trow"><label></label><button id="startBtn" style="background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600;padding:8px 22px">Start replay</button></div>
+  <p id="setupMsg" style="color:var(--text-3)"></p>
+</div>
+
+<main id="app" class="hidden">
+  <section id="markets"></section>
+  <section id="center">
+    <div id="chartwrap"><canvas id="chart"></canvas><div id="tooltip" class="num"></div></div>
+    <div id="tapewrap"><table id="tape"><thead><tr><th>time</th><th>market</th><th>side</th><th>price</th><th>qty</th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <section id="right">
+    <div id="ladder"></div>
+    <div id="ticket">
+      <div class="seg"><button id="dirOpen" class="on dir">Buy</button><button id="dirClose" class="dir">Sell</button></div>
+      <div class="seg"><button id="sideYes" class="on yes">YES <span id="yesPx" class="num"></span></button><button id="sideNo" class="no">NO <span id="noPx" class="num"></span></button></div>
+      <div class="trow"><label>Qty</label><input id="qtyIn" type="number" value="10" min="1" step="1"></div>
+      <div class="trow"><label>Limit ¢</label><input id="limIn" type="number" min="1" max="99" step="1" placeholder="market"></div>
+      <div class="trow"><label>TIF</label><select id="tifSel"><option>GTC</option><option>IOC</option></select></div>
+      <button id="place">Place order</button>
+      <div id="est"></div>
+    </div>
+  </section>
+</main>
+
+<div id="profile" class="hidden">
+  <div class="col" style="flex:0 0 300px">
+    <div id="acctTabs"></div>
+    <div id="stats"></div>
+    <canvas id="spark"></canvas>
+  </div>
+  <div class="col"><h3>Positions</h3><table id="posTbl"><tbody></tbody></table></div>
+  <div class="col"><h3>Open orders <span id="inflight" style="color:var(--text-3)"></span></h3><table id="ordTbl"><tbody></tbody></table></div>
+  <div class="col"><h3>Fills</h3><table id="fillTbl"><tbody></tbody></table></div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const CENTS = p => p == null ? "–" : Math.round(p * 100) + "¢";
+const QTY = q => q >= 10 ? Math.round(q).toLocaleString("en-US") : String(Math.round(q * 100) / 100);
+const fmtUSD = v => (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(2);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+/* ---------- state ---------- */
+const S = {
+  ws: null, desc: null, catalog: [],
+  focus: null, books: {}, tops: {}, cursor: null, tMin: 0, tMax: 1,
+  playing: false, speed: 10, inGap: false,
+  chart: {},        // market_id -> [[t, price], ...]  (mid line, per frame)
+  hist: {},         // market_id -> [[t, price], ...]  (trade prefill dots)
+  equity: {},       // account -> [[t, equity], ...]
+  accounts: {}, fills: [], acctTab: "you",
+  side: "yes", dir: "open", scrubbing: false,
+};
+const T = s => new Date(s + "Z").getTime();
+
+/* ---------- websocket ---------- */
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  S.ws = ws;
+  ws.onopen = () => { $("wsdot").classList.add("on"); send({ type: "catalog" }); };
+  ws.onclose = () => { $("wsdot").classList.remove("on"); toast("connection lost — reload the page", true); };
+  ws.onmessage = e => handle(JSON.parse(e.data));
+}
+const send = m => S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify(m));
+
+function handle(m) {
+  if (m.type === "catalog") return renderCatalog(m.events);
+  if (m.type === "session") return initSession(m);
+  if (m.type === "frame") return onFrame(m);
+  if (m.type === "history") { S.hist[m.market_id] = m.points.map(p => [T(p[0]), p[1]]); drawChart(); return; }
+  if (m.type === "meta") {
+    S.desc.markets = m.markets;
+    $("evtitle").textContent = (Object.values(m.markets)[0] || {}).title || "";
+    renderMarkets(); renderLadder(); renderProfile();
+    return;
+  }
+  if (m.type === "ended") { toast("end of captured data — session paused"); return; }
+  if (m.type === "error") return toast(m.message, true);
+}
+
+/* ---------- setup screen ---------- */
+function renderCatalog(events) {
+  S.catalog = events;
+  $("evsel").innerHTML = events.map(e =>
+    `<option value="${e.event}">${e.event} — ${e.title || "?"} (${e.markets.length} mkts, ${(e.n_events / 1000).toFixed(0)}k evts)</option>`
+  ).join("");
+  $("strats").innerHTML = `<label><input type="checkbox" id="stProbe"> probe (tight-spread taker)</label>`;
+  $("setupMsg").textContent = events.length ? "" : "no captured events found in the stream archive";
+  // dev/deep-link: /?autostart=first|EVENT&speed=300&strategies=probe
+  const q = new URLSearchParams(location.search), auto = q.get("autostart");
+  if (auto && events.length) {
+    if (auto !== "first") $("evsel").value = auto;
+    if (q.get("speed")) { S.speed = parseFloat(q.get("speed")); $("speedSel").value = q.get("speed"); }
+    if ((q.get("strategies") || "").includes("probe")) $("stProbe").checked = true;
+    $("startBtn").click();
+  }
+}
+$("startBtn").onclick = () => {
+  const ev = $("evsel").value;
+  if (!ev) return;
+  $("setupMsg").textContent = "loading archive slice…";
+  send({
+    type: "create", event: ev,
+    latency: parseFloat($("latIn").value) || 0,
+    start_cash: parseFloat($("cashIn").value) || 1000,
+    strategies: $("stProbe") && $("stProbe").checked ? ["probe"] : [],
+    speed: S.speed,
+  });
+};
+$("newBtn").onclick = () => location.reload();
+
+function initSession(desc) {
+  S.desc = desc; S.playing = true;
+  S.tMin = T(desc.t_min); S.tMax = T(desc.t_max);
+  S.chart = {}; S.hist = {}; S.equity = {}; S.fills = [];
+  const ids = desc.market_ids;
+  S.focus = ids[0];
+  S.acctTab = "you";
+  $("setup").classList.add("hidden");
+  for (const el of ["hdr", "app", "profile"]) $(el).classList.remove("hidden");
+  $("evtitle").textContent = (Object.values(desc.markets)[0] || {}).title || "";
+  renderAcctTabs(desc.accounts);
+  renderMarkets();
+  send({ type: "history", market_id: S.focus });
+  updatePlayBtn();
+}
+
+/* ---------- frames ---------- */
+function onFrame(f) {
+  S.cursor = T(f.cursor);
+  // Auto-focus once: prefer a live two-sided market near 50¢ over a
+  // dead deep-OTM strike (the alphabetical default).
+  if (!S.autoFocused) {
+    const live = Object.entries(f.tops).filter(([, t]) => t.mid != null);
+    if (live.length) {
+      S.autoFocused = true;
+      const cur = f.tops[S.focus];
+      if (!cur || cur.mid == null) {
+        live.sort((a, b) => Math.abs(a[1].mid - 0.5) - Math.abs(b[1].mid - 0.5));
+        S.focus = live[0][0];
+        send({ type: "history", market_id: S.focus });
+      }
+    }
+  }
+  S.playing = f.playing; S.speed = f.speed; S.inGap = f.in_gap;
+  Object.assign(S.books, f.books);
+  Object.assign(S.tops, f.tops);
+  for (const [mid, top] of Object.entries(f.tops)) {
+    if (top.mid == null) continue;
+    (S.chart[mid] = S.chart[mid] || []).push([S.cursor, top.mid]);
+  }
+  for (const [name, a] of Object.entries(f.accounts))
+    (S.equity[name] = S.equity[name] || []).push([S.cursor, a.equity]);
+  S.accounts = f.accounts;
+  for (const t of f.trades) addTapeRow(t);
+  for (const fl of f.fills) {
+    S.fills.unshift(fl);
+    if (fl.account === "you")
+      toast(`filled: ${fl.qty > 0 ? "+" : ""}${fl.qty} ${fl.side.toUpperCase()} @ ${CENTS(fl.price)} (${fl.maker ? "maker" : "taker"}, fee ${fmtUSD(fl.fee)})`);
+  }
+  $("clock").textContent = f.cursor.slice(0, 19).replace("T", "  ") + " UTC";
+  $("gapBadge").classList.toggle("on", S.inGap);
+  if (!S.scrubbing)
+    $("timeline").value = Math.round(1000 * (S.cursor - S.tMin) / Math.max(1, S.tMax - S.tMin));
+  updatePlayBtn();
+  renderMarkets(); renderLadder(); renderProfile(); drawChart(); drawSpark();
+}
+
+/* ---------- transport ---------- */
+function updatePlayBtn() {
+  $("playBtn").textContent = S.playing ? "⏸" : "▶";
+  $("speedSel").value = String(S.speed);
+}
+$("playBtn").onclick = () => { S.playing = !S.playing; send({ type: S.playing ? "play" : "pause" }); updatePlayBtn(); };
+$("speedSel").onchange = e => { S.speed = parseFloat(e.target.value); send({ type: "speed", speed: S.speed }); };
+$("timeline").oninput = () => { S.scrubbing = true; };
+$("timeline").onchange = e => {
+  S.scrubbing = false;
+  const ts = new Date(S.tMin + (e.target.value / 1000) * (S.tMax - S.tMin)).toISOString();
+  send({ type: "seek", ts });
+  S.chart = {}; S.hist = {}; S.equity = {}; S.fills = [];
+  $("tape").tBodies[0].innerHTML = "";
+  send({ type: "history", market_id: S.focus });
+  toast("seeked — portfolio and strategies restart flat (no time travel)");
+};
+
+/* ---------- market strip ---------- */
+function strikeLabel(mid) {
+  const m = (S.desc.markets[mid] || {});
+  if (m.floor_strike != null) return (m.strike_type === "less" ? "<" : m.strike_type === "greater" ? ">" : "") + m.floor_strike + (m.cap_strike != null ? "–" + m.cap_strike : "");
+  return mid.split("-").pop();
+}
+function renderMarkets() {
+  const el = $("markets");
+  el.innerHTML = S.desc.market_ids.map(mid => {
+    const top = S.tops[mid] || {};
+    return `<div class="mkt ${mid === S.focus ? "focus" : ""}" data-mid="${mid}">
+      <div><span class="strike">${strikeLabel(mid)}</span><span class="px num">${CENTS(top.yes_bid)} / ${CENTS(top.yes_ask)}</span></div>
+      <div class="sub">${mid}</div></div>`;
+  }).join("");
+  for (const d of el.querySelectorAll(".mkt")) d.onclick = () => {
+    S.focus = d.dataset.mid;
+    if (!S.hist[S.focus]) send({ type: "history", market_id: S.focus });
+    renderMarkets(); renderLadder(); drawChart();
+  };
+}
+
+/* ---------- ladder ---------- */
+function renderLadder() {
+  const el = $("ladder"), book = S.books[S.focus];
+  el.classList.toggle("stale", S.inGap || !book);
+  if (!book) { el.innerHTML = `<div class="spread">book unknown — awaiting first full image</div>`; return; }
+  // Kalshi mirror: YES asks are derived from resting NO bids (1 - p).
+  const asks = book.no.map(([p, q]) => [1 - p, q]).sort((a, b) => b[0] - a[0]);
+  const bids = book.yes;   // best first already
+  const maxQ = Math.max(1, ...asks.map(a => a[1]), ...bids.map(b => b[1]));
+  const row = (p, q, cls) =>
+    `<div class="lrow ${cls}" data-px="${Math.round(p * 100)}">
+       <span class="p num">${CENTS(p)}</span><span></span><span class="num" style="text-align:right">${QTY(q)}</span>
+       <div class="bar" style="width:${(100 * q / maxQ).toFixed(1)}%"></div></div>`;
+  const ya = asks.map(([p, q]) => row(p, q, "ask")).join("");
+  const spread = (asks.length && bids.length)
+    ? `<div class="spread">spread ${CENTS(asks[asks.length - 1][0] - bids[0][0])}</div>`
+    : `<div class="spread">—</div>`;
+  const yb = bids.map(([p, q]) => row(p, q, "bid")).join("");
+  el.innerHTML = ya + spread + yb;
+  for (const r of el.querySelectorAll(".lrow")) r.onclick = () => { $("limIn").value = r.dataset.px; };
+  const top = S.tops[S.focus] || {};
+  $("yesPx").textContent = CENTS(top.yes_ask);
+  $("noPx").textContent = top.yes_bid == null ? "–" : CENTS(1 - top.yes_bid);
+  updateEst();
+}
+
+/* ---------- ticket ---------- */
+function seg(onId, offId, set) {
+  $(onId).onclick = () => { $(onId).classList.add("on"); $(offId).classList.remove("on"); set(); updateEst(); };
+  $(offId).onclick = () => { $(offId).classList.add("on"); $(onId).classList.remove("on"); set(true); updateEst(); };
+}
+seg("sideYes", "sideNo", inv => { S.side = inv ? "no" : "yes"; });
+seg("dirOpen", "dirClose", inv => { S.dir = inv ? "close" : "open"; $("dirOpen").classList.toggle("on", !inv); });
+function updateEst() {
+  const qty = parseFloat($("qtyIn").value) || 0;
+  const lim = $("limIn").value ? parseFloat($("limIn").value) / 100 : null;
+  const top = S.tops[S.focus] || {};
+  const touch = S.dir === "open"
+    ? (S.side === "yes" ? top.yes_ask : (top.yes_bid == null ? null : 1 - top.yes_bid))
+    : (S.side === "yes" ? top.yes_bid : (top.yes_ask == null ? null : 1 - top.yes_ask));
+  const px = lim ?? touch;
+  $("est").textContent = px == null ? "no touch quote yet"
+    : `${S.dir === "open" ? "cost" : "proceeds"} ≈ ${fmtUSD(qty * px)} at ${CENTS(px)}${lim ? " limit" : " (touch now; fills at exec-time quote)"}`;
+}
+$("qtyIn").oninput = updateEst; $("limIn").oninput = updateEst;
+$("place").onclick = () => {
+  const qty = parseFloat($("qtyIn").value);
+  if (!qty || qty <= 0) return toast("qty must be positive", true);
+  send({
+    type: "order", market_id: S.focus, side: S.side, qty,
+    limit_price: $("limIn").value ? parseFloat($("limIn").value) / 100 : null,
+    action: S.dir, tif: $("tifSel").value,
+  });
+};
+
+/* ---------- tape ---------- */
+function addTapeRow(t) {
+  const tb = $("tape").tBodies[0];
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td class="num">${t.ts.slice(11, 19)}</td><td>${strikeLabel(t.market_id)}</td>
+    <td class="side-${t.taker_side || "yes"}">${(t.taker_side || "?").toUpperCase()}</td>
+    <td class="num">${CENTS(t.price)}</td><td class="num">${QTY(t.qty)}</td>`;
+  tb.prepend(tr);
+  while (tb.rows.length > 80) tb.deleteRow(-1);
+}
+
+/* ---------- profile ---------- */
+function renderAcctTabs(names) {
+  $("acctTabs").innerHTML = names.map(n =>
+    `<button data-a="${n}" class="${n === S.acctTab ? "on" : ""}">${n}</button>`).join("");
+  for (const b of $("acctTabs").children)
+    b.onclick = () => { S.acctTab = b.dataset.a; renderAcctTabs(names); renderProfile(); drawSpark(); };
+}
+function renderProfile() {
+  const a = S.accounts[S.acctTab];
+  if (!a) return;
+  const pnl = a.equity - S.desc.start_cash;
+  $("stats").innerHTML = [
+    ["Cash", fmtUSD(a.cash), ""],
+    ["Equity", fmtUSD(a.equity), ""],
+    ["P&L", fmtUSD(pnl), pnl >= 0 ? "pnl-pos" : "pnl-neg"],
+  ].map(([k, v, c]) => `<div class="stat"><div class="k">${k}</div><div class="v num ${c}">${v}</div></div>`).join("");
+  $("posTbl").tBodies[0].innerHTML = a.positions.map(p =>
+    `<tr><td>${strikeLabel(p.market_id)}</td><td class="side-${p.side}">${p.side.toUpperCase()}</td>
+     <td class="num">${QTY(p.qty)}</td><td class="num">${CENTS(p.mark)}</td><td class="num">${fmtUSD(p.qty * p.mark)}</td></tr>`
+  ).join("") || `<tr><td style="color:var(--text-3)">flat</td></tr>`;
+  $("inflight").textContent = a.in_flight ? `(+${a.in_flight} in flight)` : "";
+  $("ordTbl").tBodies[0].innerHTML = a.open_orders.map(o =>
+    `<tr><td>${strikeLabel(o.market_id)}</td><td class="side-${o.side}">${o.action === "close" ? "sell" : "buy"} ${o.side}</td>
+     <td class="num">${QTY(o.qty)}</td><td class="num">${CENTS(o.limit_price)}</td>
+     <td>${S.acctTab === "you" ? `<button data-oid="${o.order_id}" class="cxl">✕</button>` : ""}</td></tr>`
+  ).join("") || `<tr><td style="color:var(--text-3)">none</td></tr>`;
+  for (const b of $("ordTbl").querySelectorAll(".cxl"))
+    b.onclick = () => send({ type: "cancel", order_id: parseInt(b.dataset.oid) });
+  $("fillTbl").tBodies[0].innerHTML = S.fills.filter(f => f.account === S.acctTab).slice(0, 40).map(f =>
+    `<tr><td class="num">${f.ts.slice(11, 19)}</td><td>${strikeLabel(f.market_id)}</td>
+     <td class="side-${f.side}">${f.qty > 0 ? "+" : ""}${QTY(Math.abs(f.qty))} ${f.side}</td>
+     <td class="num">${CENTS(f.price)}</td><td class="num">${f.maker ? "M" : "T"}</td></tr>`
+  ).join("") || `<tr><td style="color:var(--text-3)">no fills yet</td></tr>`;
+}
+
+/* ---------- price chart (single series: focused market) ---------- */
+function sizeCanvas(cv) {
+  const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  if (cv.width !== r.width * dpr) { cv.width = r.width * dpr; cv.height = r.height * dpr; }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [g, r.width, r.height];
+}
+const PADL = 34, PADR = 8, PADT = 8, PADB = 18;
+function xy(w, h) {
+  const x = t => PADL + (w - PADL - PADR) * (t - S.tMin) / Math.max(1, S.tMax - S.tMin);
+  const y = p => PADT + (h - PADT - PADB) * (1 - p);
+  return [x, y];
+}
+function drawChart() {
+  const [g, w, h] = sizeCanvas($("chart"));
+  g.clearRect(0, 0, w, h);
+  const [x, y] = xy(w, h);
+  g.strokeStyle = "#242422"; g.fillStyle = "#8a897f"; g.font = "10px ui-monospace, monospace"; g.lineWidth = 1;
+  for (const p of [0, .25, .5, .75, 1]) {          // recessive grid
+    g.beginPath(); g.moveTo(PADL, y(p)); g.lineTo(w - PADR, y(p)); g.stroke();
+    g.fillText(Math.round(p * 100) + "¢", 4, y(p) + 3);
+  }
+  for (let k = 0; k <= 4; k++) {
+    const t = S.tMin + k * (S.tMax - S.tMin) / 4;
+    g.fillText(new Date(t).toISOString().slice(11, 16), x(t) - 12, h - 5);
+  }
+  const hist = S.hist[S.focus] || [];
+  g.fillStyle = "rgba(57,135,229,.35)";            // trade prefill dots (past only)
+  for (const [t, p] of hist) { if (t <= S.cursor) { g.beginPath(); g.arc(x(t), y(p), 1.5, 0, 7); g.fill(); } }
+  const line = S.chart[S.focus] || [];
+  g.strokeStyle = "#3987e5"; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+  line.forEach(([t, p], i) => i ? g.lineTo(x(t), y(p)) : g.moveTo(x(t), y(p)));
+  g.stroke();
+  if (S.cursor) {                                   // replay cursor
+    g.strokeStyle = "#383835"; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(x(S.cursor), PADT); g.lineTo(x(S.cursor), h - PADB); g.stroke();
+    g.setLineDash([]);
+  }
+}
+$("chart").onmousemove = e => {
+  const r = $("chart").getBoundingClientRect();
+  const line = (S.chart[S.focus] || []);
+  if (!line.length) return;
+  const [x] = xy(r.width, r.height);
+  let best = line[0], dBest = 1e18;
+  for (const pt of line) { const d = Math.abs(x(pt[0]) - (e.clientX - r.left)); if (d < dBest) { dBest = d; best = pt; } }
+  const tt = $("tooltip");
+  tt.style.display = "block";
+  tt.style.left = clamp(e.clientX - r.left + 14, 0, r.width - 120) + "px";
+  tt.style.top = (e.clientY - r.top - 10) + "px";
+  tt.textContent = `${new Date(best[0]).toISOString().slice(11, 19)} · ${CENTS(best[1])}`;
+};
+$("chart").onmouseleave = () => { $("tooltip").style.display = "none"; };
+
+/* ---------- equity sparkline (selected account) ---------- */
+function drawSpark() {
+  const [g, w, h] = sizeCanvas($("spark"));
+  g.clearRect(0, 0, w, h);
+  const pts = S.equity[S.acctTab] || [];
+  if (pts.length < 2) return;
+  let lo = Infinity, hi = -Infinity;
+  for (const [, v] of pts) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+  const x = t => 10 + (w - 20) * (t - pts[0][0]) / Math.max(1, pts[pts.length - 1][0] - pts[0][0]);
+  const y = v => 6 + (h - 12) * (1 - (v - lo) / (hi - lo));
+  const base = y(clamp(S.desc.start_cash, lo, hi));   // start-cash reference
+  g.strokeStyle = "#383835"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(10, base); g.lineTo(w - 10, base); g.stroke();
+  g.strokeStyle = S.acctTab === "you" ? "#3987e5" : "#9085e9"; g.lineWidth = 2; g.beginPath();
+  pts.forEach(([t, v], i) => i ? g.lineTo(x(t), y(v)) : g.moveTo(x(t), y(v)));
+  g.stroke();
+}
+
+/* ---------- toasts ---------- */
+function toast(msg, err) {
+  const d = document.createElement("div");
+  d.className = "toast" + (err ? " err" : "");
+  d.textContent = msg;
+  $("toasts").appendChild(d);
+  setTimeout(() => d.remove(), 5000);
+}
+
+addEventListener("resize", () => { drawChart(); drawSpark(); });
+connect();
+</script>
+</body>
+</html>

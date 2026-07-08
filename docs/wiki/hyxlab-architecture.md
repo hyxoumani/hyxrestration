@@ -38,6 +38,13 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
   lifecycle, runtime invariants, latency model (`latency=Δ`; Δ=0 = legacy).
 - `hyxlab/shadow.py` — Tier-3 shadow harness (`hyxlab-shadow.service`):
   live Simulator on a stream-archive tail, ledger-only fills per run_id.
+- `hyxlab/simui/` — interactive market-replay UI (`python -m
+  hyxlab.simui`, localhost:8877): archived event groups replay like a
+  live venue; user + strategy orders fill through the real Simulator
+  (ManualTrader queue → step()). session.py (ReplaySession, seek =
+  flat restart), server.py (websockets clock + control channel),
+  static/index.html (single-file terminal UI). Design:
+  `docs/plans/simui/plan.md`.
 - `hyxlab/poly_sweep.py` — Polymarket archival sweep (daily timer).
 - `hyxlab/strategy.py` — Strategy ABC (+ `requires` capability
   declaration) + Context (hides settlements, as-of forecasts,
@@ -56,9 +63,12 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
   orders. A strategy's credential is which tier it survived.
 - **Venue separation** is first-class; cross-venue strategies consume
   two explicit legs with hand-verified resolution-rule pairs.
-- **Debug frontend** (planned, user-scoped): a debugging tool, not a
-  dashboard — decision replay ("what did the strategy see at ts"),
-  market timeline, doctor. Single-file read-only local web app.
+- **Debug frontend**: simui (2026-07-08) is the foundation — a local
+  single-page replay terminal where the user paper-trades archived
+  markets and watches strategies do the same, all through the real
+  Simulator (honesty: results blanked, seek restarts flat, manual
+  orders ride the latency model). Decision-replay overlays and doctor
+  views layer on it later.
 - **Streaming (B7, promoted)**: WS daemons are the only as-if-live
   source; both venues' handshakes proven (Kalshi needs RSA auth).
 - **Collection/sim split (2026-07-07, user-approved infra-first)**:
