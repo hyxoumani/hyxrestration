@@ -34,8 +34,11 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
 - `hyxlab/qa.py` — daily data-quality checks (`hyxlab-qa.timer`).
 - `hyxlab/bookreplay.py` — stream events → ms-fidelity Snapshot stream
   (gap-honest, complete-image emission, mirror-derived asks).
-- `hyxlab/sim.py` — event loop, order lifecycle, runtime invariants,
-  latency model (`latency=Δ` seconds; Δ=0 = legacy).
+- `hyxlab/sim.py` — event loop (`step()`/`finalize()`/`run()`), order
+  lifecycle, runtime invariants, latency model (`latency=Δ`; Δ=0 = legacy).
+- `hyxlab/shadow.py` — Tier-3 shadow harness (`hyxlab-shadow.service`):
+  live Simulator on a stream-archive tail, ledger-only fills per run_id.
+- `hyxlab/poly_sweep.py` — Polymarket archival sweep (daily timer).
 - `hyxlab/strategy.py` — Strategy ABC (+ `requires` capability
   declaration) + Context (hides settlements, as-of forecasts,
   open_orders for Cancel).

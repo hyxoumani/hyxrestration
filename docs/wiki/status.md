@@ -39,11 +39,13 @@ Tier-2 sweep: 1s latency ≈ +0.4¢/contract). 128 tests green.
 1. **Cross-venue pair candidates report** (last B3.5 checkbox) —
    generate Kalshi↔Poly topic matches; pairs activate only after USER
    verifies resolution rules.
-2. **Shadow harness (Tier-3)** — strategies live against the stream,
-   ledger-only orders, fills scored vs reality with queue-position
-   bounds (design note in [simulation-honesty](simulation-honesty.md)).
-   Validates the latency-fill model; the divergence becomes a measured
-   calibration haircut.
+2. ~~Shadow harness (Tier-3) v1~~ LIVE 2026-07-08: `hyxlab-shadow.service`
+   — persistent Simulator tailing the stream archive (books seeded from
+   history, trading strictly from the stream head), same latency model
+   as backtests, fills/equity per run_id in `data/hyxshadow.duckdb`.
+   Probe strategy running. **Next iteration**: maker queue-position-bound
+   scoring + shadow-vs-replay divergence report (the calibration
+   haircut).
 3. **B4 FeatureView + signal feeds** (ALFRED vintages, GDELT, econ
    release calendar) — built together; the as-of API is the consumer.
 4. **B5 iteration machinery** — purged walk-forward, sweeps, DSR
