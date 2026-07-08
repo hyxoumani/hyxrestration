@@ -68,41 +68,50 @@ def iter_markets_by_volume(
 ) -> list[dict[str, Any]]:
     """Active (or closed) markets ordered volume-desc, down to min_volume.
 
-    Gamma is ~60 req/min unauthenticated and occasionally answers a page
-    with an error object — retried once, then skipped.
+    Keyset pagination (probed 2026-07-08): /markets rejects offset > 2000
+    — with ~4,200 markets over the $10k sweep threshold, offset paging
+    would silently truncate the daily sweep to its top half. So:
+    /markets/keyset, pages chained via `after_cursor` from the response's
+    `next_cursor`, with the threshold also applied server-side
+    (`volume_num_min`). Gamma is ~60 req/min unauthenticated and
+    occasionally answers with an error object — retried once, then the
+    walk stops (a skipped keyset page would break the cursor chain).
     """
     import time
 
     sess = session or requests.Session()
     out: list[dict[str, Any]] = []
-    offset = 0
+    cursor: str | None = None
     for _ in range(max_pages):
-        page = None
+        params: dict[str, Any] = {
+            "closed": str(closed).lower(),
+            "order": "volumeNum",
+            "ascending": "false",
+            "limit": 100,
+            "volume_num_min": str(min_volume),
+            **extra_params,
+        }
+        if cursor:
+            params["after_cursor"] = cursor
+        body = None
         for _attempt in range(2):
-            resp = sess.get(
-                f"{GAMMA}/markets",
-                params={
-                    "closed": str(closed).lower(),
-                    "order": "volumeNum",
-                    "ascending": "false",
-                    "limit": 100,
-                    "offset": offset,
-                    **extra_params,
-                },
-                timeout=30,
-            )
-            body = resp.json()
-            if isinstance(body, list):
-                page = body
+            resp = sess.get(f"{GAMMA}/markets/keyset", params=params, timeout=30)
+            candidate = resp.json()
+            if isinstance(candidate, dict) and "markets" in candidate:
+                body = candidate
                 break
             time.sleep(5)
-        if not page:
+        if body is None:
             break
-        rows = [m for m in page if isinstance(m, dict)]
+        rows = [m for m in body["markets"] or [] if isinstance(m, dict)]
+        # Server-side volume_num_min is belt-and-braces; keep the local
+        # filter so a silently ignored param can't widen the sweep.
         out.extend(m for m in rows if float(m.get("volumeNum") or 0) >= min_volume)
-        if rows and float(rows[-1].get("volumeNum") or 0) < min_volume:
+        cursor = body.get("next_cursor") or None
+        if not rows or cursor is None:
             break
-        offset += 100
+        if float(rows[-1].get("volumeNum") or 0) < min_volume:
+            break
         time.sleep(page_pause_s)
     return out
 

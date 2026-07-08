@@ -38,6 +38,13 @@ markets/candles are unrecoverable. Streams are unrecoverable everywhere.
   auth; send `{"type":"market","assets_ids":[...]}`; initial `book` per
   token then `price_change` deltas; ~5 connections/IP.
 - Polymarket Gamma/CLOB REST: public; Gamma has market-level `volume`.
+  **Gamma `/markets` rejects offset > 2000** (appeared 2026-07-08,
+  hours after that day's sweep enumerated 4,200 markets — would have
+  silently halved the next sweep). Deep listing goes through
+  `/markets/keyset`: chain `after_cursor` ← response `next_cursor`,
+  same order/filter params plus server-side `volume_num_min`
+  (`iter_markets_by_volume` does this; params from
+  gamma-api.polymarket.com/openapi.json).
 
 ## Fees (verified against schedules + /series metadata)
 

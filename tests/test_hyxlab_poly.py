@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from hyxlab.store import Store
 from hyxlab.venues.polymarket import (
     gamma_market_info,
+    iter_markets_by_volume,
     poly_trade_row,
     price_rows,
     token_pair,
@@ -82,3 +83,64 @@ def test_price_rows_roundtrip_and_watermark(tmp_path):
     wm = store.poly_price_watermarks()
     assert wm["tok1"] == datetime.fromtimestamp(1783483600, tz=UTC).replace(tzinfo=None)
     store.close()
+
+
+class _KeysetSession:
+    """Canned Gamma /markets/keyset responses (shapes probed 2026-07-08:
+    offset paging rejects offset > 2000; keyset chains via after_cursor)."""
+
+    def __init__(self, pages, error_first=False):
+        self.pages = pages  # cursor-or-None -> response dict
+        self.calls = []
+        self._error_next = error_first
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append((url, dict(params)))
+
+        class R:
+            def __init__(self, body):
+                self._body = body
+
+            def json(self):
+                return self._body
+
+        assert url.endswith("/markets/keyset")
+        if self._error_next:
+            self._error_next = False
+            return R({"type": "validation error", "error": "boom"})
+        return R(self.pages[params.get("after_cursor")])
+
+
+def _mkt(mid, vol):
+    return {"id": mid, "volumeNum": vol}
+
+
+def test_iter_markets_keyset_follows_cursor_and_stops_at_threshold(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    sess = _KeysetSession(
+        {
+            None: {"markets": [_mkt("1", 500.0), _mkt("2", 200.0)], "next_cursor": "C1"},
+            "C1": {"markets": [_mkt("3", 150.0), _mkt("4", 50.0)], "next_cursor": "C2"},
+        }
+    )
+    out = iter_markets_by_volume(100.0, session=sess)
+    assert [m["id"] for m in out] == ["1", "2", "3"]  # 50 < threshold dropped
+    assert len(sess.calls) == 2  # below-threshold tail ends the walk
+    assert sess.calls[0][1]["volume_num_min"] == "100.0"  # server-side filter too
+    assert sess.calls[1][1]["after_cursor"] == "C1"
+
+
+def test_iter_markets_keyset_retries_error_page_once(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    sess = _KeysetSession(
+        {None: {"markets": [_mkt("1", 500.0)], "next_cursor": None}},
+        error_first=True,
+    )
+    out = iter_markets_by_volume(100.0, session=sess)
+    assert [m["id"] for m in out] == ["1"]
+
+
+def test_iter_markets_keyset_null_markets_page_ends_walk(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    sess = _KeysetSession({None: {"markets": None, "next_cursor": "C1"}})
+    assert iter_markets_by_volume(100.0, session=sess) == []
