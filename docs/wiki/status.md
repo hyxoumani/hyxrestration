@@ -1,85 +1,69 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-07 late** (infra-first: stable deployment + boundary
-enforced; B3.5 retro-pass RUNNING overnight).
+Updated: **2026-07-08 early** (DATA LAYER COMPLETE — sim platform next).
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
-→ `docs/sessions/2026-07-07-09.md` (full operational handoff, gitignored).
+→ `docs/sessions/2026-07-07-14.md` (operational handoff, gitignored).
 
 ## Where the project is
 
-- **Lab built and pushed** (main @ `8186b5a`): archive store + migrations,
-  exchange-wide sweep, sim v2 (full order lifecycle + runtime accounting
-  invariants), fee models (per-series), self-test rig, manifests, wiki.
-  73 tests green; test-gate enforces on every stop.
-- **Archive banked**: 35,144 markets / 2.6M hourly bid/ask candles across
-  8 Kalshi categories (60-day retention capture complete — data Kalshi
-  has since begun purging). Plus 27k archived MOS forecasts, 1.8k climate
-  observations. `data/hyxlab.duckdb` — **needs off-box backup**.
-- **Automation live**: systemd timers — collector every 5 min, sweep
-  daily 06:10 UTC (watermarked, idempotent, flock-guarded).
-- **Both live streams proven**: Polymarket WS (no auth, book+deltas);
-  Kalshi WS (RSA auth working, creds in `.secrets/`; exchange-wide trade
-  firehose ~105 ev/s observed).
-- **First full falsification cycle complete**: WeatherNWS v1
-  pre-registered → FAIL (−3.0% ROI; fees decide the sign) → confirmed
-  worse (−$425) after the crossed-candle gate. See
-  [strategy-verdicts](strategy-verdicts.md).
+**The data-collection layer is structurally complete** (user direction
+2026-07-07: all data first, then the simulation platform). Everything
+either venue still serves is captured or capturing on timers, and rot
+trips alarms:
 
-## Session findings worth remembering
+- **Kalshi**: 2.6M hourly candles (60d capture, 35.7k markets, 8-category
+  allowlist — sports/entertainment/politics exclusion USER-CONFIRMED
+  2026-07-08); trade tape 5.6M+ prints (retro-pass finishing overnight;
+  forward capture rides the daily sweep); live WS books (watchlist
+  series) + exchange-wide trade firehose.
+- **Polymarket**: metadata + volume/liquidity series + ~60d hourly price
+  history for all markets ≥$10k volume (4,200; initial backfill
+  overnight) + trade tails (API caps at last 3,000/market — forward
+  tape is our WS); live books for top-50 volume markets' tokens.
+- **Ground truth**: 33k MOS forecasts, climate observations.
+- **Timers**: collect 5min; poly sweep 05:00; kalshi sweep 06:10;
+  QA 07:00 UTC (both archives; tape-coverage + freshness alarms).
+- **Deployment**: daemons run from the `stable` worktree;
+  `scripts/promote.sh` is the only shipping path. Import boundary
+  (collection ↛ sim) test-enforced.
 
-The durable technical findings live in [venues](venues.md),
-[data-pipeline](data-pipeline.md), [simulation-honesty](simulation-honesty.md);
-failures + root causes in [mistakes](mistakes.md). Headlines: Kalshi's
-mirrored single book makes intramarket arb impossible there; retention
-purge makes self-archiving the moat; candle bid/asks can be crossed
-(1.3% excluded at replay); fees, not signal, killed weather v1.
+**Sim machinery already standing**: sim v2 (order lifecycle, accounting
+invariants), four correctness gates, capability guard, latency model
+(`Simulator(latency=Δ)`), BookReplayer (stream → ms snapshots; first
+Tier-2 sweep: 1s latency ≈ +0.4¢/contract). 128 tests green.
 
-## Execution queue (user-approved order)
+**Falsification record**: weather v1 pre-reg FAIL (−$425, fees decide).
 
-1. ~~Correctness gates finale~~ DONE 2026-07-07: mirror-invariant
-   tripwire (`Store.mirror_violations`, in doctor, 0 live violations) +
-   capability guard (`hyxlab/capabilities.py`; vacuous backtests raise
-   `VacuousBacktestError`). See [simulation-honesty](simulation-honesty.md).
-2. ~~Stream daemon (B7)~~ LIVE 2026-07-07: `hyxlab-stream.service`
-   (Restart=always) → `data/hyxstream.duckdb` via `streamd.py`. Kalshi
-   trade firehose + watchlist books (hourly ticker refresh, seq-gap →
-   reconnect+re-seed, gap log); Poly books idle until pairs land. First
-   minute live: ~17.5k rows, 0 gaps. Doctor covers both archives.
-   Watch: disk growth (est. low-single-GB/day), box uptime now matters.
-**Direction change (user, 2026-07-07): data plumbing & infra first,
-strategies after.** Landed same evening: collection/sim import boundary
-(tests/test_boundaries.py) + stable deployment worktree
-(`scripts/promote.sh` — the only shipping path for collection code).
+## Execution queue (sim platform, user-approved)
 
-3. **Trade tape (B3.5)** — Kalshi side RUNNING (hyxlab-tradepass
-   transient unit, 35,179 settled markets oldest-first; probed retention
-   boundary: closed ≤2026-05-01 already purged, ~64-day window). Sweep
-   now captures prints for newly settled markets. Still pending:
-   Polymarket prints/volume sampling + first hand-verified cross-venue
-   pairs.
-4. ~~Daily stream QA job~~ DONE 2026-07-07: `hyxlab-qa.timer` daily
-   07:00 UTC (`hyxlab/qa.py`) — freshness, seq-vs-gap consistency,
-   negative books, latency, disk, mirror, tape coverage (armed: fails
-   until the tradepass finishes).
-5. ~~BookReplayer + latency-aware fills~~ DONE 2026-07-07 (see
-   [simulation-honesty](simulation-honesty.md)). **Next: shadow harness
-   (Tier-3 paper trading)** — live strategies, ledger-only orders,
-   queue-position-bounded scoring.
-6. B4 signals (ALFRED vintages, GDELT, FeatureView) → B5 harness (purged
-   walk-forward, sweeps, DSR) → B6 calibration atlas → debug frontend.
-7. Strategy work (favorite-longshot pre-reg etc.) AFTER the plumbing.
+1. **Cross-venue pair candidates report** (last B3.5 checkbox) —
+   generate Kalshi↔Poly topic matches; pairs activate only after USER
+   verifies resolution rules.
+2. **Shadow harness (Tier-3)** — strategies live against the stream,
+   ledger-only orders, fills scored vs reality with queue-position
+   bounds (design note in [simulation-honesty](simulation-honesty.md)).
+   Validates the latency-fill model; the divergence becomes a measured
+   calibration haircut.
+3. **B4 FeatureView + signal feeds** (ALFRED vintages, GDELT, econ
+   release calendar) — built together; the as-of API is the consumer.
+4. **B5 iteration machinery** — purged walk-forward, sweeps, DSR
+   deflation with family-wide trial counting.
+5. **B6 calibration atlas** + event study v1.
+6. **Debug frontend** — decision replay / market timeline / doctor.
+7. **Strategies** (only after 2–6): favorite-longshot pre-reg first;
+   weather v2 and econ-print candidates behind it.
 
 ## Standing user items (non-blocking)
 
-**`sudo timedatectl set-ntp true`** — box clock is ~20 s fast, NTP off
-(stream audit finding; daemon logs the correction as a clock_step gap);
-`git restore .claude/skills/compact/SKILL.md`; DuckDB off-box backup
-(both files); rotate Kalshi API key (transited chat); optional FRED key
-(helps B4); Pi migration whenever (fully portable); box uptime matters —
-the stream daemon is live and its data unrecoverable.
+**Off-box backup** (both DuckDB files — highest-value 30 min available);
+`sudo timedatectl set-ntp true` (box ~20s fast; daemon logs the step);
+`git restore .claude/skills/compact/SKILL.md`; rotate Kalshi API key;
+Phase 0 write-up (pending prose artifact); micro-probe budget decision
+(parked until explicitly authorized).
 
 ## Hard rules in force
 
 Zero capital without pre-registered Tier-2+ PASS **and** explicit user
-authorization. No retro-rescues of failed strategies. Phase 0 write-up
-remains the pending prose artifact.
+authorization. No retro-rescues of failed strategies. Probe before
+build. Every new store writer ships with a stored-timestamp assertion
+(mistakes #10). Vacuous backtests must refuse to run.

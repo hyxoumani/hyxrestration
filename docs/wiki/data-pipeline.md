@@ -54,14 +54,24 @@ migrate, watchlist, stations).
 
 - `hyxlab-collect.timer` (systemd user, 5 min): `collect --once` —
   Kalshi focus top-of-book, NWS, Polymarket pairs (pairs still empty).
-- `hyxlab-sweep.timer` (daily 06:10 UTC): `sweep --days 2` incremental,
-  category allowlist (8 categories ≈ 2,240 series; sports/entertainment/
-  politics excluded — they dominate settle volume).
+- `hyxlab-sweep.timer` (daily 06:10 UTC): `sweep --days 2` incremental
+  (candles + trade tape per settled market), category allowlist
+  (8 categories ≈ 2,240 series). **Sports/entertainment/politics stay
+  excluded — USER-CONFIRMED 2026-07-08**: ~8.2k series that dominate
+  settle volume, ~10× archive/sweep load, least strategy relevance;
+  their live prints are still captured by the stream firehose. The
+  allowlist is one line in `sweep.py` if ever revisited.
+- `hyxlab-poly-sweep.timer` (daily 05:00 UTC): `poly_sweep` —
+  Polymarket metadata + volume/liquidity series + watermarked price
+  capture (~60d retention) + trade tails, volume-desc to $10k.
+- `hyxlab-qa.timer` (daily 07:00 UTC): data-quality checks, both
+  archives; FAIL lines land in the journal with exit 1.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
   trade firehose (~105 ev/s) + orderbook_delta for watchlist series'
   open markets (re-resolved hourly, reconnect re-seeds books); Poly
-  books idle until `polymarket_pairs` lands (B3.5). Flushes every 15 s;
+  books for the top-50 volume markets' tokens + any watchlist pairs
+  (hourly refresh). Flushes every 15 s;
   `--smoke N` for a bounded live test. **Watch disk**: observed rate
   extrapolates to low-single-GB/day; parquet rotation is the lever if
   it bites. Box uptime now matters — stream data is unrecoverable.
