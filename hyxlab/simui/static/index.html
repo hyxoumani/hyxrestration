@@ -282,6 +282,15 @@
 
 <div id="toasts"></div>
 
+<div id="lostOverlay" class="hidden" style="position:fixed;inset:0;background:rgba(15,23,40,.55);display:flex;align-items:center;justify-content:center;z-index:20">
+  <div class="card" style="padding:28px 32px;max-width:420px;text-align:center">
+    <div style="font-size:17px;font-weight:700;margin-bottom:8px">Replay session ended</div>
+    <p style="color:var(--ink-2);margin-bottom:16px">The connection to the replay server dropped (restart or sleep),
+       and sessions don't survive that — the paper portfolio was ledger-only. Start a fresh replay.</p>
+    <button onclick="location.reload()" style="background:var(--green);color:#fff;border:none;font-weight:700;padding:10px 24px;border-radius:10px">New session</button>
+  </div>
+</div>
+
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -302,12 +311,29 @@ const S = {
 };
 const T = s => new Date(s + "Z").getTime();
 
-/* ---------- websocket ---------- */
+/* ---------- websocket (auto-reconnect) ---------- */
+let retryMs = 1000;
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   S.ws = ws;
-  ws.onopen = () => { $("wsdot").classList.add("on"); send({ type: "catalog" }); };
-  ws.onclose = () => { $("wsdot").classList.remove("on"); toast("connection lost — reload the page", true); };
+  ws.onopen = () => {
+    $("wsdot").classList.add("on");
+    retryMs = 1000;
+    if (S.desc) {
+      // The server holds session state per connection: a drop (server
+      // restart, sleep, network blip) ends the replay. Say so plainly
+      // instead of leaving a dead-looking page.
+      $("lostOverlay").classList.remove("hidden");
+    } else {
+      send({ type: "catalog" });
+    }
+  };
+  ws.onclose = () => {
+    $("wsdot").classList.remove("on");
+    toast(`connection lost — retrying in ${Math.round(retryMs / 1000)}s`, true);
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000);
+  };
   ws.onmessage = e => handle(JSON.parse(e.data));
 }
 const send = m => S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify(m));

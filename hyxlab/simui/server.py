@@ -13,13 +13,16 @@ window doesn't stall the event loop.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http
 import json
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from websockets.asyncio.server import serve
 from websockets.datastructures import Headers
+from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Response
 
 from hyxlab.simui import session as sess
@@ -146,31 +149,47 @@ async def _handle_message(ws, conn: Connection, msg: dict) -> None:
 
 
 async def _clock(ws, conn: Connection) -> None:
+    """Replay heartbeat. A dead clock is a frozen UI, so failures must be
+    loud (stdout) and non-fatal: only a closed socket ends the loop."""
     ticks = 0
     while True:
         await asyncio.sleep(TICK_S)
         ticks += 1
-        s = conn.session
-        if s is None:
-            continue
-        if not s.meta_loaded and ticks % 100 == 0:
-            # Archive was writer-locked at load (sweep/backfill); retry
-            # and push titles/strikes/close-times when it frees up.
+        try:
+            s = conn.session
+            if s is None:
+                continue
+            if not s.meta_loaded and ticks % 100 == 0:
+                # Archive was writer-locked at load (sweep/backfill); retry
+                # and push titles/strikes/close-times when it frees up.
+                async with conn.lock:
+                    landed = await asyncio.to_thread(s.ensure_metadata)
+                if landed:
+                    await _send(ws, {"type": "meta", "markets": s.describe()["markets"]})
+            if not conn.playing or s.cursor is None or s.t_max is None:
+                continue
+            target = s.cursor + timedelta(seconds=TICK_S * conn.speed)
             async with conn.lock:
-                landed = await asyncio.to_thread(s.ensure_metadata)
-            if landed:
-                await _send(ws, {"type": "meta", "markets": s.describe()["markets"]})
-        if not conn.playing or s.cursor is None or s.t_max is None:
-            continue
-        target = s.cursor + timedelta(seconds=TICK_S * conn.speed)
-        async with conn.lock:
-            frame = await asyncio.to_thread(s.advance, target)
-            ended = s.cursor >= s.t_max
-        if ended:
-            conn.playing = False
-        await _send_frame(ws, conn, frame)
-        if ended:
-            await _send(ws, {"type": "ended"})
+                frame = await asyncio.to_thread(s.advance, target)
+                ended = s.cursor >= s.t_max
+            if ended:
+                conn.playing = False
+            await _send_frame(ws, conn, frame)
+            if ended:
+                await _send(ws, {"type": "ended"})
+        except ConnectionClosed:
+            return  # tab closed/reloaded; the handler cleans up
+        except Exception:
+            conn.playing = False  # pause rather than spin on a broken tick
+            print(f"[simui] clock error (session paused):\n{traceback.format_exc()}", flush=True)
+            with contextlib.suppress(Exception):
+                await _send(
+                    ws,
+                    {
+                        "type": "error",
+                        "message": "replay clock error — session paused (see server log)",
+                    },
+                )
 
 
 def _make_handler(stream_db: str, archive_db: str):
@@ -186,7 +205,13 @@ def _make_handler(stream_db: str, archive_db: str):
                     continue
                 try:
                     await _handle_message(ws, conn, msg)
+                except ConnectionClosed:
+                    raise
                 except Exception as e:  # surface, don't kill the socket
+                    print(
+                        f"[simui] handler error on {msg.get('type')!r}:\n{traceback.format_exc()}",
+                        flush=True,
+                    )
                     await _send(ws, {"type": "error", "message": f"{type(e).__name__}: {e}"})
         finally:
             clock.cancel()

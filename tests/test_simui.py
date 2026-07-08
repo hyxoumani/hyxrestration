@@ -230,3 +230,90 @@ def test_list_events_and_load_session_roundtrip(tmp_path):
     s.place_order("KXTEST-26JUL07-B1.5", "yes", 1, tif="IOC")
     frame = s.advance(s.t_max + timedelta(seconds=1))
     assert len(frame["fills"]) == 1
+
+
+# -- equivalence: chunked session replay == canonical one-shot run ------------
+
+
+def _synthetic_stream(seed=7, n=2500):
+    """Deterministic interleaved stream: 3 markets, multi-row snap images,
+    signed deltas, plus coverage gaps. Exercises re-seeds, top churn, and
+    image groups the same way live capture does."""
+    import random
+
+    rng = random.Random(seed)
+    mids = ["EV-A", "EV-B", "EV-C"]
+    events, gaps = [], []
+    seq = {m: 0 for m in mids}
+    t = 0.0
+    for i in range(n):
+        t += rng.uniform(0.05, 2.0)
+        m = rng.choice(mids)
+        seq[m] += 1
+        if rng.random() < 0.04:  # fresh full image
+            yes_p = rng.randrange(20, 60) / 100
+            no_p = rng.randrange(20, 60) / 100
+            events += [
+                ev("snap", "yes", yes_p, rng.randrange(5, 200), seq[m], 1, m, t),
+                ev("snap", "yes", yes_p - 0.01, rng.randrange(5, 200), seq[m], 1, m, t),
+                ev("snap", "no", no_p, rng.randrange(5, 200), seq[m], 1, m, t),
+            ]
+        else:
+            side = rng.choice(["yes", "no"])
+            price = rng.randrange(15, 65) / 100
+            qty = rng.choice([-40, -10, -5, 5, 10, 40])
+            events.append(ev("delta", side, price, qty, seq[m], 1, m, t))
+        if rng.random() < 0.004:
+            gaps.append((at(t + 0.01), at(t + 0.02)))
+    return events, gaps
+
+
+def test_chunked_session_replay_equals_one_shot_run():
+    """The claim the UI rests on: feeding the sim through ReplaySession's
+    incremental advance (arbitrary chunk sizes, pending-gap bookkeeping)
+    produces EXACTLY the fills and equity of the canonical
+    replay_snapshots -> Simulator.run backtest path."""
+    import random
+
+    from hyxlab.bookreplay import replay_snapshots
+    from hyxlab.capabilities import LIVE_VENUE_CAPS
+    from hyxlab.sim import Simulator
+    from hyxlab.simui.session import ManualTrader
+    from hyxlab.strategies.probe import TightSpreadProbe
+
+    events, gaps = _synthetic_stream()
+    mids = sorted({e.market_id for e in events})
+    markets = {("kalshi", m): MarketInfo("kalshi", m) for m in mids}
+
+    def probe():
+        return TightSpreadProbe(qty=5, max_spread=0.02, max_mid=0.6, cooldown_min=0.2)
+
+    # Path A: canonical one-shot backtest replay.
+    ref = Simulator(
+        dict(markets),
+        [ManualTrader(), probe()],
+        data_capabilities={"kalshi": LIVE_VENUE_CAPS["kalshi"]},
+        latency=2.0,
+    )
+    for snap in replay_snapshots(list(events), gaps=list(gaps)):
+        ref.step(snap)
+
+    # Path B: session advanced in random-size time chunks.
+    s = ReplaySession(
+        mids, list(events), [], list(gaps), markets,
+        strategies_factory=lambda: [probe()], latency=2.0,
+    )
+    rng = random.Random(99)
+    cur = s.t_min
+    while s.cursor < s.t_max:
+        cur = cur + timedelta(seconds=rng.uniform(0.2, 45.0))
+        s.advance(cur)
+
+    key = lambda f: (f.ts, f.strategy, f.market_id, f.side, f.qty, f.price, f.fee, f.maker)  # noqa: E731
+    assert [key(f) for f in s.sim.result.fills] == [key(f) for f in ref.result.fills]
+    assert len(ref.result.fills) > 10  # the comparison must not be vacuous
+    assert s.sim.result.equity_curve == ref.result.equity_curve
+    # Per-account ledger cross-foot: account equities re-sum to the sim's.
+    accts = s._accounts()
+    total_delta = sum(a["equity"] - s.start_cash for a in accts.values())
+    assert total_delta == pytest.approx(s.sim._equity())

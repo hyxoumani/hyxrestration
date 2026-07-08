@@ -73,7 +73,7 @@ class ManualTrader(Strategy):
 # -- catalog ----------------------------------------------------------------
 
 
-def _connect_ro(path: str, attempts: int = 5, wait: float = 2.0):
+def _connect_ro(path: str, attempts: int = 8, wait: float = 0.75):
     """The stream daemon / collector may hold the write lock for a burst;
     retry briefly instead of failing the UI."""
     last: duckdb.Error | None = None
