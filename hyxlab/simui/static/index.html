@@ -5,126 +5,187 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hyxsim — market replay</title>
 <style>
-  /* Dark trading terminal — deliberately single-mode.
-     Palette: dataviz reference (dark-surface validated steps). */
+  /* Kalshi-style light theme: white cards, ink text, mint-green YES,
+     coral-red NO, tinted pill buttons, green chance chart. */
   :root {
-    --surface-0: #111110;
-    --surface-1: #1a1a19;
-    --surface-2: #242422;
-    --border:    #383835;
-    --text-1:    #ffffff;
-    --text-2:    #c3c2b7;
-    --text-3:    #8a897f;
-    --blue:      #3987e5;   /* price line / "you" */
-    --violet:    #9085e9;   /* strategy accounts */
-    --good:      #0ca30c;   /* YES / buys */
-    --critical:  #d03b3b;   /* NO / sells */
-    --warning:   #fab219;   /* gap badge */
+    --page:      #f7f7f8;
+    --card:      #ffffff;
+    --border:    #e5e7eb;
+    --ink:       #111827;
+    --ink-2:     #6b7280;
+    --ink-3:     #9ca3af;
+    --green:     #00a05c;   /* chart line / solid yes */
+    --green-txt: #067647;   /* text on tint */
+    --green-bg:  #e6f6ee;
+    --red:       #e5484d;
+    --red-txt:   #d92d20;
+    --red-bg:    #feeceb;
+    --amber:     #b54708; --amber-bg: #fef0c7;
+    --navy:      #0f1728;
   }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; }
   body {
-    background: var(--surface-0); color: var(--text-1);
-    font: 13px/1.45 system-ui, sans-serif;
+    background: var(--page); color: var(--ink);
+    font: 14px/1.45 Inter, -apple-system, "Segoe UI", system-ui, sans-serif;
     display: flex; flex-direction: column; overflow: hidden;
   }
-  .num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
-  button { font: inherit; color: inherit; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-  button:hover { border-color: var(--text-3); }
-  button:disabled { opacity: .4; cursor: default; }
-  select, input { font: inherit; color: var(--text-1); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
-  input[type=range] { padding: 0; }
+  .num { font-variant-numeric: tabular-nums; }
+  button { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-weight: 500; }
+  button:hover { border-color: var(--ink-3); }
+  select, input { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+  input:focus, select:focus { outline: 2px solid #b5e3cf; border-color: var(--green); }
   table { border-collapse: collapse; width: 100%; }
-  th { color: var(--text-3); font-weight: 500; text-align: left; padding: 2px 8px; font-size: 11px; }
-  td { padding: 3px 8px; border-top: 1px solid var(--surface-2); }
-
-  header {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    padding: 8px 14px; background: var(--surface-1); border-bottom: 1px solid var(--border);
-  }
-  header .brand { font-weight: 700; letter-spacing: .04em; }
-  header .brand span { color: var(--blue); }
-  #clock { font-size: 15px; color: var(--text-1); min-width: 175px; }
-  #gapBadge { display: none; color: #111; background: var(--warning); border-radius: 5px; padding: 1px 8px; font-weight: 600; }
-  #gapBadge.on { display: inline-block; }
-  #timeline { flex: 1 1 160px; min-width: 120px; accent-color: var(--blue); }
-  #wsdot { width: 9px; height: 9px; border-radius: 50%; background: var(--critical); }
-  #wsdot.on { background: var(--good); }
-
-  main { flex: 1; display: grid; grid-template-columns: 250px 1fr 300px; min-height: 0; }
-  main > section { min-height: 0; overflow-y: auto; border-right: 1px solid var(--border); }
-
-  /* market strip */
-  #markets .mkt { padding: 8px 12px; border-bottom: 1px solid var(--surface-2); cursor: pointer; }
-  #markets .mkt:hover { background: var(--surface-1); }
-  #markets .mkt.focus { background: var(--surface-2); border-left: 3px solid var(--blue); padding-left: 9px; }
-  #markets .mkt .strike { font-weight: 600; }
-  #markets .mkt .px { float: right; }
-  #markets .mkt .sub { color: var(--text-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  /* center */
-  #center { display: flex; flex-direction: column; }
-  #chartwrap { position: relative; flex: 0 0 46%; min-height: 220px; padding: 8px 10px 0; }
-  #chart { width: 100%; height: 100%; display: block; }
-  #tooltip { position: absolute; display: none; pointer-events: none; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; z-index: 5; }
-  #tapewrap { flex: 1; overflow-y: auto; border-top: 1px solid var(--border); }
-  #tape td { border-top: 1px solid var(--surface-1); }
-  .side-yes { color: var(--good); font-weight: 600; }
-  .side-no { color: var(--critical); font-weight: 600; }
-
-  /* ladder + ticket */
-  #right { display: flex; flex-direction: column; border-right: none !important; }
-  #ladder { flex: 1; overflow-y: auto; padding: 6px 0; }
-  .lrow { display: grid; grid-template-columns: 60px 1fr 70px; padding: 1px 12px; position: relative; cursor: pointer; }
-  .lrow:hover { outline: 1px solid var(--text-3); }
-  .lrow .bar { position: absolute; top: 2px; bottom: 2px; right: 0; opacity: .16; }
-  .lrow.ask .bar { background: var(--critical); }
-  .lrow.bid .bar { background: var(--good); }
-  .lrow.ask .p { color: var(--critical); }
-  .lrow.bid .p { color: var(--good); }
-  .spread { text-align: center; color: var(--text-3); font-size: 11px; padding: 4px 0; border: solid var(--surface-2); border-width: 1px 0; }
-  #ladder.stale { opacity: .35; }
-  #ticket { border-top: 1px solid var(--border); padding: 10px 12px; display: grid; gap: 8px; }
-  .seg { display: flex; }
-  .seg button { flex: 1; border-radius: 0; }
-  .seg button:first-child { border-radius: 6px 0 0 6px; }
-  .seg button:last-child { border-radius: 0 6px 6px 0; }
-  .seg button.on.yes { background: var(--good); color: #fff; border-color: var(--good); }
-  .seg button.on.no { background: var(--critical); color: #fff; border-color: var(--critical); }
-  .seg button.on.dir { background: var(--surface-0); border-color: var(--text-2); }
-  .trow { display: flex; gap: 8px; align-items: center; }
-  .trow label { color: var(--text-3); width: 44px; font-size: 11px; }
-  .trow input { width: 90px; }
-  #place { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 600; padding: 8px; }
-  #est { color: var(--text-3); font-size: 11px; }
-
-  /* profile */
-  #profile { border-top: 1px solid var(--border); background: var(--surface-1); height: 240px; display: flex; min-height: 240px; }
-  #profile .col { flex: 1; min-width: 0; overflow-y: auto; border-right: 1px solid var(--border); }
-  #profile h3 { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; padding: 8px 10px 4px; position: sticky; top: 0; background: var(--surface-1); }
-  #acctTabs { display: flex; gap: 6px; padding: 8px 10px 0; }
-  #acctTabs button.on { border-color: var(--blue); color: var(--blue); }
-  #stats { display: flex; gap: 18px; padding: 10px; flex-wrap: wrap; }
-  .stat .k { color: var(--text-3); font-size: 11px; }
-  .stat .v { font-size: 17px; }
-  .pnl-pos { color: var(--good); } .pnl-neg { color: var(--critical); }
-  #spark { width: 100%; height: 70px; display: block; padding: 0 10px; }
-  #toasts { position: fixed; right: 14px; bottom: 254px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
-  .toast { background: var(--surface-2); border: 1px solid var(--border); border-left: 3px solid var(--blue); border-radius: 6px; padding: 7px 12px; max-width: 340px; }
-  .toast.err { border-left-color: var(--critical); }
-  #setup { padding: 40px; max-width: 640px; margin: 0 auto; }
-  #setup h1 { margin-bottom: 6px; } #setup p { color: var(--text-2); margin-bottom: 18px; }
-  #setup .trow { margin-bottom: 10px; } #setup .trow label { width: 110px; }
-  #evsel { max-width: 420px; }
+  th { color: var(--ink-3); font-weight: 500; text-align: left; padding: 4px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  td { padding: 5px 10px; border-top: 1px solid #f1f2f4; }
+  .chip-yes { color: var(--green-txt); font-weight: 600; }
+  .chip-no { color: var(--red-txt); font-weight: 600; }
   .hidden { display: none !important; }
+
+  /* top nav (white, Kalshi-like) + replay strip */
+  #nav {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 18px; background: var(--card); border-bottom: 1px solid var(--border);
+  }
+  #nav .brand { font-weight: 800; font-size: 17px; letter-spacing: -.02em; }
+  #nav .brand i { color: var(--green); font-style: normal; }
+  #evtitle { font-weight: 600; color: var(--ink); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #wsdot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); margin-left: auto; }
+  #wsdot.on { background: var(--green); }
+  #replaybar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 6px 18px; background: var(--navy); color: #e7eaf0; font-size: 13px;
+  }
+  #replaybar .tag { background: rgba(255,255,255,.12); border-radius: 6px; padding: 1px 8px; font-size: 11px; font-weight: 700; letter-spacing: .06em; }
+  #clock { min-width: 168px; color: #fff; }
+  #playBtn { background: #fff; color: var(--navy); border: none; width: 34px; padding: 5px 0; font-weight: 700; }
+  #speedSel { background: rgba(255,255,255,.08); color: #fff; border-color: rgba(255,255,255,.2); padding: 3px 6px; }
+  #speedSel option { color: var(--ink); }
+  #timeline { flex: 1 1 160px; min-width: 120px; accent-color: var(--green); }
+  #gapBadge { display: none; color: var(--amber); background: var(--amber-bg); border-radius: 6px; padding: 1px 8px; font-weight: 600; }
+  #gapBadge.on { display: inline-block; }
+  #newBtn { background: transparent; color: #cbd2dd; border-color: rgba(255,255,255,.25); padding: 3px 10px; }
+
+  /* layout */
+  main { flex: 1; display: grid; grid-template-columns: 1fr 340px; gap: 16px; padding: 16px 18px 0; min-height: 0; overflow: hidden; }
+  #left { min-width: 0; overflow-y: auto; padding-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+
+  /* chart card */
+  #chartcard { padding: 16px 16px 8px; }
+  #chartHead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  #focusName { font-size: 17px; font-weight: 700; }
+  #chance { font-size: 28px; font-weight: 800; color: var(--green-txt); margin-left: auto; }
+  #chance small { font-size: 12px; color: var(--ink-2); font-weight: 500; }
+  #ranges { display: flex; gap: 4px; margin: 8px 0 2px; }
+  #ranges button { border: none; background: transparent; color: var(--ink-2); padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+  #ranges button.on { background: #eef0f2; color: var(--ink); font-weight: 600; }
+  #chartwrap { position: relative; height: 240px; }
+  #chart { width: 100%; height: 100%; display: block; }
+  #tooltip { position: absolute; display: none; pointer-events: none; background: var(--navy); color: #fff; border-radius: 6px; padding: 4px 9px; font-size: 12px; z-index: 5; }
+
+  /* strike rows */
+  #markets { margin-top: 14px; overflow: hidden; }
+  .mkt { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid #f1f2f4; cursor: pointer; }
+  .mkt:first-child { border-top: none; }
+  .mkt:hover { background: #fafbfb; }
+  .mkt.focus { background: #f4faf7; box-shadow: inset 3px 0 0 var(--green); }
+  .mkt .name { font-weight: 600; }
+  .mkt .sub { color: var(--ink-3); font-size: 11.5px; }
+  .mkt .pct { margin-left: auto; font-size: 17px; font-weight: 700; min-width: 52px; text-align: right; }
+  .pill { border: none; border-radius: 8px; padding: 8px 0; width: 84px; text-align: center; font-weight: 600; }
+  .pill.yes { background: var(--green-bg); color: var(--green-txt); }
+  .pill.no { background: var(--red-bg); color: var(--red-txt); }
+  .pill.yes:hover { background: #d3efe2; }
+  .pill.no:hover { background: #fcdcda; }
+
+  /* book / activity tabs */
+  #feedcard { margin-top: 14px; }
+  #feedtabs { display: flex; gap: 2px; padding: 10px 12px 0; border-bottom: 1px solid var(--border); }
+  #feedtabs button { border: none; background: transparent; color: var(--ink-2); border-radius: 0; padding: 6px 12px 10px; font-weight: 600; }
+  #feedtabs button.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--green); }
+  #bookwrap, #tapewrap { max-height: 300px; overflow-y: auto; }
+  #book { display: grid; grid-template-columns: 1fr 1fr; }
+  .bookcol h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 10px 14px 4px; }
+  .bookcol.ys h4 { color: var(--green-txt); }
+  .bookcol.ns h4 { color: var(--red-txt); }
+  .brow { display: flex; justify-content: space-between; padding: 3px 14px; position: relative; cursor: pointer; font-size: 13px; }
+  .brow:hover { outline: 1px solid var(--border); }
+  .brow .bar { position: absolute; inset: 2px 0 2px auto; opacity: .5; }
+  .bookcol.ys .bar { background: var(--green-bg); }
+  .bookcol.ns .bar { background: var(--red-bg); }
+  .brow span { position: relative; }
+  .brow .p { font-weight: 600; }
+  .bookcol.ys .p { color: var(--green-txt); }
+  .bookcol.ns .p { color: var(--red-txt); }
+  #book.stale, #tape.stale { opacity: .45; }
+
+  /* right rail: order ticket */
+  #rail { overflow-y: auto; padding-bottom: 16px; }
+  #ticket { padding: 16px; position: sticky; top: 0; }
+  #ticketMkt { font-weight: 700; margin-bottom: 10px; }
+  .seg { display: flex; background: #eef0f2; border-radius: 10px; padding: 3px; margin-bottom: 12px; }
+  .seg button { flex: 1; border: none; background: transparent; border-radius: 8px; padding: 7px 0; color: var(--ink-2); font-weight: 600; }
+  .seg button.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(16,24,40,.1); }
+  #sides { display: flex; gap: 8px; margin-bottom: 14px; }
+  #sides button { flex: 1; border: 1.5px solid var(--border); border-radius: 10px; padding: 12px 0; font-weight: 700; font-size: 15px; background: var(--card); }
+  #sides #sideYes.on { background: var(--green-bg); border-color: var(--green); color: var(--green-txt); }
+  #sides #sideNo.on { background: var(--red-bg); border-color: var(--red); color: var(--red-txt); }
+  .frow { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; gap: 10px; }
+  .frow label { color: var(--ink-2); font-size: 13px; }
+  .frow input, .frow select { width: 130px; text-align: right; }
+  #summary { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 10px; font-size: 13px; }
+  #summary .frow { margin-bottom: 6px; }
+  #summary .v { font-weight: 600; }
+  #payout .v { color: var(--green-txt); }
+  #place { width: 100%; border: none; border-radius: 10px; padding: 12px 0; font-size: 15px; font-weight: 700; color: #fff; background: var(--green); margin-top: 8px; }
+  #place.no { background: var(--red); }
+  #place:hover { filter: brightness(.95); }
+  #tifRow { font-size: 12px; color: var(--ink-3); }
+  #tifRow select { width: auto; padding: 2px 6px; font-size: 12px; border: none; color: var(--ink-2); background: transparent; }
+
+  /* portfolio strip */
+  #portfolio { margin: 14px 18px 16px; display: flex; min-height: 218px; height: 218px; overflow: hidden; }
+  #portfolio .col { flex: 1; min-width: 0; overflow-y: auto; border-left: 1px solid var(--border); }
+  #portfolio .col:first-child { border-left: none; flex: 0 0 290px; }
+  #portfolio h3 { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; padding: 10px 12px 4px; position: sticky; top: 0; background: var(--card); }
+  #acctTabs { display: flex; gap: 6px; padding: 10px 12px 0; }
+  #acctTabs button { border-radius: 999px; padding: 3px 12px; font-size: 12.5px; }
+  #acctTabs button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
+  #stats { display: flex; gap: 16px; padding: 10px 12px 4px; flex-wrap: wrap; }
+  .stat .k { color: var(--ink-3); font-size: 11px; }
+  .stat .v { font-size: 16px; font-weight: 700; }
+  .pnl-pos { color: var(--green-txt); } .pnl-neg { color: var(--red-txt); }
+  #spark { width: 100%; height: 64px; display: block; padding: 0 12px; }
+  .cxl { border: none; background: transparent; color: var(--ink-3); padding: 0 4px; }
+  .cxl:hover { color: var(--red-txt); }
+
+  #toasts { position: fixed; right: 16px; bottom: 246px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
+  .toast { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 8px; padding: 8px 12px; max-width: 340px; box-shadow: 0 4px 12px rgba(16,24,40,.08); }
+  .toast.err { border-left-color: var(--red); }
+
+  /* setup */
+  #setup { padding: 48px; max-width: 620px; margin: 0 auto; }
+  #setup h1 { font-size: 26px; margin-bottom: 6px; letter-spacing: -.02em; }
+  #setup h1 i { color: var(--green); font-style: normal; }
+  #setup p { color: var(--ink-2); margin-bottom: 20px; }
+  #setup .frow { justify-content: flex-start; }
+  #setup .frow label { width: 110px; }
+  #setup .frow input, #setup .frow select { text-align: left; width: auto; }
+  #evsel { max-width: 420px; }
+  #startBtn { background: var(--green); color: #fff; border: none; font-weight: 700; padding: 10px 24px; border-radius: 10px; }
 </style>
 </head>
 <body>
 
-<header id="hdr" class="hidden">
-  <div class="brand">hyx<span>sim</span></div>
-  <div id="evtitle" style="color:var(--text-2)"></div>
-  <div id="clock" class="num">—</div>
+<header id="nav">
+  <div class="brand">hyx<i>sim</i></div>
+  <div id="evtitle"></div>
+  <div id="wsdot" title="connection"></div>
+</header>
+<div id="replaybar" class="hidden">
+  <span class="tag">REPLAY</span>
+  <span id="clock" class="num">—</span>
   <span id="gapBadge">coverage gap</span>
   <button id="playBtn">▶</button>
   <select id="speedSel">
@@ -134,51 +195,88 @@
     <option value="900">900×</option><option value="3600">3600×</option>
   </select>
   <input id="timeline" type="range" min="0" max="1000" value="0">
-  <button id="newBtn" title="new session">new</button>
-  <div id="wsdot" title="connection"></div>
-</header>
+  <button id="newBtn">new session</button>
+</div>
 
 <div id="setup">
-  <h1>hyx<span style="color:var(--blue)">sim</span></h1>
+  <h1>hyx<i>sim</i></h1>
   <p>Replay a captured market as if live and trade it — your orders and any
      attached strategies fill through the same no-lookahead simulator that
      scores backtests. Paper only, by construction.</p>
-  <div class="trow"><label>Event</label><select id="evsel"></select></div>
-  <div class="trow"><label>Strategies</label><span id="strats"></span></div>
-  <div class="trow"><label>Latency</label><input id="latIn" type="number" value="2.0" step="0.5" min="0"> <span style="color:var(--text-3)">seconds (order → exchange)</span></div>
-  <div class="trow"><label>Start cash</label><input id="cashIn" type="number" value="1000" step="100" min="1"></div>
-  <div class="trow"><label></label><button id="startBtn" style="background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600;padding:8px 22px">Start replay</button></div>
-  <p id="setupMsg" style="color:var(--text-3)"></p>
+  <div class="frow"><label>Event</label><select id="evsel"></select></div>
+  <div class="frow"><label>Strategies</label><span id="strats"></span></div>
+  <div class="frow"><label>Latency</label><input id="latIn" type="number" value="2.0" step="0.5" min="0"> <span style="color:var(--ink-3)">seconds (order → exchange)</span></div>
+  <div class="frow"><label>Start cash</label><input id="cashIn" type="number" value="1000" step="100" min="1"></div>
+  <div class="frow"><label></label><button id="startBtn">Start replay</button></div>
+  <p id="setupMsg" style="color:var(--ink-3)"></p>
 </div>
 
 <main id="app" class="hidden">
-  <section id="markets"></section>
-  <section id="center">
-    <div id="chartwrap"><canvas id="chart"></canvas><div id="tooltip" class="num"></div></div>
-    <div id="tapewrap"><table id="tape"><thead><tr><th>time</th><th>market</th><th>side</th><th>price</th><th>qty</th></tr></thead><tbody></tbody></table></div>
-  </section>
-  <section id="right">
-    <div id="ladder"></div>
-    <div id="ticket">
-      <div class="seg"><button id="dirOpen" class="on dir">Buy</button><button id="dirClose" class="dir">Sell</button></div>
-      <div class="seg"><button id="sideYes" class="on yes">YES <span id="yesPx" class="num"></span></button><button id="sideNo" class="no">NO <span id="noPx" class="num"></span></button></div>
-      <div class="trow"><label>Qty</label><input id="qtyIn" type="number" value="10" min="1" step="1"></div>
-      <div class="trow"><label>Limit ¢</label><input id="limIn" type="number" min="1" max="99" step="1" placeholder="market"></div>
-      <div class="trow"><label>TIF</label><select id="tifSel"><option>GTC</option><option>IOC</option></select></div>
-      <button id="place">Place order</button>
-      <div id="est"></div>
+  <div id="left">
+    <div id="chartcard" class="card">
+      <div id="chartHead">
+        <span id="focusName"></span>
+        <span id="chance" class="num"></span>
+      </div>
+      <div id="ranges">
+        <button data-r="3600000">1H</button>
+        <button data-r="21600000">6H</button>
+        <button data-r="0" class="on">ALL</button>
+      </div>
+      <div id="chartwrap"><canvas id="chart"></canvas><div id="tooltip" class="num"></div></div>
     </div>
-  </section>
+
+    <div id="markets" class="card"></div>
+
+    <div id="feedcard" class="card">
+      <div id="feedtabs">
+        <button id="tabBook" class="on">Order book</button>
+        <button id="tabTape">Recent activity</button>
+      </div>
+      <div id="bookwrap">
+        <div id="book">
+          <div class="bookcol ys"><h4>Buy Yes</h4><div id="bookYes"></div></div>
+          <div class="bookcol ns"><h4>Buy No</h4><div id="bookNo"></div></div>
+        </div>
+      </div>
+      <div id="tapewrap" class="hidden">
+        <table id="tape"><thead><tr><th>time</th><th>market</th><th>side</th><th>price</th><th>contracts</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <div id="rail">
+    <div id="ticket" class="card">
+      <div id="ticketMkt"></div>
+      <div class="seg"><button id="dirOpen" class="on">Buy</button><button id="dirClose">Sell</button></div>
+      <div id="sides">
+        <button id="sideYes" class="on">Yes <span id="yesPx" class="num"></span></button>
+        <button id="sideNo">No <span id="noPx" class="num"></span></button>
+      </div>
+      <div class="frow"><label>Contracts</label><input id="qtyIn" type="number" value="10" min="1" step="1" class="num"></div>
+      <div class="frow"><label>Limit price ¢</label><input id="limIn" type="number" min="1" max="99" step="1" placeholder="Market" class="num"></div>
+      <div class="frow" id="tifRow"><label>Time in force</label>
+        <select id="tifSel"><option value="GTC">Good 'til canceled</option><option value="IOC">Immediate or cancel</option></select>
+      </div>
+      <div id="summary">
+        <div class="frow"><label id="costLbl">Total cost</label><span id="costV" class="v num">—</span></div>
+        <div class="frow" id="payout"><label>Payout if you win</label><span id="payV" class="v num">—</span></div>
+        <div class="frow"><label>Return</label><span id="retV" class="v num">—</span></div>
+      </div>
+      <button id="place">Place order</button>
+      <div style="color:var(--ink-3);font-size:11px;margin-top:8px">Fills at the exec-time quote after latency; fees per venue model at fill.</div>
+    </div>
+  </div>
 </main>
 
-<div id="profile" class="hidden">
-  <div class="col" style="flex:0 0 300px">
+<div id="portfolio" class="card hidden">
+  <div class="col">
     <div id="acctTabs"></div>
     <div id="stats"></div>
     <canvas id="spark"></canvas>
   </div>
   <div class="col"><h3>Positions</h3><table id="posTbl"><tbody></tbody></table></div>
-  <div class="col"><h3>Open orders <span id="inflight" style="color:var(--text-3)"></span></h3><table id="ordTbl"><tbody></tbody></table></div>
+  <div class="col"><h3>Orders <span id="inflight" style="color:var(--ink-3);text-transform:none"></span></h3><table id="ordTbl"><tbody></tbody></table></div>
   <div class="col"><h3>Fills</h3><table id="fillTbl"><tbody></tbody></table></div>
 </div>
 
@@ -188,6 +286,7 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const CENTS = p => p == null ? "–" : Math.round(p * 100) + "¢";
+const PCT = p => p == null ? "–" : Math.round(p * 100) + "%";
 const QTY = q => q >= 10 ? Math.round(q).toLocaleString("en-US") : String(Math.round(q * 100) / 100);
 const fmtUSD = v => (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(2);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -196,12 +295,10 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const S = {
   ws: null, desc: null, catalog: [],
   focus: null, books: {}, tops: {}, cursor: null, tMin: 0, tMax: 1,
-  playing: false, speed: 10, inGap: false,
-  chart: {},        // market_id -> [[t, price], ...]  (mid line, per frame)
-  hist: {},         // market_id -> [[t, price], ...]  (trade prefill dots)
-  equity: {},       // account -> [[t, equity], ...]
-  accounts: {}, fills: [], acctTab: "you",
-  side: "yes", dir: "open", scrubbing: false,
+  playing: false, speed: 10, inGap: false, autoFocused: false,
+  chart: {}, hist: {}, equity: {}, accounts: {}, fills: [],
+  acctTab: "you", side: "yes", dir: "open", scrubbing: false,
+  range: 0, feed: "book",
 };
 const T = s => new Date(s + "Z").getTime();
 
@@ -222,8 +319,8 @@ function handle(m) {
   if (m.type === "history") { S.hist[m.market_id] = m.points.map(p => [T(p[0]), p[1]]); drawChart(); return; }
   if (m.type === "meta") {
     S.desc.markets = m.markets;
-    $("evtitle").textContent = (Object.values(m.markets)[0] || {}).title || "";
-    renderMarkets(); renderLadder(); renderProfile();
+    $("evtitle").textContent = (m.markets[S.focus] || {}).title || "";
+    renderMarkets(); renderBook(); renderProfile(); renderTicketHead();
     return;
   }
   if (m.type === "ended") { toast("end of captured data — session paused"); return; }
@@ -238,7 +335,6 @@ function renderCatalog(events) {
   ).join("");
   $("strats").innerHTML = `<label><input type="checkbox" id="stProbe"> probe (tight-spread taker)</label>`;
   $("setupMsg").textContent = events.length ? "" : "no captured events found in the stream archive";
-  // dev/deep-link: /?autostart=first|EVENT&speed=300&strategies=probe
   const q = new URLSearchParams(location.search), auto = q.get("autostart");
   if (auto && events.length) {
     if (auto !== "first") $("evsel").value = auto;
@@ -262,17 +358,16 @@ $("startBtn").onclick = () => {
 $("newBtn").onclick = () => location.reload();
 
 function initSession(desc) {
-  S.desc = desc; S.playing = true;
+  S.desc = desc; S.playing = true; S.autoFocused = false;
   S.tMin = T(desc.t_min); S.tMax = T(desc.t_max);
   S.chart = {}; S.hist = {}; S.equity = {}; S.fills = [];
-  const ids = desc.market_ids;
-  S.focus = ids[0];
+  S.focus = desc.market_ids[0];
   S.acctTab = "you";
   $("setup").classList.add("hidden");
-  for (const el of ["hdr", "app", "profile"]) $(el).classList.remove("hidden");
+  for (const el of ["replaybar", "app", "portfolio"]) $(el).classList.remove("hidden");
   $("evtitle").textContent = (Object.values(desc.markets)[0] || {}).title || "";
   renderAcctTabs(desc.accounts);
-  renderMarkets();
+  renderMarkets(); renderTicketHead();
   send({ type: "history", market_id: S.focus });
   updatePlayBtn();
 }
@@ -280,8 +375,6 @@ function initSession(desc) {
 /* ---------- frames ---------- */
 function onFrame(f) {
   S.cursor = T(f.cursor);
-  // Auto-focus once: prefer a live two-sided market near 50¢ over a
-  // dead deep-OTM strike (the alphabetical default).
   if (!S.autoFocused) {
     const live = Object.entries(f.tops).filter(([, t]) => t.mid != null);
     if (live.length) {
@@ -289,8 +382,7 @@ function onFrame(f) {
       const cur = f.tops[S.focus];
       if (!cur || cur.mid == null) {
         live.sort((a, b) => Math.abs(a[1].mid - 0.5) - Math.abs(b[1].mid - 0.5));
-        S.focus = live[0][0];
-        send({ type: "history", market_id: S.focus });
+        setFocus(live[0][0]);
       }
     }
   }
@@ -308,20 +400,26 @@ function onFrame(f) {
   for (const fl of f.fills) {
     S.fills.unshift(fl);
     if (fl.account === "you")
-      toast(`filled: ${fl.qty > 0 ? "+" : ""}${fl.qty} ${fl.side.toUpperCase()} @ ${CENTS(fl.price)} (${fl.maker ? "maker" : "taker"}, fee ${fmtUSD(fl.fee)})`);
+      toast(`Filled: ${fl.qty > 0 ? "bought" : "sold"} ${QTY(Math.abs(fl.qty))} ${fl.side.toUpperCase()} @ ${CENTS(fl.price)} (${fl.maker ? "maker" : "taker"}, fee ${fmtUSD(fl.fee)})`);
   }
   $("clock").textContent = f.cursor.slice(0, 19).replace("T", "  ") + " UTC";
   $("gapBadge").classList.toggle("on", S.inGap);
   if (!S.scrubbing)
     $("timeline").value = Math.round(1000 * (S.cursor - S.tMin) / Math.max(1, S.tMax - S.tMin));
   updatePlayBtn();
-  renderMarkets(); renderLadder(); renderProfile(); drawChart(); drawSpark();
+  renderMarkets(); renderBook(); renderProfile(); renderChance(); drawChart(); drawSpark(); updateEst();
 }
 
 /* ---------- transport ---------- */
 function updatePlayBtn() {
   $("playBtn").textContent = S.playing ? "⏸" : "▶";
-  $("speedSel").value = String(S.speed);
+  const sel = $("speedSel"), v = String(S.speed);
+  if (![...sel.options].some(o => o.value === v)) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = v + "×";
+    sel.append(o);
+  }
+  sel.value = v;
 }
 $("playBtn").onclick = () => { S.playing = !S.playing; send({ type: S.playing ? "play" : "pause" }); updatePlayBtn(); };
 $("speedSel").onchange = e => { S.speed = parseFloat(e.target.value); send({ type: "speed", speed: S.speed }); };
@@ -333,78 +431,149 @@ $("timeline").onchange = e => {
   S.chart = {}; S.hist = {}; S.equity = {}; S.fills = [];
   $("tape").tBodies[0].innerHTML = "";
   send({ type: "history", market_id: S.focus });
-  toast("seeked — portfolio and strategies restart flat (no time travel)");
+  toast("Seeked — portfolio and strategies restart flat (no time travel)");
 };
 
-/* ---------- market strip ---------- */
+/* ---------- strike labels ---------- */
 function strikeLabel(mid) {
   const m = (S.desc.markets[mid] || {});
-  if (m.floor_strike != null) return (m.strike_type === "less" ? "<" : m.strike_type === "greater" ? ">" : "") + m.floor_strike + (m.cap_strike != null ? "–" + m.cap_strike : "");
+  const f = m.floor_strike, c = m.cap_strike;
+  if (m.strike_type === "greater" && f != null) return `${f} or above`;
+  if (m.strike_type === "less" && (c ?? f) != null) return `${c ?? f} or below`;
+  if (m.strike_type === "between" && f != null && c != null) return `${f} to ${c}`;
+  if (f != null) return String(f);
   return mid.split("-").pop();
 }
+
+function setFocus(mid) {
+  S.focus = mid;
+  const title = (S.desc.markets[mid] || {}).title;
+  if (title) $("evtitle").textContent = title;
+  if (!S.hist[mid]) send({ type: "history", market_id: mid });
+  renderMarkets(); renderBook(); renderChance(); renderTicketHead(); drawChart(); updateEst();
+}
+
+/* ---------- market rows ---------- */
 function renderMarkets() {
   const el = $("markets");
   el.innerHTML = S.desc.market_ids.map(mid => {
     const top = S.tops[mid] || {};
+    const noPx = top.yes_bid == null ? null : 1 - top.yes_bid;
     return `<div class="mkt ${mid === S.focus ? "focus" : ""}" data-mid="${mid}">
-      <div><span class="strike">${strikeLabel(mid)}</span><span class="px num">${CENTS(top.yes_bid)} / ${CENTS(top.yes_ask)}</span></div>
-      <div class="sub">${mid}</div></div>`;
+      <div><div class="name">${strikeLabel(mid)}</div><div class="sub">${mid}</div></div>
+      <div class="pct num">${PCT(top.mid)}</div>
+      <button class="pill yes num" data-side="yes">Yes ${CENTS(top.yes_ask)}</button>
+      <button class="pill no num" data-side="no">No ${CENTS(noPx)}</button>
+    </div>`;
   }).join("");
-  for (const d of el.querySelectorAll(".mkt")) d.onclick = () => {
-    S.focus = d.dataset.mid;
-    if (!S.hist[S.focus]) send({ type: "history", market_id: S.focus });
-    renderMarkets(); renderLadder(); drawChart();
-  };
+  for (const d of el.querySelectorAll(".mkt")) {
+    d.onclick = () => setFocus(d.dataset.mid);
+    for (const b of d.querySelectorAll(".pill")) b.onclick = ev => {
+      ev.stopPropagation();
+      setFocus(d.dataset.mid);
+      setSide(b.dataset.side); setDir("open");
+    };
+  }
 }
 
-/* ---------- ladder ---------- */
-function renderLadder() {
-  const el = $("ladder"), book = S.books[S.focus];
-  el.classList.toggle("stale", S.inGap || !book);
-  if (!book) { el.innerHTML = `<div class="spread">book unknown — awaiting first full image</div>`; return; }
-  // Kalshi mirror: YES asks are derived from resting NO bids (1 - p).
-  const asks = book.no.map(([p, q]) => [1 - p, q]).sort((a, b) => b[0] - a[0]);
-  const bids = book.yes;   // best first already
-  const maxQ = Math.max(1, ...asks.map(a => a[1]), ...bids.map(b => b[1]));
-  const row = (p, q, cls) =>
-    `<div class="lrow ${cls}" data-px="${Math.round(p * 100)}">
-       <span class="p num">${CENTS(p)}</span><span></span><span class="num" style="text-align:right">${QTY(q)}</span>
-       <div class="bar" style="width:${(100 * q / maxQ).toFixed(1)}%"></div></div>`;
-  const ya = asks.map(([p, q]) => row(p, q, "ask")).join("");
-  const spread = (asks.length && bids.length)
-    ? `<div class="spread">spread ${CENTS(asks[asks.length - 1][0] - bids[0][0])}</div>`
-    : `<div class="spread">—</div>`;
-  const yb = bids.map(([p, q]) => row(p, q, "bid")).join("");
-  el.innerHTML = ya + spread + yb;
-  for (const r of el.querySelectorAll(".lrow")) r.onclick = () => { $("limIn").value = r.dataset.px; };
+function renderChance() {
   const top = S.tops[S.focus] || {};
-  $("yesPx").textContent = CENTS(top.yes_ask);
-  $("noPx").textContent = top.yes_bid == null ? "–" : CENTS(1 - top.yes_bid);
-  updateEst();
+  $("focusName").textContent = strikeLabel(S.focus);
+  $("chance").innerHTML = top.mid == null ? "" : `${PCT(top.mid)} <small>chance</small>`;
+}
+
+/* ---------- order book / activity ---------- */
+$("tabBook").onclick = () => setFeed("book");
+$("tabTape").onclick = () => setFeed("tape");
+function setFeed(x) {
+  S.feed = x;
+  $("tabBook").classList.toggle("on", x === "book");
+  $("tabTape").classList.toggle("on", x === "tape");
+  $("bookwrap").classList.toggle("hidden", x !== "book");
+  $("tapewrap").classList.toggle("hidden", x !== "tape");
+}
+function renderBook() {
+  const book = S.books[S.focus];
+  $("book").classList.toggle("stale", S.inGap || !book);
+  const cols = [["bookYes", (book || {}).yes || [], "yes"], ["bookNo", (book || {}).no || [], "no"]];
+  const maxQ = Math.max(1, ...cols.flatMap(([, rows]) => rows.map(r => r[1])));
+  for (const [id, rows, side] of cols) {
+    $(id).innerHTML = rows.map(([p, q]) =>
+      `<div class="brow" data-side="${side}" data-px="${Math.round(p * 100)}">
+        <span class="p num">${CENTS(p)}</span><span class="num">${QTY(q)}</span>
+        <div class="bar" style="width:${(92 * q / maxQ).toFixed(1)}%"></div></div>`
+    ).join("") || `<div class="brow" style="color:var(--ink-3)">empty</div>`;
+  }
+  for (const r of $("book").querySelectorAll(".brow[data-px]")) r.onclick = () => {
+    setSide(r.dataset.side);
+    $("limIn").value = r.dataset.px;
+    updateEst();
+  };
+}
+function addTapeRow(t) {
+  const tb = $("tape").tBodies[0];
+  const tr = document.createElement("tr");
+  const side = t.taker_side || "yes";
+  tr.innerHTML = `<td class="num">${t.ts.slice(11, 19)}</td><td>${strikeLabel(t.market_id)}</td>
+    <td class="chip-${side}">${side.toUpperCase()}</td>
+    <td class="num">${CENTS(t.price)}</td><td class="num">${QTY(t.qty)}</td>`;
+  tb.prepend(tr);
+  while (tb.rows.length > 80) tb.deleteRow(-1);
 }
 
 /* ---------- ticket ---------- */
-function seg(onId, offId, set) {
-  $(onId).onclick = () => { $(onId).classList.add("on"); $(offId).classList.remove("on"); set(); updateEst(); };
-  $(offId).onclick = () => { $(offId).classList.add("on"); $(onId).classList.remove("on"); set(true); updateEst(); };
+function renderTicketHead() {
+  $("ticketMkt").textContent = `${strikeLabel(S.focus)} — ${S.focus}`;
 }
-seg("sideYes", "sideNo", inv => { S.side = inv ? "no" : "yes"; });
-seg("dirOpen", "dirClose", inv => { S.dir = inv ? "close" : "open"; $("dirOpen").classList.toggle("on", !inv); });
+function setSide(s) {
+  S.side = s;
+  $("sideYes").classList.toggle("on", s === "yes");
+  $("sideNo").classList.toggle("on", s === "no");
+  $("place").classList.toggle("no", s === "no");
+  updateEst();
+}
+function setDir(d) {
+  S.dir = d;
+  $("dirOpen").classList.toggle("on", d === "open");
+  $("dirClose").classList.toggle("on", d === "close");
+  updateEst();
+}
+$("sideYes").onclick = () => setSide("yes");
+$("sideNo").onclick = () => setSide("no");
+$("dirOpen").onclick = () => setDir("open");
+$("dirClose").onclick = () => setDir("close");
+
+function touchPx() {
+  const top = S.tops[S.focus] || {};
+  if (S.dir === "open")
+    return S.side === "yes" ? top.yes_ask : (top.yes_bid == null ? null : 1 - top.yes_bid);
+  return S.side === "yes" ? top.yes_bid : (top.yes_ask == null ? null : 1 - top.yes_ask);
+}
 function updateEst() {
+  const top = S.tops[S.focus] || {};
+  $("yesPx").textContent = CENTS(top.yes_ask);
+  $("noPx").textContent = top.yes_bid == null ? "–" : CENTS(1 - top.yes_bid);
   const qty = parseFloat($("qtyIn").value) || 0;
   const lim = $("limIn").value ? parseFloat($("limIn").value) / 100 : null;
-  const top = S.tops[S.focus] || {};
-  const touch = S.dir === "open"
-    ? (S.side === "yes" ? top.yes_ask : (top.yes_bid == null ? null : 1 - top.yes_bid))
-    : (S.side === "yes" ? top.yes_bid : (top.yes_ask == null ? null : 1 - top.yes_ask));
-  const px = lim ?? touch;
-  $("est").textContent = px == null ? "no touch quote yet"
-    : `${S.dir === "open" ? "cost" : "proceeds"} ≈ ${fmtUSD(qty * px)} at ${CENTS(px)}${lim ? " limit" : " (touch now; fills at exec-time quote)"}`;
+  const px = lim ?? touchPx();
+  const buying = S.dir === "open";
+  $("costLbl").textContent = buying ? "Total cost" : "Total proceeds";
+  $("place").textContent = buying ? `Buy ${S.side === "yes" ? "Yes" : "No"}` : `Sell ${S.side === "yes" ? "Yes" : "No"}`;
+  if (px == null || qty <= 0) { $("costV").textContent = $("payV").textContent = $("retV").textContent = "—"; return; }
+  const cost = qty * px;
+  $("costV").textContent = fmtUSD(cost);
+  if (buying) {
+    $("payV").textContent = fmtUSD(qty);
+    $("retV").textContent = cost > 0 ? `+${Math.round(100 * (qty - cost) / cost)}%` : "—";
+  } else {
+    $("payV").textContent = "—";
+    $("retV").textContent = "—";
+  }
 }
 $("qtyIn").oninput = updateEst; $("limIn").oninput = updateEst;
 $("place").onclick = () => {
   const qty = parseFloat($("qtyIn").value);
-  if (!qty || qty <= 0) return toast("qty must be positive", true);
+  if (!qty || qty <= 0) return toast("Contracts must be positive", true);
   send({
     type: "order", market_id: S.focus, side: S.side, qty,
     limit_price: $("limIn").value ? parseFloat($("limIn").value) / 100 : null,
@@ -412,18 +581,7 @@ $("place").onclick = () => {
   });
 };
 
-/* ---------- tape ---------- */
-function addTapeRow(t) {
-  const tb = $("tape").tBodies[0];
-  const tr = document.createElement("tr");
-  tr.innerHTML = `<td class="num">${t.ts.slice(11, 19)}</td><td>${strikeLabel(t.market_id)}</td>
-    <td class="side-${t.taker_side || "yes"}">${(t.taker_side || "?").toUpperCase()}</td>
-    <td class="num">${CENTS(t.price)}</td><td class="num">${QTY(t.qty)}</td>`;
-  tb.prepend(tr);
-  while (tb.rows.length > 80) tb.deleteRow(-1);
-}
-
-/* ---------- profile ---------- */
+/* ---------- portfolio ---------- */
 function renderAcctTabs(names) {
   $("acctTabs").innerHTML = names.map(n =>
     `<button data-a="${n}" class="${n === S.acctTab ? "on" : ""}">${n}</button>`).join("");
@@ -437,28 +595,35 @@ function renderProfile() {
   $("stats").innerHTML = [
     ["Cash", fmtUSD(a.cash), ""],
     ["Equity", fmtUSD(a.equity), ""],
-    ["P&L", fmtUSD(pnl), pnl >= 0 ? "pnl-pos" : "pnl-neg"],
+    ["P&L", (pnl >= 0 ? "+" : "") + fmtUSD(pnl), pnl >= 0 ? "pnl-pos" : "pnl-neg"],
   ].map(([k, v, c]) => `<div class="stat"><div class="k">${k}</div><div class="v num ${c}">${v}</div></div>`).join("");
   $("posTbl").tBodies[0].innerHTML = a.positions.map(p =>
-    `<tr><td>${strikeLabel(p.market_id)}</td><td class="side-${p.side}">${p.side.toUpperCase()}</td>
+    `<tr><td>${strikeLabel(p.market_id)}</td><td class="chip-${p.side}">${p.side.toUpperCase()}</td>
      <td class="num">${QTY(p.qty)}</td><td class="num">${CENTS(p.mark)}</td><td class="num">${fmtUSD(p.qty * p.mark)}</td></tr>`
-  ).join("") || `<tr><td style="color:var(--text-3)">flat</td></tr>`;
+  ).join("") || `<tr><td style="color:var(--ink-3)">flat</td></tr>`;
   $("inflight").textContent = a.in_flight ? `(+${a.in_flight} in flight)` : "";
   $("ordTbl").tBodies[0].innerHTML = a.open_orders.map(o =>
-    `<tr><td>${strikeLabel(o.market_id)}</td><td class="side-${o.side}">${o.action === "close" ? "sell" : "buy"} ${o.side}</td>
+    `<tr><td>${strikeLabel(o.market_id)}</td><td class="chip-${o.side}">${o.action === "close" ? "Sell" : "Buy"} ${o.side}</td>
      <td class="num">${QTY(o.qty)}</td><td class="num">${CENTS(o.limit_price)}</td>
      <td>${S.acctTab === "you" ? `<button data-oid="${o.order_id}" class="cxl">✕</button>` : ""}</td></tr>`
-  ).join("") || `<tr><td style="color:var(--text-3)">none</td></tr>`;
+  ).join("") || `<tr><td style="color:var(--ink-3)">none</td></tr>`;
   for (const b of $("ordTbl").querySelectorAll(".cxl"))
     b.onclick = () => send({ type: "cancel", order_id: parseInt(b.dataset.oid) });
   $("fillTbl").tBodies[0].innerHTML = S.fills.filter(f => f.account === S.acctTab).slice(0, 40).map(f =>
     `<tr><td class="num">${f.ts.slice(11, 19)}</td><td>${strikeLabel(f.market_id)}</td>
-     <td class="side-${f.side}">${f.qty > 0 ? "+" : ""}${QTY(Math.abs(f.qty))} ${f.side}</td>
+     <td class="chip-${f.side}">${f.qty > 0 ? "+" : "−"}${QTY(Math.abs(f.qty))} ${f.side}</td>
      <td class="num">${CENTS(f.price)}</td><td class="num">${f.maker ? "M" : "T"}</td></tr>`
-  ).join("") || `<tr><td style="color:var(--text-3)">no fills yet</td></tr>`;
+  ).join("") || `<tr><td style="color:var(--ink-3)">no fills yet</td></tr>`;
 }
 
-/* ---------- price chart (single series: focused market) ---------- */
+/* ---------- chance chart (single series, Kalshi-green) ---------- */
+for (const b of $("ranges").children)
+  b.onclick = () => {
+    for (const x of $("ranges").children) x.classList.remove("on");
+    b.classList.add("on");
+    S.range = parseInt(b.dataset.r);
+    drawChart();
+  };
 function sizeCanvas(cv) {
   const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
   if (cv.width !== r.width * dpr) { cv.width = r.width * dpr; cv.height = r.height * dpr; }
@@ -466,9 +631,15 @@ function sizeCanvas(cv) {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   return [g, r.width, r.height];
 }
-const PADL = 34, PADR = 8, PADT = 8, PADB = 18;
+const PADL = 8, PADR = 40, PADT = 8, PADB = 18;
+function xDomain() {
+  const end = S.cursor || S.tMax;
+  const start = S.range ? Math.max(S.tMin, end - S.range) : S.tMin;
+  return [start, S.range ? end : S.tMax];
+}
 function xy(w, h) {
-  const x = t => PADL + (w - PADL - PADR) * (t - S.tMin) / Math.max(1, S.tMax - S.tMin);
+  const [d0, d1] = xDomain();
+  const x = t => PADL + (w - PADL - PADR) * (t - d0) / Math.max(1, d1 - d0);
   const y = p => PADT + (h - PADT - PADB) * (1 - p);
   return [x, y];
 }
@@ -476,24 +647,31 @@ function drawChart() {
   const [g, w, h] = sizeCanvas($("chart"));
   g.clearRect(0, 0, w, h);
   const [x, y] = xy(w, h);
-  g.strokeStyle = "#242422"; g.fillStyle = "#8a897f"; g.font = "10px ui-monospace, monospace"; g.lineWidth = 1;
-  for (const p of [0, .25, .5, .75, 1]) {          // recessive grid
+  const [d0, d1] = xDomain();
+  g.strokeStyle = "#f1f2f4"; g.fillStyle = "#9ca3af"; g.font = "10.5px Inter, sans-serif"; g.lineWidth = 1;
+  for (const p of [0, .25, .5, .75, 1]) {
     g.beginPath(); g.moveTo(PADL, y(p)); g.lineTo(w - PADR, y(p)); g.stroke();
-    g.fillText(Math.round(p * 100) + "¢", 4, y(p) + 3);
+    g.fillText(Math.round(p * 100) + "%", w - PADR + 6, y(p) + 3.5);
   }
   for (let k = 0; k <= 4; k++) {
-    const t = S.tMin + k * (S.tMax - S.tMin) / 4;
-    g.fillText(new Date(t).toISOString().slice(11, 16), x(t) - 12, h - 5);
+    const t = d0 + k * (d1 - d0) / 4;
+    g.fillText(new Date(t).toISOString().slice(11, 16), clamp(x(t) - 12, 2, w - 40), h - 5);
   }
-  const hist = S.hist[S.focus] || [];
-  g.fillStyle = "rgba(57,135,229,.35)";            // trade prefill dots (past only)
-  for (const [t, p] of hist) { if (t <= S.cursor) { g.beginPath(); g.arc(x(t), y(p), 1.5, 0, 7); g.fill(); } }
-  const line = S.chart[S.focus] || [];
-  g.strokeStyle = "#3987e5"; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
-  line.forEach(([t, p], i) => i ? g.lineTo(x(t), y(p)) : g.moveTo(x(t), y(p)));
+  const inD = pt => pt[0] >= d0 && pt[0] <= d1;
+  g.fillStyle = "rgba(0,160,92,.28)";
+  for (const pt of (S.hist[S.focus] || [])) {
+    if (pt[0] <= S.cursor && inD(pt)) { g.beginPath(); g.arc(x(pt[0]), y(pt[1]), 1.5, 0, 7); g.fill(); }
+  }
+  const line = (S.chart[S.focus] || []).filter(inD);
+  g.strokeStyle = "#00a05c"; g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+  line.forEach((pt, i) => i ? g.lineTo(x(pt[0]), y(pt[1])) : g.moveTo(x(pt[0]), y(pt[1])));
   g.stroke();
-  if (S.cursor) {                                   // replay cursor
-    g.strokeStyle = "#383835"; g.setLineDash([3, 3]);
+  if (line.length) {  // endpoint dot at the replay cursor
+    const last = line[line.length - 1];
+    g.fillStyle = "#00a05c"; g.beginPath(); g.arc(x(last[0]), y(last[1]), 3.5, 0, 7); g.fill();
+  }
+  if (S.cursor && !S.range) {
+    g.strokeStyle = "#d6d9de"; g.setLineDash([3, 3]);
     g.beginPath(); g.moveTo(x(S.cursor), PADT); g.lineTo(x(S.cursor), h - PADB); g.stroke();
     g.setLineDash([]);
   }
@@ -507,13 +685,13 @@ $("chart").onmousemove = e => {
   for (const pt of line) { const d = Math.abs(x(pt[0]) - (e.clientX - r.left)); if (d < dBest) { dBest = d; best = pt; } }
   const tt = $("tooltip");
   tt.style.display = "block";
-  tt.style.left = clamp(e.clientX - r.left + 14, 0, r.width - 120) + "px";
+  tt.style.left = clamp(e.clientX - r.left + 14, 0, r.width - 130) + "px";
   tt.style.top = (e.clientY - r.top - 10) + "px";
-  tt.textContent = `${new Date(best[0]).toISOString().slice(11, 19)} · ${CENTS(best[1])}`;
+  tt.textContent = `${new Date(best[0]).toISOString().slice(11, 19)} · ${PCT(best[1])}`;
 };
 $("chart").onmouseleave = () => { $("tooltip").style.display = "none"; };
 
-/* ---------- equity sparkline (selected account) ---------- */
+/* ---------- equity sparkline ---------- */
 function drawSpark() {
   const [g, w, h] = sizeCanvas($("spark"));
   g.clearRect(0, 0, w, h);
@@ -522,12 +700,13 @@ function drawSpark() {
   let lo = Infinity, hi = -Infinity;
   for (const [, v] of pts) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
   if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
-  const x = t => 10 + (w - 20) * (t - pts[0][0]) / Math.max(1, pts[pts.length - 1][0] - pts[0][0]);
+  const x = t => 12 + (w - 24) * (t - pts[0][0]) / Math.max(1, pts[pts.length - 1][0] - pts[0][0]);
   const y = v => 6 + (h - 12) * (1 - (v - lo) / (hi - lo));
-  const base = y(clamp(S.desc.start_cash, lo, hi));   // start-cash reference
-  g.strokeStyle = "#383835"; g.lineWidth = 1;
-  g.beginPath(); g.moveTo(10, base); g.lineTo(w - 10, base); g.stroke();
-  g.strokeStyle = S.acctTab === "you" ? "#3987e5" : "#9085e9"; g.lineWidth = 2; g.beginPath();
+  const base = y(clamp(S.desc.start_cash, lo, hi));
+  g.strokeStyle = "#e5e7eb"; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(12, base); g.lineTo(w - 12, base); g.stroke();
+  const up = pts[pts.length - 1][1] >= S.desc.start_cash;
+  g.strokeStyle = up ? "#00a05c" : "#e5484d"; g.lineWidth = 2; g.beginPath();
   pts.forEach(([t, v], i) => i ? g.lineTo(x(t), y(v)) : g.moveTo(x(t), y(v)));
   g.stroke();
 }
