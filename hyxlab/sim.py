@@ -232,27 +232,32 @@ class Simulator:
 
     # -- main loop ---------------------------------------------------------
 
-    def run(self, snapshots: Iterable[Snapshot]) -> SimResult:
-        for snap in snapshots:
-            self.ctx._observe(snap)
-            if self.latency:
-                self._exec_due(snap)
-            self._maker_check_and_expire(snap)
-            for strat in self.strategies:
-                for cmd in strat.on_snapshot(snap, self.ctx) or []:
-                    if isinstance(cmd, Cancel):
-                        if self.latency:
-                            self._pending_cancels.append((snap.ts + self.latency, cmd.order_id))
-                        else:
-                            self._cancel(cmd.order_id)
-                    elif self.latency:
-                        key = (cmd.venue, cmd.market_id)
-                        self._pending.setdefault(key, []).append(
-                            (snap.ts + self.latency, strat.name, cmd)
-                        )
+    def step(self, snap: Snapshot) -> None:
+        """Process one snapshot: due pending execs, maker checks, strategy
+        callbacks. Online — the shadow harness feeds live snapshots here."""
+        self.ctx._observe(snap)
+        if self.latency:
+            self._exec_due(snap)
+        self._maker_check_and_expire(snap)
+        for strat in self.strategies:
+            for cmd in strat.on_snapshot(snap, self.ctx) or []:
+                if isinstance(cmd, Cancel):
+                    if self.latency:
+                        self._pending_cancels.append((snap.ts + self.latency, cmd.order_id))
                     else:
-                        self._submit(strat.name, cmd, snap)
-            self.result.equity_curve.append((snap.ts, self._equity()))
+                        self._cancel(cmd.order_id)
+                elif self.latency:
+                    key = (cmd.venue, cmd.market_id)
+                    self._pending.setdefault(key, []).append(
+                        (snap.ts + self.latency, strat.name, cmd)
+                    )
+                else:
+                    self._submit(strat.name, cmd, snap)
+        self.result.equity_curve.append((snap.ts, self._equity()))
+
+    def finalize(self) -> SimResult:
+        """End of data: count undeliverable pending orders, settle, compute
+        metrics. Call once."""
         # Orders whose market never printed another snapshot after their
         # exec time were never executable — count them, don't fill them.
         for pend in self._pending.values():
@@ -261,6 +266,11 @@ class Simulator:
         self._settle()
         self._compute_metrics()
         return self.result
+
+    def run(self, snapshots: Iterable[Snapshot]) -> SimResult:
+        for snap in snapshots:
+            self.step(snap)
+        return self.finalize()
 
     def _exec_due(self, snap: Snapshot) -> None:
         """Latency mode: cancels take effect at their exec time (checked

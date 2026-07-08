@@ -152,14 +152,21 @@ class BookReplayer:
 def replay_snapshots(
     events: Iterable[BookEvent],
     gaps: Iterable[tuple[datetime, datetime]] = _EMPTY,
+    replayer: BookReplayer | None = None,
 ) -> Iterator[Snapshot]:
     """Events (recv_ts order) + gap intervals → top-of-book Snapshots.
 
     Any gap whose start falls before an event invalidates ALL book state
     at that point (conservative: gap rows aren't per-market). Snapshot
     images emit once complete — when their (market, sid, seq) row group
-    ends — never row-by-row."""
-    replayer = BookReplayer()
+    ends — never row-by-row.
+
+    Pass a persistent `replayer` to carry book state across successive
+    batches (the shadow harness tails the stream archive in polls; a WS
+    frame's rows are flushed atomically, so image groups never span
+    batches and the end-of-batch finalize is safe)."""
+    if replayer is None:
+        replayer = BookReplayer()
     gap_starts = sorted(g[0] for g in gaps)
     gi = 0
     open_group: tuple | None = None  # (market_id, sid, seq) of open image

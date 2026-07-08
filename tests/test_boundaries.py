@@ -30,6 +30,7 @@ SIM = {
     "capabilities",
     "harness",
     "bookreplay",
+    "shadow",
     "run_sim",
     "run_backtest",
 }
