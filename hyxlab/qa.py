@@ -145,6 +145,15 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
     ).fetchone()[0]
     check("kalshi mirror invariant", mv == 0, f"{mv} violations")
 
+    # Polymarket price capture: once the poly sweep has ever run, its
+    # daily cadence must hold (retention rolls off at ~60d).
+    n_poly = conn.execute("SELECT count(*) FROM poly_prices").fetchone()[0]
+    if n_poly:
+        page = conn.execute("SELECT epoch(? - max(ts)) / 3600 FROM poly_prices", [now]).fetchone()[
+            0
+        ]
+        check("poly prices fresh (< 30h old)", page < 30, f"age {page:.1f}h")
+
     # Tape coverage: settled+traded markets inside the retention window
     # (~64d, use 55 to stay ahead of the boundary) must have a tape sweep.
     uncovered = conn.execute(

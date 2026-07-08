@@ -42,6 +42,7 @@ FLUSH_SECS = 15.0
 STATS_SECS = 300.0
 TICKER_REFRESH_SECS = 3600.0
 POLY_PING_SECS = 10.0
+POLY_TOP_MARKETS = 50  # busiest books streamed even without verified pairs
 BACKOFF_MAX = 60.0
 
 
@@ -183,12 +184,29 @@ class Daemon:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
 
-    async def poly_books(self) -> None:
+    def _poly_token_set(self) -> list[str]:
+        """Watchlist pair tokens + top-volume markets' tokens (data-first:
+        stream the busiest books even before any pair is hand-verified)."""
         pairs = self.watchlist.get("polymarket_pairs", [])
-        assets = [tok for pair in pairs for tok in pair[1:3]]
+        assets = {tok for pair in pairs for tok in pair[1:3]}
+        try:
+            from hyxlab.venues import polymarket as poly
+
+            top = poly.iter_markets_by_volume(0.0, max_pages=1)  # one page, vol-desc
+            for m in top[:POLY_TOP_MARKETS]:
+                tp = poly.token_pair(m)
+                if tp:
+                    assets.update(tp)
+        except Exception as exc:
+            _log(f"poly-books: top-volume refresh failed: {exc}")
+        return sorted(assets)
+
+    async def poly_books(self) -> None:
+        assets = await asyncio.to_thread(self._poly_token_set)
         if not assets:
-            _log("poly-books: no polymarket_pairs in watchlist; task idle (pairs land with B3.5)")
+            _log("poly-books: no tokens (watchlist empty, Gamma unreachable); task idle")
             return
+        _log(f"poly-books: {len(assets)} tokens (top {POLY_TOP_MARKETS} by volume + pairs)")
         backoff, last_recv, first = 1.0, None, True
         while True:
             try:
@@ -198,11 +216,22 @@ class Daemon:
                         self._gap("polymarket", "market", last_recv, "reconnect")
                     first, backoff = False, 1.0
                     _log(f"poly-books: connected ({len(assets)} tokens)")
+                    next_refresh = asyncio.get_event_loop().time() + TICKER_REFRESH_SECS
                     while True:
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=POLY_PING_SECS)
                         except TimeoutError:
                             await ws.send("PING")  # idle keepalive
+                            if asyncio.get_event_loop().time() >= next_refresh:
+                                next_refresh = asyncio.get_event_loop().time() + TICKER_REFRESH_SECS
+                                new = await asyncio.to_thread(self._poly_token_set)
+                                if new and new != assets:
+                                    _log(
+                                        f"poly-books: token set {len(assets)} -> {len(new)};"
+                                        " reconnecting"
+                                    )
+                                    assets = new
+                                    break  # reconnect re-seeds via fresh books
                             continue
                         recv_ts = datetime.now(UTC)
                         self._clock_check("polymarket", "market", recv_ts, last_recv)

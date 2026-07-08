@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS trades_swept (
     n_trades  INTEGER,
     status    VARCHAR
 );
+CREATE TABLE IF NOT EXISTS poly_prices (
+    token_id  VARCHAR NOT NULL,
+    market_id VARCHAR NOT NULL,
+    outcome   VARCHAR,
+    ts        TIMESTAMP NOT NULL,
+    price     DOUBLE NOT NULL
+);
+CREATE TABLE IF NOT EXISTS poly_market_stats (
+    market_id VARCHAR NOT NULL,
+    ts        TIMESTAMP NOT NULL,
+    volume    DOUBLE,
+    liquidity DOUBLE
+);
 CREATE TABLE IF NOT EXISTS series (
     venue          VARCHAR NOT NULL,
     ticker         VARCHAR NOT NULL,
@@ -294,6 +307,7 @@ class Store:
     def insert_trades(self, rows: list[tuple]) -> int:
         """(venue, market_id, trade_id, ts, yes_price, qty, taker_side,
         is_block); dedup on trade_id so retro-pass re-runs are safe."""
+        rows = [(*r[:3], _naive_utc(r[3]), *r[4:]) for r in rows]
         return self.insert_new("trades", rows, ["trade_id"])
 
     def mark_trades_swept(self, market_id: str, n_trades: int, status: str) -> None:
@@ -304,6 +318,22 @@ class Store:
 
     def trades_swept_ids(self) -> set[str]:
         return {r[0] for r in self.conn.execute("SELECT market_id FROM trades_swept").fetchall()}
+
+    def insert_poly_prices(self, rows: list[tuple]) -> int:
+        """(token_id, market_id, outcome, ts, price); dedup (token, ts)."""
+        rows = [(*r[:3], _naive_utc(r[3]), r[4]) for r in rows]
+        return self.insert_new("poly_prices", rows, ["token_id", "ts"])
+
+    def insert_poly_stats(self, rows: list[tuple]) -> None:
+        """(market_id, ts, volume, liquidity) — daily volume/liquidity series."""
+        self.conn.executemany("INSERT INTO poly_market_stats VALUES (?,?,?,?)", rows)
+
+    def poly_price_watermarks(self) -> dict[str, datetime]:
+        """token_id -> latest captured price ts (for incremental backfill)."""
+        rows = self.conn.execute(
+            "SELECT token_id, max(ts) FROM poly_prices GROUP BY token_id"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
 
     def upsert_observations(self, rows: list[tuple[str, date, int | None]]) -> None:
         self.conn.executemany("INSERT OR REPLACE INTO observations VALUES (?,?,?)", rows)

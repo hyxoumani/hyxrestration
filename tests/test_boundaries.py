@@ -18,6 +18,7 @@ COLLECTION = {
     "sweep",
     "backfill",
     "trades_backfill",
+    "poly_sweep",
     "streamd",
     "qa",
     "venues",  # all venue clients (REST + WS)

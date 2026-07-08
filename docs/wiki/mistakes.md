@@ -55,6 +55,17 @@ Format: what happened → root cause → error type → prevention tier
    parser will eat; caught same-session because the smoke test asserts
    rows landed, which is the cheap tripwire to keep.
 
+10. **Box-local timestamp corruption RECURRED (item 1's exact failure).**
+    New store writers (insert_trades, insert_poly_prices) passed
+    tz-aware datetimes straight to DuckDB; 5.4M trade rows landed
+    shifted −5 h before a poly unit test caught the mechanism. Root
+    cause: the `_naive_utc` RULE lived per-writer, so every NEW writer
+    could silently skip it. Repaired by single atomic +5 h UPDATE,
+    verified against API created_time ground truth. Type:
+    `wrong-assumption` (recurrence). Prevention: ESCALATED rule → test:
+    store tests now assert stored ts values for tz-aware inputs on the
+    new writers; any future writer must ship with the same assertion.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

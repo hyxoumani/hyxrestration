@@ -120,6 +120,10 @@ def test_insert_trades_dedups_on_trade_id(tmp_path):
     assert store.insert_trades([row]) == 1
     assert store.insert_trades([row]) == 0  # retro-pass re-run is safe
     assert store.counts()["trades"] == 1
+    # tz-aware input must land as naive UTC, never box-local (the 5h-shift
+    # corruption this exact path produced on 2026-07-07).
+    stored = store.conn.execute("SELECT ts FROM trades").fetchone()[0]
+    assert stored == datetime(2026, 7, 6, 17, 21, 56, 956835)
     store.close()
 
 
