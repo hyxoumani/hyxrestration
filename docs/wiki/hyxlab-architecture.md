@@ -30,7 +30,12 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
 - `hyxlab/streamd.py` — stream daemon (asyncio, reconnect/re-seed/
   gap-marking; systemd `hyxlab-stream.service`).
 - `hyxlab/sweep.py` — exchange-wide archival sweep + `--doctor`.
-- `hyxlab/sim.py` — event loop, order lifecycle, runtime invariants.
+- `hyxlab/trades_backfill.py` — trade-tape retro-pass (races retention).
+- `hyxlab/qa.py` — daily data-quality checks (`hyxlab-qa.timer`).
+- `hyxlab/bookreplay.py` — stream events → ms-fidelity Snapshot stream
+  (gap-honest, complete-image emission, mirror-derived asks).
+- `hyxlab/sim.py` — event loop, order lifecycle, runtime invariants,
+  latency model (`latency=Δ` seconds; Δ=0 = legacy).
 - `hyxlab/strategy.py` — Strategy ABC (+ `requires` capability
   declaration) + Context (hides settlements, as-of forecasts,
   open_orders for Cancel).
@@ -65,10 +70,12 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
 
 ## Build state (2026-07-07)
 
-B1 archive+sweep ✅, B2 sim v2 ✅, B3 self-tests ✅, crossed-candle
-gate ✅, mirror tripwire + capability guard ✅, B7 stream daemon ✅
-LIVE (96 tests). Next: trade tape (B3.5) → debug frontend → B4 signals
-→ B5 walk-forward/DSR → B6 calibration atlas → first pre-reg strategy.
+B1 archive+sweep ✅, B2 sim v2 ✅, B3 self-tests ✅, all gates ✅,
+B7 stream daemon ✅ LIVE, B3.5 Kalshi tape ✅ (retro-pass running),
+stable deployment + import boundary ✅, daily QA ✅, BookReplayer +
+latency fills ✅ (123 tests). Next: shadow harness → B4 signals →
+B5 walk-forward/DSR → B6 atlas → debug frontend → first pre-reg
+strategy (infra-first order, user 2026-07-07).
 
 ## Related
 - [data-pipeline](data-pipeline.md) · [simulation-honesty](simulation-honesty.md)

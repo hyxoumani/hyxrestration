@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from hyxlab.capabilities import check_capabilities
 from hyxlab.fees import FEE_MODELS, FeeModel
@@ -65,6 +65,7 @@ class Simulator:
         fee_models: dict[str, FeeModel] | None = None,
         fee_resolver: Callable[[str, str], FeeModel] | None = None,
         data_capabilities: dict[str, frozenset[str]] | None = None,
+        latency: float = 0.0,
     ) -> None:
         # Capability guard: refuse vacuous backtests up front. Strategies
         # with requirements need a feed declaration (hyxlab.capabilities
@@ -79,6 +80,14 @@ class Simulator:
         self._resting: dict[tuple[str, str], list[_Resting]] = {}
         self.ctx._resting_ref = self._resting  # read-only view for open_orders()
         self._next_id = 1
+        # Latency model: orders decided at t execute against the FIRST
+        # subsequent snapshot of their market at ts >= t + latency; the
+        # decision-time quote is never fillable. latency=0 keeps the
+        # legacy immediate-fill behavior exactly.
+        self.latency = timedelta(seconds=latency)
+        self._pending: dict[tuple[str, str], list[tuple[datetime, str, Order]]] = {}
+        self._pending_cancels: list[tuple[datetime, int]] = []
+        self._dropped: dict[str, int] = {}
         # Component ledger for I1 and per-market I3.
         self._purchases = self._proceeds = self._fees = self._payouts = 0.0
         self._by_market: dict[tuple[str, str, str], dict[str, float]] = {}
@@ -226,17 +235,58 @@ class Simulator:
     def run(self, snapshots: Iterable[Snapshot]) -> SimResult:
         for snap in snapshots:
             self.ctx._observe(snap)
+            if self.latency:
+                self._exec_due(snap)
             self._maker_check_and_expire(snap)
             for strat in self.strategies:
                 for cmd in strat.on_snapshot(snap, self.ctx) or []:
                     if isinstance(cmd, Cancel):
-                        self._cancel(cmd.order_id)
+                        if self.latency:
+                            self._pending_cancels.append((snap.ts + self.latency, cmd.order_id))
+                        else:
+                            self._cancel(cmd.order_id)
+                    elif self.latency:
+                        key = (cmd.venue, cmd.market_id)
+                        self._pending.setdefault(key, []).append(
+                            (snap.ts + self.latency, strat.name, cmd)
+                        )
                     else:
                         self._submit(strat.name, cmd, snap)
             self.result.equity_curve.append((snap.ts, self._equity()))
+        # Orders whose market never printed another snapshot after their
+        # exec time were never executable — count them, don't fill them.
+        for pend in self._pending.values():
+            for _, strat_name, _ in pend:
+                self._dropped[strat_name] = self._dropped.get(strat_name, 0) + 1
         self._settle()
         self._compute_metrics()
         return self.result
+
+    def _exec_due(self, snap: Snapshot) -> None:
+        """Latency mode: cancels take effect at their exec time (checked
+        globally — maker fills only occur at snapshots, so applying due
+        cancels before this snapshot's maker check is exact); pending
+        orders execute against the first snapshot of THEIR market at or
+        after exec time, in submission order."""
+        if self._pending_cancels:
+            due = [oid for ts, oid in self._pending_cancels if ts <= snap.ts]
+            self._pending_cancels = [(ts, o) for ts, o in self._pending_cancels if ts > snap.ts]
+            for oid in due:
+                self._cancel(oid)
+        key = (snap.venue, snap.market_id)
+        pend = self._pending.get(key)
+        if not pend:
+            return
+        still = []
+        for exec_ts, strat_name, order in pend:
+            if exec_ts <= snap.ts:
+                self._submit(strat_name, order, snap)
+            else:
+                still.append((exec_ts, strat_name, order))
+        if still:
+            self._pending[key] = still
+        else:
+            del self._pending[key]
 
     # -- marking, settlement, invariants ------------------------------------
 
@@ -276,21 +326,22 @@ class Simulator:
             if qty < -1e-9:
                 raise SimAccountingError(f"I2 negative position {key}: {qty}")
 
+    @staticmethod
+    def _blank_metrics() -> dict[str, float]:
+        return {
+            "n_fills": 0,
+            "fees": 0.0,
+            "cost": 0.0,
+            "settled_payout": 0.0,
+            "settled_net_pnl": 0.0,
+            "settled_cost": 0.0,
+            "open_cost": 0.0,
+        }
+
     def _compute_metrics(self) -> None:
         by_strat: dict[str, dict[str, float]] = {}
         for (strat, venue, market_id), led in self._by_market.items():
-            m = by_strat.setdefault(
-                strat,
-                {
-                    "n_fills": 0,
-                    "fees": 0.0,
-                    "cost": 0.0,
-                    "settled_payout": 0.0,
-                    "settled_net_pnl": 0.0,
-                    "settled_cost": 0.0,
-                    "open_cost": 0.0,
-                },
-            )
+            m = by_strat.setdefault(strat, self._blank_metrics())
             m["fees"] += led["fees"]
             m["cost"] += led["cost"]
             m["settled_payout"] += led["payout"]
@@ -302,6 +353,10 @@ class Simulator:
                 m["open_cost"] += led["cost"]
         for f in self.result.fills:
             by_strat[f.strategy]["n_fills"] += 1
+        if self.latency:
+            for strat_name in {s.name for s in self.strategies}:
+                m = by_strat.setdefault(strat_name, self._blank_metrics())
+                m["n_dropped_pending"] = self._dropped.get(strat_name, 0)
         peak, max_dd = float("-inf"), 0.0
         for _, eq in self.result.equity_curve:
             peak = max(peak, eq)

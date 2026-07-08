@@ -19,6 +19,7 @@ COLLECTION = {
     "backfill",
     "trades_backfill",
     "streamd",
+    "qa",
     "venues",  # all venue clients (REST + WS)
 }
 SIM = {
@@ -27,6 +28,7 @@ SIM = {
     "strategies",
     "capabilities",
     "harness",
+    "bookreplay",
     "run_sim",
     "run_backtest",
 }

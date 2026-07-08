@@ -57,10 +57,14 @@ strategies after.** Landed same evening: collection/sim import boundary
    now captures prints for newly settled markets. Still pending:
    Polymarket prints/volume sampling + first hand-verified cross-venue
    pairs.
-4. **Daily stream QA job** — promote the audit (seq holes, negative
-   books, latency, disk) into a scheduled check.
-5. **BookReplayer + latency-aware fills** → **shadow harness (Tier-3
-   paper trading)** — one arc, shares stream-replay plumbing.
+4. ~~Daily stream QA job~~ DONE 2026-07-07: `hyxlab-qa.timer` daily
+   07:00 UTC (`hyxlab/qa.py`) — freshness, seq-vs-gap consistency,
+   negative books, latency, disk, mirror, tape coverage (armed: fails
+   until the tradepass finishes).
+5. ~~BookReplayer + latency-aware fills~~ DONE 2026-07-07 (see
+   [simulation-honesty](simulation-honesty.md)). **Next: shadow harness
+   (Tier-3 paper trading)** — live strategies, ledger-only orders,
+   queue-position-bounded scoring.
 6. B4 signals (ALFRED vintages, GDELT, FeatureView) → B5 harness (purged
    walk-forward, sweeps, DSR) → B6 calibration atlas → debug frontend.
 7. Strategy work (favorite-longshot pre-reg etc.) AFTER the plumbing.

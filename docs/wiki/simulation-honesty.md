@@ -11,6 +11,20 @@ results hidden (a fallthrough bug once leaked them — now the
 "adversarial peeker" test attempts to cheat every channel and must come
 up empty), forecasts served strictly as-of the snapshot timestamp.
 
+## Latency model (landed 2026-07-07 late)
+
+`Simulator(latency=Δ)`: orders/cancels decided at t execute against the
+FIRST subsequent snapshot of their market at ts ≥ t+Δ — the
+decision-time quote is never fillable; orders whose market never prints
+again are counted (`n_dropped_pending`), not filled. Δ=0 is exactly the
+legacy engine. Tier-2 feed: `bookreplay.load_stream_snapshots()` replays
+archived WS books into ms-fidelity snapshots (gap-honest: books unknown
+inside stream_gaps until re-seeded; snapshot images emit only complete —
+partial images are states that never existed). First real sweep
+(2026-07-07 stream, 313k snapshots/455 markets, tight-spread probe):
+1s latency ≈ +0.4¢/contract and ~1% orders unfillable; 30s ≈ +0.6¢.
+Latency sensitivity is now a standard verdict dimension.
+
 ## Fill model biases (Tier 1–2, v1/v2 engine)
 
 - Taker fills at displayed touch, capped at displayed size: OPTIMISTIC
