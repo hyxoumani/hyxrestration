@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+from collector.venues import kalshi_ws, polymarket_ws
 from hyxlab.streamstore import StreamStore
-from hyxlab.venues import kalshi_ws, polymarket_ws
 
 RECV = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 
@@ -183,7 +183,7 @@ def test_poly_last_trade_price_becomes_trade():
 def test_clock_step_logged_as_gap(tmp_path):
     from datetime import timedelta
 
-    from hyxlab.streamd import Daemon
+    from collector.streamd import Daemon
 
     store = StreamStore(tmp_path / "s.duckdb")
     d = Daemon(store, watchlist={})

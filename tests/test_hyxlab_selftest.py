@@ -9,11 +9,11 @@ import json
 import random
 from datetime import UTC, date, datetime, timedelta
 
-from hyxlab.capabilities import INDEPENDENT_NO_BOOK
 from hyxlab.models import Forecast, MarketInfo, Order, Snapshot
-from hyxlab.sim import Simulator
-from hyxlab.strategies import IntramarketRebalance
-from hyxlab.strategy import Strategy
+from simulator.capabilities import INDEPENDENT_NO_BOOK
+from simulator.sim import Simulator
+from simulator.strategy import Strategy
+from strategies import IntramarketRebalance
 
 T0 = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
 # Declared for tests whose synthetic snapshots carry genuinely independent

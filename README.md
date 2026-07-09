@@ -1,24 +1,29 @@
 # hyxrestration
 
-Prediction-market strategy-testing lab (`hyxlab/`). Archives Kalshi and
+Prediction-market strategy-testing lab. Archives Kalshi and
 Polymarket market data into DuckDB, replays it through a no-lookahead
 simulator, and kills strategies via pre-registered backtests. No capital
 is deployed until a strategy passes a pre-registered test.
 
 ## Functionality
 
+Four top-level packages with a test-enforced import boundary
+(`tests/test_boundaries.py`): `collector/` and `simulator/` never import
+each other; `strategies/` sits on top of the simulator; `hyxlab/` is the
+shared kernel both sides use.
+
 ```
-connectors (hyxlab/venues/*)  →  archive store (store.py, DuckDB)
-        ↓ scheduled by systemd timers (collect 5min, sweep daily)
-alignment (Context / FeatureView)   ← the only time-sensitive read path
-        ↓
-sim engine (sim.py) ←→ strategies (strategies/*)
-        ↓
-harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
+collector/ (venues, sweeps, stream daemons, qa)
+        ↓ writes                     hyxlab/ — shared kernel
+   DuckDB archives   ←────────────   (models, store, streamstore,
+        ↓ reads                       fees, migrate, watchlist)
+simulator/ (sim engine, bookreplay, shadow, simui)
+        ↕
+strategies/ (candidates under test)
 ```
 
 - **Data collection** — REST connectors for Kalshi, Polymarket, NWS, IEM,
-  ALFRED, and Alpaca news (`hyxlab/venues/`), plus WebSocket stream
+  ALFRED, and Alpaca news (`collector/venues/`), plus WebSocket stream
   daemons (`streamd.py`) that archive live order-book events and trades
   with gap-marking and reconnect/re-seed. A 5-minute collect timer and a
   daily exchange-wide sweep keep the DuckDB archive current;
@@ -73,20 +78,20 @@ Without these, the Kalshi stream channels idle; everything else works.
 
 ```bash
 # Archive health check
-.venv/bin/python -m hyxlab.sweep --doctor
+.venv/bin/python -m collector.sweep --doctor
 
 # One collection cycle (normally run by the 5-min systemd timer)
-.venv/bin/python -m hyxlab.collect --once
+.venv/bin/python -m collector.collect --once
 
 # Replay a pre-registered backtest
-.venv/bin/python -m hyxlab.run_backtest
+.venv/bin/python -m simulator.run_backtest
 
 # Interactive market-replay UI (paper trading) → http://127.0.0.1:8877
-.venv/bin/python -m hyxlab.simui
+.venv/bin/python -m simulator.simui
 
 # Tests and lint
 .venv/bin/python -m pytest tests/ -q
-.venv/bin/ruff check hyxlab tests
+.venv/bin/ruff check collector simulator strategies hyxlab tests
 ```
 
 Scheduled operation uses systemd user units run from a `stable` worktree

@@ -3,7 +3,7 @@ settled market already in the archive, BEFORE Kalshi's ~64-day retention
 purges them (probed 2026-07-07: markets closed ≤2026-05-01 are already
 gone — the boundary advances daily, so this runs oldest-first).
 
-    python -m hyxlab.trades_backfill [--db ...] [--rps 2] [--limit N]
+    python -m collector.trades_backfill [--db ...] [--rps 2] [--limit N]
 
 Resumable and idempotent: per-market progress in trades_swept (purged
 markets recorded as status='empty' so they aren't refetched), trade rows
@@ -21,8 +21,8 @@ from pathlib import Path
 
 import requests
 
+from collector.venues import kalshi
 from hyxlab.store import Store
-from hyxlab.venues import kalshi
 
 FLUSH_MARKETS = 50
 LOCK_FILE = "data/writer.lock"

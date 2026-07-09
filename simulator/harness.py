@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from hyxlab.models import Snapshot
-from hyxlab.sim import SimResult
+from simulator.sim import SimResult
 
 
 def _git_rev() -> str:

@@ -8,9 +8,9 @@ import json
 from datetime import date
 from pathlib import Path
 
-from hyxlab.venues.alfred import parse_vintage_csv, pessimistic_knowable_at
-from hyxlab.venues.alpaca_news import parse_news_payload
-from hyxlab.venues.kalshi import to_market_info, to_snapshot
+from collector.venues.alfred import parse_vintage_csv, pessimistic_knowable_at
+from collector.venues.alpaca_news import parse_news_payload
+from collector.venues.kalshi import to_market_info, to_snapshot
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

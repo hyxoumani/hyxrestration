@@ -2,7 +2,7 @@
 ledger-only orders — the strongest no-lookahead tier that exists without
 capital, because the future hasn't happened when decisions are made.
 
-    python -m hyxlab.shadow [--latency 2.0] [--poll 20] [--duration N]
+    python -m simulator.shadow [--latency 2.0] [--poll 20] [--duration N]
 
 Architecture: the Simulator is already an online algorithm, so shadow =
 a persistent Simulator instance fed by a live tail of the stream archive
@@ -32,11 +32,11 @@ from pathlib import Path
 
 import duckdb
 
-from hyxlab.bookreplay import BookReplayer, replay_snapshots
-from hyxlab.sim import Simulator
 from hyxlab.store import Store
-from hyxlab.strategies.probe import TightSpreadProbe
 from hyxlab.streamstore import BookEvent
+from simulator.bookreplay import BookReplayer, replay_snapshots
+from simulator.sim import Simulator
+from strategies.probe import TightSpreadProbe
 
 STREAM_DB = "data/hyxstream.duckdb"
 SHADOW_DB = "data/hyxshadow.duckdb"

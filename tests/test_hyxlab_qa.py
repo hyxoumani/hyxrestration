@@ -3,10 +3,10 @@ seeded defect trips its check."""
 
 from datetime import UTC, datetime, timedelta
 
-import hyxlab.qa as qa
+import collector.qa as qa
+from collector.venues.kalshi_ws import parse_message
 from hyxlab.store import Store
 from hyxlab.streamstore import StreamStore
-from hyxlab.venues.kalshi_ws import parse_message
 
 NOW = datetime.now(UTC)
 

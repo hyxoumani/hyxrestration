@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from hyxlab.bookreplay import BookReplayer, replay_snapshots
 from hyxlab.streamstore import BookEvent
+from simulator.bookreplay import BookReplayer, replay_snapshots
 
 T0 = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 

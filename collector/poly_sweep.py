@@ -1,7 +1,7 @@
 """Polymarket archival sweep: metadata, volume series, price history,
 trade tails — everything the venue still serves (probed 2026-07-07).
 
-    python -m hyxlab.poly_sweep [--db ...] [--min-volume 10000] [--limit N]
+    python -m collector.poly_sweep [--db ...] [--min-volume 10000] [--limit N]
 
 Retention facts driving the design:
 - prices-history: ~60-day ROLLING window; closed markets purge ~1-2
@@ -29,8 +29,8 @@ from pathlib import Path
 
 import requests
 
+from collector.venues import polymarket as poly
 from hyxlab.store import Store
-from hyxlab.venues import polymarket as poly
 
 FLUSH_MARKETS = 25
 LOCK_FILE = "data/writer.lock"

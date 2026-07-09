@@ -98,7 +98,7 @@ def test_watermarks_roundtrip(tmp_path):
 
 
 def test_insert_trades_dedups_on_trade_id(tmp_path):
-    from hyxlab.venues.kalshi import trade_row
+    from collector.venues.kalshi import trade_row
 
     # Live REST shape, probed 2026-07-07.
     api_trade = {

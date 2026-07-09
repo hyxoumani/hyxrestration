@@ -1,95 +1,85 @@
-"""Import-boundary contract between collection and simulation.
+"""Import-boundary contract between the top-level packages.
 
-The two sides have opposite risk profiles: collection runs unattended
-24/7 and its failure loses unrecoverable data; sim/strategy code churns
-daily. Neither may import the other — both go through the shared kernel
-only. This keeps the daemons deployable from a stable checkout that
-never has to carry strategy churn, and keeps a future physical split a
-`git mv` instead of a refactor.
+The lab is physically split into four packages with opposite risk
+profiles: `collector/` runs unattended 24/7 and its failure loses
+unrecoverable data; `simulator/` and `strategies/` churn daily;
+`hyxlab/` is the shared kernel. The allowed import edges:
+
+    collector  → hyxlab
+    simulator  → hyxlab   (engine; runner entrypoints may also wire
+                           in `strategies` — see ENTRYPOINTS)
+    strategies → simulator, hyxlab
+    hyxlab     → (nothing above it)
+
+Anything else means the split has been silently re-fused and the
+daemons can no longer be deployed from a stable checkout that never
+carries strategy churn.
 """
 
 import ast
 from pathlib import Path
 
-PKG = Path(__file__).parent.parent / "hyxlab"
+ROOT = Path(__file__).parent.parent
 
-COLLECTION = {
-    "collect",
-    "sweep",
-    "backfill",
-    "trades_backfill",
-    "poly_sweep",
-    "streamd",
-    "qa",
-    "venues",  # all venue clients (REST + WS)
+# package -> packages it may import from (besides itself and stdlib/3p)
+ALLOWED = {
+    "collector": {"hyxlab"},
+    "simulator": {"hyxlab"},
+    "strategies": {"simulator", "hyxlab"},
+    "hyxlab": set(),
 }
-SIM = {
-    "sim",
-    "strategy",
-    "strategies",
-    "capabilities",
-    "harness",
-    "bookreplay",
-    "shadow",
-    "run_sim",
-    "run_backtest",
-    "simui",
+PACKAGES = set(ALLOWED)
+
+# Runner/entrypoint modules that compose engine + strategies. The
+# engine itself (sim, strategy, capabilities, bookreplay, harness)
+# must stay strategy-agnostic.
+ENTRYPOINTS = {
+    "simulator/run_sim.py",
+    "simulator/run_backtest.py",
+    "simulator/shadow.py",
+    "simulator/simui/server.py",
 }
-# Shared kernel (either side may import): models, store, streamstore,
-# fees, migrate, watchlist.
 
 
-def _top_module(path: Path) -> str:
-    rel = path.relative_to(PKG)
-    return rel.parts[0].removesuffix(".py")
-
-
-def _hyxlab_imports(path: Path) -> set[str]:
-    """Top-level hyxlab submodules imported by a file (incl. lazy imports)."""
+def _internal_imports(path: Path) -> set[str]:
+    """Top-level lab packages imported by a file (incl. lazy imports)."""
     tree = ast.parse(path.read_text())
     out = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("hyxlab"):
-            parts = node.module.split(".")
-            out.add(parts[1] if len(parts) > 1 else node.names[0].name)
+        if isinstance(node, ast.ImportFrom) and node.module:
+            top = node.module.split(".")[0]
+            if top in PACKAGES:
+                out.add(top)
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("hyxlab."):
-                    out.add(alias.name.split(".")[1])
+                top = alias.name.split(".")[0]
+                if top in PACKAGES:
+                    out.add(top)
     return out
 
 
-def _violations(side_modules: set[str], forbidden: set[str]) -> list[str]:
+def _violations(package: str) -> list[str]:
+    allowed = ALLOWED[package] | {package}
     bad = []
-    for py in PKG.rglob("*.py"):
-        if _top_module(py) not in side_modules:
-            continue
-        hits = _hyxlab_imports(py) & forbidden
+    for py in (ROOT / package).rglob("*.py"):
+        extra = {"strategies"} if str(py.relative_to(ROOT)) in ENTRYPOINTS else set()
+        hits = _internal_imports(py) - allowed - extra
         if hits:
-            bad.append(f"{py.relative_to(PKG.parent)} imports {sorted(hits)}")
+            bad.append(f"{py.relative_to(ROOT)} imports {sorted(hits)}")
     return bad
 
 
-def test_collection_never_imports_sim_side():
-    assert _violations(COLLECTION, SIM) == []
+def test_collector_imports_kernel_only():
+    assert _violations("collector") == []
 
 
-def test_sim_side_never_imports_collection():
-    assert _violations(SIM, COLLECTION) == []
+def test_simulator_never_imports_collector():
+    assert _violations("simulator") == []
 
 
-def test_every_module_is_classified():
-    """New top-level modules must be assigned a side (or the kernel)."""
-    kernel = {
-        "models",
-        "store",
-        "streamstore",
-        "fees",
-        "migrate",
-        "watchlist",
-        "stations",
-        "__init__",
-    }
-    tops = {_top_module(p) for p in PKG.rglob("*.py")}
-    unclassified = tops - COLLECTION - SIM - kernel
-    assert unclassified == set(), f"classify in tests/test_boundaries.py: {unclassified}"
+def test_strategies_never_import_collector():
+    assert _violations("strategies") == []
+
+
+def test_kernel_imports_nothing_above_it():
+    assert _violations("hyxlab") == []

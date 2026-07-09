@@ -2,13 +2,13 @@
 
 from datetime import UTC, date, datetime
 
-from hyxlab.capabilities import INDEPENDENT_NO_BOOK
+from collector.venues.kalshi import parse_event_date, to_market_info, to_snapshot
 from hyxlab.models import Forecast, MarketInfo, Order, Snapshot
-from hyxlab.sim import Simulator
-from hyxlab.strategies import IntramarketRebalance, WeatherNWS
-from hyxlab.strategies.cross_venue import CrossVenueArb, Pair
-from hyxlab.strategy import Strategy
-from hyxlab.venues.kalshi import parse_event_date, to_market_info, to_snapshot
+from simulator.capabilities import INDEPENDENT_NO_BOOK
+from simulator.sim import Simulator
+from simulator.strategy import Strategy
+from strategies import IntramarketRebalance, WeatherNWS
+from strategies.cross_venue import CrossVenueArb, Pair
 
 TS0 = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
 TS1 = datetime(2026, 7, 6, 12, 5, tzinfo=UTC)

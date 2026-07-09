@@ -11,9 +11,9 @@ invitation to chase millisecond bots.
 
 from __future__ import annotations
 
-from hyxlab.capabilities import INDEPENDENT_NO_BOOK
 from hyxlab.models import Order, Snapshot
-from hyxlab.strategy import Context, Strategy
+from simulator.capabilities import INDEPENDENT_NO_BOOK
+from simulator.strategy import Context, Strategy
 
 
 class IntramarketRebalance(Strategy):

@@ -23,11 +23,15 @@ echo "== sync stable venv deps =="
 "$STABLE/.venv/bin/pip" install -q -r "$DEV/scripts/requirements-stable.txt"
 
 echo "== smoke-import in stable venv =="
-(cd "$STABLE" && .venv/bin/python -c "import hyxlab.streamd, hyxlab.collect, hyxlab.sweep")
+(cd "$STABLE" && .venv/bin/python -c "import collector.streamd, collector.collect, collector.sweep, simulator.shadow")
 
-echo "== restart stream daemon (timers pick up new code on next run) =="
-systemctl --user restart hyxlab-stream.service
+echo "== install systemd units (repo scripts/systemd/ is canonical) =="
+cp "$DEV"/scripts/systemd/hyxlab-* ~/.config/systemd/user/
+systemctl --user daemon-reload
+
+echo "== restart daemons (timers pick up new code on next run) =="
+systemctl --user restart hyxlab-stream.service hyxlab-shadow.service
 sleep 3
-systemctl --user is-active hyxlab-stream.service
+systemctl --user is-active hyxlab-stream.service hyxlab-shadow.service
 
 echo "== promoted: $(git -C "$STABLE" log --oneline -1) =="

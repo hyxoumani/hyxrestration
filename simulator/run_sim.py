@@ -1,6 +1,6 @@
 """Replay stored snapshots through the baseline strategies and print metrics.
 
-    python -m hyxlab.run_sim [--db data/hyxlab.duckdb]
+    python -m simulator.run_sim [--db data/hyxlab.duckdb]
 
 Cross-venue arb runs only if pairs are configured in the watchlist (each
 pair must be human-verified for identical resolution rules first).
@@ -11,12 +11,12 @@ from __future__ import annotations
 import argparse
 import json
 
-from hyxlab.capabilities import live_feed_caps, partition_runnable
-from hyxlab.sim import Simulator
 from hyxlab.store import Store
-from hyxlab.strategies import CrossVenueArb, IntramarketRebalance, WeatherNWS
-from hyxlab.strategies.cross_venue import Pair
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
+from simulator.capabilities import live_feed_caps, partition_runnable
+from simulator.sim import Simulator
+from strategies import CrossVenueArb, IntramarketRebalance, WeatherNWS
+from strategies.cross_venue import Pair
 
 
 def main() -> None:

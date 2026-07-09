@@ -1,4 +1,4 @@
-"""python -m hyxlab.simui [--port 8877] — interactive market-replay UI."""
+"""python -m simulator.simui [--port 8877] — interactive market-replay UI."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import argparse
 import asyncio
 import contextlib
 
-from hyxlab.simui import session as sess
-from hyxlab.simui.server import run
+from simulator.simui import session as sess
+from simulator.simui.server import run
 
 
 def main() -> None:

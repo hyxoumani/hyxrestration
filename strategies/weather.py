@@ -25,7 +25,7 @@ from datetime import timedelta
 
 from hyxlab.models import MarketInfo, Order, Snapshot
 from hyxlab.stations import SERIES_TO_STATION
-from hyxlab.strategy import Context, Strategy
+from simulator.strategy import Context, Strategy
 
 
 def _phi(z: float) -> float:

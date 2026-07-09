@@ -1,0 +1,14 @@
+[Unit]
+Description=hyxlab shadow harness (ledger-only live paper trading)
+After=network-online.target hyxlab-stream.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m simulator.shadow --latency 2 --poll 20
+Restart=always
+RestartSec=30
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target

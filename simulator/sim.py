@@ -30,10 +30,10 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from hyxlab.capabilities import check_capabilities
 from hyxlab.fees import FEE_MODELS, FeeModel
 from hyxlab.models import Cancel, Fill, MarketInfo, Order, Snapshot
-from hyxlab.strategy import Context, Strategy
+from simulator.capabilities import check_capabilities
+from simulator.strategy import Context, Strategy
 
 
 class SimAccountingError(AssertionError):
@@ -68,7 +68,7 @@ class Simulator:
         latency: float = 0.0,
     ) -> None:
         # Capability guard: refuse vacuous backtests up front. Strategies
-        # with requirements need a feed declaration (hyxlab.capabilities
+        # with requirements need a feed declaration (simulator.capabilities
         # helpers) — undeclared counts as absent.
         check_capabilities(strategies, data_capabilities)
         self.markets = markets

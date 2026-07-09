@@ -5,9 +5,9 @@ markets + hourly candles since each series' watermark, and logs progress
 to sweep_log. Idempotent: watermarks + anti-join inserts make re-runs and
 crashes safe; a re-run resumes where the last one stopped.
 
-    python -m hyxlab.sweep --days 60            # initial retention capture
-    python -m hyxlab.sweep --days 2             # daily incremental
-    python -m hyxlab.sweep --days 2 --limit 20  # smoke test
+    python -m collector.sweep --days 60            # initial retention capture
+    python -m collector.sweep --days 2             # daily incremental
+    python -m collector.sweep --days 2 --limit 20  # smoke test
 
 Rationale: Kalshi purges market data ~60-90 days after settlement
 (verified 2026-07-06); anything not swept is gone. The allowlist excludes
@@ -26,8 +26,8 @@ from pathlib import Path
 import duckdb
 import requests
 
+from collector.venues import kalshi
 from hyxlab.store import Store
-from hyxlab.venues import kalshi
 
 DEFAULT_CATEGORIES = [
     "Economics",

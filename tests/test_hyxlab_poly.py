@@ -3,14 +3,14 @@ round-trips, YES-normalization of trades."""
 
 from datetime import UTC, datetime
 
-from hyxlab.store import Store
-from hyxlab.venues.polymarket import (
+from collector.venues.polymarket import (
     gamma_market_info,
     iter_markets_by_volume,
     poly_trade_row,
     price_rows,
     token_pair,
 )
+from hyxlab.store import Store
 
 GAMMA_ROW = {
     "id": "558963",

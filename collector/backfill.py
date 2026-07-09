@@ -7,8 +7,8 @@ Pulls into the same DuckDB file the live collector uses:
   MOS forecast highs as-issued (no-lookahead model inputs).
 
 Run:
-    python -m hyxlab.backfill --days 365
-    python -m hyxlab.backfill --days 365 --series KXHIGHNY --stations NYC
+    python -m collector.backfill --days 365
+    python -m collector.backfill --days 365 --series KXHIGHNY --stations NYC
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import requests
 
+from collector.venues import iem, kalshi
 from hyxlab.store import Store
-from hyxlab.venues import iem, kalshi
 
 WEATHER_SERIES = ["KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHAUS", "KXHIGHDEN"]
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from hyxlab.models import Order, Snapshot
-from hyxlab.strategy import Context, Strategy
+from simulator.strategy import Context, Strategy
 
 
 class TightSpreadProbe(Strategy):

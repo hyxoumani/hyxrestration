@@ -1,0 +1,6 @@
+[Unit]
+Description=hyxlab daily data-quality checks
+[Service]
+Type=oneshot
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.qa

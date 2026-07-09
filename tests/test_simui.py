@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from hyxlab.bookreplay import BookReplayer
 from hyxlab.models import MarketInfo
-from hyxlab.simui.session import ReplaySession, list_events, load_session
 from hyxlab.streamstore import BookEvent, StreamStore, StreamTrade
+from simulator.bookreplay import BookReplayer
+from simulator.simui.session import ReplaySession, list_events, load_session
 
 T0 = datetime(2026, 7, 7, 12, 0)  # naive UTC, as stored
 
@@ -162,7 +162,7 @@ def test_ensure_metadata_retries_and_sanitizes(monkeypatch):
     s = make_session(image())
     s.meta_loaded = False
     late = {("kalshi", "EV-M1"): MarketInfo("kalshi", "EV-M1", title="Late", result="yes")}
-    monkeypatch.setattr("hyxlab.simui.session._try_load_markets", lambda _db: late)
+    monkeypatch.setattr("simulator.simui.session._try_load_markets", lambda _db: late)
     assert s.ensure_metadata() is True
     info = s.sim.markets[("kalshi", "EV-M1")]
     assert info.title == "Late"
@@ -275,11 +275,11 @@ def test_chunked_session_replay_equals_one_shot_run():
     replay_snapshots -> Simulator.run backtest path."""
     import random
 
-    from hyxlab.bookreplay import replay_snapshots
-    from hyxlab.capabilities import LIVE_VENUE_CAPS
-    from hyxlab.sim import Simulator
-    from hyxlab.simui.session import ManualTrader
-    from hyxlab.strategies.probe import TightSpreadProbe
+    from simulator.bookreplay import replay_snapshots
+    from simulator.capabilities import LIVE_VENUE_CAPS
+    from simulator.sim import Simulator
+    from simulator.simui.session import ManualTrader
+    from strategies.probe import TightSpreadProbe
 
     events, gaps = _synthetic_stream()
     mids = sorted({e.market_id for e in events})

@@ -6,54 +6,63 @@ Strategy-testing lab for prediction markets. Full component spec:
 
 ## Layers
 
+Physical package split (2026-07-09): four root packages with the import
+boundary test-enforced by `tests/test_boundaries.py` — `collector/` and
+`simulator/` never import each other; `strategies/` may import
+simulator + kernel; `hyxlab/` is the shared kernel (models, store,
+streamstore, fees, migrate, watchlist, stations). Simulator runner
+entrypoints (`run_sim`, `run_backtest`, `shadow`, `simui/server`) are
+the only sim modules allowed to wire in `strategies`; the engine stays
+strategy-agnostic.
+
 ```
-connectors (venues/*)  →  archive store (store.py, DuckDB)
+collector/ (venues/*, sweeps, streamd, qa)  →  archive store (hyxlab/store.py, DuckDB)
         ↓ scheduled by systemd timers (collect 5min, sweep daily)
 alignment (Context / FeatureView planned)   ← the ONLY time-sensitive read path
         ↓
-sim engine (sim.py) ←→ strategies (strategies/*)
+sim engine (simulator/sim.py) ←→ strategies (strategies/*)
         ↓
-harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
+harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 ```
 
 ## Module map
 
 - `hyxlab/models.py` — typed records (Snapshot, MarketInfo, Order incl.
   open/close + GTC/IOC, Cancel, Fill, Forecast, EconVintage, NewsItem).
-- `hyxlab/venues/` — kalshi, polymarket, nws, iem, alfred, alpaca_news
+- `collector/venues/` — kalshi, polymarket, nws, iem, alfred, alpaca_news
   (pure fetch→records; sessions injected; fixtures in tests/fixtures/);
   kalshi_ws + polymarket_ws (WS auth/payloads/parsers, no sockets).
 - `hyxlab/store.py` — schema, naive-UTC, insert_new dedup, watermarks,
   candles_as_snapshots (with crossed-candle gate), mirror tripwire.
 - `hyxlab/streamstore.py` — stream archive (own DuckDB: book_events,
   stream_trades, stream_gaps; buffered flush bursts).
-- `hyxlab/streamd.py` — stream daemon (asyncio, reconnect/re-seed/
+- `collector/streamd.py` — stream daemon (asyncio, reconnect/re-seed/
   gap-marking; systemd `hyxlab-stream.service`).
-- `hyxlab/sweep.py` — exchange-wide archival sweep + `--doctor`.
-- `hyxlab/trades_backfill.py` — trade-tape retro-pass (races retention).
-- `hyxlab/qa.py` — daily data-quality checks (`hyxlab-qa.timer`).
-- `hyxlab/bookreplay.py` — stream events → ms-fidelity Snapshot stream
+- `collector/sweep.py` — exchange-wide archival sweep + `--doctor`.
+- `collector/trades_backfill.py` — trade-tape retro-pass (races retention).
+- `collector/qa.py` — daily data-quality checks (`hyxlab-qa.timer`).
+- `simulator/bookreplay.py` — stream events → ms-fidelity Snapshot stream
   (gap-honest, complete-image emission, mirror-derived asks).
-- `hyxlab/sim.py` — event loop (`step()`/`finalize()`/`run()`), order
+- `simulator/sim.py` — event loop (`step()`/`finalize()`/`run()`), order
   lifecycle, runtime invariants, latency model (`latency=Δ`; Δ=0 = legacy).
-- `hyxlab/shadow.py` — Tier-3 shadow harness (`hyxlab-shadow.service`):
+- `simulator/shadow.py` — Tier-3 shadow harness (`hyxlab-shadow.service`):
   live Simulator on a stream-archive tail, ledger-only fills per run_id.
-- `hyxlab/simui/` — interactive market-replay UI (`python -m
-  hyxlab.simui`, localhost:8877): archived event groups replay like a
+- `simulator/simui/` — interactive market-replay UI (`python -m
+  simulator.simui`, localhost:8877): archived event groups replay like a
   live Kalshi event page; user + strategy orders fill through the real
   Simulator (ManualTrader queue → step()). session.py (ReplaySession;
   seek = flat restart; chunked advance proven ≡ one-shot sim.run),
   server.py (websockets clock, guarded — errors log+pause, never die
   silently), static/index.html (single-file Kalshi-style UI with WS
   auto-reconnect). Design: `docs/plans/simui/plan.md`.
-- `hyxlab/poly_sweep.py` — Polymarket archival sweep (daily timer).
-- `hyxlab/strategy.py` — Strategy ABC (+ `requires` capability
+- `collector/poly_sweep.py` — Polymarket archival sweep (daily timer).
+- `simulator/strategy.py` — Strategy ABC (+ `requires` capability
   declaration) + Context (hides settlements, as-of forecasts,
   open_orders for Cancel).
-- `hyxlab/capabilities.py` — strategy↔data capability contract
+- `simulator/capabilities.py` — strategy↔data capability contract
   (vacuous backtests raise instead of returning zero).
 - `hyxlab/fees.py` — parabolic models, per-series `kalshi_model()`.
-- `hyxlab/harness.py` — run manifests (git rev, params, fingerprint).
+- `simulator/harness.py` — run manifests (git rev, params, fingerprint).
 - `hyxlab/migrate.py` — numbered migrations.
 - Entrypoints: `collect`, `sweep`, `backfill`, `run_sim`, `run_backtest`,
   `streamd`.

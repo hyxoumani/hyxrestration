@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from hyxlab.models import Order, Snapshot
-from hyxlab.strategy import Context, Strategy
+from simulator.strategy import Context, Strategy
 
 
 @dataclass(frozen=True)

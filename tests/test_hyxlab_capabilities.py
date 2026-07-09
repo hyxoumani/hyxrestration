@@ -6,16 +6,16 @@ from datetime import UTC, datetime
 
 import pytest
 
-from hyxlab.capabilities import (
+from hyxlab.models import MarketInfo, Snapshot
+from hyxlab.store import Store
+from simulator.capabilities import (
     INDEPENDENT_NO_BOOK,
     VacuousBacktestError,
     candle_feed_caps,
     live_feed_caps,
 )
-from hyxlab.models import MarketInfo, Snapshot
-from hyxlab.sim import Simulator
-from hyxlab.store import Store
-from hyxlab.strategies import IntramarketRebalance, WeatherNWS
+from simulator.sim import Simulator
+from strategies import IntramarketRebalance, WeatherNWS
 
 T0 = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
 
@@ -76,7 +76,7 @@ def test_strategy_without_requirements_runs_undeclared():
 
 
 def test_partition_runnable_splits_loudly_skippable_strategies():
-    from hyxlab.capabilities import partition_runnable
+    from simulator.capabilities import partition_runnable
 
     reb, weather = IntramarketRebalance(), WeatherNWS()
     runnable, refused = partition_runnable([reb, weather], {"kalshi": frozenset()})

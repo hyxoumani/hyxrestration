@@ -1,0 +1,14 @@
+[Unit]
+Description=hyxlab live stream daemon (kalshi books+trades, poly books)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.streamd
+Restart=always
+RestartSec=10
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target

@@ -4,8 +4,8 @@ order's market at/after t+Δ — the decision-time quote is never fillable."""
 from datetime import UTC, datetime, timedelta
 
 from hyxlab.models import Cancel, MarketInfo, Order, Snapshot
-from hyxlab.sim import Simulator
-from hyxlab.strategy import Strategy
+from simulator.sim import Simulator
+from simulator.strategy import Strategy
 
 T0 = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 

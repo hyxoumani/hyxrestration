@@ -3,9 +3,9 @@
 from datetime import UTC, date, datetime
 from unittest.mock import patch
 
+from collector.venues.iem import get_mos_forecasts
+from collector.venues.kalshi import candle_row
 from hyxlab.store import Store
-from hyxlab.venues.iem import get_mos_forecasts
-from hyxlab.venues.kalshi import candle_row
 
 MOS_CSV = """runtime,ftime,model,n_x,tmp,dpt,cld,wsp,p12,q12,t12_1,t12_2,station,q24,p24,t24,t12
 2025-07-01 00:00:00,2025-07-02 00:00:00,MEX,86,77,72,OV,4,87,4.0,23,52,KNYC,,,,23/52

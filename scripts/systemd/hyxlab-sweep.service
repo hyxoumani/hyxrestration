@@ -1,0 +1,6 @@
+[Unit]
+Description=hyxlab daily incremental sweep
+[Service]
+Type=oneshot
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+ExecStart=/usr/bin/flock /home/devs/workspace/hyxrestration/data/writer.lock /home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.sweep --days 2

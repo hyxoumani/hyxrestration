@@ -28,13 +28,13 @@ from datetime import UTC, datetime, timedelta
 
 import duckdb
 
-from hyxlab.bookreplay import BookReplayer, replay_snapshots
-from hyxlab.capabilities import LIVE_VENUE_CAPS
 from hyxlab.models import Cancel, MarketInfo, Order
-from hyxlab.sim import Simulator
 from hyxlab.store import Store
-from hyxlab.strategy import Context, Strategy
 from hyxlab.streamstore import BookEvent, StreamTrade
+from simulator.bookreplay import BookReplayer, replay_snapshots
+from simulator.capabilities import LIVE_VENUE_CAPS
+from simulator.sim import Simulator
+from simulator.strategy import Context, Strategy
 
 STREAM_DB = "data/hyxstream.duckdb"
 ARCHIVE_DB = "data/hyxlab.duckdb"

@@ -104,7 +104,7 @@ class Context:
 class Strategy(ABC):
     name: str = "strategy"
     # Book-structure capabilities this strategy's trigger depends on (see
-    # hyxlab.capabilities). The Simulator refuses to run a strategy whose
+    # simulator.capabilities). The Simulator refuses to run a strategy whose
     # requirements no venue in the declared data feed satisfies — a
     # backtest that cannot fill is vacuous, not a null result.
     requires: frozenset[str] = frozenset()

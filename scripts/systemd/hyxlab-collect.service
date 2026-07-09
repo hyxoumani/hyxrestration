@@ -1,0 +1,6 @@
+[Unit]
+Description=hyxlab 5-min collector (kalshi/poly books + NWS)
+[Service]
+Type=oneshot
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+ExecStart=/usr/bin/flock -n /home/devs/workspace/hyxrestration/data/writer.lock /home/devs/workspace/hyxrestration-stable/.venv/bin/python -m collector.collect --once

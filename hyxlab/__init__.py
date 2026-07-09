@@ -1,32 +1,26 @@
-"""hyxlab — strategy-testing lab for prediction markets.
+"""hyxlab — shared kernel for the prediction-market strategy lab.
 
-Backbone for testing prediction-market strategies against recorded data
-before any capital decision. Three layers:
+The lab is split into four top-level packages with a test-enforced
+import boundary (tests/test_boundaries.py):
 
-1. **Collect** (`hyxlab.collect`): polls public, auth-free endpoints —
-   Kalshi markets (top-of-book included), Polymarket CLOB books, NWS
-   forecasts — into a DuckDB file. Run it for days/weeks to build the
-   dataset strategies replay against.
+- `collector/` — data capture: venue connectors, sweeps, stream
+  daemons, QA. Runs unattended 24/7 from the stable worktree; its
+  failure loses unrecoverable data.
+- `simulator/` — replay + simulation: sim engine, Strategy ABC,
+  capability contracts, book replay, shadow harness, simui.
+- `strategies/` — strategies under test. Each is a candidate to be
+  falsified, not a recommendation. May import simulator + kernel.
+- `hyxlab/` (this package) — the shared kernel both sides may import:
+  typed records (`models`), DuckDB archive (`store`), stream archive
+  (`streamstore`), fee models (`fees`), migrations (`migrate`),
+  watchlist, and station metadata.
 
-2. **Simulate** (`hyxlab.sim`): replays stored snapshots in time order
-   through `Strategy` objects, fills orders against displayed quotes with
-   verified venue fee models (`hyxlab.fees`), and settles positions at
-   market resolution. No lookahead: strategies only see snapshots and
-   forecasts fetched before the current timestamp.
-
-3. **Strategies** (`hyxlab.strategies`): baselines under test —
-   intramarket YES+NO rebalancing, cross-venue arb, NWS-based weather
-   trading. Each is a candidate to be falsified, not a recommendation.
-
-Known v1 simplifications (documented, revisit before trusting results):
-- Snapshot-based, not full order flow. Fill model is optimistic for
-  takers (assumes displayed size is still there) and conservative for
-  makers (fills only when the opposite touch strictly crosses the limit).
-- Buy-only orders (buying NO expresses short-YES); positions are held to
-  settlement. Market-making strategies need a richer engine — v2.
+Neither collector nor simulator may import the other; both go through
+this kernel only.
 
 Usage:
-    python -m hyxlab.collect --once          # one collection cycle
-    python -m hyxlab.collect --interval 300  # poll every 5 minutes
-    python -m hyxlab.run_sim                 # replay stored data through baselines
+    python -m collector.collect --once   # one collection cycle
+    python -m collector.sweep --doctor   # archive health
+    python -m simulator.run_backtest     # pre-registered backtest replay
+    python -m simulator.simui            # market-replay UI (localhost:8877)
 """

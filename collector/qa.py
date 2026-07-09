@@ -1,6 +1,6 @@
 """Daily data-quality checks over both archives (scheduled: hyxlab-qa.timer).
 
-    python -m hyxlab.qa [--hours 26]
+    python -m collector.qa [--hours 26]
 
 Read-only. Every check prints PASS/FAIL; any FAIL makes the exit code 1
 so the failure lands loudly in the journal. Promoted from the one-off

@@ -25,8 +25,8 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Response
 
-from hyxlab.simui import session as sess
-from hyxlab.strategies.probe import TightSpreadProbe
+from simulator.simui import session as sess
+from strategies.probe import TightSpreadProbe
 
 STATIC = Path(__file__).parent / "static" / "index.html"
 TICK_S = 0.12  # wall seconds per clock tick

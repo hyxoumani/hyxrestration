@@ -6,12 +6,12 @@ from datetime import UTC, datetime, timedelta
 
 import duckdb
 
+from collector.venues.kalshi_ws import parse_message
 from hyxlab.models import MarketInfo, Order, Snapshot
-from hyxlab.shadow import ShadowLedger, ShadowRunner
-from hyxlab.sim import Simulator
-from hyxlab.strategy import Strategy
 from hyxlab.streamstore import StreamStore
-from hyxlab.venues.kalshi_ws import parse_message
+from simulator.shadow import ShadowLedger, ShadowRunner
+from simulator.sim import Simulator
+from simulator.strategy import Strategy
 
 T0 = datetime(2026, 7, 8, 12, 0, tzinfo=UTC)
 

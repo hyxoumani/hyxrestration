@@ -9,8 +9,8 @@ Each cycle:
   fetched_at for no-lookahead replay.
 
 Run:
-    python -m hyxlab.collect --once
-    python -m hyxlab.collect --interval 300
+    python -m collector.collect --once
+    python -m collector.collect --interval 300
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ from datetime import UTC, datetime
 
 import requests
 
+from collector.venues import kalshi, nws, polymarket
 from hyxlab.store import Store
-from hyxlab.venues import kalshi, nws, polymarket
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
 __all__ = ["DEFAULT_WATCHLIST", "collect_once", "load_watchlist", "main"]

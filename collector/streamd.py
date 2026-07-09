@@ -3,7 +3,7 @@ archive. This data is unrecoverable — neither venue serves historical
 books or full prints — so the daemon's one job is: never lose what it saw,
 and mark honestly what it missed (stream_gaps).
 
-    python -m hyxlab.streamd [--db data/hyxstream.duckdb]
+    python -m collector.streamd [--db data/hyxstream.duckdb]
                              [--watchlist hyxlab/watchlist.json]
                              [--smoke SECONDS]   # bounded run, then exit
 
@@ -35,8 +35,8 @@ from pathlib import Path
 
 import websockets
 
+from collector.venues import kalshi, kalshi_ws, polymarket_ws
 from hyxlab.streamstore import StreamStore
-from hyxlab.venues import kalshi, kalshi_ws, polymarket_ws
 
 FLUSH_SECS = 15.0
 STATS_SECS = 300.0
@@ -190,7 +190,7 @@ class Daemon:
         pairs = self.watchlist.get("polymarket_pairs", [])
         assets = {tok for pair in pairs for tok in pair[1:3]}
         try:
-            from hyxlab.venues import polymarket as poly
+            from collector.venues import polymarket as poly
 
             top = poly.iter_markets_by_volume(0.0, max_pages=1)  # one page, vol-desc
             for m in top[:POLY_TOP_MARKETS]:

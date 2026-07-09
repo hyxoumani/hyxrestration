@@ -1,6 +1,6 @@
 """Tier-1 historical backtest: candles → simulator → per-city report.
 
-    python -m hyxlab.run_backtest [--db ...] [--sigma 2.7] [--bias 0]
+    python -m simulator.run_backtest [--db ...] [--sigma 2.7] [--bias 0]
                                   [--min-edge 0.05] [--max-qty 20]
 
 Also prints the forecast-quality diagnostic (MAE/bias of day-ahead MOS
@@ -16,10 +16,10 @@ import json
 from collections import defaultdict
 from datetime import timedelta
 
-from hyxlab.capabilities import candle_feed_caps
-from hyxlab.sim import Simulator
 from hyxlab.store import Store
-from hyxlab.strategies import WeatherNWS
+from simulator.capabilities import candle_feed_caps
+from simulator.sim import Simulator
+from strategies import WeatherNWS
 
 
 def forecast_diagnostic(store: Store) -> dict[str, dict[str, float]]:

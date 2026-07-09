@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import pytest
 
 from hyxlab.models import Cancel, MarketInfo, Order, Snapshot
-from hyxlab.sim import SimAccountingError, Simulator
-from hyxlab.strategy import Strategy
+from simulator.sim import SimAccountingError, Simulator
+from simulator.strategy import Strategy
 
 T = [datetime(2026, 7, 6, 12, i * 5, tzinfo=UTC) for i in range(4)]
 
