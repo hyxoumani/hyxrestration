@@ -31,7 +31,15 @@ the next snapshot re-seeds).
   backfill/sweep re-run is safe. (Fixed a real dup-on-rerun defect.)
 - **Single writer**: DuckDB blocks even read_only connects while a
   writer is open. All scheduled writers flock `data/writer.lock`;
-  ad-hoc reads must wait for the 5-min collector (seconds).
+  ad-hoc reads must wait for the 5-min collector (seconds) — but the
+  **poly sweep holds the archive open for HOURS** (~7h observed
+  2026-07-08 walking 4k+ markets). Sim-side readers must degrade
+  gracefully and retry lazily (simui's `ensure_metadata` pattern),
+  never block on it.
+- **Enumeration tripwire (TODO)**: the Gamma offset-cap regression
+  (see [venues](venues.md)) would have silently halved the poly sweep;
+  it was caught by a lucky dead probe, not QA. The sweep should alarm
+  when the enumerated universe shrinks sharply vs. the archive count.
 - **Provenance**: every signal row carries when it became knowable
   (forecast runtime, vintage release, poll time). The no-lookahead
   boundary is enforced by this column, not convention.

@@ -14,7 +14,7 @@ record under `phase0/` — do not build on it.
 ## Commands
 
 ```bash
-# Test (73 tests; test-gate hook runs this on stop)
+# Test (150 tests; test-gate hook runs this on stop)
 .venv/bin/python -m pytest tests/ -q
 
 # Lint/Format (auto-format hook runs ruff on edit)

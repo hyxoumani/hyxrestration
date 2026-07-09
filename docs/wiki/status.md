@@ -1,9 +1,9 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-08** (data layer complete; sim platform underway —
-simui replay terminal shipped).
+Updated: **2026-07-08 late** (simui shipped+hardened; Gamma pagination
+regression fixed same-day; next: shadow-vs-replay divergence report).
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
-→ `docs/sessions/2026-07-07-14.md` (operational handoff, gitignored).
+→ `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 
 ## Where the project is
 
@@ -18,9 +18,12 @@ trips alarms:
   forward capture rides the daily sweep); live WS books (watchlist
   series) + exchange-wide trade firehose.
 - **Polymarket**: metadata + volume/liquidity series + ~60d hourly price
-  history for all markets ≥$10k volume (4,200; initial backfill
-  overnight) + trade tails (API caps at last 3,000/market — forward
-  tape is our WS); live books for top-50 volume markets' tokens.
+  history for all markets ≥$10k volume (universe now ~4,600 and growing)
+  + trade tails (API caps at last 3,000/market — forward tape is our
+  WS); live books for top-50 volume markets' tokens. **2026-07-08:
+  Gamma capped /markets offset at 2000 hours after that day's sweep —
+  enumeration moved to /markets/keyset same day (fix promoted to
+  stable before the next 05:00 run; see [venues](venues.md)).
 - **Ground truth**: 33k MOS forecasts, climate observations.
 - **Timers**: collect 5min; poly sweep 05:00; kalshi sweep 06:10;
   QA 07:00 UTC (both archives; tape-coverage + freshness alarms).
@@ -31,7 +34,9 @@ trips alarms:
 **Sim machinery already standing**: sim v2 (order lifecycle, accounting
 invariants), four correctness gates, capability guard, latency model
 (`Simulator(latency=Δ)`), BookReplayer (stream → ms snapshots; first
-Tier-2 sweep: 1s latency ≈ +0.4¢/contract). 128 tests green.
+Tier-2 sweep: 1s latency ≈ +0.4¢/contract), simui replay terminal with
+a proven chunked≡one-shot replay equivalence (see
+[simulation-honesty](simulation-honesty.md)). 150 tests green.
 
 **Falsification record**: weather v1 pre-reg FAIL (−$425, fees decide).
 
@@ -52,11 +57,14 @@ Tier-2 sweep: 1s latency ≈ +0.4¢/contract). 128 tests green.
 4. **B5 iteration machinery** — purged walk-forward, sweeps, DSR
    deflation with family-wide trial counting.
 5. **B6 calibration atlas** + event study v1.
-6. ~~Debug frontend~~ **simui v1 SHIPPED 2026-07-08**: interactive
-   market-replay terminal (`python -m hyxlab.simui`,
-   localhost:8877) — archived events replay like a live venue UI;
-   user buy/sell + attached strategies fill through the real
-   Simulator; per-account profile (cash/equity/positions/fills).
+6. ~~Debug frontend~~ **simui SHIPPED 2026-07-08** (v1 + Kalshi-style
+   restyle + resilience): interactive market-replay terminal
+   (`python -m hyxlab.simui`, localhost:8877) — archived events replay
+   like a live Kalshi event page; user buy/sell + attached strategies
+   fill through the real Simulator; per-account profile. Chunked
+   session replay proven bit-identical to the one-shot backtest path
+   (synthetic test + real 587k-event window). Client auto-reconnects;
+   server clock errors log + pause instead of dying silently.
    Stream-tier Kalshi only. Later: decision-replay overlay, doctor
    view, candle-tier + Polymarket replay.
 7. **Strategies** (only after 2–6): favorite-longshot pre-reg first;
@@ -64,11 +72,22 @@ Tier-2 sweep: 1s latency ≈ +0.4¢/contract). 128 tests green.
 
 ## Standing user items (non-blocking)
 
-**Off-box backup** (both DuckDB files — highest-value 30 min available);
+**Off-box backup** (all three DuckDB files — highest-value 30 min; needs
+a destination from the user; stakes rose: 10M+ unrefetchable rows, and
+the poly sweep holds a multi-hour write lock);
 `sudo timedatectl set-ntp true` (box ~20s fast; daemon logs the step);
 `git restore .claude/skills/compact/SKILL.md`; rotate Kalshi API key;
 Phase 0 write-up (pending prose artifact); micro-probe budget decision
-(parked until explicitly authorized).
+(parked until explicitly authorized); **simui as a systemd unit?** —
+currently dies with the dev session that launched it (user to confirm).
+
+## Small follow-ups (agent-actionable)
+
+- **Sweep-shrink tripwire**: alarm when the enumerated Polymarket
+  universe drops sharply vs. the archive's known count — the offset-cap
+  regression was caught by a lucky dead probe, not by QA.
+- Cross-venue pair candidates report (queue item 1) is mostly
+  mechanical and can ride along with other work.
 
 ## Hard rules in force
 

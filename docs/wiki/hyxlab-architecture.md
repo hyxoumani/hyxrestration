@@ -40,11 +40,12 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
   live Simulator on a stream-archive tail, ledger-only fills per run_id.
 - `hyxlab/simui/` — interactive market-replay UI (`python -m
   hyxlab.simui`, localhost:8877): archived event groups replay like a
-  live venue; user + strategy orders fill through the real Simulator
-  (ManualTrader queue → step()). session.py (ReplaySession, seek =
-  flat restart), server.py (websockets clock + control channel),
-  static/index.html (single-file terminal UI). Design:
-  `docs/plans/simui/plan.md`.
+  live Kalshi event page; user + strategy orders fill through the real
+  Simulator (ManualTrader queue → step()). session.py (ReplaySession;
+  seek = flat restart; chunked advance proven ≡ one-shot sim.run),
+  server.py (websockets clock, guarded — errors log+pause, never die
+  silently), static/index.html (single-file Kalshi-style UI with WS
+  auto-reconnect). Design: `docs/plans/simui/plan.md`.
 - `hyxlab/poly_sweep.py` — Polymarket archival sweep (daily timer).
 - `hyxlab/strategy.py` — Strategy ABC (+ `requires` capability
   declaration) + Context (hides settlements, as-of forecasts,
@@ -81,14 +82,15 @@ harness manifests (harness.py → data/runs/)  +  self-tests (tests/)
 - GPU is irrelevant here — everything is network/IO-bound; portable to
   a Pi (repo + venv + duckdb + .secrets + 2 systemd timers).
 
-## Build state (2026-07-07)
+## Build state (2026-07-08)
 
 B1 archive+sweep ✅, B2 sim v2 ✅, B3 self-tests ✅, all gates ✅,
-B7 stream daemon ✅ LIVE, B3.5 Kalshi tape ✅ (retro-pass running),
-stable deployment + import boundary ✅, daily QA ✅, BookReplayer +
-latency fills ✅ (123 tests). Next: shadow harness → B4 signals →
-B5 walk-forward/DSR → B6 atlas → debug frontend → first pre-reg
-strategy (infra-first order, user 2026-07-07).
+B7 stream daemon ✅ LIVE, B3.5 Kalshi tape ✅, stable deployment +
+import boundary ✅, daily QA ✅, BookReplayer + latency fills ✅,
+shadow harness ✅ LIVE, simui replay terminal ✅ (150 tests,
+2026-07-08). Next: shadow-vs-replay divergence report → B4 signals →
+B5 walk-forward/DSR → B6 atlas → first pre-reg strategy (infra-first
+order, user 2026-07-07).
 
 ## Related
 - [data-pipeline](data-pipeline.md) · [simulation-honesty](simulation-honesty.md)

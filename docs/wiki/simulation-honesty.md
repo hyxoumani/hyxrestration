@@ -59,6 +59,17 @@ positions; I3 settlement conservation per market. An accounting bug can
 never be reported as PnL. Fuzz test: 300 random snapshots × random
 open/close/IOC orders must never trip them.
 
+## Replay-equivalence guarantee (2026-07-08)
+
+Feeding the sim incrementally (simui's `ReplaySession.advance` in
+arbitrary time chunks, with pending-gap bookkeeping) is proven to
+produce **bit-identical fills and equity** to the canonical one-shot
+`replay_snapshots → Simulator.run` path — permanent test on a seeded
+synthetic stream (images/deltas/gaps/latency), plus a real-data check
+on the 587k-event KXHIGHCHI-26JUL07 window (35/35 fills, 56,454 equity
+points identical). Consequence: what a human trades in simui is exactly
+what a backtest would score; there is one replay semantics, not two.
+
 ## Correctness gates (each caught a real defect)
 
 - **Forecast MAE gate**: day-ahead MOS vs climate report must be

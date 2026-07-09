@@ -66,6 +66,19 @@ Format: what happened → root cause → error type → prevention tier
     store tests now assert stored ts values for tz-aware inputs on the
     new writers; any future writer must ship with the same assertion.
 
+11. **`pgrep -f` self-match RECURRED (item 4's exact failure, twice in
+    one session).** `pkill -f "hyxlab.simui"` inside compound commands
+    killed the agent's own wrapper shell (the harness embeds the whole
+    command line in a `bash -c` cmdline, so the pattern always
+    self-matches) — aborting the rest of the script both times,
+    including a server restart that then never ran. Root cause: the
+    gotcha tier relied on remembering; compound commands make the
+    self-match invisible. Type: `tooling-footgun` (recurrence).
+    Prevention: ESCALATED gotcha → RULE (`.claude/rules/ops.md`):
+    never `pkill -f <pattern>` when the pattern appears in your own
+    command line — use a bracket class (`sim[u]i`) AND keep launch
+    strings out of the killing command, or kill by held PID.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
@@ -74,3 +87,14 @@ adopted: **probe-before-build** (the data_contracts.md live-validation
 pass) — keep applying it to every new source/driver. Items 2+3 justified
 the capability guard, which landed 2026-07-07 and immediately caught two
 further latent instances of item 3's pattern.
+
+Recurrence audit (2026-07-08): item 1 recurred as item 10 (escalated to
+test-enforced), item 4 recurred as item 11 (escalated to rule). Both
+recurrences were gotcha-tier lessons that relied on memory — the pattern
+is clear: **gotchas do not survive sessions; anything that recurs must
+jump straight to rule/test/hook.** A counter-example worth recording:
+the ops-blindness lesson (item 5) DID pay off 2026-07-08 — a dead
+probe's captured output was the only reason the Gamma offset-cap
+regression was caught before it silently halved the poly sweep. The
+remaining follow-through: enumeration-shrink tripwire (see
+[data-pipeline](data-pipeline.md)).
