@@ -37,23 +37,25 @@ GKG_PAUSE_S = 0.2
 
 
 def fetch_alfred(session: requests.Session, today=None) -> dict[str, list[EconVintage]]:
+    """Fresh session per attempt: once a request to alfred.stlouisfed.org
+    times out, the shared keep-alive connection stays wedged and every
+    later request on that session times out too (observed 2026-07-11:
+    whole runs failed while a fresh-session probe succeeded instantly).
+    The caller's session is deliberately not used here."""
     today = today or datetime.now(UTC).date()
     out: dict[str, list[EconVintage]] = {}
     for series in alfred.SERIES:
-        # ALFRED throttles rapid sequential fetches into read-timeouts
-        # (observed 2026-07-11: all series timed out at 0.5s pacing
-        # while a lone probe succeeded) — retry once with a long pause.
-        for attempt in range(2):
+        for attempt in range(3):
             try:
-                out[series] = alfred.get_vintage(series, today, session=session)
+                out[series] = alfred.get_vintage(series, today, session=requests.Session())
                 break
             except Exception as exc:
                 print(
-                    f"[signals] alfred {series}{' retry' if attempt else ''}: {type(exc).__name__}",
+                    f"[signals] alfred {series} attempt {attempt + 1}: {type(exc).__name__}",
                     flush=True,
                 )
-                time.sleep(15)
-        time.sleep(3)
+                time.sleep(10)
+        time.sleep(2)
     return out
 
 
