@@ -79,6 +79,27 @@ Format: what happened → root cause → error type → prevention tier
     command line — use a bracket class (`sim[u]i`) AND keep launch
     strings out of the killing command, or kill by held PID.
 
+12. **flush() lost the batch it claimed to hold (silent archive holes,
+    2026-07-11).** `streamstore.flush()` swapped buffers into locals
+    *before* `duckdb.connect()`; when a reader (shadow/simui/QA) briefly
+    held the file lock, connect raised and the 15 s batch was
+    garbage-collected — while the flusher logged "buffer held for
+    retry", which was false. 18 occurrences Jul 9–11 left unmarked holes
+    that surfaced only as slowly-growing negative reconstructed book
+    levels in daily QA (and even that signal was ~90% noise, because the
+    QA reconstruction itself was unsound — it keyed snapshots on
+    `max(seq)`, but Kalshi seq is subscription-scoped and resets per
+    reconnect). Root cause chain: recovery path never tested + recovery
+    log message asserted behavior the code didn't have + QA check
+    written against imagined rather than observed seq semantics. Type:
+    `untested-recovery-path` + `wrong-assumption` (venue seq semantics).
+    Prevention: regression test now proves a failed flush preserves the
+    buffer; QA reconstruction rewritten time-ordered with a seeded
+    seq-reset test; the 18 lost windows retro-marked as
+    `flush_failure_backfill` gap rows. Lesson worth escalating if it
+    recurs: **a log line describing a recovery guarantee is a claim —
+    test it like one.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

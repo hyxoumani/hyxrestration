@@ -1,7 +1,14 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-08 late** (simui shipped+hardened; Gamma pagination
-regression fixed same-day; next: shadow-vs-replay divergence report).
+Updated: **2026-07-11** (physical package split shipped 07-09:
+`collector/` / `simulator/` / `strategies/` / `hyxlab` kernel, systemd
+units vendored in `scripts/systemd/`, promote.sh installs them. QA
+negative-levels root cause found and fixed 07-11: flush() dropped its
+batch when a reader held the file lock — 18 silent 15s archive holes
+Jul 9–11, now retro-gap-marked; QA reconstruction was also unsound
+(max(seq) vs subscription-scoped seq) — rewritten time-ordered. All QA
+green. Next: shadow-vs-replay divergence report, ~2.9k shadow fills
+banked.)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 
@@ -76,18 +83,27 @@ a proven chunked≡one-shot replay equivalence (see
 a destination from the user; stakes rose: 10M+ unrefetchable rows, and
 the poly sweep holds a multi-hour write lock);
 `sudo timedatectl set-ntp true` (box ~20s fast; daemon logs the step);
-`git restore .claude/skills/compact/SKILL.md`; rotate Kalshi API key;
+rotate Kalshi API key;
 Phase 0 write-up (pending prose artifact); micro-probe budget decision
 (parked until explicitly authorized); **simui as a systemd unit?** —
 currently dies with the dev session that launched it (user to confirm).
 
 ## Small follow-ups (agent-actionable)
 
-- **Sweep-shrink tripwire**: alarm when the enumerated Polymarket
-  universe drops sharply vs. the archive's known count — the offset-cap
-  regression was caught by a lucky dead probe, not by QA.
+- ~~Sweep-shrink tripwire~~ DONE 2026-07-11 (QA: last completed day vs
+  prior-week peak, 0.5 threshold; reachability check is now lock-aware
+  so the multi-hour poly sweep no longer false-alarms).
 - Cross-venue pair candidates report (queue item 1) is mostly
   mechanical and can ride along with other work.
+
+## Watch items (not yet alarming)
+
+- **Poly swept universe declining organically** ~5%/day (8.7k Jul 2 →
+  5.7k Jul 10, smooth, predates the keyset change — resolve-churn, not
+  enumeration breakage). Tripwire threshold chosen so drift stays
+  quiet; investigate only if the trend accelerates or the sweep
+  runtime (now ~12h, was ~7h) keeps growing against a shrinking
+  universe.
 
 ## Hard rules in force
 
