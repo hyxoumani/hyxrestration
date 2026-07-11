@@ -22,7 +22,7 @@ virtual orders across 8 markets: crossing rule filled 75 vs queue
 bracket [78 pess, 86 opt] — aggregate roughly calibrated, slightly
 conservative, but order-level disagreement ~15% both ways (9
 crossing-fills lack queue evidence; 12 queue-certain fills the
-crossing rule forgoes). B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). Next: favorite-longshot pre-registration — design against strategy-verdicts.md rules with temporal holdout (the atlas already saw this data in aggregate; the pre-reg test must be forward/holdout to avoid circularity). Event study v1 is honestly data-blocked until the vintage log accumulates real release moments.)
+crossing rule forgoes). B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Next: cross-venue pair candidates report; maker-entry fav-long needs a NEW registration on Tier-2 data. Event study v1 data-blocked until the vintage log accumulates real releases.)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 

@@ -16,6 +16,16 @@ strategies stay in the repo as records.
   Smoke-test peek (+23% NYC, 10 days) was disclosed and proved to be
   noise — pre-registration did its job.
 
+- **FavoriteLongshot v1** (2026-07-11,
+  `docs/hyxpredict/prereg_favlong_backtest.md`): buy the favorite side
+  at taker ask in [0.80, 0.95], 24h before close, hold to settlement.
+  FAIL — ROI −5.0% on $74.4K/8,363 fills, negative in 4/5 categories,
+  both halves, both sub-bands; gross already negative, **the spread
+  decides**: realized 85.2% vs 89.0¢ paid at the ask, while the
+  atlas's favorite-underpricing lives at the MID. Successor idea
+  (maker-side entry, scoreable via queue-position bounds) requires a
+  NEW registration.
+
 ## Rejected without testing (documented reasoning)
 
 Latency/oracle arb (infra race, fees designed against it); copy-trading
@@ -25,10 +35,10 @@ structure — see [venues](venues.md)).
 
 ## Queue (each needs its own pre-registration)
 
-1. **Favorite-longshot bias** — most robust documented inefficiency
-   (longshots overpriced, favorites underpriced; QuantPedia synthesis,
-   arXiv 2602.19520). Model-free → testable on the existing 2.6M-candle
-   archive. Gated on: calibration atlas (B6) for honest buckets.
+1. ~~Favorite-longshot bias (taker)~~ — TESTED AND KILLED 2026-07-11
+   (see Dead list). The mid-level signature survives in the atlas; a
+   maker-entry variant would be a new registration, gated on Tier-2
+   stream data + queue-position-bound scoring.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive

@@ -103,4 +103,50 @@ return series through `simulator.iterate.deflated_sharpe`
 
 ## Results (appended after the run, unmodified)
 
-_pending_
+Run 2026-07-11 23:07 UTC, manifest
+`data/runs/20260711T230707_e7ba056d/` (n_trials_in_family=1). The
+console block's head lines were cut by a `tail` pipe; those fields
+were recomputed deterministically from the manifest's `fills.json`
+(same aggregation) and are marked ✎; all other lines are verbatim.
+
+```json
+{
+ "settled_fills": 8363,            ✎
+ "mean_entry_price": 0.8896,       ✎
+ "cost": 74400.26,                 ✎
+ "fees": 598.08,                   ✎
+ "payout": 71280.00,               ✎
+ "pnl": -3718.34,                  ✎
+ "roi": -0.05,                     ✎
+ "fee_share_of_gross": -0.1917,    ✎
+ "by_category": {
+  "Climate and Weather": {"n": 4442, "pnl": -1482.13},
+  "Commodities": {"n": 1746, "pnl": -804.03},
+  "Economics": {"n": 748, "pnl": -645.41},
+  "Financials": {"n": 1377, "pnl": -789.06},
+  "Science and Technology": {"n": 50, "pnl": 2.29}
+ },
+ "halves_pnl": {"H1": -1781.87, "H2": -1936.47},
+ "sub_bands_pnl": {"low": -1867.7, "high": -1850.64},
+ "robustness": {"R1": false, "R2": false, "R3": false, "R4": false},
+ "psr_supplementary": {
+  "sr": -0.1266, "sr0": 0.0, "dsr": 0.0,
+  "n_returns": 8363, "n_trials": 1,
+  "skew": -1.9166, "kurt": 4.8053
+ },
+ "verdict": "FAIL (kill)"
+}
+```
+
+**Verdict: FAIL (kill).** ROI −5.0% on $74.4K/8,363 fills; negative in
+4 of 5 categories, both halves, both sub-bands. Gross (pre-fee) was
+already −$3,120 — fees did not decide this one; the entry price did.
+
+**Post-mortem note (non-binding):** realized win rate 85.24% vs mean
+taker entry 88.96¢. The atlas's favorite-underpricing signature was
+measured at the candle MID; a taker pays the ASK. The ~1–2¢ half-
+spread plus the ask-based band selection consumed the entire aggregate
+calibration gap and more. Any successor registration must target
+maker-side entry (queue-position bounds now exist to score it) or
+demonstrate a mid-accessible edge — it would be a NEW registration,
+not a rescue of this one.
