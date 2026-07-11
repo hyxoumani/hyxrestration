@@ -136,3 +136,54 @@ def test_trades_swept_tracks_progress(tmp_path):
     store.mark_trades_swept("M1", 3, "ok")  # re-mark replaces, no dup
     assert store.conn.execute("SELECT count(*) FROM trades_swept").fetchone()[0] == 2
     store.close()
+
+
+def test_open_retry_waits_out_transient_lock(tmp_path, monkeypatch):
+    """Writers that must not die (poly sweep flush) wait out readers
+    holding the file lock instead of crashing mid-run."""
+    import duckdb
+
+    from hyxlab import store as store_mod
+
+    real_connect = duckdb.connect
+    attempts = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise duckdb.IOException("Could not set lock on file")
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(store_mod.duckdb, "connect", flaky)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    store = store_mod.open_retry(tmp_path / "t.duckdb", retries=5, delay=0)
+    assert attempts["n"] == 3
+    store.close()
+
+
+def test_open_retry_raises_after_exhaustion(tmp_path, monkeypatch):
+    import duckdb
+    import pytest
+
+    from hyxlab import store as store_mod
+
+    def always_locked(*args, **kwargs):
+        raise duckdb.IOException("Could not set lock on file")
+
+    monkeypatch.setattr(store_mod.duckdb, "connect", always_locked)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    with pytest.raises(duckdb.IOException):
+        store_mod.open_retry(tmp_path / "t.duckdb", retries=3, delay=0)
+
+
+def test_sweep_lock_excludes_second_holder_and_releases(tmp_path):
+    from collector.sweep import acquire_sweep_lock
+
+    path = str(tmp_path / "sweep.lock")
+    first = acquire_sweep_lock(path)
+    assert first is not None
+    assert acquire_sweep_lock(path) is None  # held -> refused
+    first.close()  # release (also happens on process death)
+    third = acquire_sweep_lock(path)
+    assert third is not None
+    third.close()

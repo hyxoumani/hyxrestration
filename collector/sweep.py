@@ -18,7 +18,9 @@ volume but are outside our strategy domains — one line to revisit.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -200,6 +202,20 @@ def doctor(store: Store) -> None:
         print(f"  {cat or '?'}: {n}")
 
 
+def acquire_sweep_lock(path: str) -> object | None:
+    """Exclusive non-blocking flock; None if another sweep holds it.
+    flock releases on process death — no stale-file failure mode (the
+    old touch()/exists() lock survived SIGKILL and blocked every later
+    sweep until removed by hand)."""
+    f = open(path, "a")  # noqa: SIM115 — handle must outlive this call
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab exchange-wide archival sweep")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
@@ -209,7 +225,6 @@ def main() -> None:
     ap.add_argument("--doctor", action="store_true", help="print archive health and exit")
     args = ap.parse_args()
 
-    lock = Path(args.db + ".lock")
     store = None
     for attempt in range(5):
         try:
@@ -219,23 +234,22 @@ def main() -> None:
             # A writer (collector/tradepass flush) holds the file; those
             # bursts last ~seconds.
             if attempt == 4:
+                # Nonzero so systemd records a failed run instead of a
+                # silent no-op success only QA would notice 36h later.
                 print("archive busy (writer active); try again in a few seconds")
-                return
+                sys.exit(75)  # EX_TEMPFAIL
             time.sleep(2)
     try:
         if args.doctor:
             doctor(store)
             return
-        if lock.exists():
-            print(f"[sweep] lock {lock} exists — another writer running? aborting")
-            return
-        lock.touch()
-        try:
-            totals = run_sweep(store, args.days, args.categories, limit=args.limit)
-            print(f"[sweep] done: {totals}")
-            print(f"[sweep] db={store.counts()}")
-        finally:
-            lock.unlink(missing_ok=True)
+        lock = acquire_sweep_lock(args.db + ".lock")
+        if lock is None:
+            print("[sweep] another sweep holds the lock; aborting")
+            sys.exit(75)
+        totals = run_sweep(store, args.days, args.categories, limit=args.limit)
+        print(f"[sweep] done: {totals}")
+        print(f"[sweep] db={store.counts()}")
     finally:
         store.close()
 

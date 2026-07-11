@@ -146,6 +146,32 @@ def _naive_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None)
 
 
+def open_retry(
+    path: str | Path = "data/hyxlab.duckdb",
+    *,
+    read_only: bool = False,
+    retries: int = 30,
+    delay: float = 2.0,
+) -> Store:
+    """Open the store, waiting out whoever briefly holds the file lock.
+
+    DuckDB excludes a writer while ANY reader is attached (and vice
+    versa), so a QA run, doctor, backtest, or simui session can make a
+    bare Store() raise mid-run — which can kill a multi-hour sweep at
+    an unguarded flush. Readers hold the file for seconds; waiting is
+    almost always right for a writer that must not die."""
+    import time
+
+    for attempt in range(retries):
+        try:
+            return Store(path, read_only=read_only)
+        except duckdb.Error:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
 class Store:
     def __init__(self, path: str | Path = "data/hyxlab.duckdb", read_only: bool = False) -> None:
         p = Path(path)

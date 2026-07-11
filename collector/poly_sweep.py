@@ -30,7 +30,7 @@ from pathlib import Path
 import requests
 
 from collector.venues import polymarket as poly
-from hyxlab.store import Store
+from hyxlab.store import open_retry
 
 FLUSH_MARKETS = 25
 LOCK_FILE = "data/writer.lock"
@@ -40,7 +40,7 @@ REQUEST_PAUSE_S = 0.25  # CLOB/data-api pacing
 def _flush(db: str, batch: dict) -> None:
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        store = Store(db)
+        store = open_retry(db)  # readers (QA/doctor/backtest) don't take the flock
         try:
             if batch["infos"]:
                 store.upsert_markets(batch["infos"])
@@ -78,7 +78,7 @@ def sweep(
 
     with open(LOCK_FILE, "a") as lock:  # ensure schema + read watermarks
         fcntl.flock(lock, fcntl.LOCK_EX)
-        store = Store(db)
+        store = open_retry(db)
         watermarks = store.poly_price_watermarks()
         store.close()
         fcntl.flock(lock, fcntl.LOCK_UN)
@@ -127,7 +127,11 @@ def sweep(
             time.sleep(2)
         totals["markets"] += 1
         if len(batch["infos"]) >= FLUSH_MARKETS or i == len(markets) - 1:
-            _flush(db, batch)
+            try:
+                _flush(db, batch)
+            except Exception as exc:  # batch is cleared only on success
+                totals["errors"] += 1
+                print(f"[poly] flush failed, batch held: {str(exc)[:80]}", flush=True)
         if (i + 1) % 200 == 0:
             rate = (i + 1) / (time.monotonic() - t0)
             eta = (len(markets) - i - 1) / rate / 60

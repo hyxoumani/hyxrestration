@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 import requests
 
 from collector.venues import kalshi, nws, polymarket
-from hyxlab.store import Store
+from hyxlab.store import Store, open_retry
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
 __all__ = ["DEFAULT_WATCHLIST", "collect_once", "load_watchlist", "main"]
@@ -84,7 +84,7 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="one cycle, then exit")
     args = ap.parse_args()
 
-    store = Store(args.db)
+    store = open_retry(args.db, retries=5)
     watchlist = load_watchlist(args.watchlist)
     sess = requests.Session()
     try:
