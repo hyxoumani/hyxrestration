@@ -102,6 +102,13 @@ def iter_markets_by_volume(
                 break
             time.sleep(5)
         if body is None:
+            # Same failure class the QA shrink-tripwire catches a day
+            # late — the same-run signal is this log line.
+            print(
+                f"[poly] keyset walk INCOMPLETE at {len(out)} markets"
+                f" (Gamma errors persisted after retry; status {getattr(resp, 'status_code', '?')})",
+                flush=True,
+            )
             break
         rows = [m for m in body["markets"] or [] if isinstance(m, dict)]
         # Server-side volume_num_min is belt-and-braces; keep the local
@@ -113,6 +120,13 @@ def iter_markets_by_volume(
         if float(rows[-1].get("volumeNum") or 0) < min_volume:
             break
         time.sleep(page_pause_s)
+    else:
+        if cursor is not None:
+            print(
+                f"[poly] keyset walk TRUNCATED at {len(out)} markets"
+                f" (max_pages={max_pages} exhausted, cursor live)",
+                flush=True,
+            )
     return out
 
 
@@ -182,7 +196,14 @@ def trades_tail(
             timeout=30,
         )
         body = resp.json()
-        if not isinstance(body, list) or not body:
+        if not isinstance(body, list):  # error object with HTTP 200
+            print(
+                f"[poly] trades_tail {condition_id[:16]} stopped early at"
+                f" {len(out)} prints (non-list body, status {getattr(resp, 'status_code', '?')})",
+                flush=True,
+            )
+            break
+        if not body:
             break
         out.extend(body)
         if len(body) < 500:

@@ -88,11 +88,15 @@ def main() -> None:
     for i, ticker in enumerate(targets):
         t_req = time.monotonic()
         try:
-            raw = kalshi.get_trades(ticker, session=sess)
+            raw, truncated = kalshi.get_trades(ticker, session=sess)
             rows = [kalshi.trade_row(t) for t in raw]
             # Only successes get marked in trades_swept — errored markets
-            # stay pending so the next run retries them.
-            batch.append((ticker, rows, "ok" if rows else "empty"))
+            # stay pending so the next run retries them. A page-capped
+            # tape is recorded as 'truncated', never 'ok'.
+            if truncated:
+                print(f"[tradepass] {ticker} tape TRUNCATED at {len(rows)} prints", flush=True)
+            status = "truncated" if truncated else ("ok" if rows else "empty")
+            batch.append((ticker, rows, status))
             totals["trades"] += len(rows)
             totals["empty"] += 0 if rows else 1
         except requests.HTTPError as exc:

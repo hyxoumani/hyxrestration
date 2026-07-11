@@ -95,6 +95,10 @@ def sweep_series(
         open_ts = _ts(m.get("open_time"))
         close_ts = _ts(m.get("close_time"))
         if open_ts is None or close_ts is None:
+            # The watermark may advance past this market via its
+            # siblings' closes — without a log line that's a permanent
+            # invisible hole in a system built on marking what it missed.
+            print(f"[sweep] {m.get('ticker', '?')} skipped: missing open/close time", flush=True)
             continue
         try:
             candles = kalshi.get_candlesticks(
@@ -115,9 +119,11 @@ def sweep_series(
         # Trade tape rides along (B3.5): prints purge on the same
         # retention clock as candles, so capture them at first sight.
         try:
-            rows = [kalshi.trade_row(t) for t in kalshi.get_trades(m["ticker"], session=session)]
+            raw, truncated = kalshi.get_trades(m["ticker"], session=session)
+            rows = [kalshi.trade_row(t) for t in raw]
             store.insert_trades(rows)
-            store.mark_trades_swept(m["ticker"], len(rows), "ok" if rows else "empty")
+            status = "truncated" if truncated else ("ok" if rows else "empty")
+            store.mark_trades_swept(m["ticker"], len(rows), status)
         except requests.HTTPError:
             pass  # stays unmarked; the retro-pass or next sweep retries
         close_dt = datetime.fromtimestamp(close_ts, tz=UTC)

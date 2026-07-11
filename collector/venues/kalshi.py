@@ -63,6 +63,12 @@ def get_markets(
         cursor = body.get("cursor") or ""
         if not cursor or not body.get("markets"):
             break
+    if cursor:  # pages exhausted with more upstream — the Gamma-offset class
+        print(
+            f"[kalshi] get_markets TRUNCATED at {len(out)} rows"
+            f" (max_pages={max_pages} exhausted, cursor live)",
+            flush=True,
+        )
     return out
 
 
@@ -71,8 +77,13 @@ def get_trades(
     limit: int = 1000,
     max_pages: int = 100,
     session: requests.Session | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     """All public trade prints for one market (cursor-paginated).
+
+    Returns (trades, truncated): truncated=True when max_pages ran out
+    with the cursor still live — callers must record it (a truncated
+    tape marked 'ok' is a permanent silent hole; the retention clock
+    gives no second chance).
 
     Probed 2026-07-07: same string-dollar shape as the WS trade channel
     (trade_id, created_time ISO, yes_price_dollars, count_fp, taker_side,
@@ -93,7 +104,7 @@ def get_trades(
         cursor = body.get("cursor") or ""
         if not cursor or not body.get("trades"):
             break
-    return out
+    return out, bool(cursor)
 
 
 def trade_row(t: dict[str, Any]) -> tuple:

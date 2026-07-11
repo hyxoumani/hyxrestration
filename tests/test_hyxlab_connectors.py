@@ -69,3 +69,41 @@ def test_kalshi_settled_market_fixture_parses():
     assert info.target_date is not None
     snap = to_snapshot(m)
     assert snap.market_id == info.market_id
+
+
+def test_kalshi_get_trades_reports_truncation():
+    """A page-capped tape must surface truncated=True so callers never
+    mark it 'ok' — retention gives no second chance at those prints."""
+    from collector.venues import kalshi
+
+    class _Sess:
+        def get(self, url, params=None, timeout=None):
+            class R:
+                @staticmethod
+                def raise_for_status():
+                    pass
+
+                @staticmethod
+                def json():
+                    return {"trades": [{"trade_id": "t"}], "cursor": "MORE"}
+
+            return R()
+
+    rows, truncated = kalshi.get_trades("M1", max_pages=2, session=_Sess())
+    assert len(rows) == 2 and truncated
+
+    class _End(_Sess):
+        def get(self, url, params=None, timeout=None):
+            class R:
+                @staticmethod
+                def raise_for_status():
+                    pass
+
+                @staticmethod
+                def json():
+                    return {"trades": [{"trade_id": "t"}], "cursor": ""}
+
+            return R()
+
+    rows, truncated = kalshi.get_trades("M1", max_pages=2, session=_End())
+    assert len(rows) == 1 and not truncated

@@ -144,3 +144,25 @@ def test_iter_markets_keyset_null_markets_page_ends_walk(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda _s: None)
     sess = _KeysetSession({None: {"markets": None, "next_cursor": "C1"}})
     assert iter_markets_by_volume(100.0, session=sess) == []
+
+
+def test_iter_markets_keyset_persistent_error_logs_incomplete(monkeypatch, capsys):
+    """The Gamma-offset regression class: a walk that stops early must
+    say so in the same run, not wait for the QA tripwire a day later."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    class _AlwaysError(_KeysetSession):
+        def get(self, url, params=None, timeout=None):
+            self.calls.append((url, dict(params)))
+
+            class R:
+                status_code = 200
+
+                def json(self):
+                    return {"type": "validation error"}
+
+            return R()
+
+    out = iter_markets_by_volume(100.0, session=_AlwaysError({}))
+    assert out == []
+    assert "INCOMPLETE" in capsys.readouterr().out
