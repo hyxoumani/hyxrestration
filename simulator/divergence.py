@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -205,7 +205,7 @@ def main() -> None:
         "end": str(end),
         "latency_s": latency,
         "strategies": strategies,
-        "generated_at": str(datetime.utcnow()),
+        "generated_at": str(datetime.now(UTC).replace(tzinfo=None)),
         **compare(shadow_fills, replay_fills),
     }
     out_dir = Path(args.out)
