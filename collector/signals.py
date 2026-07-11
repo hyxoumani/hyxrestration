@@ -25,6 +25,7 @@ import fcntl
 import time
 from datetime import UTC, datetime, timedelta
 
+import duckdb
 import requests
 
 from collector.venues import alfred, gdelt
@@ -93,12 +94,18 @@ def main() -> None:
     sess.headers["User-Agent"] = "hyxlab-research"
     now = datetime.now(UTC).replace(tzinfo=None)
 
-    # read the watermark in a short-lived read-only open
+    # read the watermark in a short-lived read-only open; a read-only
+    # Store doesn't create schema, so a pre-B4 archive lacks the table
+    # until the first write below — treat that as a cold start.
     store = open_retry(args.db, read_only=True)
-    last_news = store.conn.execute(
-        "SELECT max(knowable_at) FROM news_items WHERE source='gdelt'"
-    ).fetchone()[0]
-    store.close()
+    try:
+        last_news = store.conn.execute(
+            "SELECT max(knowable_at) FROM news_items WHERE source='gdelt'"
+        ).fetchone()[0]
+    except duckdb.CatalogException:
+        last_news = None
+    finally:
+        store.close()
 
     fetched = fetch_alfred(sess)
     items: list[NewsItem] = []

@@ -22,7 +22,7 @@ virtual orders across 8 markets: crossing rule filled 75 vs queue
 bracket [78 pess, 86 opt] — aggregate roughly calibrated, slightly
 conservative, but order-level disagreement ~15% both ways (9
 crossing-fills lack queue evidence; 12 queue-certain fills the
-crossing rule forgoes). Next: B4 FeatureView + signal feeds.)
+crossing rule forgoes). B4 signal layer shipped same evening (see queue). Next: B5 iteration machinery.)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 
@@ -73,10 +73,27 @@ a proven chunked≡one-shot replay equivalence (see
    Probe strategy running. **Next iteration**: maker queue-position-bound
    scoring + shadow-vs-replay divergence report (the calibration
    haircut).
-3. **B4 FeatureView + signal feeds** (ALFRED vintages, GDELT, econ
-   release calendar) — built together; the as-of API is the consumer.
-4. **B5 iteration machinery** — purged walk-forward, sweeps, DSR
-   deflation with family-wide trial counting.
+3. ~~B4 FeatureView + signal feeds~~ **SHIPPED 2026-07-11 late**:
+   `econ_vintages`/`news_items` tables; ALFRED keyless vintage pull
+   (7 series incl. DFEDTARU/L; value-diffed daily so the restamped
+   knowable_at can't forge vintages; historical vintages need a
+   FRED_API_KEY — user item); GDELT bulk 15-min GKG filter-and-discard
+   (templates in `collector/queries/gdelt.json`, format probed live);
+   `simulator/features.py` FeatureView — bisect as-of, two-dimensional
+   vintage semantics, news prefix-sum windows, P1 property-tested;
+   Context delegates (`ctx.econ_latest/econ_series/news_window`).
+   `hyxlab-signals.timer` daily 04:40 UTC + QA freshness checks.
+   Release-datetime refinement (08:30 ET prints via FRED calendar)
+   deferred until a FRED key exists; knowable_at stays pessimistic.
+4. **B5 iteration machinery** — CORE SHIPPED 2026-07-11 late
+   (`simulator/iterate.py`): Deflated Sharpe (Bailey–López de Prado;
+   inv-normal vs table values, PSR special case hand-checked),
+   E[max SR] deflation benchmark, purged walk-forward folds with
+   close-date embargo (belt in neither train nor test), family_report
+   (a sweep's best variant is only quotable deflated). Remaining for
+   full B5: grid runner over episodes + `fit(train_view)` calibration
+   protocol + size_sensitivity/persistence_filter post-processors —
+   these land with the first calibrated strategy that needs them.
 5. **B6 calibration atlas** + event study v1.
 6. ~~Debug frontend~~ **simui SHIPPED 2026-07-08** (v1 + Kalshi-style
    restyle + resilience): interactive market-replay terminal
