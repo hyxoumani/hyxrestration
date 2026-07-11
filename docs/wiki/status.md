@@ -13,9 +13,16 @@ vs offline replay — matched fills price-identical (mean Δ 5e-6),
 match rate 69% of shadow / 93% of replay; the asymmetry is coverage
 honesty (62 gaps in window; 57% of shadow fills sit in a gap's 65-min
 re-seed shadow, incl. the 12 retro flush-failure windows replay blanks
-but live shadow traded through). Taker-side fill-model haircut ≈ 0;
-maker queue-position bounds remain the open calibration question.
-Next: maker scoring iteration, then B4.)
+but live shadow traded through). Taker-side fill-model haircut ≈ 0.
+**Maker queue-position bounds SHIPPED 07-11 late**
+(`simulator/queuebounds.py` + `python -m simulator.queuescore`;
+trade↔delta mapping probed: no-taker hits yes@p, yes-taker hits
+no@1-p, ±1ms alignment). First 24h bracket, 143 join-the-touch
+virtual orders across 8 markets: crossing rule filled 75 vs queue
+bracket [78 pess, 86 opt] — aggregate roughly calibrated, slightly
+conservative, but order-level disagreement ~15% both ways (9
+crossing-fills lack queue evidence; 12 queue-certain fills the
+crossing rule forgoes). Next: B4 FeatureView + signal feeds.)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 

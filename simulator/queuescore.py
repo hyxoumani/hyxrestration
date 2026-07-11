@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -142,7 +143,15 @@ def main() -> None:
     ap.add_argument("--out", default="reports/maker_bracket")
     args = ap.parse_args()
 
-    conn = duckdb.connect(args.stream_db, read_only=True)
+    conn = None
+    for attempt in range(15):  # streamd's flush bursts hold the file ~1s
+        try:
+            conn = duckdb.connect(args.stream_db, read_only=True)
+            break
+        except duckdb.IOException:
+            if attempt == 14:
+                raise
+            time.sleep(1)
     since = conn.execute(
         "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
         [int(args.hours)],
