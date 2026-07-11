@@ -22,7 +22,7 @@ virtual orders across 8 markets: crossing rule filled 75 vs queue
 bracket [78 pess, 86 opt] — aggregate roughly calibrated, slightly
 conservative, but order-level disagreement ~15% both ways (9
 crossing-fills lack queue evidence; 12 queue-certain fills the
-crossing rule forgoes). B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Next: cross-venue pair candidates report; maker-entry fav-long needs a NEW registration on Tier-2 data. Event study v1 data-blocked until the vintage log accumulates real releases.)
+crossing rule forgoes). B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 
@@ -63,9 +63,11 @@ a proven chunked≡one-shot replay equivalence (see
 
 ## Execution queue (sim platform, user-approved)
 
-1. **Cross-venue pair candidates report** (last B3.5 checkbox) —
-   generate Kalshi↔Poly topic matches; pairs activate only after USER
-   verifies resolution rules.
+1. ~~Cross-venue pair candidates report~~ DONE 2026-07-11 late
+   (`python -m simulator.pair_candidates` → `reports/pairs/`): 100
+   ranked leads; the top class is Fed funds upper-bound markets listed
+   on BOTH venues (score 0.54, same close). USER gate: verify
+   resolution rules coincide before any pair enters watchlist.json.
 2. ~~Shadow harness (Tier-3) v1~~ LIVE 2026-07-08: `hyxlab-shadow.service`
    — persistent Simulator tailing the stream archive (books seeded from
    history, trading strictly from the stream head), same latency model
