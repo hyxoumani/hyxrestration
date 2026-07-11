@@ -187,3 +187,55 @@ def test_sweep_lock_excludes_second_holder_and_releases(tmp_path):
     third = acquire_sweep_lock(path)
     assert third is not None
     third.close()
+
+
+def test_vintages_dedup_and_naive_utc(tmp_path):
+    from datetime import UTC, date
+
+    from hyxlab.models import EconVintage
+
+    store = Store(tmp_path / "t.duckdb")
+    v = EconVintage(
+        series_id="CPIAUCSL",
+        obs_date=date(2026, 6, 1),
+        value=321.5,
+        knowable_at=datetime(2026, 7, 11, 12, 30, tzinfo=UTC),
+    )
+    assert store.insert_vintages([v]) == 1
+    assert store.insert_vintages([v]) == 0  # re-fetch is safe
+    # a REVISION of the same period is a new row, not a dup
+    v2 = EconVintage(
+        series_id="CPIAUCSL",
+        obs_date=date(2026, 6, 1),
+        value=321.7,
+        knowable_at=datetime(2026, 8, 11, 12, 30, tzinfo=UTC),
+    )
+    assert store.insert_vintages([v2]) == 1
+    # stored-timestamp assertion (mistakes #10): tz-aware in, naive UTC out
+    stored = store.conn.execute(
+        "SELECT knowable_at FROM econ_vintages ORDER BY knowable_at LIMIT 1"
+    ).fetchone()[0]
+    assert stored == datetime(2026, 7, 11, 12, 30)
+    store.close()
+
+
+def test_news_dedup_on_url_hash_and_naive_utc(tmp_path):
+    from datetime import UTC
+
+    from hyxlab.models import NewsItem
+
+    store = Store(tmp_path / "t.duckdb")
+    n = NewsItem(
+        source="gdelt",
+        url_hash="abc123",
+        published_at=None,
+        knowable_at=datetime(2026, 7, 11, 9, 15, tzinfo=UTC),
+        title="CPI surprises",
+        tone=-2.5,
+        topics="cpi,inflation",
+    )
+    assert store.insert_news([n]) == 1
+    assert store.insert_news([n]) == 0  # same article re-seen
+    stored = store.conn.execute("SELECT knowable_at, tone FROM news_items").fetchone()
+    assert stored == (datetime(2026, 7, 11, 9, 15), -2.5)
+    store.close()

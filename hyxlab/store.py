@@ -16,7 +16,7 @@ from pathlib import Path
 
 import duckdb
 
-from hyxlab.models import Forecast, MarketInfo, Snapshot
+from hyxlab.models import EconVintage, Forecast, MarketInfo, NewsItem, Snapshot
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS markets (
@@ -121,6 +121,24 @@ CREATE TABLE IF NOT EXISTS sweep_log (
 CREATE TABLE IF NOT EXISTS watermarks (
     series        VARCHAR NOT NULL PRIMARY KEY,
     last_close_ts TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS econ_vintages (
+    series_id    VARCHAR NOT NULL,     -- e.g. 'CPIAUCSL'
+    obs_date     DATE    NOT NULL,     -- period the value describes
+    value        DOUBLE,
+    knowable_at  TIMESTAMP NOT NULL,   -- release moment of this vintage
+    PRIMARY KEY (series_id, obs_date, knowable_at)
+);
+CREATE TABLE IF NOT EXISTS news_items (
+    source       VARCHAR NOT NULL,     -- 'gdelt' | 'alpaca'
+    url_hash     VARCHAR NOT NULL,
+    published_at TIMESTAMP,
+    knowable_at  TIMESTAMP NOT NULL,   -- monitored/wire time
+    title        VARCHAR,
+    tone         DOUBLE,               -- NULL for alpaca
+    topics       VARCHAR,              -- comma list, from query template
+    symbols      VARCHAR,              -- comma list of tickers (alpaca)
+    PRIMARY KEY (source, url_hash)
 );
 CREATE TABLE IF NOT EXISTS schema_meta (
     version INTEGER NOT NULL
@@ -344,6 +362,28 @@ class Store:
 
     def trades_swept_ids(self) -> set[str]:
         return {r[0] for r in self.conn.execute("SELECT market_id FROM trades_swept").fetchall()}
+
+    def insert_vintages(self, vintages: list[EconVintage]) -> int:
+        """Idempotent: a vintage re-fetched on a later day dedups away;
+        only genuinely new (series, period, release) rows land."""
+        rows = [(v.series_id, v.obs_date, v.value, _naive_utc(v.knowable_at)) for v in vintages]
+        return self.insert_new("econ_vintages", rows, ["series_id", "obs_date", "knowable_at"])
+
+    def insert_news(self, items: list[NewsItem]) -> int:
+        rows = [
+            (
+                n.source,
+                n.url_hash,
+                _naive_utc(n.published_at),
+                _naive_utc(n.knowable_at),
+                n.title,
+                n.tone,
+                n.topics,
+                n.symbols,
+            )
+            for n in items
+        ]
+        return self.insert_new("news_items", rows, ["source", "url_hash"])
 
     def insert_poly_prices(self, rows: list[tuple]) -> int:
         """(token_id, market_id, outcome, ts, price); dedup (token, ts)."""

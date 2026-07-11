@@ -23,8 +23,10 @@ class Context:
         markets: dict[tuple[str, str], MarketInfo],
         forecasts: list[Forecast] | None = None,
         fee_models: dict[str, FeeModel] | None = None,
+        features=None,  # simulator.features.FeatureView (duck-typed; optional)
     ) -> None:
         self._markets = markets
+        self._features = features
         self._fee_models = fee_models or FEE_MODELS
         self._last: dict[tuple[str, str], Snapshot] = {}
         self._positions: dict[tuple[str, str, str, str], float] = {}
@@ -73,6 +75,26 @@ class Context:
             if self.now is None or f.fetched_at <= self.now:
                 return f.high_f
         return None
+
+    # -- signals (delegate to FeatureView; every answer is as-of now) ----
+
+    def econ_latest(self, series_id: str):
+        """Most recent econ print (latest revision) knowable at now."""
+        if self._features is None or self.now is None:
+            return None
+        return self._features.econ_latest(series_id, self.now)
+
+    def econ_series(self, series_id: str, n: int) -> list:
+        """Last n periods as known at now, newest period first."""
+        if self._features is None or self.now is None:
+            return []
+        return self._features.econ_series_asof(series_id, self.now, n)
+
+    def news_window(self, topic: str, window):
+        """NewsAgg(count, mean_tone) over (now-window, now]; None w/o feed."""
+        if self._features is None or self.now is None:
+            return None
+        return self._features.news_window(topic, self.now, window)
 
     # -- portfolio ------------------------------------------------------
 

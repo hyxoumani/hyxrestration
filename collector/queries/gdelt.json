@@ -1,0 +1,8 @@
+{
+  "_comment": "Per-market-category GKG theme templates (prefix-matched). Codes verified against live GKG files 2026-07-11; keep entries prefixes so venue taxonomy drift (ECON_CENTRALBANK vs _BANKS) still matches.",
+  "inflation": ["ECON_INFLATION", "ECON_PRICE", "ECON_COSTOFLIVING"],
+  "rates_fed": ["ECON_INTERESTRATE", "ECON_CENTRALBANK"],
+  "jobs": ["ECON_UNEMPLOYMENT", "UNEMPLOYMENT"],
+  "energy": ["ECON_OILPRICE", "ENV_OIL"],
+  "extreme_heat": ["NATURAL_DISASTER_HEAT", "NATURAL_DISASTER_EXTREME_HEAT"]
+}

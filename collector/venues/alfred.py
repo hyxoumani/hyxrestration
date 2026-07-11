@@ -27,7 +27,7 @@ from hyxlab.models import EconVintage
 BASE = "https://alfred.stlouisfed.org/graph/alfredgraph.csv"
 
 # Kalshi-relevant starting set (proposal §C1).
-SERIES = ["CPIAUCSL", "CPILFESL", "ICSA", "PAYEMS", "UNRATE"]
+SERIES = ["CPIAUCSL", "CPILFESL", "ICSA", "PAYEMS", "UNRATE", "DFEDTARU", "DFEDTARL"]
 
 
 def pessimistic_knowable_at(vintage_date: date) -> datetime:

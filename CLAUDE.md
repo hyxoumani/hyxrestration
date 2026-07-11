@@ -15,6 +15,16 @@ through a no-lookahead simulator, and kills strategies via pre-registered
 backtests. Phase 0 (falsified ag-equity thesis) is a closed historical
 record under `phase0/` — do not build on it.
 
+## Working Mode
+
+**Autonomous development is the default (user directive 2026-07-11).**
+Do not stop at natural checkpoints to summarize and wait — finish a
+work item, commit/promote/push, update the wiki, and take the next item
+from the execution queue in `docs/wiki/status.md` without asking.
+Stop only for: capital decisions (hard rule: pre-reg PASS + explicit
+user authorization), destructive/irreversible actions, or genuine
+scope changes the user must decide.
+
 ## Commands
 
 ```bash

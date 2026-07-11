@@ -66,6 +66,7 @@ class Simulator:
         fee_resolver: Callable[[str, str], FeeModel] | None = None,
         data_capabilities: dict[str, frozenset[str]] | None = None,
         latency: float = 0.0,
+        features=None,  # simulator.features.FeatureView (optional signal feed)
     ) -> None:
         # Capability guard: refuse vacuous backtests up front. Strategies
         # with requirements need a feed declaration (simulator.capabilities
@@ -75,7 +76,7 @@ class Simulator:
         self.strategies = strategies
         self.fee_models = fee_models or FEE_MODELS
         self.fee_resolver = fee_resolver
-        self.ctx = Context(markets, forecasts=forecasts, fee_models=fee_models)
+        self.ctx = Context(markets, forecasts=forecasts, fee_models=fee_models, features=features)
         self.result = SimResult()
         self._resting: dict[tuple[str, str], list[_Resting]] = {}
         self.ctx._resting_ref = self._resting  # read-only view for open_orders()
