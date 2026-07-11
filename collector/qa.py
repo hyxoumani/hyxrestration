@@ -82,18 +82,34 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         f"{holes} seq holes, {gaps} gap rows in window",
     )
 
+    # Reconstruct each Kalshi book from its time-latest snapshot image
+    # (an image is one WS frame, so its rows share recv_ts) plus the
+    # signed deltas received after it. seq is NOT usable as an ordering
+    # key here: it is subscription-scoped and resets on every reconnect.
+    # Pairs whose delta window a coverage gap intersects are skipped —
+    # the book is legitimately unknown until the next snapshot re-seeds.
+    # (Polymarket deltas carry absolute sizes, never negative; excluded.)
     neg = conn.execute(
         """
-        WITH last_snap AS (
-          SELECT market_id, side, max(seq) AS snap_seq
-          FROM book_events WHERE kind='snap' GROUP BY market_id, side
+        WITH pair AS (
+          SELECT market_id, side,
+                 max(recv_ts) FILTER (kind='snap') AS snap_ts,
+                 max(recv_ts) AS last_ts
+          FROM book_events WHERE venue='kalshi' GROUP BY market_id, side
+        ), eligible AS (
+          SELECT market_id, side, snap_ts FROM pair
+          WHERE snap_ts IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM stream_gaps g
+              WHERE g.venue IN ('kalshi', '*')
+                AND g.started_at > pair.snap_ts AND g.started_at <= pair.last_ts)
         ), levels AS (
           SELECT e.market_id, e.side, e.price,
-                 sum(CASE WHEN e.kind='snap' AND e.seq = ls.snap_seq THEN e.qty
-                          WHEN e.kind='delta' AND e.seq > ls.snap_seq THEN e.qty
+                 sum(CASE WHEN e.kind='snap' AND e.recv_ts = el.snap_ts THEN e.qty
+                          WHEN e.kind='delta' AND e.recv_ts > el.snap_ts THEN e.qty
                           ELSE 0 END) AS qty
           FROM book_events e
-          JOIN last_snap ls ON ls.market_id = e.market_id AND ls.side = e.side
+          JOIN eligible el ON el.market_id = e.market_id AND el.side = e.side
           GROUP BY e.market_id, e.side, e.price
         )
         SELECT count(*) FROM levels WHERE qty < -1e-9
