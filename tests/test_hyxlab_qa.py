@@ -194,6 +194,70 @@ def test_negative_levels_forgiven_when_gap_intersects(tmp_path):
     assert "reconstructed book levels non-negative" not in failed
 
 
+def _poly_days(store, markets_per_day):
+    """markets_per_day: {days_ago: distinct market count}; hour offset
+    keeps each batch inside its calendar day and under the 30h fresh gate."""
+    rows = []
+    for days_ago, count in markets_per_day.items():
+        ts = (NOW - timedelta(days=days_ago, hours=2)).replace(tzinfo=None)
+        rows += [(f"t{i}", f"pm{i}", "yes", ts, 0.5) for i in range(count)]
+    store.insert_poly_prices(rows)
+
+
+def test_poly_universe_shrink_trips(tmp_path):
+    """Regression class: 2026-07-08 Gamma offset cap halved the swept
+    universe and no check noticed. A sharp drop vs the prior week's
+    peak must trip."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _poly_days(store, {3: 700, 2: 720, 1: 100})  # yesterday collapsed
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly swept universe not shrinking" in failed
+
+
+def test_poly_universe_steady_passes(tmp_path):
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _poly_days(store, {3: 700, 2: 720, 1: 710})
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly swept universe not shrinking" not in failed
+
+
+def test_archive_locked_by_live_writer_is_not_a_failure(tmp_path, monkeypatch):
+    """The poly sweep holds the write lock for hours; QA colliding with
+    it must skip, not alarm — alarm fatigue buries real failures."""
+    import subprocess
+    import sys
+    import time as _time
+
+    monkeypatch.setattr(qa.time, "sleep", lambda s: None)  # fast retries
+
+    db = tmp_path / "a.duckdb"
+    Store(db).close()  # create the file
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            f"import duckdb,sys,time; c=duckdb.connect({str(db)!r}); print('locked',flush=True); time.sleep(60)",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        _time.sleep(0.2)
+        qa._failures.clear()
+        qa.qa_archive(26.0, path=str(db))
+        failed = set(qa._failures)
+        qa._failures.clear()
+        assert "main archive reachable" not in failed
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_healthy_archive_passes_and_unswept_tape_trips(tmp_path):
     from hyxlab.models import MarketInfo, Snapshot
 

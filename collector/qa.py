@@ -13,6 +13,7 @@ failure mode that has either happened or provably can.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ ARCHIVE = "data/hyxlab.duckdb"
 STREAM = "data/hyxstream.duckdb"
 
 _failures: list[str] = []
+_lock_holder: str | None = None  # set by _connect_ro when a live writer holds the file
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -34,25 +36,48 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def _connect_ro(path: str, retries: int = 5) -> duckdb.DuckDBPyConnection | None:
+    """read-only connect with retry. Distinguishes a live writer holding
+    the lock (normal: poly sweep holds it for hours) from a genuinely
+    unreachable file — alarm fatigue trains people to ignore QA."""
+    global _lock_holder
+    _lock_holder = None
     for attempt in range(retries):
         try:
             return duckdb.connect(path, read_only=True)
-        except duckdb.Error:
+        except duckdb.Error as exc:
+            m = re.search(r"Conflicting lock is held in (\S+) \(PID (\d+)\)", str(exc))
+            if m and Path(f"/proc/{m.group(2)}").exists():
+                _lock_holder = f"{m.group(1)} pid {m.group(2)}"
             if attempt == retries - 1:
                 return None
             time.sleep(2)  # writer burst (collector/tradepass flush)
     return None
 
 
+def _reachable(conn, name: str) -> bool:
+    """Emit the reachability check; lock held by a live writer is a PASS
+    (checks skipped), anything else unreachable is a FAIL."""
+    if conn is not None:
+        return True
+    if _lock_holder:
+        check(name, True, f"skipped: live writer holds lock ({_lock_holder})")
+    else:
+        check(name, False, "unreachable and no live writer holds the lock")
+    return False
+
+
 def qa_stream(hours: float, path: str = STREAM) -> None:
     conn = _connect_ro(path)
-    if conn is None:
-        check("stream archive reachable", False, "writer held the file for >10s")
+    if not _reachable(conn, "stream archive reachable"):
         return
     now = datetime.now(UTC).replace(tzinfo=None)
 
     age = conn.execute("SELECT epoch(? - max(recv_ts)) FROM stream_trades", [now]).fetchone()[0]
-    check("stream fresh (trades < 5 min old)", age is not None and age < 300, f"age {age:.0f}s")
+    check(
+        "stream fresh (trades < 5 min old)",
+        age is not None and age < 300,
+        f"age {age:.0f}s" if age is not None else "no trades",
+    )
 
     bad = conn.execute(
         "SELECT count(*) FROM stream_trades WHERE recv_ts > ? - INTERVAL 1 HOUR *"
@@ -136,8 +161,7 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
 
 def qa_archive(hours: float, path: str = ARCHIVE) -> None:
     conn = _connect_ro(path)
-    if conn is None:
-        check("main archive reachable", False, "writer held the file for >10s")
+    if not _reachable(conn, "main archive reachable"):
         return
     now = datetime.now(UTC).replace(tzinfo=None)
 
@@ -145,7 +169,7 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
     check(
         "collector fresh (snapshots < 20 min old)",
         age is not None and age < 1200,
-        f"age {age:.0f}s",
+        f"age {age:.0f}s" if age is not None else "no snapshots",
     )
 
     ok_sweeps = conn.execute(
@@ -169,6 +193,33 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
             0
         ]
         check("poly prices fresh (< 30h old)", page < 30, f"age {page:.1f}h")
+
+        # Enumeration-shrink tripwire: the 2026-07-08 Gamma offset cap
+        # silently dropped the swept universe from ~4600 to ~2000 markets
+        # and was caught by a lucky dead probe, not by QA. Compare the
+        # last completed day's distinct swept markets against the prior
+        # week's peak; a sharp drop means upstream pagination broke.
+        yday, prior = conn.execute(
+            """
+            WITH daily AS (
+              SELECT date_trunc('day', ts) AS d, count(DISTINCT market_id) AS cnt
+              FROM poly_prices WHERE ts > ? - INTERVAL 9 DAY GROUP BY 1
+            )
+            SELECT
+              (SELECT cnt FROM daily WHERE d = date_trunc('day', ? - INTERVAL 1 DAY)),
+              (SELECT max(cnt) FROM daily WHERE d < date_trunc('day', ? - INTERVAL 1 DAY))
+            """,
+            [now, now, now],
+        ).fetchone()
+        # 0.5: the swept universe declines organically ~5%/day as markets
+        # resolve (0.66 vs peak observed 2026-07-11, benign); the failure
+        # class is a step-function halving, not a drift.
+        if prior and prior > 500:
+            check(
+                "poly swept universe not shrinking",
+                yday is not None and yday >= 0.5 * prior,
+                f"yesterday {yday or 0} distinct markets vs prior-week peak {prior}",
+            )
 
     # Tape coverage: settled+traded markets inside the retention window
     # (~64d, use 55 to stay ahead of the boundary) must have a tape sweep.
