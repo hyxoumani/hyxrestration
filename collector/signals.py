@@ -40,11 +40,20 @@ def fetch_alfred(session: requests.Session, today=None) -> dict[str, list[EconVi
     today = today or datetime.now(UTC).date()
     out: dict[str, list[EconVintage]] = {}
     for series in alfred.SERIES:
-        try:
-            out[series] = alfred.get_vintage(series, today, session=session)
-        except Exception as exc:
-            print(f"[signals] alfred {series}: {type(exc).__name__}: {exc}", flush=True)
-        time.sleep(0.5)
+        # ALFRED throttles rapid sequential fetches into read-timeouts
+        # (observed 2026-07-11: all series timed out at 0.5s pacing
+        # while a lone probe succeeded) — retry once with a long pause.
+        for attempt in range(2):
+            try:
+                out[series] = alfred.get_vintage(series, today, session=session)
+                break
+            except Exception as exc:
+                print(
+                    f"[signals] alfred {series}{' retry' if attempt else ''}: {type(exc).__name__}",
+                    flush=True,
+                )
+                time.sleep(15)
+        time.sleep(3)
     return out
 
 
