@@ -115,3 +115,23 @@ def test_family_report_deflates_best_by_family_size():
     assert d["n_trials"] == 20 and d["sr0"] > 0
     # the best of 20 zero-skill variants must not look significant
     assert d["dsr"] < 0.95
+
+
+def test_pair_candidates_matching():
+    from datetime import datetime
+
+    from simulator.pair_candidates import candidates, jaccard, tokens
+
+    assert tokens("Will the CPI be above 3.1% in June?") == frozenset({"cpi", "3.1", "june"})
+    assert jaccard(frozenset({"a", "b"}), frozenset({"b", "c"})) == 1 / 3
+
+    t = datetime(2026, 7, 20)
+    rows = candidates(
+        [("K1", "High temp in NYC above 90 on July 20?", t)],
+        [
+            ("P1", "Will NYC high temperature exceed 90 July 20?", t),
+            ("P2", "Will Norway win the World Cup?", t),
+        ],
+        min_score=0.3,
+    )
+    assert len(rows) == 1 and rows[0]["poly_id"] == "P1"
