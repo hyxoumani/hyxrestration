@@ -152,3 +152,14 @@ def test_accounting_invariant_trips_on_tampering():
     sim.result.cash += 1.0  # corrupt the books
     with pytest.raises(SimAccountingError):
         sim._check_invariants()
+
+
+def test_order_rejects_typoed_fields():
+    """A typo'd side keys positions under a string that never matches
+    info.result — settled at 0 silently. Fail at construction instead."""
+    with pytest.raises(ValueError):
+        Order("kalshi", "M1", "Yes", 5)
+    with pytest.raises(ValueError):
+        Order("kalshi", "M1", "yes", 5, action="sell")
+    with pytest.raises(ValueError):
+        Order("kalshi", "M1", "yes", 5, tif="FOK")

@@ -117,12 +117,15 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     neg = conn.execute(
         """
         WITH pair AS (
-          SELECT market_id, side,
+          -- One snapshot frame carries BOTH sides, so the baseline is
+          -- keyed per market: a side legitimately empty in the newest
+          -- image must not stay anchored to an older image's rows.
+          SELECT market_id,
                  max(recv_ts) FILTER (kind='snap') AS snap_ts,
                  max(recv_ts) AS last_ts
-          FROM book_events WHERE venue='kalshi' GROUP BY market_id, side
+          FROM book_events WHERE venue='kalshi' GROUP BY market_id
         ), eligible AS (
-          SELECT market_id, side, snap_ts FROM pair
+          SELECT market_id, snap_ts FROM pair
           WHERE snap_ts IS NOT NULL
             AND NOT EXISTS (
               SELECT 1 FROM stream_gaps g
@@ -134,7 +137,7 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
                           WHEN e.kind='delta' AND e.recv_ts > el.snap_ts THEN e.qty
                           ELSE 0 END) AS qty
           FROM book_events e
-          JOIN eligible el ON el.market_id = e.market_id AND el.side = e.side
+          JOIN eligible el ON el.market_id = e.market_id
           GROUP BY e.market_id, e.side, e.price
         )
         SELECT count(*) FROM levels WHERE qty < -1e-9

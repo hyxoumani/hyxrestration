@@ -147,6 +147,7 @@ class ShadowRunner:
         self.cursor: datetime | None = None  # start from NOW (first poll sets it)
         self.gap_cursor: datetime | None = None
         self._n_fills_persisted = 0
+        self._markets_loaded_at = time.monotonic() if markets else float("-inf")
         self.ledger.start_run(self.run_id, latency, [s.name for s in strategies])
         self.stats = {"snapshots": 0, "events": 0, "polls": 0}
 
@@ -211,11 +212,16 @@ class ShadowRunner:
         return [BookEvent(*r) for r in rows], gaps
 
     def poll_once(self) -> int:
-        if not self.sim.markets:
+        # Refresh metadata hourly, not just when empty: on a multi-day
+        # run, markets listed after start otherwise have no close_time
+        # (resting orders never expire) and no settlement results.
+        now_mono = time.monotonic()
+        if not self.sim.markets or now_mono - self._markets_loaded_at > 3600:
             markets = self._try_load_markets()
             if markets:
                 self.sim.markets = markets
                 self.sim.ctx._markets = markets  # Context holds its own ref
+                self._markets_loaded_at = now_mono
                 print(f"[shadow] market metadata loaded ({len(markets)})", flush=True)
         try:
             events, gaps = self._read_new()

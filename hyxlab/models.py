@@ -99,6 +99,16 @@ class Order:
     action: str = "open"  # "open" | "close"
     tif: str = "GTC"  # "GTC" | "IOC"
 
+    def __post_init__(self) -> None:
+        # A typo'd side ("Yes") would key positions under a string that
+        # never matches info.result — silently settled at 0. Fail loud.
+        if self.side not in ("yes", "no"):
+            raise ValueError(f"Order.side must be 'yes'|'no', got {self.side!r}")
+        if self.action not in ("open", "close"):
+            raise ValueError(f"Order.action must be 'open'|'close', got {self.action!r}")
+        if self.tif not in ("GTC", "IOC"):
+            raise ValueError(f"Order.tif must be 'GTC'|'IOC', got {self.tif!r}")
+
 
 @dataclass(frozen=True)
 class Cancel:

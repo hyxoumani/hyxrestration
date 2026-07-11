@@ -259,7 +259,12 @@ class Daemon:
             try:
                 n = await asyncio.to_thread(self.store.flush)
             except Exception as exc:
-                _log(f"flush FAILED ({type(exc).__name__}: {exc}); buffer held for retry")
+                # pending size makes a wedged-reader buildup visible in
+                # the journal long before it could OOM the daemon.
+                _log(
+                    f"flush FAILED ({type(exc).__name__}: {exc});"
+                    f" {self.store.pending} rows held for retry"
+                )
                 continue
             now = asyncio.get_event_loop().time()
             if now - last_stats >= STATS_SECS:

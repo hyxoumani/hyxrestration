@@ -45,9 +45,9 @@ def collect_once(store: Store, watchlist: dict, session: requests.Session | None
             store.insert_snapshots(snaps)
             counts["kalshi_markets"] += len(infos)
             counts["kalshi_snaps"] += len(snaps)
-        except requests.RequestException as e:
+        except Exception as e:  # isolation: one bad source must not kill the cycle
             counts["errors"] += 1
-            print(f"[collect] kalshi {series}: {e}")
+            print(f"[collect] kalshi {series}: {type(e).__name__}: {e}")
 
     pairs = watchlist.get("polymarket_pairs", [])
     if pairs:
@@ -60,18 +60,18 @@ def collect_once(store: Store, watchlist: dict, session: requests.Session | None
             ]
             store.insert_snapshots(snaps)
             counts["poly_snaps"] += len(snaps)
-        except requests.RequestException as e:
+        except Exception as e:  # Gamma serves error objects with HTTP 200
             counts["errors"] += 1
-            print(f"[collect] polymarket books: {e}")
+            print(f"[collect] polymarket books: {type(e).__name__}: {e}")
 
     for station in watchlist.get("nws_stations", []):
         try:
             fcs = nws.get_daily_highs(station, session=sess)
             store.insert_forecasts(fcs)
             counts["forecasts"] += len(fcs)
-        except requests.RequestException as e:
+        except Exception as e:
             counts["errors"] += 1
-            print(f"[collect] nws {station}: {e}")
+            print(f"[collect] nws {station}: {type(e).__name__}: {e}")
 
     return counts
 

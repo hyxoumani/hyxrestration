@@ -128,6 +128,11 @@ def compare(shadow_fills: list[tuple], replay_fills: list) -> dict:
     n_r = sum(len(v) for v in r_by.values())
     deltas.sort()
     return {
+        "matching_note": (
+            "greedy first-in-window match requires exact qty equality;"
+            " partial-fill splits (5 vs 3+2) count as unmatched on both"
+            " sides, so match rates are a floor, not a point estimate"
+        ),
         "shadow_fills": n_s,
         "replay_fills": n_r,
         "matched": matched,
