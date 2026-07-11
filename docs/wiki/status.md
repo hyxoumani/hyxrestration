@@ -50,7 +50,7 @@ invariants), four correctness gates, capability guard, latency model
 (`Simulator(latency=Δ)`), BookReplayer (stream → ms snapshots; first
 Tier-2 sweep: 1s latency ≈ +0.4¢/contract), simui replay terminal with
 a proven chunked≡one-shot replay equivalence (see
-[simulation-honesty](simulation-honesty.md)). 150 tests green.
+[simulation-honesty](simulation-honesty.md)). Suite green (count moves; test-gate enforces).
 
 **Falsification record**: weather v1 pre-reg FAIL (−$425, fees decide).
 
@@ -102,6 +102,40 @@ currently dies with the dev session that launched it (user to confirm).
   so the multi-hour poly sweep no longer false-alarms).
 - Cross-venue pair candidates report (queue item 1) is mostly
   mechanical and can ride along with other work.
+
+## Deep review 2026-07-11 — triage record
+
+`docs/reviews/2026-07-11-deep-review.md` (4 High / 8 Medium / 7
+hygiene). **Implemented 2026-07-11**: H1 (writer-lock: open_retry,
+guarded poly flushes, flock sweep lock, nonzero aborts), H2 (gap rows
+filtered to kalshi-books coverage — plus the trades-channel case the
+review missed), H3+M6+M2 (truncation signals; get_trades returns a
+truncated flag, trades_swept records 'truncated'), H4 (size-0 quote
+fills nothing), M1, M3 (pending-size log), M4 (per-source isolation),
+M5 (hourly metadata refresh), M8 (matching_note caveat), Order field
+validation, QA per-market snapshot baseline, CLAUDE.md/wiki drift,
+stray root doc moved.
+
+**Pushbacks (not applicable as filed)**:
+- M7 (mark-at-zero for unquoted positions): marking DOWN is the
+  conservative direction this lab wants — a flattering mark is the
+  failure mode, a pessimistic max_drawdown is survivable. Documented
+  bias, not a bug; revisit only when drawdown gates a pre-reg verdict.
+- Hygiene 3's `## Metric` TBD in CLAUDE.md: bootstrap placeholder by
+  design until the lab has a single optimizable metric.
+- H1's framing "flock honored only by poly_sweep/trades_backfill":
+  collect and kalshi-sweep DO hold writer.lock — via their systemd
+  units' flock wrappers. The real exposure was readers (QA, doctor,
+  backtest, simui), which never flock; fixed via open_retry.
+
+**Backlogged (valid, not urgent)**:
+- `hyx/` legacy package quarantine (phase0-style fence or move; ~20
+  tests import it — mechanical but churny).
+- StreamStore spill-to-sidecar cap for multi-hour reader wedges (the
+  pending-size journal line covers detection for now).
+- requirements.txt ↔ requirements-stable.txt version-skew check.
+- `streamd.open_tickers` shorter retry when the initial set is empty.
+- Divergence matcher: nearest-in-window + split-aware matching (v2).
 
 ## Watch items (not yet alarming)
 

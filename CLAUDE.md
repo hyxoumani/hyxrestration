@@ -18,7 +18,7 @@ record under `phase0/` — do not build on it.
 ## Commands
 
 ```bash
-# Test (150 tests; test-gate hook runs this on stop)
+# Test (test-gate hook runs this on stop)
 .venv/bin/python -m pytest tests/ -q
 
 # Lint/Format (auto-format hook runs ruff on edit)
@@ -33,9 +33,12 @@ record under `phase0/` — do not build on it.
 .venv/bin/python -m simulator.simui
 ```
 
-Scheduled: systemd user timers `hyxlab-collect` (5 min) and
-`hyxlab-sweep` (daily 06:10 UTC). DuckDB is single-writer — ad-hoc runs
-may need to wait seconds for the collector's flock.
+Scheduled (systemd user units, run from the stable worktree; canonical
+files in `scripts/systemd/`, installed by `scripts/promote.sh`): timers
+`hyxlab-collect` (5 min), `hyxlab-poly-sweep` (05:00 UTC),
+`hyxlab-sweep` (06:10 UTC), `hyxlab-qa` (07:00 UTC); daemons
+`hyxlab-stream` and `hyxlab-shadow`. DuckDB is single-writer — ad-hoc
+runs may need to wait seconds for the collector's flock.
 
 ## Architecture
 

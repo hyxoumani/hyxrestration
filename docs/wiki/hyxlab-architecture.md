@@ -96,7 +96,7 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 B1 archive+sweep ✅, B2 sim v2 ✅, B3 self-tests ✅, all gates ✅,
 B7 stream daemon ✅ LIVE, B3.5 Kalshi tape ✅, stable deployment +
 import boundary ✅, daily QA ✅, BookReplayer + latency fills ✅,
-shadow harness ✅ LIVE, simui replay terminal ✅ (150 tests,
+shadow harness ✅ LIVE, simui replay terminal ✅ (suite green,
 2026-07-08). Next: shadow-vs-replay divergence report → B4 signals →
 B5 walk-forward/DSR → B6 atlas → first pre-reg strategy (infra-first
 order, user 2026-07-07).
