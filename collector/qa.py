@@ -224,6 +224,22 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
                 f"yesterday {yday or 0} distinct markets vs prior-week peak {prior}",
             )
 
+    # Signal feeds (B4): once a feed has ever pulled, its cadence must
+    # hold. Guarded on non-empty so pre-first-pull archives stay green.
+    n_vint = conn.execute("SELECT count(*) FROM econ_vintages").fetchone()[0]
+    if n_vint:
+        age_d = conn.execute(
+            "SELECT epoch(? - max(knowable_at)) / 86400 FROM econ_vintages", [now]
+        ).fetchone()[0]
+        check("econ vintages fresh (< 8 days)", age_d < 8, f"age {age_d:.1f}d")
+    n_news = conn.execute("SELECT count(*) FROM news_items WHERE source='gdelt'").fetchone()[0]
+    if n_news:
+        age_h = conn.execute(
+            "SELECT epoch(? - max(knowable_at)) / 3600 FROM news_items WHERE source='gdelt'",
+            [now],
+        ).fetchone()[0]
+        check("gdelt news fresh (< 30h)", age_h < 30, f"age {age_h:.1f}h")
+
     # Tape coverage: settled+traded markets inside the retention window
     # (~64d, use 55 to stay ahead of the boundary) must have a tape sweep.
     uncovered = conn.execute(

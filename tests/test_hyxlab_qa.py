@@ -299,3 +299,24 @@ def test_healthy_archive_passes_and_unswept_tape_trips(tmp_path):
     store.close()
     failed = _run(None, tmp_path, archive=db)
     assert "trade tape covers retention window" not in failed
+
+
+def test_stale_gdelt_news_trips_freshness(tmp_path):
+    from hyxlab.models import NewsItem
+
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    store.insert_news(
+        [
+            NewsItem(
+                source="gdelt",
+                url_hash="old1",
+                published_at=None,
+                knowable_at=NOW - timedelta(hours=40),
+                topics="inflation",
+            )
+        ]
+    )
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "gdelt news fresh (< 30h)" in failed

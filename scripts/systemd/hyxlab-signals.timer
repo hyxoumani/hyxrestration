@@ -1,0 +1,7 @@
+[Unit]
+Description=hyxlab signals daily 04:40 UTC (before poly sweep + QA)
+[Timer]
+OnCalendar=*-*-* 04:40:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target
