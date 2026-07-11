@@ -150,7 +150,12 @@ class Simulator:
         self._check_invariants()
 
     def _executable_qty(self, strategy: str, order: Order, avail: float) -> float:
-        qty = order.qty if avail <= 0 else min(order.qty, avail)
+        # Displayed size 0 is NO liquidity (kalshi _fp and poly REST emit
+        # real quotes with size 0); unknown size is +inf by convention
+        # (candles_as_snapshots), which min() caps at order qty. Filling
+        # into size 0 would flatter takers beyond the documented
+        # displayed-size bias.
+        qty = min(order.qty, avail)
         if order.action == "close":
             held = self.ctx.position(strategy, order.venue, order.market_id, order.side)
             resting_closes = sum(

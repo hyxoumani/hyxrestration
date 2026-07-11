@@ -69,6 +69,21 @@ def test_close_capped_at_held_qty():
     assert res.fills[-1].qty == -10  # I2: no shorting via oversized close
 
 
+def test_zero_displayed_size_fills_nothing():
+    """A real quote with displayed size 0 is NO liquidity, not 'size
+    unknown' — filling into it flatters takers beyond the documented
+    bias. Unknown size is represented as +inf (candle snapshots)."""
+    steps = {0: [Order("kalshi", "M1", "yes", 10, tif="IOC")]}
+    _, res = run(steps, [snap("M1", T[0], 0.39, 0.40, size=0.0)])
+    assert res.fills == []
+
+
+def test_infinite_size_caps_fill_at_order_qty():
+    steps = {0: [Order("kalshi", "M1", "yes", 10, tif="IOC")]}
+    _, res = run(steps, [snap("M1", T[0], 0.39, 0.40, size=float("inf"))])
+    assert [f.qty for f in res.fills] == [10]
+
+
 def test_ioc_drops_unfilled_remainder():
     steps = {0: [Order("kalshi", "M1", "yes", 50, limit_price=0.40, tif="IOC")]}
     snaps = [snap("M1", T[0], 0.39, 0.40, size=20), snap("M1", T[1], 0.39, 0.40, size=100)]
