@@ -33,6 +33,13 @@ from hyxlab.streamstore import BookEvent
 
 _EMPTY: tuple = ()
 
+# Gap rows that break KALSHI BOOK coverage. Foreign venues and the
+# trades channel don't feed book_events; applying their gaps blanks
+# every book until the next Kalshi reconnect — up to an hour of
+# self-inflicted blindness per Polymarket flap. ('*' rows — daemon
+# downtime, retro flush-failure marks — always apply.)
+BOOK_GAPS = "venue IN ('kalshi', '*') AND channel IN ('books', '*')"
+
 
 class _Book:
     __slots__ = ("levels", "pending_before", "seeded", "snap_key", "snap_ts")
@@ -237,7 +244,7 @@ def load_stream_snapshots(
             params,
         ).fetchall()
         gaps = conn.execute(
-            "SELECT started_at, ended_at FROM stream_gaps ORDER BY started_at"
+            f"SELECT started_at, ended_at FROM stream_gaps WHERE {BOOK_GAPS} ORDER BY started_at"
         ).fetchall()
     finally:
         conn.close()

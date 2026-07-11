@@ -30,7 +30,7 @@ import duckdb
 
 from hyxlab.store import Store
 from hyxlab.streamstore import BookEvent
-from simulator.bookreplay import replay_snapshots
+from simulator.bookreplay import BOOK_GAPS, replay_snapshots
 from simulator.shadow import SHADOW_DB, STREAM_DB
 from simulator.sim import Simulator
 from strategies.probe import TightSpreadProbe
@@ -75,7 +75,8 @@ def replay_run(
         # Seed books exactly as shadow does: replay history since the
         # last coverage break WITHOUT stepping the sim.
         floor = conn.execute(
-            "SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ?", [anchor]
+            f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
+            [anchor],
         ).fetchone()[0]
         from simulator.bookreplay import BookReplayer
 
@@ -86,8 +87,9 @@ def replay_run(
         # Trade the window with full gap honesty (including gap rows the
         # live run never saw, e.g. flush_failure_backfill).
         gaps = conn.execute(
-            "SELECT started_at, ended_at FROM stream_gaps"
-            " WHERE ended_at > ? AND started_at <= ? ORDER BY started_at",
+            f"SELECT started_at, ended_at FROM stream_gaps"
+            f" WHERE ended_at > ? AND started_at <= ? AND {BOOK_GAPS}"
+            f" ORDER BY started_at",
             [anchor, end],
         ).fetchall()
         for snap in replay_snapshots(_events(conn, anchor, end), gaps=gaps, replayer=replayer):

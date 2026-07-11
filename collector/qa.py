@@ -126,7 +126,7 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
           WHERE snap_ts IS NOT NULL
             AND NOT EXISTS (
               SELECT 1 FROM stream_gaps g
-              WHERE g.venue IN ('kalshi', '*')
+              WHERE g.venue IN ('kalshi', '*') AND g.channel IN ('books', '*')
                 AND g.started_at > pair.snap_ts AND g.started_at <= pair.last_ts)
         ), levels AS (
           SELECT e.market_id, e.side, e.price,

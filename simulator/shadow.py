@@ -34,7 +34,7 @@ import duckdb
 
 from hyxlab.store import Store
 from hyxlab.streamstore import BookEvent
-from simulator.bookreplay import BookReplayer, replay_snapshots
+from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
 from simulator.sim import Simulator
 from strategies.probe import TightSpreadProbe
 
@@ -174,7 +174,9 @@ class ShadowRunner:
                 self.gap_cursor = self.cursor
                 if self.cursor is not None:
                     self.ledger.set_anchor(self.run_id, self.cursor)
-                    floor = conn.execute("SELECT max(ended_at) FROM stream_gaps").fetchone()[0]
+                    floor = conn.execute(
+                        f"SELECT max(ended_at) FROM stream_gaps WHERE {BOOK_GAPS}"
+                    ).fetchone()[0]
                     rows = conn.execute(
                         "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side,"
                         " price, qty FROM book_events WHERE venue = 'kalshi'"
@@ -199,7 +201,7 @@ class ShadowRunner:
                 [self.cursor],
             ).fetchall()
             gaps = conn.execute(
-                "SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ?",
+                f"SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ? AND {BOOK_GAPS}",
                 [self.gap_cursor],
             ).fetchall()
         if rows:
