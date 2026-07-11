@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS shadow_runs (
     run_id     VARCHAR PRIMARY KEY,
     started_at TIMESTAMP,
     latency_s  DOUBLE,
-    strategies VARCHAR
+    strategies VARCHAR,
+    anchor     TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS shadow_fills (
     run_id    VARCHAR NOT NULL,
@@ -78,13 +79,21 @@ class ShadowLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with duckdb.connect(str(self.path)) as conn:
             conn.execute(_SCHEMA)
+            # pre-anchor DBs: add the column in place
+            conn.execute("ALTER TABLE shadow_runs ADD COLUMN IF NOT EXISTS anchor TIMESTAMP")
 
     def start_run(self, run_id: str, latency: float, strategies: list[str]) -> None:
         with duckdb.connect(str(self.path)) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO shadow_runs VALUES (?,?,?,?)",
+                "INSERT OR REPLACE INTO shadow_runs VALUES (?,?,?,?,NULL)",
                 [run_id, datetime.now(UTC).replace(tzinfo=None), latency, ",".join(strategies)],
             )
+
+    def set_anchor(self, run_id: str, anchor: datetime) -> None:
+        """Record where trading actually starts (cursor at first poll) —
+        the divergence replay needs it to reproduce the exact window."""
+        with duckdb.connect(str(self.path)) as conn:
+            conn.execute("UPDATE shadow_runs SET anchor=? WHERE run_id=?", [_naive(anchor), run_id])
 
     def persist(self, run_id: str, fills: list, equity: tuple[datetime, float] | None) -> None:
         if not fills and equity is None:
@@ -164,6 +173,7 @@ class ShadowRunner:
                 self.cursor = conn.execute("SELECT max(recv_ts) FROM book_events").fetchone()[0]
                 self.gap_cursor = self.cursor
                 if self.cursor is not None:
+                    self.ledger.set_anchor(self.run_id, self.cursor)
                     floor = conn.execute("SELECT max(ended_at) FROM stream_gaps").fetchone()[0]
                     rows = conn.execute(
                         "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side,"

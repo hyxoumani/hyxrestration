@@ -37,6 +37,7 @@ ENTRYPOINTS = {
     "simulator/run_sim.py",
     "simulator/run_backtest.py",
     "simulator/shadow.py",
+    "simulator/divergence.py",
     "simulator/simui/server.py",
 }
 
