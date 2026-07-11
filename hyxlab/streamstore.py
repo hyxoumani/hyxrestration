@@ -135,13 +135,28 @@ class StreamStore:
     # -- persistence ------------------------------------------------------
 
     def flush(self) -> int:
-        """Write all buffered rows in one transaction; returns rows written."""
+        """Write all buffered rows in one transaction; returns rows written.
+
+        On any failure (e.g. a reader briefly holds the file lock) the
+        batch is restored to the buffer front — recv order preserved —
+        so the next flush retries it. Losing it would leave a silent,
+        unmarked hole in the archive."""
         n = self.pending
         if n == 0:
             return 0
         events, self._events = self._events, []
         trades, self._trades = self._trades, []
         gaps, self._gaps = self._gaps, []
+        try:
+            self._write(events, trades, gaps)
+        except BaseException:
+            self._events[:0] = events
+            self._trades[:0] = trades
+            self._gaps[:0] = gaps
+            raise
+        return n
+
+    def _write(self, events: list[BookEvent], trades: list[StreamTrade], gaps: list[tuple]) -> None:
         with duckdb.connect(str(self.path)) as conn:
             conn.execute("BEGIN")
             if events:
@@ -183,7 +198,6 @@ class StreamStore:
             if gaps:
                 conn.executemany("INSERT INTO stream_gaps VALUES (?,?,?,?,?)", gaps)
             conn.execute("COMMIT")
-        return n
 
     def mark_startup_gap(self, now: datetime | None = None) -> None:
         """Record daemon downtime: everything between the last archived

@@ -254,6 +254,44 @@ def test_streamstore_timestamps_stored_naive_utc(tmp_path):
     assert src == datetime.fromtimestamp(1751889600, tz=UTC).replace(tzinfo=None)
 
 
+def test_flush_failure_preserves_buffer(tmp_path, monkeypatch):
+    """Regression: a failed flush (e.g. a reader holds the file lock) must
+    keep the batch buffered for the next attempt. Dropping it leaves silent
+    unmarked holes in the archive — root cause of the 2026-07 negative
+    reconstructed-book-levels QA failures."""
+    import duckdb
+    import pytest
+
+    from hyxlab import streamstore as ss
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    events, _ = kalshi_ws.parse_message(
+        {
+            "type": "orderbook_snapshot",
+            "sid": 1,
+            "seq": 1,
+            "msg": {"market_ticker": "M1", "yes_dollars_fp": [["0.4000", "100.00"]]},
+        },
+        RECV,
+    )
+    store.append_events(events)
+    store.append_trades(kalshi_ws.parse_message(_trade_frame(seq=3), RECV)[1])
+    store.append_gap("kalshi", "books", RECV, RECV, "seq_gap")
+    n = store.pending
+
+    def locked(*args, **kwargs):
+        raise duckdb.IOException("Could not set lock on file")
+
+    monkeypatch.setattr(ss.duckdb, "connect", locked)
+    with pytest.raises(duckdb.IOException):
+        store.flush()
+    monkeypatch.undo()
+
+    assert store.pending == n  # batch survived the failure
+    assert store.flush() == n
+    assert store.counts() == {"book_events": 1, "stream_trades": 1, "stream_gaps": 1}
+
+
 def test_streamstore_gap_rows(tmp_path):
     store = StreamStore(tmp_path / "s.duckdb")
     store.append_gap("kalshi", "books", RECV, RECV, "seq_gap")
