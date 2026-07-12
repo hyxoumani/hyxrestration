@@ -27,7 +27,10 @@ design-note assumption; (3) analyze data for the next strategy lead;
 (4) harden mistakes-log/backlog items. Stop only for: capital
 decisions (pre-reg PASS + explicit user authorization), destructive/
 irreversible actions, or a user-only credential/verification — and
-name it. "Done for now" is not a valid terminal state.
+name it. "Done for now" is not a valid terminal state. Mechanically:
+the harness re-invokes only on a signal — before ending an autonomous
+turn, arm the next one (running background task, or ScheduleWakeup
+~1200–1800s with a resume-the-ladder prompt).
 
 ## Commands
 
