@@ -1,0 +1,7 @@
+[Unit]
+Description=hyxlab autoloop every 6h (bounded, flock-guarded)
+[Timer]
+OnCalendar=*-*-* 02,08,14,20:15:00 UTC
+Persistent=false
+[Install]
+WantedBy=timers.target

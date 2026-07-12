@@ -1,0 +1,7 @@
+[Unit]
+Description=hyxlab autonomous development iteration (headless Claude Code)
+[Service]
+Type=oneshot
+WorkingDirectory=/home/devs/workspace/hyxrestration
+ExecStart=/home/devs/workspace/hyxrestration/scripts/autoloop.sh
+TimeoutStartSec=3h
