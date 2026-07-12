@@ -68,7 +68,9 @@ cash and fees identical to the cent. The 69%/93% divergence measured
 on the first report (run 20260709T234859) is fully attributed to
 since-fixed infrastructure: flush-failure data loss (mistakes #12),
 venue-unfiltered gap blanking (review H2), and the unrecorded trading
-anchor. Consequence: Tier-3 shadow and Tier-2 replay are ONE
+anchor. Replicated 2026-07-12 on a second
+independent window (run 20260712T161018: 7.2h, 1,130/1,130 fills, all
+deltas 0). Consequence: Tier-3 shadow and Tier-2 replay are ONE
 semantics on identical data — the calibration question is now solely
 about what the archive misses vs the venue (latency tail, fill-model
 vs reality), not about internal consistency.
