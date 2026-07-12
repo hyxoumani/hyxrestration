@@ -41,9 +41,15 @@ structure — see [venues](venues.md)).
    NEGATIVE in every band (taker dead everywhere); won−mid +0.5¢ to
    +4.4¢ (real, peaks at bands 0.75–0.85); won−bid +1.8¢ to +11.3¢
    GROSS — before adverse selection, which is the whole question.
-   Registration gated on: enough Tier-2 stream data to score maker
-   fills via queue-position bounds (accumulating now), then a NEW
-   pre-reg with fill-quality-adjusted endpoints.
+   Horizon curve (2026-07-12, bands 0.75–0.90): edge@mid is U-shaped —
+   +9.9¢ @1h, +8.4¢ @6h, +3.7¢ @24h, +6.5¢ @72h — but near-close bids
+   sit 10¢+ under mid (thin end-of-life books), so the 1h/6h gaps are
+   the least capturable and most adversely selected. 24h is the
+   conservative design point. Registration gated on: enough Tier-2
+   stream data to score maker fills via queue-position bounds
+   (accumulating now; bracket day 2 shows the crossing rule's bias
+   flips sign by regime, so endpoints must use queue-PESS fills), then
+   a NEW pre-reg; any horizon sweep counts into the DSR family.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
