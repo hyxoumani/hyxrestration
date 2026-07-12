@@ -76,8 +76,8 @@ def migrate(conn: duckdb.DuckDBPyConnection, migrations_dir: Path = MIGRATIONS_D
 
 
 if __name__ == "__main__":
-    from hyx.config import Config
-    from hyx.db import connection
+    from phase0.hyx.config import Config
+    from phase0.hyx.db import connection
 
     cfg = Config.load(require_alpaca=False)
     with connection(cfg.db_path) as conn:

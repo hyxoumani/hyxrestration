@@ -113,6 +113,14 @@ class Daemon:
             _log("kalshi-books: no series in watchlist; task idle")
             return
         tickers = await asyncio.to_thread(open_tickers, series)
+        # An empty INITIAL set (REST down at boot) would leave books dark
+        # until the hourly refresh — retry on a short ladder instead.
+        for wait in (10, 30, 60, 120):
+            if tickers:
+                break
+            _log(f"kalshi-books: empty initial ticker set; retrying in {wait}s")
+            await asyncio.sleep(wait)
+            tickers = await asyncio.to_thread(open_tickers, series)
         _log(f"kalshi-books: {len(tickers)} open tickers across {len(series)} series")
 
         async def refresh() -> bool:
@@ -261,9 +269,11 @@ class Daemon:
             except Exception as exc:
                 # pending size makes a wedged-reader buildup visible in
                 # the journal long before it could OOM the daemon.
+                n_pending = self.store.pending
+                sev = "CRITICAL " if n_pending > self.store.PENDING_ALARM else ""
                 _log(
-                    f"flush FAILED ({type(exc).__name__}: {exc});"
-                    f" {self.store.pending} rows held for retry"
+                    f"{sev}flush FAILED ({type(exc).__name__}: {exc});"
+                    f" {n_pending} rows held for retry"
                 )
                 continue
             now = asyncio.get_event_loop().time()

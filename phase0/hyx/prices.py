@@ -20,7 +20,7 @@ from datetime import datetime
 
 import yfinance as yf
 
-from hyx.retry import with_retry
+from phase0.hyx.retry import with_retry
 
 
 @dataclass(frozen=True)

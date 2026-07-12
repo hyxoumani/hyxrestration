@@ -23,14 +23,14 @@ from pathlib import Path
 
 import duckdb
 
-from hyx.audit import audit
-from hyx.config import Config
-from hyx.db import connection
-from hyx.db.migrate import migrate
-from hyx.news import AlpacaNewsClient, NewsRow
-from hyx.prices import OhlcvRow, fetch_daily_bars
-from hyx.report import TickerReport, write_report
-from hyx.sentiment import MODEL_TAG, score_headlines
+from phase0.hyx.audit import audit
+from phase0.hyx.config import Config
+from phase0.hyx.db import connection
+from phase0.hyx.db.migrate import migrate
+from phase0.hyx.news import AlpacaNewsClient, NewsRow
+from phase0.hyx.prices import OhlcvRow, fetch_daily_bars
+from phase0.hyx.report import TickerReport, write_report
+from phase0.hyx.sentiment import MODEL_TAG, score_headlines
 
 SLICE_NAME = "slice1"
 TICKERS: tuple[str, ...] = ("DE",)
@@ -344,7 +344,7 @@ def _parse_date(s: str) -> datetime:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(prog="hyx.slice1")
+    p = argparse.ArgumentParser(prog="phase0.hyx.slice1")
     p.add_argument(
         "--backfill-since",
         type=_parse_date,

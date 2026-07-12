@@ -7,7 +7,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from hyx.db.migrate import MIGRATIONS_DIR, _discover, migrate
+from phase0.hyx.db.migrate import MIGRATIONS_DIR, _discover, migrate
 
 
 def test_discover_returns_sorted_unique_ids():

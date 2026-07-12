@@ -85,3 +85,43 @@ def test_strategies_never_import_collector():
 
 def test_kernel_imports_nothing_above_it():
     assert _violations("hyxlab") == []
+
+
+def test_stable_requirements_cover_daemon_imports():
+    """Version/package skew between dev-test and stable-run is invisible
+    until a daemon crashes at 3am: every third-party package imported
+    by stable-side code (collector + kernel + the sim modules the
+    shadow daemon runs) must be pinned in requirements-stable.txt."""
+    import sys
+
+    stdlib = sys.stdlib_module_names
+    pinned = set()
+    req = ROOT / "scripts" / "requirements-stable.txt"
+    for line in req.read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            pinned.add(line.split("==")[0].split(">=")[0].strip().lower().replace("-", "_"))
+
+    missing = {}
+    for pkg in ("collector", "hyxlab", "simulator", "strategies"):
+        for py in (ROOT / pkg).rglob("*.py"):
+            for top in _third_party_imports(py, stdlib):
+                if top not in pinned:
+                    missing.setdefault(top, str(py.relative_to(ROOT)))
+    assert missing == {}, f"unpinned in requirements-stable.txt: {missing}"
+
+
+def _third_party_imports(path: Path, stdlib) -> set[str]:
+    tree = ast.parse(path.read_text())
+    out = set()
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names = [node.module]
+        elif isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        for name in names:
+            top = name.split(".")[0]
+            if top not in stdlib and top not in PACKAGES:
+                out.add(top.lower())
+    return out

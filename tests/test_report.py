@@ -7,12 +7,12 @@ from pathlib import Path
 
 import duckdb
 
-from hyx.db.migrate import migrate
-from hyx.news import NewsRow
-from hyx.prices import OhlcvRow
-from hyx.report import TickerReport, write_report
-from hyx.sentiment import MODEL_TAG
-from hyx.slice1 import _build_ticker_report, _persist_news, _persist_ohlcv
+from phase0.hyx.db.migrate import migrate
+from phase0.hyx.news import NewsRow
+from phase0.hyx.prices import OhlcvRow
+from phase0.hyx.report import TickerReport, write_report
+from phase0.hyx.sentiment import MODEL_TAG
+from phase0.hyx.slice1 import _build_ticker_report, _persist_news, _persist_ohlcv
 
 
 def test_write_report_produces_md_and_csv(tmp_path: Path):

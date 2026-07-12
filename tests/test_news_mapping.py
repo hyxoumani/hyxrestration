@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from alpaca.data.models.news import News
 
-from hyx.news import NewsRow
+from phase0.hyx.news import NewsRow
 
 
 def _article(**overrides) -> News:

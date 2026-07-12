@@ -128,6 +128,12 @@ class StreamStore:
     ) -> None:
         self._gaps.append((venue, channel, _naive_utc(started_at), _naive_utc(ended_at), reason))
 
+    # ~30 min of firehose at the observed ~105 ev/s. Exceeding this
+    # means a reader has wedged the file far beyond a flush burst —
+    # the flusher escalates its log so the journal shows it clearly
+    # before memory pressure ever could (review M3).
+    PENDING_ALARM = 200_000
+
     @property
     def pending(self) -> int:
         return len(self._events) + len(self._trades) + len(self._gaps)

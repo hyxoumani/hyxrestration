@@ -46,7 +46,7 @@ class Config:
             alpaca_key = os.environ.get("ALPACA_KEY", "").strip()
             alpaca_secret = os.environ.get("ALPACA_SECRET", "").strip()
 
-        db_path = Path(_optional("HYX_DB_PATH", str(PROJECT_ROOT / "data" / "hyx.duckdb")))
+        db_path = Path(_optional("HYX_DB_PATH", str(PROJECT_ROOT / "data" / "phase0.hyx.duckdb")))
         reports_dir = Path(_optional("HYX_REPORTS_DIR", str(PROJECT_ROOT / "reports")))
 
         db_path.parent.mkdir(parents=True, exist_ok=True)

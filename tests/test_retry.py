@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import pytest
 
-from hyx.retry import RETRY_DELAYS, with_retry
+from phase0.hyx.retry import RETRY_DELAYS, with_retry
 
 
 @pytest.fixture
 def recorded_sleeps(monkeypatch):
     """Replace time.sleep with a recorder. Returns the list sleeps land in."""
     calls: list[float] = []
-    monkeypatch.setattr("hyx.retry.time.sleep", lambda s: calls.append(s))
+    monkeypatch.setattr("phase0.hyx.retry.time.sleep", lambda s: calls.append(s))
     return calls
 
 

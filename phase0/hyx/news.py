@@ -18,7 +18,7 @@ from alpaca.data.historical.news import NewsClient
 from alpaca.data.models.news import News
 from alpaca.data.requests import NewsRequest
 
-from hyx.retry import with_retry
+from phase0.hyx.retry import with_retry
 
 
 @dataclass(frozen=True)

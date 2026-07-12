@@ -108,7 +108,7 @@ verdicts. Design spec: `docs/plans/hyxlab-v2/proposal.md`.
 
 ## Historical: Phase 0
 
-`phase0/` and `hyx/` are the closed record of a falsified thesis
+`phase0/` (including the quarantined `phase0/hyx/` slice-1 pipeline) is the closed record of a falsified thesis
 (LLM-driven swing trading of US agricultural equities). Do not build on
 them; the portable part is the methodology (pre-registration, BH-FDR,
 honest nulls). See `docs/phase0_postmortem.md`.

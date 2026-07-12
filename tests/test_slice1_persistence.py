@@ -10,10 +10,10 @@ from datetime import UTC, date, datetime
 
 import duckdb
 
-from hyx.db.migrate import migrate
-from hyx.news import NewsRow
-from hyx.prices import OhlcvRow
-from hyx.slice1 import (
+from phase0.hyx.db.migrate import migrate
+from phase0.hyx.news import NewsRow
+from phase0.hyx.prices import OhlcvRow
+from phase0.hyx.slice1 import (
     _persist_news,
     _persist_ohlcv,
     _source_cursor,
@@ -97,7 +97,7 @@ def test_fetch_cursor_roundtrip():
 
 
 def test_audit_log_autoincrement():
-    from hyx.audit import audit
+    from phase0.hyx.audit import audit
 
     conn = _fresh_db()
     audit(conn, slice="test", level="info", event="one", payload={"k": 1}, echo=False)
