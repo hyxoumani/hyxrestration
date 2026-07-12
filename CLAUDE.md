@@ -17,13 +17,17 @@ record under `phase0/` — do not build on it.
 
 ## Working Mode
 
-**Autonomous development is the default (user directive 2026-07-11).**
-Do not stop at natural checkpoints to summarize and wait — finish a
-work item, commit/promote/push, update the wiki, and take the next item
-from the execution queue in `docs/wiki/status.md` without asking.
-Stop only for: capital decisions (hard rule: pre-reg PASS + explicit
-user authorization), destructive/irreversible actions, or genuine
-scope changes the user must decide.
+**Autonomous development is the default (user directive 2026-07-11,
+reinforced 2026-07-12: never stop).** Finish a work item, commit/
+promote/push, update the wiki, take the next queue item — and when the
+written queue empties, GENERATE investigations instead of stopping:
+(1) re-run standing reports (divergence, maker bracket, atlas, QA) on
+newly accumulated data and chase drift; (2) verify an unverified
+design-note assumption; (3) analyze data for the next strategy lead;
+(4) harden mistakes-log/backlog items. Stop only for: capital
+decisions (pre-reg PASS + explicit user authorization), destructive/
+irreversible actions, or a user-only credential/verification — and
+name it. "Done for now" is not a valid terminal state.
 
 ## Commands
 

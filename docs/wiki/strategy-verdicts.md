@@ -36,9 +36,14 @@ structure — see [venues](venues.md)).
 ## Queue (each needs its own pre-registration)
 
 1. ~~Favorite-longshot bias (taker)~~ — TESTED AND KILLED 2026-07-11
-   (see Dead list). The mid-level signature survives in the atlas; a
-   maker-entry variant would be a new registration, gated on Tier-2
-   stream data + queue-position-bound scoring.
+   (see Dead list). **Maker variant quantified 2026-07-12** (24h
+   horizon, favorite-side bands, n=1.7k–12.9k per band): won−ask
+   NEGATIVE in every band (taker dead everywhere); won−mid +0.5¢ to
+   +4.4¢ (real, peaks at bands 0.75–0.85); won−bid +1.8¢ to +11.3¢
+   GROSS — before adverse selection, which is the whole question.
+   Registration gated on: enough Tier-2 stream data to score maker
+   fills via queue-position bounds (accumulating now), then a NEW
+   pre-reg with fill-quality-adjusted endpoints.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
