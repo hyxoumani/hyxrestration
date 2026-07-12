@@ -59,6 +59,20 @@ positions; I3 settlement conservation per market. An accounting bug can
 never be reported as PnL. Fuzz test: 300 random snapshots × random
 open/close/IOC orders must never trip them.
 
+## Shadow ≡ replay equivalence (2026-07-12, real data)
+
+The shadow-vs-replay divergence report on the first fully post-fix
+window (run 20260712T004818: 15.3h live, 2,300 fills) shows EXACT
+convergence: 2,300/2,300 fills matched, all price deltas 0, gross
+cash and fees identical to the cent. The 69%/93% divergence measured
+on the first report (run 20260709T234859) is fully attributed to
+since-fixed infrastructure: flush-failure data loss (mistakes #12),
+venue-unfiltered gap blanking (review H2), and the unrecorded trading
+anchor. Consequence: Tier-3 shadow and Tier-2 replay are ONE
+semantics on identical data — the calibration question is now solely
+about what the archive misses vs the venue (latency tail, fill-model
+vs reality), not about internal consistency.
+
 ## Replay-equivalence guarantee (2026-07-08)
 
 Feeding the sim incrementally (simui's `ReplaySession.advance` in

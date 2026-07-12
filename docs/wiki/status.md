@@ -10,7 +10,7 @@ Jul 9–11, now retro-gap-marked; QA reconstruction was also unsound
 green. **Divergence report v1 SHIPPED same day** (`python -m
 simulator.divergence`): run 20260709T234859 (42h, 3,065 shadow fills)
 vs offline replay — matched fills price-identical (mean Δ 5e-6),
-match rate 69% of shadow / 93% of replay; the asymmetry is coverage
+match rate 69%/93% pre-fix — RESOLVED 2026-07-12: the first fully post-fix window converges EXACTLY (2,300/2,300 fills, all deltas 0; see simulation-honesty). Historic asymmetry was coverage
 honesty (62 gaps in window; 57% of shadow fills sit in a gap's 65-min
 re-seed shadow, incl. the 12 retro flush-failure windows replay blanks
 but live shadow traded through). Taker-side fill-model haircut ≈ 0.
