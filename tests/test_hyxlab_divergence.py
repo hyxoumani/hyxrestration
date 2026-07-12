@@ -80,3 +80,25 @@ def test_replay_reproduces_shadow_run_exactly(tmp_path):
     assert report["match_rate_vs_shadow"] == 1.0
     assert report["match_rate_vs_replay"] == 1.0
     assert report["price_delta_abs_mean"] == 0.0
+
+
+def test_split_fills_count_in_qty_match_rate():
+    """5 vs 3+2 in the same minute: order-level match fails (floor),
+    qty-level overlap credits it fully (v2)."""
+    from datetime import datetime
+
+    from simulator.divergence import compare
+
+    class F:
+        def __init__(self, qty, ts, price=0.4):
+            self.market_id, self.side = "M1", "yes"
+            self.qty, self.price, self.fee, self.maker = qty, price, 0.0, False
+            self.ts = ts
+
+    t = datetime(2026, 7, 12, 1, 0, 30)
+    shadow = [("M1", "yes", 5.0, 0.4, 0.0, False, t)]
+    replay = [F(3.0, t), F(2.0, t.replace(second=45))]
+    rep = compare(shadow, replay)
+    assert rep["matched"] == 0  # order-level: qty mismatch
+    assert rep["qty_match_rate_vs_shadow"] == 1.0
+    assert rep["qty_match_rate_vs_replay"] == 1.0

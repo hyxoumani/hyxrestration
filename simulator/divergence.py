@@ -124,15 +124,32 @@ def compare(shadow_fills: list[tuple], replay_fills: list) -> dict:
                 matched += 1
                 deltas.append(r[2] - s[2])  # replay price - shadow price
 
+    # qty-weighted overlap: bucket each side's quantity by minute and
+    # credit min(shadow, replay) per bucket — split fills (5 vs 3+2)
+    # count as matched quantity instead of unmatched orders (v2).
+    def _qty_buckets(by):
+        out: dict[tuple, float] = {}
+        for key, fills in by.items():
+            for ts, qty, *_ in fills:
+                b = (key, ts.replace(second=0, microsecond=0))
+                out[b] = out.get(b, 0.0) + qty
+        return out
+
+    sq, rq = _qty_buckets(s_by), _qty_buckets(r_by)
+    matched_qty = sum(min(v, rq.get(k, 0.0)) for k, v in sq.items())
+    qty_s, qty_r = sum(sq.values()), sum(rq.values())
+
     n_s = sum(len(v) for v in s_by.values())
     n_r = sum(len(v) for v in r_by.values())
     deltas.sort()
     return {
         "matching_note": (
-            "greedy first-in-window match requires exact qty equality;"
-            " partial-fill splits (5 vs 3+2) count as unmatched on both"
-            " sides, so match rates are a floor, not a point estimate"
+            "order-level match requires exact qty in a 60s window (a"
+            " floor); qty_match_* buckets quantity per minute and"
+            " credits overlap, so split fills count (v2)"
         ),
+        "qty_match_rate_vs_shadow": round(matched_qty / qty_s, 4) if qty_s else None,
+        "qty_match_rate_vs_replay": round(matched_qty / qty_r, 4) if qty_r else None,
         "shadow_fills": n_s,
         "replay_fills": n_r,
         "matched": matched,
