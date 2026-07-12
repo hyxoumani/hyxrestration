@@ -1,0 +1,6 @@
+[Unit]
+Description=hyxlab rotated DuckDB backups (set HYXLAB_BACKUP_DIR for off-box)
+[Service]
+Type=oneshot
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.backup

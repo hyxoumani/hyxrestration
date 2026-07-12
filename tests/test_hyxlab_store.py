@@ -239,3 +239,23 @@ def test_news_dedup_on_url_hash_and_naive_utc(tmp_path):
     stored = store.conn.execute("SELECT knowable_at, tone FROM news_items").fetchone()
     assert stored == (datetime(2026, 7, 11, 9, 15), -2.5)
     store.close()
+
+
+def test_backup_rotation_and_consistency(tmp_path):
+    import duckdb
+
+    from collector.backup import backup_one
+
+    src = tmp_path / "hyxtest.duckdb"
+    store = Store(src)
+    store.log_sweep("S1", datetime.now(UTC), datetime.now(UTC), 1, 1, "ok")
+    store.close()
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    out = backup_one(src, dest)
+    assert out is not None and out.name.startswith("hyxtest.") and out.suffix == ".duckdb"
+    # same weekday slot overwrites (rotation), and the copy opens clean
+    assert backup_one(src, dest) == out
+    with duckdb.connect(str(out), read_only=True) as conn:
+        assert conn.execute("SELECT count(*) FROM sweep_log").fetchone()[0] == 1
+    assert backup_one(tmp_path / "missing.duckdb", dest) is None
