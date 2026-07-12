@@ -178,12 +178,15 @@ stray root doc moved.
 
 ## Watch items (not yet alarming)
 
-- **Poly swept universe declining organically** ~5%/day (8.7k Jul 2 →
-  5.7k Jul 10, smooth, predates the keyset change — resolve-churn, not
-  enumeration breakage). Tripwire threshold chosen so drift stays
-  quiet; investigate only if the trend accelerates or the sweep
-  runtime (now ~12h, was ~7h) keeps growing against a shrinking
-  universe.
+- **Poly swept universe decline is partly a measurement artifact**
+  (found 2026-07-12): day-buckets MATURE for ~2 days as later sweeps
+  backfill price history into past days (Jul 10 read 5,692 on Jul 11
+  but 6,672 on Jul 12). The tripwire compares a fresh (immature)
+  yesterday against matured peaks — biased toward false alarms; the
+  0.5 threshold absorbs the ~15–20% maturation effect. True trend is
+  a mild decline (7.2–7.4k steady-state), not the ~5%/day slide
+  first estimated. Watch only if matured days trend below ~5k or the
+  sweep runtime keeps growing.
 
 ## Hard rules in force
 
