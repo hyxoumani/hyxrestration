@@ -195,11 +195,13 @@ def test_negative_levels_forgiven_when_gap_intersects(tmp_path):
 
 
 def _poly_days(store, markets_per_day):
-    """markets_per_day: {days_ago: distinct market count}; hour offset
-    keeps each batch inside its calendar day and under the 30h fresh gate."""
+    """markets_per_day: {days_ago: distinct market count}. Seeds at NOON
+    of each target calendar day — an hour-offset from now drifts into
+    the wrong day bucket right after UTC midnight (flaked 2026-07-12)."""
     rows = []
     for days_ago, count in markets_per_day.items():
-        ts = (NOW - timedelta(days=days_ago, hours=2)).replace(tzinfo=None)
+        day = (NOW - timedelta(days=days_ago)).date()
+        ts = datetime(day.year, day.month, day.day, 12, 0)
         rows += [(f"t{i}", f"pm{i}", "yes", ts, 0.5) for i in range(count)]
     store.insert_poly_prices(rows)
 
