@@ -164,6 +164,29 @@ def _naive_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None)
 
 
+def connect_retry(
+    path: str | Path,
+    *,
+    read_only: bool = True,
+    retries: int = 15,
+    delay: float = 2.0,
+):
+    """Raw duckdb.connect with lock-retry — for non-Store databases
+    (stream archive, shadow ledger). Same rationale as open_retry:
+    writers flush in bursts and readers attach briefly; colliding is
+    normal, dying on it is not."""
+    import time
+
+    for attempt in range(retries):
+        try:
+            return duckdb.connect(str(path), read_only=read_only)
+        except duckdb.Error:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
 def open_retry(
     path: str | Path = "data/hyxlab.duckdb",
     *,

@@ -26,13 +26,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import duckdb
-
+from hyxlab.store import connect_retry
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
 from simulator.queuebounds import QueueTracker, consuming_print
@@ -143,15 +141,7 @@ def main() -> None:
     ap.add_argument("--out", default="reports/maker_bracket")
     args = ap.parse_args()
 
-    conn = None
-    for attempt in range(15):  # streamd's flush bursts hold the file ~1s
-        try:
-            conn = duckdb.connect(args.stream_db, read_only=True)
-            break
-        except duckdb.IOException:
-            if attempt == 14:
-                raise
-            time.sleep(1)
+    conn = connect_retry(args.stream_db)
     since = conn.execute(
         "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
         [int(args.hours)],

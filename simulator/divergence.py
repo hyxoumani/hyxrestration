@@ -26,9 +26,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import duckdb
-
-from hyxlab.store import Store
+from hyxlab.store import Store, connect_retry
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, replay_snapshots
 from simulator.shadow import SHADOW_DB, STREAM_DB
@@ -71,7 +69,7 @@ def replay_run(
         store.close()
     sim = Simulator(markets, [STRATEGIES[n]() for n in strategy_names], latency=latency)
 
-    with duckdb.connect(stream_db, read_only=True) as conn:
+    with connect_retry(stream_db) as conn:
         # Seed books exactly as shadow does: replay history since the
         # last coverage break WITHOUT stepping the sim.
         floor = conn.execute(
@@ -188,7 +186,7 @@ def main() -> None:
     ap.add_argument("--out", default="reports/shadow_divergence")
     args = ap.parse_args()
 
-    with duckdb.connect(args.shadow_db, read_only=True) as conn:
+    with connect_retry(args.shadow_db) as conn:
         run_id = (
             args.run
             or conn.execute(
