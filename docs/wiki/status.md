@@ -122,14 +122,17 @@ a proven chunked≡one-shot replay equivalence (see
 
 ## Standing user items (non-blocking)
 
-**Off-box backup** (all three DuckDB files — highest-value 30 min; needs
-a destination from the user; stakes rose: 10M+ unrefetchable rows, and
-the poly sweep holds a multi-hour write lock);
+**Off-box backup destination** (local tier SHIPPED 2026-07-12:
+`hyxlab-backup.timer` daily 03:30 UTC, 7-slot rotation in
+`data/backups` via consistent read-locked copies — guards corruption/
+deletion, not disk loss; point `HYXLAB_BACKUP_DIR` at any off-box
+mount to finish the job);
 `sudo timedatectl set-ntp true` (box ~20s fast; daemon logs the step);
 rotate Kalshi API key;
 Phase 0 write-up (pending prose artifact); micro-probe budget decision
-(parked until explicitly authorized); **simui as a systemd unit?** —
-currently dies with the dev session that launched it (user to confirm).
+(parked until explicitly authorized). ~~simui as a systemd unit~~
+SHIPPED 2026-07-12 (`hyxlab-simui.service`, localhost:8877, paper
+state only — disable anytime with `systemctl --user disable --now`).
 
 ## Small follow-ups (agent-actionable)
 
