@@ -122,6 +122,15 @@ a proven chunked≡one-shot replay equivalence (see
 7. **Strategies** (only after 2–6): favorite-longshot pre-reg first;
    weather v2 and econ-print candidates behind it.
 
+## Autonomous loop (2026-07-12)
+
+`hyxlab-autoloop.timer` runs one bounded headless Claude Code
+iteration every 6h (02/08/14/20:15 UTC) against the investigation
+ladder — the never-stop directive as infrastructure, surviving
+interactive sessions. flock-guarded; hooks + hard rules bind headless
+runs identically. Knobs: cadence (timer), turn cap (autoloop.sh),
+permission mode.
+
 ## Standing user items (non-blocking)
 
 **Off-box backup destination** (local tier SHIPPED 2026-07-12:
