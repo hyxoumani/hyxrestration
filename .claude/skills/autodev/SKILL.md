@@ -13,10 +13,16 @@ experiments yourself — agents do.
 
 A Stop hook (`.claude/hooks/autodev-stop-guard.sh`) enforces the loop: while
 `.autodev/ACTIVE` exists, every attempt to end your turn is blocked, and the
-hook **audits your ledger** — it counts `status: proposed` and
-`status: running` entries and names violations in its block message. You
-cannot satisfy it by idling, and you must never satisfy it by faking
-statuses. Do not fight the hook; the only legitimate exits are the
+hook **audits your ledger and paths map** — for each `## `-headed block in
+EXPERIMENTS.md/PATHS.md it takes only that block's own first
+`- status: ...` line (occurrences of the word "status:" elsewhere in a
+block's prose/notes/code-fences are ignored), counts `status: proposed` and
+`status: running` experiment blocks, and checks for at least one
+`unexplored`/`active` PATHS.md avenue. Once `.autodev/dispatch_log` has
+accumulated >= 5 lines, it also checks the last 5 for the novelty quota (see
+below) — naming violations in its block message. You cannot satisfy it by
+idling, and you must never satisfy it by faking statuses or dispatch_log
+entries. Do not fight the hook; the only legitimate exits are the
 completion gate (bounded mode) or the user (continuous mode).
 
 ## Prime directive: always be investigating
@@ -25,15 +31,45 @@ There is always work. "Waiting for data/markets/time to pass" is never a
 state you are allowed to be in — if every queued follow-up is blocked on
 wall-clock, that means your hypothesis generation has stalled, not that work
 ran out. Open a new avenue in PATHS.md instead. These invariants must hold
-at the end of EVERY iteration (the hook checks the first two mechanically):
+at the end of EVERY iteration. The hook mechanically checks queue depth,
+dispatch, the "at least one open avenue" half of exploration, AND (once
+`.autodev/dispatch_log` has >= 5 lines) the novelty quota (second half of
+#3) — see the dispatch-log format below. Below 5 logged dispatches the
+novelty-quota check is skipped (nothing to enforce yet), so treat it as
+prompt-level self-enforcement until the log fills up.
 
 1. **Queue depth** — at least 3 experiments with `status: proposed` that are
    launchable right now. Ideas blocked on time/data get `status: deferred`
-   (with the unblock condition) and do not count.
-2. **Dispatch** — exactly one experiment `status: running` (sequential mode).
+   (with the unblock condition) and do not count. (mechanically checked)
+2. **Dispatch** — exactly one experiment `status: running` (sequential
+   mode); zero or more than one both violate this. (mechanically checked)
 3. **Exploration** — PATHS.md lists at least one `unexplored` or `active`
-   avenue, and at least every 5th experiment you dispatch must open an
-   `unexplored` avenue (novelty quota).
+   avenue (mechanically checked), and at least every 5th experiment you
+   dispatch must open an `unexplored` avenue (novelty quota — mechanically
+   checked once `.autodev/dispatch_log` has >= 5 lines; see "Dispatch log"
+   below).
+
+### Dispatch log (`.autodev/dispatch_log`)
+
+Append-only, one line per dispatch, tab-separated:
+
+```
+<iteration>\t<experiment-id>\t<avenue>\t<opened-unexplored: yes|no>
+```
+
+- `<iteration>` — the iteration counter at dispatch time.
+- `<experiment-id>` — the ledger ID you just marked `running` (e.g. `EXP-014`).
+- `<avenue>` — the PATHS.md avenue name it belongs to.
+- `<opened-unexplored: yes|no>` — literally `yes` if, immediately before this
+  dispatch, that avenue's PATHS.md status was `unexplored` (i.e. this
+  dispatch is the one opening it); `no` otherwise.
+
+You MUST append one line here every time you complete step 5 ("Dispatch")
+of the loop, below — this is what makes the novelty quota mechanically
+enforceable. Never fake the `yes`/`no` field to satisfy the hook; that is
+exactly the kind of gaming the audit exists to catch. Once the log holds
+>= 5 lines, the hook checks the LAST 5 for at least one `yes` and blocks
+with `NOVELTY-QUOTA-VIOLATION` if none is found.
 
 ## Arguments
 
@@ -43,8 +79,14 @@ at the end of EVERY iteration (the hook checks the first two mechanically):
   `touch .autodev/ACTIVE`, journal the reopening, and re-enter the loop with
   the existing ledger, paths, and library.
 - `/autodev status` — report session state (goal, mode, ledger and paths
-  summary, iteration count) and stop. Do NOT create ACTIVE for a status
-  check.
+  summary, iteration count). Do NOT create ACTIVE for a status check. Be
+  honest about what happens next: if no session is ACTIVE, the Stop hook
+  has nothing to guard and your turn genuinely ends here. If a session IS
+  ACTIVE, the hook has no status-check exception — it will still block
+  your turn-end and re-prompt you into the loop right after the status is
+  printed. So `status` only truly "stops" when no session is ACTIVE; while
+  ACTIVE it prints the status and the loop continues. Say this plainly in
+  your response rather than implying the session paused.
 - `/autodev stop` — manual abort, valid ONLY when the user explicitly
   requested it this turn; you may never invoke it on your own initiative.
   Append an honest status entry to JOURNAL.md, then `rm .autodev/ACTIVE`.
@@ -103,24 +145,42 @@ compaction.
    cited evidence (library briefs / measurements), never because you are
    tired of it. Re-check any `deferred` experiments whose unblock condition
    has arrived and flip them back to `proposed`.
-3. **Propose** — refill the queue to at least 3 launchable `proposed`
+3. **Check early completion** (bounded mode only — skip this step entirely
+   in continuous mode). Before proposing or dispatching anything ordinary,
+   ask: does every GOAL.md acceptance criterion already hold on concluded,
+   evidence-backed work (validated/rejected, not still `running`), AND is
+   there currently NO experiment `status: running` in the ledger? If yes,
+   do NOT mechanically propose/dispatch one more ordinary experiment just
+   to keep the queue moving — skip straight to **Completion gate** below
+   this iteration instead of steps 4-5. If an experiment is still
+   `running`, it is not settled yet: continue to Propose/Dispatch as usual
+   (or, if nothing new should be dispatched, let that experiment conclude
+   first) — an in-flight experiment must be evaluated, marked
+   `validated`/`rejected`, and given a library brief before the completion
+   gate can ever be entered. Never write `COMPLETE` while any experiment is
+   `running`.
+4. **Propose** — refill the queue to at least 3 launchable `proposed`
    experiments. Be genuinely creative, like a PM hunting for alpha:
    alternative designs, refactors, performance, robustness hardening,
    tooling, tests that would expose weaknesses, cross-cutting analyses.
    Consult the library first — never re-propose an approach a brief shows
    failed unless you can say what changed. Honor the novelty quota: every
    5th dispatch opens an `unexplored` avenue.
-4. **Dispatch** — pick the highest-expected-value `proposed` experiment,
+5. **Dispatch** — pick the highest-expected-value `proposed` experiment,
    mark it `running`, and spawn ONE `autodev-agent` subagent with a
    self-contained brief: the hypothesis, relevant context/paths, the
    verification command, and what evidence to return. Sequential mode:
    exactly one experiment in flight at a time. (The ledger format supports
    parallel dispatch; do not use it unless the user changes the mode.)
-5. **Journal** — append one entry to JOURNAL.md: iteration number, what was
+   Then append one line to `.autodev/dispatch_log` (format above) recording
+   this dispatch — this is what makes the novelty quota mechanically
+   checkable; do not skip it.
+6. **Journal** — append one entry to JOURNAL.md: iteration number, what was
    evaluated/decided/dispatched, invariant status.
-6. **Check the gate** (bounded mode only). If it does not pass — or the mode
-   is continuous — simply continue; when you try to end the turn, the hook
-   re-prompts you into the next iteration.
+7. **Check the gate** (bounded mode only — including the branch taken from
+   step 3). If it does not pass — or the mode is continuous — simply
+   continue; when you try to end the turn, the hook re-prompts you into
+   the next iteration.
 
 ### Rules
 
@@ -146,21 +206,67 @@ the same iteration:
 2. **Full verification passes now** — you ran the project's verification
    command(s) in this iteration and they succeeded. Paste the outcome into
    the journal.
-3. **Red-team review** — dispatch one `autodev-agent` with a
-   devil's-advocate brief: given GOAL.md, the ledger, PATHS.md and the
-   library, attack the claim that the work is complete and hunt for
-   unblocked, positive-expected-value experiments. If it finds ANY, you are
-   not done — add them to the queue and continue. Only an empty-handed
-   red-team report, pasted into the journal, satisfies this condition.
+3. **Red-team review** — a dedicated, ledger-tracked pseudo-experiment, not
+   an ad-hoc dispatch. Add a ledger entry titled `## RT-<N>: red-team
+   review of completion claim` (increment `<N>` each time this gate is
+   attempted; e.g. `RT-1`, `RT-2`) with `path: red-team-review` so it is
+   distinguishable and searchable in EXPERIMENTS.md, and give it a
+   `status:` field exactly like a normal experiment (`proposed` → `running`
+   → `validated`/`rejected`). Mark it `running` and send ONE `autodev-agent`
+   a self-contained brief containing:
+   - the ID (`RT-<N>`) and the hypothesis: "the work is NOT actually
+     complete — there exists an unblocked, positive-expected-value
+     experiment";
+   - the relevant GOAL.md acceptance criteria, PATHS.md avenues, and
+     library briefs, pasted in verbatim (the agent cannot see your
+     conversation);
+   - an explicit statement that this is analysis-only, with NO
+     verification command of its own — the agent must NOT implement, fix,
+     or change any files, only investigate and report;
+   - the required report format: either an explicit empty-handed
+     statement, or a numbered list of findings, each a candidate
+     experiment with a one-line hypothesis.
+   Evaluate the returned report exactly as you would any other experiment:
+   mark the `RT-<N>` ledger entry `validated` (empty-handed — the
+   completion claim survived) or `rejected` (findings surfaced — the claim
+   does not hold; add every finding to the queue as a new `proposed`
+   experiment) with the outcome cited in the ledger, then file a library
+   brief for it like any concluded experiment. Only an empty-handed report,
+   journaled and filed this way, satisfies this condition — you may not
+   write `COMPLETE` while the `RT-<N>` entry is still `status: running`.
 4. **Completion rationale** — a journal entry arguing why stopping is
    correct. "Remaining work is blocked on time/data" is never admissible —
    deferred work means the session should idle-proof itself with new
    avenues, or the user should be told, not that the loop is done.
 
-Then write `.autodev/COMPLETE` containing a one-paragraph summary and the
-verification result, and end your turn — the hook will allow it and retire
-the ACTIVE marker. If any condition fails, you are not done: return to the
-loop.
+Then write `.autodev/COMPLETE`. The stop-hook parses it as a structured
+attestation, not a bare marker — it must contain, verbatim and each on
+its own line, ALL of these labeled tokens (the hook greps for them
+literally):
+
+```
+VERIFICATION: PASS
+RED_TEAM: EMPTY_HANDED
+ACCEPTANCE_CRITERIA: MET
+```
+
+Alongside those three required lines, include a one-paragraph summary and
+the verification command output for a human reader. The three literal
+marker strings are NOT sufficient by themselves, though: the hook ALSO
+cross-references EXPERIMENTS.md and requires at least one block whose
+header matches `## RT-<N>` to have its own `- path: red-team-review` line
+AND its own `- status: validated` line — i.e. a real, ledger-tracked,
+empty-handed red-team review must actually exist, not just be claimed via
+the RED_TEAM marker text. If any of the three tokens is missing/
+misspelled, OR no such validated `RT-<N>` ledger entry exists, the hook
+treats COMPLETE as invalid (same as if it didn't exist) and blocks,
+naming exactly what's missing — rewrite the file (and/or finish the RT-<N>
+ledger entry) rather than touching an empty COMPLETE.
+
+Then end your turn — the hook will allow it and retire the ACTIVE marker
+(and will re-block if it cannot confirm ACTIVE was actually removed). If
+any completion-gate condition above fails, you are not done: return to
+the loop.
 
 ## Paths map (`PATHS.md`)
 
@@ -185,8 +291,16 @@ Your exploration frontier — every avenue of investigation toward the goal:
 - outcome: <evidence: test output summary, measurements, or why rejected>
 ```
 
-The hook greps for `status: proposed` and `status: running` — keep the
-field spelled exactly that way, one status line per experiment.
+The hook parses each `## EXP-N` block and reads only that block's own first
+`- status: ...` line — keep the field spelled exactly that way, one status
+line per experiment, and put it before any other field so it's the first
+match after the header.
+
+Red-team completion reviews use the same block format under an `RT-<N>` ID
+(e.g. `## RT-1: red-team review of completion claim`) with `path:
+red-team-review` — see Completion gate. They are ordinary blocks to the
+hook's audit (a `running` RT entry counts toward the dispatch check like
+any other), and must be evaluated and filed exactly like an EXP entry.
 
 ## Library (`.autodev/library/`)
 
