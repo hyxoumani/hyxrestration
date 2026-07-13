@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from collector.venues import kalshi_ws, polymarket_ws
-from hyxlab.streamstore import StreamStore
+from hyxlab.streamstore import BookEvent, StreamStore, StreamTrade
 
 RECV = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
 
@@ -351,3 +351,125 @@ def test_startup_gap_marks_downtime_only_when_history_exists(tmp_path):
     assert store.pending == 1  # downtime gap buffered
     store.flush()
     assert store.counts()["stream_gaps"] == 1
+
+
+# -- spill-to-sidecar (multi-hour reader wedge cap) ----------------------------
+
+
+def _seq_trade(seq):
+    from datetime import timedelta
+
+    return StreamTrade("kalshi", "M1", RECV + timedelta(seconds=seq), RECV, 0.4, 5.0, "yes", seq)
+
+
+def _wedge(monkeypatch):
+    """Same blocked-writer simulation as test_flush_failure_preserves_buffer."""
+    import duckdb
+
+    from hyxlab import streamstore as ss
+
+    def locked(*args, **kwargs):
+        raise duckdb.IOException("Could not set lock on file")
+
+    monkeypatch.setattr(ss.duckdb, "connect", locked)
+
+
+def test_wedged_flush_past_cap_spills_overflow_and_bounds_memory(tmp_path, monkeypatch):
+    """A reader wedge lasting past SPILL_CAP pending rows must move the
+    oldest overflow to the sidecar and keep the in-memory buffer at the cap."""
+    import duckdb
+    import pytest
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 10)
+    store.append_trades([_seq_trade(i) for i in range(25)])
+    _wedge(monkeypatch)
+    with pytest.raises(duckdb.IOException):
+        store.flush()
+    assert store.pending <= 10  # memory bounded at the cap
+    assert store._spill_path.exists()  # overflow landed on disk
+
+
+def test_recovery_flush_drains_sidecar_before_memory_with_zero_loss(tmp_path, monkeypatch):
+    """After a wedge that spilled, the next good flush must land every
+    ingested row exactly once — sidecar (oldest) first, recv order intact."""
+    import duckdb
+    import pytest
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 10)
+    store.append_trades([_seq_trade(i) for i in range(25)])
+    _wedge(monkeypatch)
+    with pytest.raises(duckdb.IOException):
+        store.flush()
+    monkeypatch.undo()
+
+    store.append_trades([_seq_trade(i) for i in range(25, 30)])  # ingest continues post-wedge
+    assert store.flush() == 30  # sidecar + memory drained in one transaction
+    with duckdb.connect(str(tmp_path / "s.duckdb"), read_only=True) as conn:
+        rows = conn.execute("SELECT seq FROM stream_trades ORDER BY rowid").fetchall()
+    seqs = [r[0] for r in rows]
+    assert seqs == list(range(30))  # zero loss, original ingest order
+    assert not store._spill_path.exists()  # sidecar removed after commit
+
+
+def test_spill_roundtrip_covers_events_trades_and_gaps(tmp_path, monkeypatch):
+    """Every buffered row type (incl. None fields) must survive the
+    sidecar round-trip faithfully."""
+    import duckdb
+    import pytest
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 0)  # spill everything on failure
+    store.append_events([BookEvent("kalshi", "M1", RECV, None, None, 7, "snap", "yes", 0.4, 100.0)])
+    store.append_trades([_seq_trade(1)])
+    store.append_gap("kalshi", "books", RECV, RECV, "seq_gap")
+    _wedge(monkeypatch)
+    with pytest.raises(duckdb.IOException):
+        store.flush()
+    monkeypatch.undo()
+
+    assert store.pending == 0  # all three rows spilled
+    assert store.flush() == 3
+    assert store.counts() == {"book_events": 1, "stream_trades": 1, "stream_gaps": 1}
+
+
+def test_sidecar_drain_stores_original_event_timestamps(tmp_path, monkeypatch):
+    """Rows drained from the sidecar must keep their ORIGINAL recv/src
+    timestamps (naive UTC), never a drain-time restamp (mistakes #10)."""
+    import duckdb
+    import pytest
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 0)
+    store.append_trades([_seq_trade(0)])
+    _wedge(monkeypatch)
+    with pytest.raises(duckdb.IOException):
+        store.flush()
+    monkeypatch.undo()
+
+    store.flush()
+    with duckdb.connect(str(tmp_path / "s.duckdb"), read_only=True) as conn:
+        recv, src = conn.execute("SELECT recv_ts, src_ts FROM stream_trades").fetchone()
+    assert recv == RECV.replace(tzinfo=None)  # original event time, naive UTC
+    assert src == RECV.replace(tzinfo=None)
+
+
+def test_sidecar_survives_daemon_restart_and_drains_on_first_flush(tmp_path, monkeypatch):
+    """A daemon that crashed while wedged leaves a sidecar on disk; a
+    fresh StreamStore's first good flush must recover those rows."""
+    import duckdb
+    import pytest
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 0)
+    store.append_trades([_seq_trade(i) for i in range(3)])
+    _wedge(monkeypatch)
+    with pytest.raises(duckdb.IOException):
+        store.flush()
+    monkeypatch.undo()
+
+    fresh = StreamStore(tmp_path / "s.duckdb")  # restart: empty memory buffers
+    assert fresh.pending == 0
+    assert fresh.flush() == 3  # first flush drains the crashed daemon's sidecar
+    assert fresh.counts()["stream_trades"] == 3

@@ -186,8 +186,11 @@ stray root doc moved.
 **Backlogged (valid, not urgent)**:
 - ~~`hyx/` legacy package quarantine~~ DONE (ef70546: moved under
   `phase0/hyx`).
-- StreamStore spill-to-sidecar cap for multi-hour reader wedges (the
-  pending-size journal line covers detection for now).
+- ~~StreamStore spill-to-sidecar cap for multi-hour reader wedges~~
+  DONE 2026-07-12 (SPILL_CAP=400k; failed flush spills oldest rows to
+  `<db>.spill.jsonl`, drained sidecar-first in one transaction on the
+  next good flush, survives restart; 5 recovery-claim tests per
+  mistakes #12).
 - ~~requirements.txt ↔ requirements-stable.txt version-skew check~~
   DONE 2026-07-12 (`tests/test_requirements_sync.py`: stable must be
   exact pins; shared pins must satisfy dev specifiers).

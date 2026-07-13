@@ -25,6 +25,7 @@ over convenience — replay logic interprets):
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,6 +69,53 @@ def _naive_utc(dt: datetime | None) -> datetime | None:
     if dt is None or dt.tzinfo is None:
         return dt
     return dt.astimezone(UTC).replace(tzinfo=None)
+
+
+# -- sidecar (spill) serialization: one JSON line per row, tagged by table.
+# ISO timestamps round-trip tz-awareness exactly, so rows drained from the
+# sidecar store the ORIGINAL event timestamps, never a drain-time restamp.
+
+
+def _iso(dt: datetime | None) -> str | None:
+    return None if dt is None else dt.isoformat()
+
+
+def _from_iso(s: str | None) -> datetime | None:
+    return None if s is None else datetime.fromisoformat(s)
+
+
+def _enc_event(e: BookEvent) -> str:
+    row = [
+        e.venue,
+        e.market_id,
+        _iso(e.recv_ts),
+        _iso(e.src_ts),
+        e.sid,
+        e.seq,
+        e.kind,
+        e.side,
+        e.price,
+        e.qty,
+    ]
+    return json.dumps({"t": "e", "r": row}) + "\n"
+
+
+def _enc_trade(t: StreamTrade) -> str:
+    row = [
+        t.venue,
+        t.market_id,
+        _iso(t.recv_ts),
+        _iso(t.src_ts),
+        t.price,
+        t.qty,
+        t.taker_side,
+        t.seq,
+    ]
+    return json.dumps({"t": "t", "r": row}) + "\n"
+
+
+def _enc_gap(g: tuple) -> str:
+    return json.dumps({"t": "g", "r": [g[0], g[1], _iso(g[2]), _iso(g[3]), g[4]]}) + "\n"
 
 
 @dataclass
@@ -134,9 +182,21 @@ class StreamStore:
     # before memory pressure ever could (review M3).
     PENDING_ALARM = 200_000
 
+    # 2x the alarm (~1 h of firehose). Past this, a failed flush moves
+    # the OLDEST pending rows to a JSONL sidecar next to the DB, so a
+    # multi-hour reader wedge (poly sweep runs ~7 h) bounds daemon
+    # memory instead of growing without limit. The sidecar is drained
+    # ahead of the in-memory buffer on the next good flush — recv order
+    # preserved — and survives a daemon restart.
+    SPILL_CAP = 400_000
+
     @property
     def pending(self) -> int:
         return len(self._events) + len(self._trades) + len(self._gaps)
+
+    @property
+    def _spill_path(self) -> Path:
+        return self.path.parent / (self.path.name + ".spill.jsonl")
 
     # -- persistence ------------------------------------------------------
 
@@ -146,64 +206,144 @@ class StreamStore:
         On any failure (e.g. a reader briefly holds the file lock) the
         batch is restored to the buffer front — recv order preserved —
         so the next flush retries it. Losing it would leave a silent,
-        unmarked hole in the archive."""
+        unmarked hole in the archive. If a wedge holds past SPILL_CAP
+        pending rows, the oldest rows spill to the sidecar; it is
+        written FIRST here (older than anything in memory), then
+        removed only after the transaction commits — a crash between
+        commit and unlink re-drains it (duplicates over holes)."""
         n = self.pending
-        if n == 0:
+        if n == 0 and not self._spill_path.exists():
             return 0
         events, self._events = self._events, []
         trades, self._trades = self._trades, []
         gaps, self._gaps = self._gaps, []
         try:
-            self._write(events, trades, gaps)
+            with duckdb.connect(str(self.path)) as conn:
+                # Parse the sidecar only once the write lock is held: in
+                # a wedge it can hold hours of rows, and a flush that is
+                # about to fail on connect must not pay to load it.
+                s_events, s_trades, s_gaps = self._read_spill()
+                self._insert(conn, s_events + events, s_trades + trades, s_gaps + gaps)
+                n += len(s_events) + len(s_trades) + len(s_gaps)
         except BaseException:
             self._events[:0] = events
             self._trades[:0] = trades
             self._gaps[:0] = gaps
+            self._spill_overflow()
             raise
+        self._spill_path.unlink(missing_ok=True)
         return n
 
-    def _write(self, events: list[BookEvent], trades: list[StreamTrade], gaps: list[tuple]) -> None:
-        with duckdb.connect(str(self.path)) as conn:
-            conn.execute("BEGIN")
-            if events:
-                conn.executemany(
-                    "INSERT INTO book_events VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    [
-                        (
-                            e.venue,
-                            e.market_id,
-                            _naive_utc(e.recv_ts),
-                            _naive_utc(e.src_ts),
-                            e.sid,
-                            e.seq,
-                            e.kind,
-                            e.side,
-                            e.price,
-                            e.qty,
+    def _spill_overflow(self) -> None:
+        """Move the oldest pending rows to the sidecar until the buffer
+        is back at SPILL_CAP. Append-only, oldest-first from each buffer
+        front, so the sidecar always holds rows older than anything
+        still in memory. Sidecar write lands BEFORE the buffers are
+        trimmed — a failed disk write must not drop rows (mistakes #12:
+        recovery claims get tested, not assumed)."""
+        over = self.pending - self.SPILL_CAP
+        if over <= 0:
+            return
+        lines: list[str] = []
+        takes: list[tuple[list, int]] = []
+        for buf, enc in (
+            (self._events, _enc_event),
+            (self._trades, _enc_trade),
+            (self._gaps, _enc_gap),
+        ):
+            take = min(over, len(buf))
+            lines.extend(enc(row) for row in buf[:take])
+            takes.append((buf, take))
+            over -= take
+        with self._spill_path.open("a", encoding="utf-8") as f:
+            f.writelines(lines)
+        for buf, take in takes:
+            del buf[:take]
+
+    def _read_spill(self) -> tuple[list[BookEvent], list[StreamTrade], list[tuple]]:
+        events: list[BookEvent] = []
+        trades: list[StreamTrade] = []
+        gaps: list[tuple] = []
+        if not self._spill_path.exists():
+            return events, trades, gaps
+        with self._spill_path.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                r = rec["r"]
+                if rec["t"] == "e":
+                    events.append(
+                        BookEvent(
+                            r[0],
+                            r[1],
+                            _from_iso(r[2]),
+                            _from_iso(r[3]),
+                            r[4],
+                            r[5],
+                            r[6],
+                            r[7],
+                            r[8],
+                            r[9],
                         )
-                        for e in events
-                    ],
-                )
-            if trades:
-                conn.executemany(
-                    "INSERT INTO stream_trades VALUES (?,?,?,?,?,?,?,?)",
-                    [
-                        (
-                            t.venue,
-                            t.market_id,
-                            _naive_utc(t.recv_ts),
-                            _naive_utc(t.src_ts),
-                            t.price,
-                            t.qty,
-                            t.taker_side,
-                            t.seq,
+                    )
+                elif rec["t"] == "t":
+                    trades.append(
+                        StreamTrade(
+                            r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4], r[5], r[6], r[7]
                         )
-                        for t in trades
-                    ],
-                )
-            if gaps:
-                conn.executemany("INSERT INTO stream_gaps VALUES (?,?,?,?,?)", gaps)
-            conn.execute("COMMIT")
+                    )
+                else:
+                    gaps.append((r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4]))
+        return events, trades, gaps
+
+    def _insert(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        events: list[BookEvent],
+        trades: list[StreamTrade],
+        gaps: list[tuple],
+    ) -> None:
+        conn.execute("BEGIN")
+        if events:
+            conn.executemany(
+                "INSERT INTO book_events VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        e.venue,
+                        e.market_id,
+                        _naive_utc(e.recv_ts),
+                        _naive_utc(e.src_ts),
+                        e.sid,
+                        e.seq,
+                        e.kind,
+                        e.side,
+                        e.price,
+                        e.qty,
+                    )
+                    for e in events
+                ],
+            )
+        if trades:
+            conn.executemany(
+                "INSERT INTO stream_trades VALUES (?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        t.venue,
+                        t.market_id,
+                        _naive_utc(t.recv_ts),
+                        _naive_utc(t.src_ts),
+                        t.price,
+                        t.qty,
+                        t.taker_side,
+                        t.seq,
+                    )
+                    for t in trades
+                ],
+            )
+        if gaps:
+            conn.executemany("INSERT INTO stream_gaps VALUES (?,?,?,?,?)", gaps)
+        conn.execute("COMMIT")
 
     def mark_startup_gap(self, now: datetime | None = None) -> None:
         """Record daemon downtime: everything between the last archived
