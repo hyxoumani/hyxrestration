@@ -32,7 +32,7 @@ from pathlib import Path
 
 import duckdb
 
-from hyxlab.store import Store
+from hyxlab.store import Store, connect_retry
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
 from simulator.sim import Simulator
@@ -40,6 +40,25 @@ from strategies.probe import TightSpreadProbe
 
 STREAM_DB = "data/hyxstream.duckdb"
 SHADOW_DB = "data/hyxshadow.duckdb"
+# The daemon runs under MemoryMax=1G, but DuckDB's default memory_limit
+# scales with SYSTEM RAM — the seed-time ORDER BY over book_events blew
+# through the cgroup cap and got the process kernel-OOM-killed at boot
+# (2026-07-11 and 2026-07-12, both recovered only by systemd restart).
+# Bound the engine well under the cap and let it spill to disk instead.
+DUCK_MEM = "512MiB"
+DUCK_THREADS = 2
+DUCK_TMP = "data/duckspill-shadow"
+
+
+def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
+    """Read-only stream-archive connection with the engine bounded
+    below the unit's cgroup cap (see DUCK_MEM note above)."""
+    conn = connect_retry(path)
+    conn.execute(f"SET memory_limit = '{DUCK_MEM}'")
+    conn.execute(f"SET threads = {DUCK_THREADS}")
+    conn.execute(f"SET temp_directory = '{DUCK_TMP}'")
+    return conn
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS shadow_runs (
@@ -162,7 +181,7 @@ class ShadowRunner:
             store.close()
 
     def _read_new(self) -> tuple[list[BookEvent], list[tuple]]:
-        with duckdb.connect(self.stream_db, read_only=True) as conn:
+        with stream_conn(self.stream_db) as conn:
             if self.cursor is None:
                 # First poll anchors at the newest archived event: shadow
                 # trades the FUTURE only. But book state must be SEEDED

@@ -210,6 +210,16 @@ stray root doc moved.
 
 ## Watch items (not yet alarming)
 
+- **DuckDB vs cgroup memory caps**: hyxlab-shadow was kernel-OOM-killed
+  at boot twice (2026-07-11, 2026-07-12 — systemd auto-restart
+  recovered both) because DuckDB's default memory_limit scales with
+  SYSTEM RAM, far above the unit's MemoryMax=1G; the seed-time ORDER BY
+  blew the cap. FIXED for shadow 2026-07-12 (`stream_conn`: 512MiB
+  engine cap, 2 threads, spill to `data/duckspill-shadow`, and it now
+  uses the mandated `connect_retry`). `hyxlab-simui` shares the 1G cap
+  and replays big archive windows — same exposure, unobserved so far;
+  apply the same bound if it ever OOMs.
+
 - **Poly swept universe decline is partly a measurement artifact**
   (found 2026-07-12): day-buckets MATURE for ~2 days as later sweeps
   backfill price history into past days (Jul 10 read 5,692 on Jul 11

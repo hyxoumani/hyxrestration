@@ -73,6 +73,29 @@ def _snapshot_frame(mid, seq, bid_cents, ask_no_cents, ts):
     )[0]
 
 
+def test_stream_reads_bound_duckdb_engine_below_cgroup_cap(tmp_path):
+    """Regression (boot OOM-kills 2026-07-11 + 2026-07-12): shadow's
+    stream-archive reads must cap DuckDB's memory_limit well under the
+    unit's MemoryMax=1G — the engine default scales with SYSTEM RAM,
+    and the seed-time ORDER BY got the daemon kernel-killed."""
+    from simulator.shadow import stream_conn
+
+    db = tmp_path / "stream.duckdb"
+    StreamStore(db)  # schema, so a read-only connect succeeds
+    with stream_conn(str(db)) as conn:
+        settings = dict(
+            conn.execute(
+                "SELECT name, value FROM duckdb_settings()"
+                " WHERE name IN ('memory_limit', 'threads', 'temp_directory')"
+            ).fetchall()
+        )
+        read_only = conn.execute("SELECT current_setting('access_mode')").fetchone()[0]
+    assert settings["memory_limit"] == "512.0 MiB"  # far below MemoryMax=1G
+    assert settings["threads"] == "2"
+    assert settings["temp_directory"] == "data/duckspill-shadow"  # spill, don't die
+    assert read_only.lower() == "read_only"  # still connect_retry's read-only mode
+
+
 def test_shadow_tails_only_the_future_and_persists_fills(tmp_path):
     stream_db = tmp_path / "stream.duckdb"
     archive_db = tmp_path / "archive.duckdb"
