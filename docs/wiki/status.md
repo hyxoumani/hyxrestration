@@ -184,11 +184,13 @@ stray root doc moved.
   backtest, simui), which never flock; fixed via open_retry.
 
 **Backlogged (valid, not urgent)**:
-- `hyx/` legacy package quarantine (phase0-style fence or move; ~20
-  tests import it — mechanical but churny).
+- ~~`hyx/` legacy package quarantine~~ DONE (ef70546: moved under
+  `phase0/hyx`).
 - StreamStore spill-to-sidecar cap for multi-hour reader wedges (the
   pending-size journal line covers detection for now).
-- requirements.txt ↔ requirements-stable.txt version-skew check.
+- ~~requirements.txt ↔ requirements-stable.txt version-skew check~~
+  DONE 2026-07-12 (`tests/test_requirements_sync.py`: stable must be
+  exact pins; shared pins must satisfy dev specifiers).
 - `streamd.open_tickers` shorter retry when the initial set is empty.
 - Divergence matcher: nearest-in-window + split-aware matching (v2).
 
