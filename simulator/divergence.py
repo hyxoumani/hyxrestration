@@ -35,6 +35,8 @@ from strategies.probe import TightSpreadProbe
 
 STRATEGIES = {"probe": TightSpreadProbe}
 MATCH_TOLERANCE = timedelta(seconds=60)
+NEAREST_WINDOW = timedelta(seconds=2)
+_QTY_EPS = 1e-9
 CHUNK = 200_000
 
 
@@ -95,8 +97,21 @@ def replay_run(
     return [f for f in sim.result.fills if f.ts <= end]
 
 
-def compare(shadow_fills: list[tuple], replay_fills: list) -> dict:
-    """Greedy per-(market, side) match by time; price deltas on matches.
+def compare(
+    shadow_fills: list[tuple], replay_fills: list, window: timedelta = NEAREST_WINDOW
+) -> dict:
+    """Tiered per-(market, side) matching; price deltas per tier.
+
+    Tier priority: exact (the v1 matcher, byte-for-byte unchanged:
+    equal qty within 60s, greedy in time order) claims fills FIRST, so
+    a clean window reports identically to v1 — the relaxed tiers only
+    ever see exact's leftovers. Split-aware runs before nearest because
+    the nearest key is qty-free and would otherwise consume one leg of
+    a partial-fill group. Neither relaxed tier invents agreement: split
+    demands partials at the same price summing exactly to the single
+    fill, nearest demands the exact same price; both are confined to
+    `window` (default 2s) and counted separately in the report so a
+    calibration read never silently mixes tiers.
 
     shadow_fills rows: (market_id, side, qty, price, fee, maker, ts).
     """
@@ -108,10 +123,13 @@ def compare(shadow_fills: list[tuple], replay_fills: list) -> dict:
     for f in replay_fills:
         r_by[(f.market_id, f.side)].append([f.ts, f.qty, f.price, f.fee, f.maker])
 
+    # Tier 1 — exact (v1 semantics, unchanged): equal qty within 60s,
+    # greedy over time-sorted fills. Leftovers feed the relaxed tiers.
     matched, deltas = 0, []
-    for key, s_list in s_by.items():
+    s_left, r_left = defaultdict(list), defaultdict(list)
+    for key in sorted(s_by.keys() | r_by.keys()):
         r_list = sorted(r_by.get(key, []))
-        for s in sorted(s_list):
+        for s in sorted(s_by.get(key, [])):
             best = None
             for i, r in enumerate(r_list):
                 if abs(r[0] - s[0]) <= MATCH_TOLERANCE and r[1] == s[1]:
@@ -121,6 +139,67 @@ def compare(shadow_fills: list[tuple], replay_fills: list) -> dict:
                 r = r_list.pop(best)
                 matched += 1
                 deltas.append(r[2] - s[2])  # replay price - shadow price
+            else:
+                s_left[key].append(s)
+        r_left[key] = r_list
+
+    # Tier split — N partials at one price on one side summing exactly
+    # to a single leftover fill on the other, all within `window` of it.
+    def _claim_group(single, cands):
+        """Earliest contiguous time-sorted run (>=2 fills, same price,
+        inside `window` of `single`) whose qtys sum to single's qty."""
+        elig = sorted(c for c in cands if c[2] == single[2] and abs(c[0] - single[0]) <= window)
+        for i in range(len(elig)):
+            total = 0.0
+            for j in range(i, len(elig)):
+                total += elig[j][1]
+                if total > single[1] + _QTY_EPS:
+                    break
+                if abs(total - single[1]) <= _QTY_EPS and j > i:
+                    return elig[i : j + 1]
+        return None
+
+    split_groups, split_s_fills, split_r_fills, split_deltas = 0, 0, 0, []
+    for key in sorted(s_left.keys() | r_left.keys()):
+        for singles, parts, sign in (
+            (s_left[key], r_left[key], +1),  # 1 shadow <- N replay
+            (r_left[key], s_left[key], -1),  # 1 replay <- N shadow
+        ):
+            for single in list(singles):
+                grp = _claim_group(single, parts)
+                if grp is None:
+                    continue
+                singles.remove(single)
+                for g in grp:
+                    parts.remove(g)
+                split_groups += 1
+                split_s_fills += 1 if sign > 0 else len(grp)
+                split_r_fills += len(grp) if sign > 0 else 1
+                split_deltas.append(sign * (grp[0][2] - single[2]))  # 0 by construction
+
+    # Tier nearest — one-to-one on the remainder: same (market, side,
+    # price), smallest |dt| within `window` first; ties by earliest ts.
+    nearest_pairs = []
+    for key in sorted(s_left.keys() & r_left.keys()):
+        cands = sorted(
+            (abs(r[0] - s[0]), s[0], r[0], si, ri)
+            for si, s in enumerate(s_left[key])
+            for ri, r in enumerate(r_left[key])
+            if r[2] == s[2] and abs(r[0] - s[0]) <= window
+        )
+        used_s, used_r = set(), set()
+        for dt, _sts, _rts, si, ri in cands:
+            if si in used_s or ri in used_r:
+                continue
+            used_s.add(si)
+            used_r.add(ri)
+            nearest_pairs.append((dt, s_left[key][si], r_left[key][ri]))
+    n_nearest = len(nearest_pairs)
+    nearest_deltas = [r[2] - s[2] for _, s, r in nearest_pairs]  # 0 by construction
+    all_deltas = deltas + split_deltas + nearest_deltas
+
+    def _abs_mean(vals):
+        return round(sum(abs(v) for v in vals) / len(vals), 6) if vals else None
 
     # qty-weighted overlap: bucket each side's quantity by minute and
     # credit min(shadow, replay) per bucket — split fills (5 vs 3+2)
@@ -139,13 +218,37 @@ def compare(shadow_fills: list[tuple], replay_fills: list) -> dict:
 
     n_s = sum(len(v) for v in s_by.values())
     n_r = sum(len(v) for v in r_by.values())
+    n_all_s = matched + n_nearest + split_s_fills
+    n_all_r = matched + n_nearest + split_r_fills
     deltas.sort()
     return {
         "matching_note": (
-            "order-level match requires exact qty in a 60s window (a"
-            " floor); qty_match_* buckets quantity per minute and"
-            " credits overlap, so split fills count (v2)"
+            "order-level tiers: exact (v1 floor: equal qty in a 60s"
+            " window) alone decides matched/match_rate_*/price_delta_*;"
+            " split (same-price partials summing exactly) and nearest"
+            " (same price, smallest |dt|) claim only exact's leftovers"
+            f" within {window.total_seconds()}s and are counted"
+            " separately (v2); qty_match_* buckets quantity per minute"
+            " and credits overlap, so split fills count"
         ),
+        "matched_nearest": n_nearest,
+        "matched_split_groups": split_groups,
+        "matched_split_shadow_fills": split_s_fills,
+        "matched_split_replay_fills": split_r_fills,
+        "matched_all_vs_shadow": n_all_s,
+        "matched_all_vs_replay": n_all_r,
+        "match_rate_all_vs_shadow": round(n_all_s / n_s, 4) if n_s else None,
+        "match_rate_all_vs_replay": round(n_all_r / n_r, 4) if n_r else None,
+        "nearest_window_s": window.total_seconds(),
+        "nearest_dt_abs_mean_s": (
+            round(sum(dt.total_seconds() for dt, _, _ in nearest_pairs) / n_nearest, 6)
+            if nearest_pairs
+            else None
+        ),
+        "price_delta_abs_mean_nearest": _abs_mean(nearest_deltas),
+        "price_delta_abs_mean_split": _abs_mean(split_deltas),
+        "price_delta_mean_all": round(sum(all_deltas) / len(all_deltas), 6) if all_deltas else None,
+        "price_delta_abs_mean_all": _abs_mean(all_deltas),
         "qty_match_rate_vs_shadow": round(matched_qty / qty_s, 4) if qty_s else None,
         "qty_match_rate_vs_replay": round(matched_qty / qty_r, 4) if qty_r else None,
         "shadow_fills": n_s,
@@ -184,6 +287,12 @@ def main() -> None:
     ap.add_argument("--stream-db", default=STREAM_DB)
     ap.add_argument("--archive-db", default="data/hyxlab.duckdb")
     ap.add_argument("--out", default="reports/shadow_divergence")
+    ap.add_argument(
+        "--nearest-window",
+        type=float,
+        default=NEAREST_WINDOW.total_seconds(),
+        help="seconds of |dt| tolerance for the nearest/split tiers (default 2)",
+    )
     args = ap.parse_args()
 
     with connect_retry(args.shadow_db) as conn:
@@ -228,7 +337,7 @@ def main() -> None:
         "latency_s": latency,
         "strategies": strategies,
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None)),
-        **compare(shadow_fills, replay_fills),
+        **compare(shadow_fills, replay_fills, window=timedelta(seconds=args.nearest_window)),
     }
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

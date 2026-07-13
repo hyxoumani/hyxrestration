@@ -194,8 +194,16 @@ stray root doc moved.
 - ~~requirements.txt ↔ requirements-stable.txt version-skew check~~
   DONE 2026-07-12 (`tests/test_requirements_sync.py`: stable must be
   exact pins; shared pins must satisfy dev specifiers).
-- `streamd.open_tickers` shorter retry when the initial set is empty.
-- Divergence matcher: nearest-in-window + split-aware matching (v2).
+- ~~`streamd.open_tickers` shorter retry when the initial set is
+  empty~~ DONE (ladder shipped in ef70546; regression test added
+  2026-07-12). Residual dead-air class still open: `poly_books` goes
+  permanently idle on an empty initial token set, and `kalshi_books`
+  subscribes empty if the whole 10/30/60/120s ladder exhausts.
+- ~~Divergence matcher: nearest-in-window + split-aware matching
+  (v2)~~ DONE 2026-07-12: tiered exact→split→nearest (2s window,
+  `--nearest-window`); pre-existing report fields stay exact-tier-only
+  so shipped reports remain comparable; convergence window re-run
+  bit-identical (2,300/2,300 exact, 0 relaxed).
 
 ## Watch items (not yet alarming)
 

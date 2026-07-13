@@ -3,7 +3,7 @@ recording must reproduce its fills exactly — the zero baseline that
 makes nonzero divergence on real runs attributable to infrastructure
 (late archive rows, gaps unknown live) rather than method noise."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import duckdb
 
@@ -102,3 +102,129 @@ def test_split_fills_count_in_qty_match_rate():
     assert rep["matched"] == 0  # order-level: qty mismatch
     assert rep["qty_match_rate_vs_shadow"] == 1.0
     assert rep["qty_match_rate_vs_replay"] == 1.0
+
+
+# ---- tiered matching (v2: exact / nearest / split, EXP-004) ----------------
+
+
+class _RF:
+    """Minimal replay-fill stand-in for compare()."""
+
+    def __init__(self, qty, ts, price=0.4, market_id="M1", side="yes"):
+        self.market_id, self.side = market_id, side
+        self.qty, self.price, self.fee, self.maker = qty, price, 0.0, False
+        self.ts = ts
+
+
+def _shadow(qty, ts, price=0.4, market_id="M1", side="yes"):
+    return (market_id, side, qty, price, 0.0, False, ts)
+
+
+T = datetime(2026, 7, 12, 1, 0, 0)
+
+
+def test_exact_only_dataset_reports_zero_relaxed_matches():
+    """Identical fill streams: every match is tier-exact; nearest and
+    split stay at zero and the v1 headline fields are untouched."""
+    shadow = [_shadow(5.0, T), _shadow(2.0, T + timedelta(minutes=11), price=0.3)]
+    replay = [_RF(5.0, T), _RF(2.0, T + timedelta(minutes=11), price=0.3)]
+    rep = compare(shadow, replay)
+    assert rep["matched"] == 2
+    assert rep["match_rate_vs_shadow"] == 1.0
+    assert rep["price_delta_abs_mean"] == 0.0
+    assert rep["matched_nearest"] == 0
+    assert rep["matched_split_groups"] == 0
+    assert rep["matched_all_vs_shadow"] == 2
+    assert rep["match_rate_all_vs_replay"] == 1.0
+    assert rep["price_delta_abs_mean_all"] == 0.0
+
+
+def test_same_fill_shifted_300ms_matches_at_exact_tier():
+    """v1's exact tier already tolerates pure time offsets (60s window),
+    so a 300ms-shifted identical fill is exact — NOT a relaxed match.
+    This is why v2 cannot perturb the shipped convergence result."""
+    rep = compare([_shadow(5.0, T)], [_RF(5.0, T + timedelta(milliseconds=300))])
+    assert rep["matched"] == 1
+    assert rep["matched_nearest"] == 0
+    assert rep["matched_split_groups"] == 0
+
+
+def test_offset_qty_perturbed_fill_matches_nearest_tier_with_dt():
+    """Same market/side/price, 300ms apart, qty 5 vs 4: exact refuses
+    (qty), nearest claims it and reports the |dt|; its price delta is
+    zero by construction and stays out of the exact-tier stats."""
+    rep = compare([_shadow(5.0, T)], [_RF(4.0, T + timedelta(milliseconds=300))])
+    assert rep["matched"] == 0
+    assert rep["matched_nearest"] == 1
+    assert rep["nearest_dt_abs_mean_s"] == 0.3
+    assert rep["price_delta_abs_mean_nearest"] == 0.0
+    assert rep["price_delta_abs_mean"] is None  # exact tier saw nothing
+    assert rep["matched_all_vs_shadow"] == 1
+
+
+def test_three_partials_summing_to_one_fill_match_split_tier():
+    """Replay fills 1+2+3 at one price within the window sum to the
+    shadow fill's 6: matched as one split group, not nearest/exact."""
+    shadow = [_shadow(6.0, T)]
+    replay = [
+        _RF(1.0, T),
+        _RF(2.0, T + timedelta(milliseconds=200)),
+        _RF(3.0, T + timedelta(milliseconds=400)),
+    ]
+    rep = compare(shadow, replay)
+    assert rep["matched"] == 0
+    assert rep["matched_nearest"] == 0
+    assert rep["matched_split_groups"] == 1
+    assert rep["matched_split_shadow_fills"] == 1
+    assert rep["matched_split_replay_fills"] == 3
+    assert rep["matched_all_vs_shadow"] == 1
+    assert rep["matched_all_vs_replay"] == 3
+    assert rep["price_delta_abs_mean_split"] == 0.0
+
+
+def test_shadow_partials_matching_one_replay_fill_split_reverse_direction():
+    """Split grouping is symmetric: 2+3 shadow partials vs one 5-qty
+    replay fill also match as a group."""
+    shadow = [_shadow(2.0, T), _shadow(3.0, T + timedelta(milliseconds=500))]
+    rep = compare(shadow, [_RF(5.0, T)])
+    assert rep["matched"] == 0
+    assert rep["matched_split_groups"] == 1
+    assert rep["matched_split_shadow_fills"] == 2
+    assert rep["matched_split_replay_fills"] == 1
+
+
+def test_fill_outside_nearest_window_stays_unmatched():
+    """Same price but 10s apart (> 2s window) and qty-mismatched: no
+    tier may claim it — relaxation must not rescue gap-window fills."""
+    rep = compare([_shadow(5.0, T)], [_RF(4.0, T + timedelta(seconds=10))])
+    assert rep["matched"] == 0
+    assert rep["matched_nearest"] == 0
+    assert rep["matched_split_groups"] == 0
+    assert rep["matched_all_vs_shadow"] == 0
+    assert rep["matched_all_vs_replay"] == 0
+
+
+def test_shuffled_input_order_produces_identical_report():
+    """Determinism: the report is a pure function of the fill sets,
+    not of their arrival order."""
+    import random
+
+    shadow = [
+        _shadow(5.0, T),  # exact pair
+        _shadow(4.0, T + timedelta(minutes=5)),  # nearest pair (qty differs)
+        _shadow(6.0, T + timedelta(minutes=10)),  # split single
+        _shadow(9.0, T + timedelta(minutes=20), market_id="M2", side="no"),  # unmatched
+    ]
+    replay = [
+        _RF(5.0, T + timedelta(milliseconds=100)),
+        _RF(3.0, T + timedelta(minutes=5, milliseconds=300)),
+        _RF(2.0, T + timedelta(minutes=10)),
+        _RF(4.0, T + timedelta(minutes=10, milliseconds=400)),
+    ]
+    baseline = compare(shadow, replay)
+    rng = random.Random(42)
+    for _ in range(5):
+        s, r = shadow[:], replay[:]
+        rng.shuffle(s)
+        rng.shuffle(r)
+        assert compare(s, r) == baseline
