@@ -31,3 +31,4 @@ phase0/data/finbert_scores.csv
 # without re-scraping 132 XLS files. Regenerate via phase0.wasde_scraper.
 # phase0/results/ IS committed — the falsification record is the deliverable
 .secrets/
+.autodev/

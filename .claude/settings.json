@@ -68,6 +68,16 @@
             "timeout": 310000
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/autodev-stop-guard.sh",
+            "timeout": 10,
+            "statusMessage": "Autodev keep-running guard"
+          }
+        ]
       }
     ]
   },
