@@ -30,7 +30,18 @@ crossing rule forgoes). Three brackets, three different signs
 crossing-rule bias is genuinely regime-dependent and flips sign day to
 day; any
 maker registration must score fills via queue-PESSIMISTIC bounds
-directly, never a fixed haircut on the crossing rule. B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
+directly, never a fixed haircut on the crossing rule. **Fourth bracket
+2026-07-13 14:17 UTC** (234 orders, 8 markets): crossing 101 vs
+[98 pess, 103 opt] — for the first time crossing lands INSIDE the
+queue bracket (25 crossing-not-pess vs 22 pess-not-crossing, near
+symmetric). Four runs, no stable sign — under/over/under/inside — the
+regime-dependent-bias conclusion holds; still no fixed-haircut
+shortcut. Same session: divergence report re-run on live shadow run
+20260713T064302 (06:41–14:16 UTC, 1,030 fills) — 99.0%/97.9% match,
+price delta 0 — confirms the post-fix exact-convergence finding still
+holds on fresh data. Atlas stability re-run 2026-07-13 14:17 UTC
+(vs the 02:16 run): same 68 flagged buckets, zero added/dropped, max
+gap drift 0.0012 — still no drift to chase. B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 
@@ -143,6 +154,19 @@ runs identically. Knobs: cadence (timer), turn cap (autoloop.sh),
 permission mode.
 
 ## Standing user items (non-blocking)
+
+**Unexplained untracked file flagged, not actioned** (2026-07-13
+14:16 UTC): `strategies/hylshi_fade.py` appeared untracked, created
+minutes before this session, with zero provenance anywhere in the
+repo — no wiki mention, no session doc, no mistakes-log entry, no
+git history; "hylshi"/"EXP-423" appear nowhere else. Its docstring
+claims to encode "the live hylshi weather-fade rule" from prior
+studies that don't exist in this project. Left untouched (not
+deleted, not registered, not committed) pending USER confirmation of
+origin — this is the retro-rescue pattern the hard rules exclude
+(presenting a strategy as already-validated to fast-track past
+pre-registration), and weather brackets already have a killed
+precedent (WeatherNWS v1).
 
 **Off-box backup destination** (local tier SHIPPED 2026-07-12:
 `hyxlab-backup.timer` daily 03:30 UTC, 7-slot rotation in
