@@ -193,7 +193,9 @@ stray root doc moved.
   mistakes #12).
 - ~~requirements.txt ↔ requirements-stable.txt version-skew check~~
   DONE 2026-07-12 (`tests/test_requirements_sync.py`: stable must be
-  exact pins; shared pins must satisfy dev specifiers).
+  exact pins; shared pins must satisfy dev specifiers; every stable
+  pin must be installed in the suite's venv at exactly that version —
+  pin bumps are deliberately a two-step edit+pip-install).
 - ~~`streamd.open_tickers` shorter retry when the initial set is
   empty~~ DONE (ladder shipped in ef70546; regression test added
   2026-07-12). Residual dead-air class ALSO CLOSED 2026-07-12:

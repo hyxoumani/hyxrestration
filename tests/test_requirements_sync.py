@@ -19,10 +19,17 @@ Rules enforced (design decisions, given the files' actual formats):
   other way round by test_boundaries.py's
   test_stable_requirements_cover_daemon_imports, which asserts every
   third-party import of stable-side code is pinned in stable.
+- Every stable-pinned package must be INSTALLED in the interpreter
+  running this suite, at exactly the pinned version. The two file
+  checks above can both pass while the dev venv itself drifts (e.g. a
+  stray `pip install -U`), in which case the suite exercises a version
+  production never runs. Not installed at all also fails: the suite
+  can't validate daemon code against a dep it can't import.
 
 Parsing uses `packaging`, which pytest itself hard-depends on.
 """
 
+from importlib import metadata
 from pathlib import Path
 
 from packaging.requirements import Requirement
@@ -63,3 +70,24 @@ def test_stable_pins_satisfy_dev_specifiers():
         if not dev[name].specifier.contains(pin, prereleases=True):
             skewed.append(f"{name}: stable pins {pin}, dev requires {dev[name].specifier}")
     assert skewed == [], f"version skew between {DEV_REQ.name} and {STABLE_REQ.name}: {skewed}"
+
+
+def test_stable_pins_are_installed_in_running_environment():
+    # Canonicalize installed names ourselves rather than trusting
+    # metadata.version()'s lookup to normalize (it is not guaranteed to
+    # across implementations).
+    installed = {
+        canonicalize_name(dist.metadata["Name"]): Version(dist.version)
+        for dist in metadata.distributions()
+    }
+    drifted = []
+    for name, req in sorted(_parse(STABLE_REQ).items()):
+        pin = Version(next(iter(req.specifier)).version)
+        if name not in installed:
+            drifted.append(
+                f"{name}: pinned {pin} in {STABLE_REQ.name} but not installed here "
+                "(suite cannot validate daemon code against an uninstalled dep)"
+            )
+        elif installed[name] != pin:
+            drifted.append(f"{name}: stable pins {pin}, this environment runs {installed[name]}")
+    assert drifted == [], f"dev environment drifted from {STABLE_REQ.name} pins: {drifted}"
