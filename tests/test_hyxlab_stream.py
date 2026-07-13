@@ -196,6 +196,48 @@ def test_clock_step_logged_as_gap(tmp_path):
     assert reason.startswith("clock_step_-20")
 
 
+def test_kalshi_books_retries_empty_initial_ticker_set(tmp_path, monkeypatch):
+    """Regression (review backlog 2026-07-11): an empty INITIAL open_tickers
+    result (Kalshi REST down at boot) must be retried on a short ladder —
+    not left dark until the hourly TICKER_REFRESH_SECS refresh."""
+    import asyncio
+
+    from collector import streamd
+
+    calls: list[list[str]] = []
+
+    def fake_open_tickers(series):
+        calls.append(series)
+        return set() if len(calls) < 3 else {"T1", "T2"}  # empty twice, then live
+
+    monkeypatch.setattr(streamd, "open_tickers", fake_open_tickers)
+
+    waits: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(secs):
+        waits.append(secs)
+        await real_sleep(0)
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", fake_sleep)
+
+    subscribed: dict[str, str] = {}
+
+    async def fake_loop(self, channel, make_subscribe, refresh):
+        subscribed[channel] = make_subscribe()
+
+    monkeypatch.setattr(streamd.Daemon, "_kalshi_loop", fake_loop)
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    d = streamd.Daemon(store, watchlist={"kalshi_series": ["S1"]})
+    asyncio.run(d.kalshi_books())
+
+    assert len(calls) == 3  # initial fetch + two short retries, stops when non-empty
+    assert waits == [10, 30]  # short ladder, far below TICKER_REFRESH_SECS
+    assert all(w < streamd.TICKER_REFRESH_SECS for w in waits)
+    assert '"T1"' in subscribed["books"]  # loop got the recovered set
+
+
 def duckdb_reason(path):
     import duckdb
 
