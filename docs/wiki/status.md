@@ -36,12 +36,21 @@ directly, never a fixed haircut on the crossing rule. **Fourth bracket
 queue bracket (25 crossing-not-pess vs 22 pess-not-crossing, near
 symmetric). Four runs, no stable sign — under/over/under/inside — the
 regime-dependent-bias conclusion holds; still no fixed-haircut
+shortcut. **Fifth bracket 2026-07-13 20:18 UTC** (230 orders, 8
+markets — all `KXHIGH*` weather high-temp this window): crossing 151 vs
+[135 pess, 150 opt] — crossing sits just ABOVE the optimistic ceiling,
+OVER-awarding again (37 crossing-not-pess vs 21 pess-not-crossing).
+Five runs, sign sequence under/over/under/inside/over — still no stable
+sign; regime-dependent-bias conclusion firmly holds, no fixed-haircut
 shortcut. Same session: divergence report re-run on live shadow run
-20260713T064302 (06:41–14:16 UTC, 1,030 fills) — 99.0%/97.9% match,
-price delta 0 — confirms the post-fix exact-convergence finding still
-holds on fresh data. Atlas stability re-run 2026-07-13 14:17 UTC
-(vs the 02:16 run): same 68 flagged buckets, zero added/dropped, max
-gap drift 0.0012 — still no drift to chase. B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
+20260713T064302 (06:41–20:16 UTC full day, 2,185 fills — ~2× the 14:16
+check) — 99.5%/99.0% match, price delta 0 across mean/median/abs —
+confirms the post-fix exact-convergence finding still holds on fresh
+data. Atlas re-run 2026-07-13 20:16 UTC: byte-identical to the 14:17
+run (same data fingerprint 52,734 settled markets / 2.83M candles,
+same 68 flags, max gap drift 0.0) — the settled set only advances on
+the daily sweeps (05:00/06:10 UTC), so atlas re-runs are data-gated
+until the next sweep; no intraday re-run value. B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 
