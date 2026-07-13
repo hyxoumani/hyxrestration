@@ -64,8 +64,29 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 - `hyxlab/fees.py` — parabolic models, per-series `kalshi_model()`.
 - `simulator/harness.py` — run manifests (git rev, params, fingerprint).
 - `hyxlab/migrate.py` — numbered migrations.
-- Entrypoints: `collect`, `sweep`, `backfill`, `run_sim`, `run_backtest`,
-  `streamd`.
+- `collector/signals.py` — daily ALFRED+GDELT pull (`hyxlab-signals.timer`;
+  value-diffed vintages, watermarked GKG grid; fresh session per ALFRED
+  attempt — timeouts wedge keep-alive connections).
+- `collector/backup.py` — read-lock-consistent 7-slot archive backups
+  (`hyxlab-backup.timer`; HYXLAB_BACKUP_DIR for off-box).
+- `collector/venues/gdelt.py` + `collector/queries/gdelt.json` — bulk
+  15-min GKG filter-and-discard, prefix-matched topic templates.
+- `simulator/features.py` — FeatureView as-of gate (P1): econ vintage
+  semantics, news windows, forecast index; Context delegates.
+- `simulator/divergence.py` — shadow-vs-replay report (exact
+  convergence proven post-fixes; qty-weighted v2 matching).
+- `simulator/queuebounds.py` + `simulator/queuescore.py` — FIFO maker
+  queue-position bounds and the crossing-rule calibration bracket.
+- `simulator/atlas.py` — calibration atlas (implied vs realized,
+  Wilson flags). `simulator/iterate.py` — DSR, purged folds,
+  family_report (B5 core). `simulator/pair_candidates.py` — cross-venue
+  leads (user-gated activation). `simulator/run_favlong.py` — the
+  killed pre-reg's runner (record).
+- `scripts/autoloop.sh` — 6-hourly bounded headless development
+  iteration (`hyxlab-autoloop.timer`, flock-guarded).
+- Entrypoints: `collect`, `sweep`, `backfill`, `signals`, `backup`,
+  `run_sim`, `run_backtest`, `run_favlong`, `divergence`, `queuescore`,
+  `atlas`, `pair_candidates`, `streamd`.
 
 ## Key decisions
 
@@ -91,15 +112,17 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 - GPU is irrelevant here — everything is network/IO-bound; portable to
   a Pi (repo + venv + duckdb + .secrets + 2 systemd timers).
 
-## Build state (2026-07-08)
+## Build state (2026-07-12)
 
 B1 archive+sweep ✅, B2 sim v2 ✅, B3 self-tests ✅, all gates ✅,
 B7 stream daemon ✅ LIVE, B3.5 Kalshi tape ✅, stable deployment +
 import boundary ✅, daily QA ✅, BookReplayer + latency fills ✅,
 shadow harness ✅ LIVE, simui replay terminal ✅ (suite green,
-2026-07-08). Next: shadow-vs-replay divergence report → B4 signals →
-B5 walk-forward/DSR → B6 atlas → first pre-reg strategy (infra-first
-order, user 2026-07-07).
+2026-07-08), divergence ✅ (shadow≡replay exact), maker queue bounds ✅,
+B4 signals ✅, B5 core ✅, B6 atlas ✅, fav-long v1 pre-reg FAIL (spread
+decides), pair leads ✅, backups + simui service + autoloop ✅
+(2026-07-12). Next: Tier-2 maker fav-long registration (data-gated) and
+event study (data-gated); user gates in status.md.
 
 ## Related
 - [data-pipeline](data-pipeline.md) · [simulation-honesty](simulation-honesty.md)

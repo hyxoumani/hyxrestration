@@ -126,3 +126,22 @@ ingestion behind a `FeatureView` as-of API.
 ## Related
 - [venues](venues.md) — sources and their limits
 - [hyxlab-architecture](hyxlab-architecture.md) — where this layer sits
+
+
+## Signal feeds & backups (B4, 2026-07-11/12)
+
+- `hyxlab-signals.timer` (04:40 UTC): ALFRED econ vintages (7 series,
+  value-diffed daily — the keyless endpoint restamps knowable_at each
+  fetch day, a naive insert would forge vintages) + GDELT bulk GKG
+  (15-min grid from the news watermark; filter-and-discard against
+  collector/queries/gdelt.json). QA freshness checks guard both.
+- ALFRED gotcha: a timed-out request wedges the shared keep-alive
+  session; every later request on it times out. Fresh session per
+  attempt (collector/signals.py).
+- `hyxlab-backup.timer` (03:30 UTC): holding a read-only DuckDB attach
+  excludes writers → consistent file copy; 7-slot weekday rotation in
+  data/backups (local tier); point HYXLAB_BACKUP_DIR at a mount for
+  off-box (standing user item).
+- Poly day-bucket counts MATURE for ~2 days (later sweeps backfill
+  history into past days) — fresh-vs-matured comparisons overstate
+  decline; the shrink tripwire's 0.5 threshold absorbs it.

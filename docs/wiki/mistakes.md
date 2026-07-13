@@ -100,6 +100,17 @@ Format: what happened → root cause → error type → prevention tier
     recurs: **a log line describing a recovery guarantee is a claim —
     test it like one.**
 
+13. **ALFRED session poisoning misread as throttling (2026-07-12).**
+    All 7 series timed out in-run while a lone fresh-session probe
+    succeeded instantly; first diagnosis (rate throttling) led to a
+    retry-pacing fix that failed the same way. Actual cause: one
+    read-timeout leaves the shared requests.Session's keep-alive
+    connection wedged; every subsequent request on that session times
+    out. Fix: fresh session per attempt. Type: `wrong-assumption`.
+    Aggravator: the runner's `| tail -N` pipe cut the earlier error
+    lines, hiding that ALL series failed — diagnose from full logs or
+    journals, never a tail-truncated pipe.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
@@ -116,6 +127,14 @@ is clear: **gotchas do not survive sessions; anything that recurs must
 jump straight to rule/test/hook.** A counter-example worth recording:
 the ops-blindness lesson (item 5) DID pay off 2026-07-08 — a dead
 probe's captured output was the only reason the Gamma offset-cap
-regression was caught before it silently halved the poly sweep. The
-remaining follow-through: enumeration-shrink tripwire (see
-[data-pipeline](data-pipeline.md)).
+regression was caught before it silently halved the poly sweep.
+Enumeration-shrink tripwire: DONE 2026-07-11 (QA).
+
+Recurrence audit (2026-07-12): readers dying on transient DuckDB lock
+collisions recurred 3× in one day (QA reachability, queuescore,
+divergence.replay_run) — ESCALATED to a kernel helper
+(`hyxlab.store.connect_retry`); every raw read-only connect must use
+it. Item 12's lesson ("a log line describing a recovery guarantee is a
+claim — test it like one") held: the flush-retry fix was regression-
+tested and later converted a would-be data loss into clean
+backpressure during heavy replay reads.
