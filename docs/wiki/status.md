@@ -21,8 +21,14 @@ no@1-p, ±1ms alignment). First 24h bracket, 143 join-the-touch
 virtual orders across 8 markets: crossing rule filled 75 vs queue
 bracket [78 pess, 86 opt]. Second bracket 2026-07-12 (218 orders):
 crossing 98 vs [88, 93] — the rule flipped to OVER-awarding (28% of
-its fills lack queue evidence, vs 12% day one). Conclusion: the
-crossing-rule bias is regime-dependent and flips sign day to day; any
+its fills lack queue evidence, vs 12% day one). Third bracket
+2026-07-13 03:17 UTC (194 orders, 8 markets): crossing 97 vs
+[98 pess, 107 opt] — flipped back to UNDER-awarding (crossing now
+sits below the pessimistic floor itself, 22 real pess fills the
+crossing rule forgoes). Three brackets, three different signs
+(under/over/under) confirms this is not a one-day fluke: the
+crossing-rule bias is genuinely regime-dependent and flips sign day to
+day; any
 maker registration must score fills via queue-PESSIMISTIC bounds
 directly, never a fixed haircut on the crossing rule. B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
