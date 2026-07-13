@@ -44,6 +44,12 @@ TICKER_REFRESH_SECS = 3600.0
 POLY_PING_SECS = 10.0
 POLY_TOP_MARKETS = 50  # busiest books streamed even without verified pairs
 BACKOFF_MAX = 60.0
+# Retry waits when a book task's subscription set comes back EMPTY (venue
+# REST down at boot); the last rung repeats until the set is non-empty.
+# Subscribing empty captures nothing — and the hourly in-loop refresh may
+# never fire if the venue drops the empty subscription — so neither book
+# task ever subscribes with an empty set.
+EMPTY_SET_RETRY_LADDER = (10, 30, 60, 120)
 
 
 def load_env(path: str | Path = ".env") -> None:
@@ -62,6 +68,20 @@ def load_env(path: str | Path = ".env") -> None:
 
 def _log(msg: str) -> None:
     print(f"[streamd] {datetime.now(UTC):%H:%M:%S} {msg}", flush=True)
+
+
+async def _fetch_until_nonempty(fetch, channel: str, what: str):
+    """Run `fetch` in a thread, retrying on EMPTY_SET_RETRY_LADDER (last
+    rung repeats forever) until the result is non-empty."""
+    items = await asyncio.to_thread(fetch)
+    rung = 0
+    while not items:
+        wait = EMPTY_SET_RETRY_LADDER[min(rung, len(EMPTY_SET_RETRY_LADDER) - 1)]
+        _log(f"{channel}: empty {what}; retrying in {wait}s")
+        await asyncio.sleep(wait)
+        items = await asyncio.to_thread(fetch)
+        rung += 1
+    return items
 
 
 def open_tickers(series_list: list[str]) -> set[str]:
@@ -112,15 +132,11 @@ class Daemon:
         if not series:
             _log("kalshi-books: no series in watchlist; task idle")
             return
-        tickers = await asyncio.to_thread(open_tickers, series)
         # An empty INITIAL set (REST down at boot) would leave books dark
-        # until the hourly refresh — retry on a short ladder instead.
-        for wait in (10, 30, 60, 120):
-            if tickers:
-                break
-            _log(f"kalshi-books: empty initial ticker set; retrying in {wait}s")
-            await asyncio.sleep(wait)
-            tickers = await asyncio.to_thread(open_tickers, series)
+        # until the hourly refresh — keep retrying until tickers exist.
+        tickers = await _fetch_until_nonempty(
+            lambda: open_tickers(series), "kalshi-books", "initial ticker set"
+        )
         _log(f"kalshi-books: {len(tickers)} open tickers across {len(series)} series")
 
         async def refresh() -> bool:
@@ -210,10 +226,11 @@ class Daemon:
         return sorted(assets)
 
     async def poly_books(self) -> None:
-        assets = await asyncio.to_thread(self._poly_token_set)
-        if not assets:
-            _log("poly-books: no tokens (watchlist empty, Gamma unreachable); task idle")
-            return
+        # An empty initial set (watchlist empty AND Gamma unreachable at
+        # boot) must not idle the task forever — retry until tokens exist.
+        assets = await _fetch_until_nonempty(
+            self._poly_token_set, "poly-books", "token set (watchlist empty, Gamma unreachable)"
+        )
         _log(f"poly-books: {len(assets)} tokens (top {POLY_TOP_MARKETS} by volume + pairs)")
         backoff, last_recv, first = 1.0, None, True
         while True:
@@ -268,12 +285,15 @@ class Daemon:
                 n = await asyncio.to_thread(self.store.flush)
             except Exception as exc:
                 # pending size makes a wedged-reader buildup visible in
-                # the journal long before it could OOM the daemon.
+                # the journal long before it could OOM the daemon. Past
+                # SPILL_CAP pending plateaus, so show sidecar growth too.
                 n_pending = self.store.pending
+                n_spilled = self.store.spilled
                 sev = "CRITICAL " if n_pending > self.store.PENDING_ALARM else ""
+                spill = f" (+{n_spilled} spilled to sidecar)" if n_spilled else ""
                 _log(
                     f"{sev}flush FAILED ({type(exc).__name__}: {exc});"
-                    f" {n_pending} rows held for retry"
+                    f" {n_pending} rows held for retry{spill}"
                 )
                 continue
             now = asyncio.get_event_loop().time()

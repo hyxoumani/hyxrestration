@@ -196,9 +196,10 @@ stray root doc moved.
   exact pins; shared pins must satisfy dev specifiers).
 - ~~`streamd.open_tickers` shorter retry when the initial set is
   empty~~ DONE (ladder shipped in ef70546; regression test added
-  2026-07-12). Residual dead-air class still open: `poly_books` goes
-  permanently idle on an empty initial token set, and `kalshi_books`
-  subscribes empty if the whole 10/30/60/120s ladder exhausts.
+  2026-07-12). Residual dead-air class ALSO CLOSED 2026-07-12:
+  `_fetch_until_nonempty` (last ladder rung repeats forever) means
+  neither book task ever idles permanently or subscribes with an
+  empty set; flusher() logs spilled-sidecar rows during a wedge.
 - ~~Divergence matcher: nearest-in-window + split-aware matching
   (v2)~~ DONE 2026-07-12: tiered exact→split→nearest (2s window,
   `--nearest-window`); pre-existing report fields stay exact-tier-only

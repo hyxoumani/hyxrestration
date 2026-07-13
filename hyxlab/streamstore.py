@@ -154,6 +154,12 @@ class StreamStore:
         self._events: list[BookEvent] = []
         self._trades: list[StreamTrade] = []
         self._gaps: list[tuple] = []
+        # Rows moved to the sidecar by _spill_overflow since the last good
+        # flush — observability only (`pending` plateaus at SPILL_CAP during
+        # a wedge). Approximate across restarts: starts at 0 even if a
+        # crashed daemon left a sidecar on disk (the file itself survives
+        # and is drained on the first good flush regardless).
+        self.spilled = 0
         # Create schema up front so readers see the tables immediately.
         with duckdb.connect(str(self.path)) as conn:
             conn.execute(_SCHEMA)
@@ -232,6 +238,7 @@ class StreamStore:
             self._spill_overflow()
             raise
         self._spill_path.unlink(missing_ok=True)
+        self.spilled = 0
         return n
 
     def _spill_overflow(self) -> None:
@@ -259,6 +266,7 @@ class StreamStore:
             f.writelines(lines)
         for buf, take in takes:
             del buf[:take]
+        self.spilled += len(lines)
 
     def _read_spill(self) -> tuple[list[BookEvent], list[StreamTrade], list[tuple]]:
         events: list[BookEvent] = []

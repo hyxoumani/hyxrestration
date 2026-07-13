@@ -238,6 +238,108 @@ def test_kalshi_books_retries_empty_initial_ticker_set(tmp_path, monkeypatch):
     assert '"T1"' in subscribed["books"]  # loop got the recovered set
 
 
+def test_kalshi_books_keeps_retrying_past_exhausted_ladder_never_subscribes_empty(
+    tmp_path, monkeypatch
+):
+    """Regression (EXP-005): if every ladder rung returns empty (~220s REST
+    outage), keep repeating the last rung until tickers exist. Subscribing
+    with an EMPTY set captures nothing, and the hourly in-loop refresh may
+    never fire if the venue drops the empty subscription."""
+    import asyncio
+
+    from collector import streamd
+
+    calls: list[int] = []
+
+    def fake_open_tickers(series):
+        calls.append(1)
+        if len(calls) > 20:  # bound: a broken retry loop must not spin forever
+            raise AssertionError("unbounded ticker refetch")
+        return set() if len(calls) < 8 else {"T1"}  # empty past the whole ladder
+
+    monkeypatch.setattr(streamd, "open_tickers", fake_open_tickers)
+
+    waits: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(secs):
+        waits.append(secs)
+        await real_sleep(0)
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", fake_sleep)
+
+    subscribed: dict[str, str] = {}
+
+    async def fake_loop(self, channel, make_subscribe, refresh):
+        subscribed[channel] = make_subscribe()
+
+    monkeypatch.setattr(streamd.Daemon, "_kalshi_loop", fake_loop)
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    d = streamd.Daemon(store, watchlist={"kalshi_series": ["S1"]})
+    asyncio.run(d.kalshi_books())
+
+    assert len(calls) == 8  # kept fetching past the four-rung ladder
+    assert waits == [10, 30, 60, 120, 120, 120, 120]  # last rung repeats
+    assert '"T1"' in subscribed["books"]  # never subscribed with an empty set
+
+
+def test_poly_books_retries_empty_initial_token_set_until_subscribed(tmp_path, monkeypatch):
+    """Regression (EXP-005): an empty initial token set (watchlist empty AND
+    Gamma unreachable at boot) must be retried — not left permanently idle
+    until a manual daemon restart."""
+    import asyncio
+
+    import pytest
+
+    from collector import streamd
+
+    calls: list[int] = []
+
+    def fake_token_set(self):
+        calls.append(1)
+        return [] if len(calls) < 3 else ["tok1", "tok2"]  # empty twice, then live
+
+    monkeypatch.setattr(streamd.Daemon, "_poly_token_set", fake_token_set)
+
+    waits: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(secs):
+        waits.append(secs)
+        await real_sleep(0)
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", fake_sleep)
+
+    sent: list[str] = []
+
+    class FakeWS:
+        async def send(self, msg):
+            sent.append(msg)
+            raise asyncio.CancelledError  # subscription observed; stop the loop
+
+    class FakeConnect:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return FakeWS()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(streamd.websockets, "connect", FakeConnect)
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    d = streamd.Daemon(store, watchlist={})
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(d.poly_books())
+
+    assert len(calls) == 3  # initial fetch + two retries, stops when non-empty
+    assert waits == [10, 30]  # same short ladder as kalshi-books
+    assert "tok1" in sent[0]  # ended up subscribed with the recovered set
+
+
 def duckdb_reason(path):
     import duckdb
 
@@ -473,3 +575,58 @@ def test_sidecar_survives_daemon_restart_and_drains_on_first_flush(tmp_path, mon
     assert fresh.pending == 0
     assert fresh.flush() == 3  # first flush drains the crashed daemon's sidecar
     assert fresh.counts()["stream_trades"] == 3
+
+
+def test_spilled_counter_tracks_overflow_and_resets_on_drain(tmp_path, monkeypatch):
+    """During a wedge past the cap, `pending` plateaus at SPILL_CAP — the
+    `spilled` counter must expose the sidecar growth, and reset once a
+    good flush drains the sidecar (EXP-005)."""
+    import duckdb
+    import pytest
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    assert store.spilled == 0
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 10)
+    store.append_trades([_seq_trade(i) for i in range(25)])
+    _wedge(monkeypatch)
+    with pytest.raises(duckdb.IOException):
+        store.flush()
+    assert store.spilled == 15  # overflow past the cap is visible
+    assert store.pending == 10  # ...while pending sits at the plateau
+    monkeypatch.undo()
+
+    assert store.flush() == 25  # sidecar + memory drained
+    assert store.spilled == 0  # counter reset with the sidecar gone
+
+
+def test_flusher_log_shows_spilled_rows_during_wedge(tmp_path, monkeypatch, capsys):
+    """The flusher's failure line must include sidecar growth when rows
+    have spilled — pending alone plateaus at the cap and hides it."""
+    import asyncio
+
+    import pytest
+
+    from collector import streamd
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 10)
+    store.append_trades([_seq_trade(i) for i in range(25)])
+    _wedge(monkeypatch)
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(secs):
+        if sleeps:
+            raise asyncio.CancelledError  # one flush round is enough
+        sleeps.append(secs)
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", fake_sleep)
+
+    d = streamd.Daemon(store, watchlist={})
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(d.flusher())
+
+    out = capsys.readouterr().out
+    assert "flush FAILED" in out
+    assert "10 rows held for retry" in out
+    assert "15 spilled to sidecar" in out  # growth visible past the plateau
