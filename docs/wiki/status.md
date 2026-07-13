@@ -1,6 +1,6 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-11** (physical package split shipped 07-09:
+Updated: **2026-07-13 (UTC)** (physical package split shipped 07-09:
 `collector/` / `simulator/` / `strategies/` / `hyxlab` kernel, systemd
 units vendored in `scripts/systemd/`, promote.sh installs them. QA
 negative-levels root cause found and fixed 07-11: flush() dropped its
@@ -99,7 +99,7 @@ a proven chunked≡one-shot replay equivalence (see
    protocol + size_sensitivity/persistence_filter post-processors —
    these land with the first calibrated strategy that needs them.
 5. **B6 calibration atlas SHIPPED 2026-07-11 late** (`python -m
-   simulator.atlas`): 39 flagged buckets (n≥200, implied outside
+   simulator.atlas`): 68 flagged buckets (n≥200, implied outside
    Wilson 95%), a consistent favorite-longshot signature across
    categories — longshot deciles 1–2 overpriced (Commodities 1h d1:
    implied .146 vs realized .015; Financials 1h d1: .147 vs .044),
@@ -108,7 +108,12 @@ a proven chunked≡one-shot replay equivalence (see
    (same market at multiple horizons, sibling strikes), and fees +
    spread eat part of the gap — the favorite-longshot PRE-REG BACKTEST
    is the test, per hard rules. Report: `reports/atlas/*.json`.
-   Event study v1 remains open for full B6.
+   Event study v1 remains open for full B6. **Stability re-run
+   2026-07-13 02:16 UTC** (+1,444 settled markets since 07-11): the
+   same 68 buckets flag — zero dropped, zero new, max realized−implied
+   gap drift 0.004 (Economics 1h d7, +0.101→+0.097). The
+   favorite-longshot signature is persistent, not a one-window
+   artifact; no drift to chase.
 6. ~~Debug frontend~~ **simui SHIPPED 2026-07-08** (v1 + Kalshi-style
    restyle + resilience): interactive market-replay terminal
    (`python -m hyxlab.simui`, localhost:8877) — archived events replay
