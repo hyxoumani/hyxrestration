@@ -50,7 +50,18 @@ data. Atlas re-run 2026-07-13 20:16 UTC: byte-identical to the 14:17
 run (same data fingerprint 52,734 settled markets / 2.83M candles,
 same 68 flags, max gap drift 0.0) — the settled set only advances on
 the daily sweeps (05:00/06:10 UTC), so atlas re-runs are data-gated
-until the next sweep; no intraday re-run value. B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
+until the next sweep; no intraday re-run value. **Queue-bounds mapping
+VERIFIED 2026-07-14 02:20 UTC** (ladder item 2 — `python -m
+simulator.prioritycheck`, new): the trade→book-decrement mapping the
+maker bracket rests on (probed on one market, 269/270) now holds across
+the archive — 18,707 prints / 8 markets / 24h, 99.65% land an exact-size
+decrement at the predicted complement level within the model's 2s
+window; the naive same-side mapping fits 0 (not coincidence); residual
+0.35% are no-decrement coverage gaps; timing median 0.14ms, p95 1.4ms.
+Removes the "not yet verified empirically" caveat from queuebounds; the
+front-vs-back consumption ORDER within a level stays bracketed
+(pess/opt), needing a live maker probe (Tier-3, capital-gated). Suite
+234→240. B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 
