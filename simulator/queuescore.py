@@ -20,6 +20,13 @@ Known v1 simplifications: coverage gaps aren't specially handled inside
 an order's lifetime (orders are 30-min capped, and gap-heavy windows
 show up as unmatched noise, not bias); the crossing rule is evaluated
 once per snapshot at full remaining qty capped at displayed ask size.
+
+Coverage note: markets are the top-N Kalshi series by stream trade-print
+count. In practice these are dominated by `KXHIGH*` weather high-temp
+markets (the most-active stream series), so the bracket's conclusions
+generalize to weather high-temp — the report's `market_composition`
+field records the actual series mix per run. A maker registration in
+any other category has NO queue-bounds validation from this bracket.
 """
 
 from __future__ import annotations
@@ -63,6 +70,17 @@ class VirtualOrder:
             "fills_opt": t.filled_opt,
             "pess_at": str(t.fill_events[0][0]) if t.fill_events else None,
         }
+
+
+def series_composition(orders: list[VirtualOrder]) -> dict[str, int]:
+    """Count virtual orders per Kalshi series (market_id prefix before the
+    first '-'), high-to-low. Surfaces the bracket's coverage: in practice
+    the top-print markets are all `KXHIGH*` weather high-temp."""
+    comp: dict[str, int] = {}
+    for o in orders:
+        series = o.market_id.split("-", 1)[0]
+        comp[series] = comp.get(series, 0) + 1
+    return dict(sorted(comp.items(), key=lambda kv: -kv[1]))
 
 
 def score_market(conn, market_id: str, since: datetime, qty: float) -> list[VirtualOrder]:
@@ -171,6 +189,7 @@ def main() -> None:
     opt = [o for o in all_orders if o.tracker.filled_opt > 0]
     cross_only = [o for o in all_orders if o.crossed_at and o.tracker.filled_pess == 0]
     pess_only = [o for o in all_orders if not o.crossed_at and o.tracker.filled_pess > 0]
+    composition = series_composition(all_orders)
     report = {
         "generated_at": str(datetime.now().replace(microsecond=0)),
         "window_hours": args.hours,
@@ -180,6 +199,7 @@ def main() -> None:
         "queue_opt_filled": len(opt),
         "crossing_but_not_pess": len(cross_only),
         "pess_but_not_crossing": len(pess_only),
+        "market_composition": composition,
         "note": (
             "crossing rule = what backtests award today; queue bounds ="
             " what L2+tape evidence supports (pess is the floor)."

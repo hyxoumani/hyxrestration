@@ -50,6 +50,12 @@ structure — see [venues](venues.md)).
    (accumulating now; bracket day 2 shows the crossing rule's bias
    flips sign by regime, so endpoints must use queue-PESS fills), then
    a NEW pre-reg; any horizon sweep counts into the DSR family.
+   **Coverage caveat (2026-07-14):** all six maker brackets to date are
+   100% `KXHIGH*` weather high-temp (queuescore picks top-print series,
+   which are uniformly weather). If this fav-long maker candidate lands
+   in Financials/Commodities/Climate bands (where the atlas gap lives),
+   the weather-only bracket gives it NO queue-bounds validation — it
+   must run its own bracket on its own markets before registration.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive

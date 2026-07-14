@@ -7,7 +7,7 @@ import duckdb
 
 from collector.venues.kalshi_ws import parse_message
 from hyxlab.streamstore import StreamStore
-from simulator.queuescore import score_market
+from simulator.queuescore import VirtualOrder, score_market, series_composition
 
 T0 = datetime(2026, 7, 11, 12, 0)
 
@@ -100,3 +100,21 @@ def test_queue_fill_without_crossing_and_crossing_without_queue(tmp_path):
     assert b[0].crossed_qty == 5.0
     assert b[0].tracker.filled_pess == 0.0  # no prints: no queue evidence
     assert b[0].tracker.filled_opt == 0.0
+
+
+def test_series_composition_groups_by_prefix_high_to_low():
+    def vo(mid):
+        return VirtualOrder(mid, "yes", 0.5, 5.0, T0, tracker=None)
+
+    orders = [
+        vo("KXHIGHNY-26JUL13-B84.5"),
+        vo("KXHIGHNY-26JUL13-B85.5"),
+        vo("KXHIGHMIA-26JUL13-B90.5"),
+        vo("KXFED-26DEC-T4.50"),
+        vo("KXFED-26DEC-T4.75"),
+        vo("KXFED-26DEC-T5.00"),
+    ]
+    comp = series_composition(orders)
+    # grouped by the prefix before the first '-', ordered high-to-low
+    assert comp == {"KXFED": 3, "KXHIGHNY": 2, "KXHIGHMIA": 1}
+    assert list(comp)[0] == "KXFED"

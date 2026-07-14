@@ -1,6 +1,8 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-14 14:15 (UTC)** (physical package split shipped 07-09:
+Updated: **2026-07-14 (maker-bracket category hypothesis killed: all six
+brackets are 100% KXHIGH weather high-temp — coverage gap flagged, bias
+flips within a single category; `market_composition` now in the report)** (physical package split shipped 07-09:
 `collector/` / `simulator/` / `strategies/` / `hyxlab` kernel, systemd
 units vendored in `scripts/systemd/`, promote.sh installs them. QA
 negative-levels root cause found and fixed 07-11: flush() dropped its
@@ -67,9 +69,22 @@ markets — again all `KXHIGH*` weather high-temp this window): crossing
 the second time (20 crossing-not-pess vs 17 pess-not-crossing, near
 symmetric). Six runs, sign sequence under/over/under/inside/over/inside
 — still no stable sign; regime-dependent-bias conclusion firmly holds,
-no fixed-haircut shortcut. (Both weather-dominated windows land inside
-— a weak hint the sign may track market category, but n=2 same-category
-and the other four windows spanned mixed categories; not yet actionable.)
+no fixed-haircut shortcut. **Category hypothesis KILLED 2026-07-14
+(ladder item 3, `series_composition` in queuescore + all six shipped
+brackets audited):** the earlier hint that the sign might track market
+category was based on a false premise — ALL six brackets are 100%
+`KXHIGH*` weather high-temp markets (the earlier note that four windows
+"spanned mixed categories" was wrong). queuescore selects the top-N
+Kalshi series by stream trade-print count, and those are uniformly
+weather high-temp. So the sign flips (under/over/under/inside/over/
+inside) all occur WITHIN a single category, which STRENGTHENS the
+regime-dependent, no-fixed-haircut conclusion (the bias flips day to
+day even holding category fixed) and removes any category-shortcut. It
+also exposes a COVERAGE GAP: this bracket validates the crossing rule
+ONLY for weather high-temp; a maker registration in any other category
+(e.g. a Financials fav-long maker) has zero queue-bounds validation and
+must run its own bracket on its own markets first. Runs now emit a
+`market_composition` field so the mix is visible per report.
 B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
