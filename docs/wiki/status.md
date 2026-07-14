@@ -1,6 +1,6 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-13 (UTC)** (physical package split shipped 07-09:
+Updated: **2026-07-14 (UTC)** (physical package split shipped 07-09:
 `collector/` / `simulator/` / `strategies/` / `hyxlab` kernel, systemd
 units vendored in `scripts/systemd/`, promote.sh installs them. QA
 negative-levels root cause found and fixed 07-11: flush() dropped its
@@ -61,7 +61,16 @@ window; the naive same-side mapping fits 0 (not coincidence); residual
 Removes the "not yet verified empirically" caveat from queuebounds; the
 front-vs-back consumption ORDER within a level stays bracketed
 (pess/opt), needing a live maker probe (Tier-3, capital-gated). Suite
-234→240. B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
+234→240. **Sixth bracket 2026-07-14 08:15 UTC** (143 orders, 8
+markets — again all `KXHIGH*` weather high-temp this window): crossing
+85 vs [82 pess, 90 opt] — crossing lands INSIDE the queue bracket for
+the second time (20 crossing-not-pess vs 17 pess-not-crossing, near
+symmetric). Six runs, sign sequence under/over/under/inside/over/inside
+— still no stable sign; regime-dependent-bias conclusion firmly holds,
+no fixed-haircut shortcut. (Both weather-dominated windows land inside
+— a weak hint the sign may track market category, but n=2 same-category
+and the other four windows spanned mixed categories; not yet actionable.)
+B4 signal layer, B5 core, and B6 atlas ALL shipped same evening (see queue). **FavoriteLongshot v1 pre-registered and KILLED same night** (ROI −5.0% on 8,363 fills; the spread decides — atlas gap lives at mid, taker pays the ask; see strategy-verdicts.md). Pair candidates report DONE same night (100 leads; Fed-funds bounds pair on both venues awaits USER resolution-rule verification). **Queue drained of unblocked agent work** — remaining items are user-gated (pair verification, backup destination, FRED key, NTP, key rotation, simui-service call) or data-gated (event study, Tier-2 maker fav-long registration: both need weeks of accumulation).)
 Cold-start order: this page → [hyxlab-architecture](hyxlab-architecture.md)
 → `docs/sessions/2026-07-08-05.md` (session handoff, gitignored).
 
