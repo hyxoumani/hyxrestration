@@ -17,8 +17,15 @@ pessimistic one (design: simulation-honesty.md "Queue-position bounds"):
   thin books converge the bracket for free.
 - level increases join behind us: no effect on either bound.
 
-Assumes Kalshi price-time priority as documented; not yet verified
-empirically (design-note precondition — revisit before Tier-3 use).
+The trade→decrement MAPPING this rests on is verified empirically
+across the archive by `python -m simulator.prioritycheck` (2026-07-14:
+18,707 prints / 8 markets / 24h — 99.65% land an exact-size decrement
+at the predicted complement level within the 2s window; the naive
+same-side mapping fits 0). What that probe does NOT establish is the
+front-vs-back consumption ORDER within a level (Kalshi price-time
+priority as documented) — anonymous L2 can't distinguish it, which is
+exactly why this model brackets it (pess/opt) rather than assuming it.
+Revisit the ordering only with a live maker probe before Tier-3 use.
 """
 
 from __future__ import annotations

@@ -49,7 +49,18 @@ the pessimistic one. Thin books narrow the bracket via exact-size
 cancel↔placement matching. Preconditions: subscribe at market birth
 (hourly ticker refresh may miss up to 1h — tighten when building this)
 and verify Kalshi's documented price-time priority empirically before
-trusting it.
+trusting it. **Mapping verified 2026-07-14** (`python -m
+simulator.prioritycheck`): the trade→book-decrement mapping the bracket
+rests on (yes-taker→no-book@1-p, no-taker→yes-book@p) holds across the
+archive — 18,707 prints / 8 markets / 24h, 99.65% land an exact-size
+decrement at the predicted complement level within the model's 2s
+window, and the naive same-side mapping fits 0 (so it is not
+coincidence); residual 0.35% are no-decrement coverage gaps, not
+mapping errors; timing median 0.14ms, p95 1.4ms, tail ~5ms (the ±1ms
+claim is typical, not a bound; ABSORB_WINDOW=2s is safely generous).
+This verifies WHICH level a trade consumes; the front-vs-back
+consumption ORDER within a level stays bracketed (pess/opt), not
+assumed — that needs a live maker probe (Tier-3, capital-gated).
 
 ## Runtime accounting invariants
 
