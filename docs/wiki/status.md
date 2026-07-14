@@ -1,6 +1,6 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-14 (UTC)** (physical package split shipped 07-09:
+Updated: **2026-07-14 14:15 (UTC)** (physical package split shipped 07-09:
 `collector/` / `simulator/` / `strategies/` / `hyxlab` kernel, systemd
 units vendored in `scripts/systemd/`, promote.sh installs them. QA
 negative-levels root cause found and fixed 07-11: flush() dropped its
@@ -159,7 +159,20 @@ a proven chunked≡one-shot replay equivalence (see
    same 68 buckets flag — zero dropped, zero new, max realized−implied
    gap drift 0.004 (Economics 1h d7, +0.101→+0.097). The
    favorite-longshot signature is persistent, not a one-window
-   artifact; no drift to chase.
+   artifact; no drift to chase. **Stability re-run 2026-07-14 14:15
+   UTC** — largest increment yet (+4,215 settled markets since 07-13,
+   52,734→56,949, +8% of corpus, two fresh sweeps): flagged 68→74. The
+   signature STRENGTHENS rather than drifts — all 8 newly-flagged
+   buckets sit in the favorite-longshot direction (longshot deciles
+   1–3 overpriced: Commodities 1h d2/d3, Financials 24h d2, …;
+   favorite deciles 6–8 underpriced: Financials 6h d6 +0.214,
+   Commodities 1h d7 +0.172, Climate 6h d8 +0.069). Only 2 dropped and
+   neither is signature-relevant: Climate 24h d5 (a mid-decile, .544
+   implied) and Sci/Tech 24h d0 (extreme longshot, implied .012 →
+   realized .002, negligible magnitude crossing inside Wilson). Max gap
+   drift on common buckets 0.036 (Financials 6h d5, +0.249→+0.213),
+   modest and non-directional. Report:
+   `reports/atlas/20260714T141530.json`.
 6. ~~Debug frontend~~ **simui SHIPPED 2026-07-08** (v1 + Kalshi-style
    restyle + resilience): interactive market-replay terminal
    (`python -m hyxlab.simui`, localhost:8877) — archived events replay
