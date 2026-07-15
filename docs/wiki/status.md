@@ -1,6 +1,38 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-15 02:18 UTC (coverage gap CLOSED — first non-weather
+Updated: **2026-07-15 08:22 UTC (SECOND non-weather maker bracket — the
+econ crossing-rule bias FLIPS SIGN, just like weather. Run on the
+book-covered econ series KXFED,KXCPI,KXCPIYOY,KXJOBLESSCLAIMS with
+`--markets 24` (needed to surface the live 26JUL forward contracts; the
+26JUN CPI contracts that dominated run 1 have gone post-event, books
+frozen, zero join-the-touch opportunities): 273 orders / 100%
+non-weather — crossing 20 vs queue [14 pess, 16 opt], crossing sits
+ABOVE the optimistic ceiling (OVER-awarding; 11 crossing-not-pess vs 5
+pess-not-crossing). Run 1 (07-14 21:18) UNDER-awarded below the pess
+floor (26 vs [32,34]); run 2 OVER-awards above the opt ceiling. Two
+non-weather brackets, opposite signs, both meaningful n (184 / 273):
+the crossing-rule bias flips sign day-to-day WITHIN the econ-print
+category exactly as within weather — regime-dependence is NOT
+weather-specific, and the no-fixed-haircut conclusion holds across
+categories. Caveats: (a) the two windows overlap ~18h so the flip is
+driven by the ~6h fresh tail + composition shift (June→July contracts);
+(b) run 2 widened `--markets` to 24 vs run 1's default 8, so not
+parameter-identical. STRUCTURAL COVERAGE LIMIT documented: queue bounds
+need live L2 book depth, and watchlist book subscriptions cover only
+weather (5 KXHIGH cities) + econ-prints (KXFED/KXCPI/KXCPIYOY/KXU/
+KXPAYROLLS/KXJOBLESSCLAIMS). Crypto (KXBTC 2.5M tape prints/24h),
+sports, esports have the exchange-wide TRADE tape but NO streamed book —
+so the maker bracket cannot validate the crossing rule outside
+weather+econ without adding those series to the book watchlist (a
+collector change, capital-neutral, USER-gateable if a non-econ maker
+lead ever needs it). Atlas ladder item re-run same session: byte-
+identical fingerprint (56,949 settled / 2.91M candles) — the 07-15
+kalshi sweep fires 11:10 UTC (06:10 CDT, box is UTC-5) and hasn't run
+yet, so no new settled markets since 07-14; atlas data-gated, no drift.
+Reports: `reports/maker_bracket/20260715T032022.json` (273-order
+broader run, the headline); `20260715T031804.json` (thin CPI-only,
+51 orders); atlas `reports/atlas/20260715T081535.json`.)** (prior 2026-07-15 02:18 UTC:
+coverage gap CLOSED — first non-weather
 maker bracket: queuescore now takes `--series`; run on Financials/
 Economics KXCPI+KXCPIYOY+KXFED, 184 orders / 100% non-weather — crossing
 26 vs queue [32 pess, 34 opt], crossing UNDER-awards below the
@@ -9,7 +41,7 @@ Confirms the crossing-rule bias is regime-dependent ACROSS categories,
 not just within weather; a Financials maker registration cannot borrow
 the weather bracket's calibration and must score via queue-pess bounds
 on its own markets. Report: `reports/maker_bracket/20260714T211807.json`.
-Suite 240→242.)** (prior 2026-07-14: maker-bracket category hypothesis
+Suite 240→242.) (prior 2026-07-14: maker-bracket category hypothesis
 killed: all six brackets were 100% KXHIGH weather high-temp — coverage
 gap flagged, bias flips within a single category; `market_composition`
 now in the report) (physical package split shipped 07-09:
