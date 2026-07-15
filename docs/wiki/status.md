@@ -1,6 +1,22 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-15 14:16 UTC (ATLAS re-run on +5,659 fresh settled
+Updated: **2026-07-15 20:15 UTC (DIVERGENCE re-run on the main shadow
+run 20260713T064302, now 9,222 fills spanning 2.5 days — 4× the prior
+07-13 check (2,185 fills, one day). The exact-convergence
+simulation-honesty finding holds, and TIGHTENS on the larger sample:
+match rate 99.89% vs shadow / 99.76% vs replay (up from 99.5%/99.0%),
+and price_delta mean = median = abs_mean = 0.0 across all 9,212 matched
+fills — every matched fill is price-identical shadow↔offline-replay.
+Fees near-identical (shadow 353.85 vs replay 354.51, +0.19%); gross cash
+6265.18 vs 6277.72. 10 unmatched shadow / 22 unmatched replay fills
+(0.1–0.2%) are boundary/coverage, not price disagreement. The taker-side
+fill-model haircut ≈ 0 conclusion is now confirmed on 2.5 days of live
+shadow, not just the original convergence window. Note: streamd is a
+continuous stream writer so the live hyxstream.duckdb is lock-contended;
+connect_retry rode through it (the report opens read-only between the
+daemon's ~5-min flush bursts). Report:
+`reports/divergence/20260715T201543_run20260713T064302.json`.) (prior
+2026-07-15 14:16 UTC: ATLAS re-run on +5,659 fresh settled
 markets — first real increment since 07-14. The 07-15 kalshi sweep
 fired 12:15 UTC (settled 56,949→62,608, candles 2.91M→3.06M), so atlas
 is no longer data-gated. Flagged 74→78. The favorite-longshot signature
