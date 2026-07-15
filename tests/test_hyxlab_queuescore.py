@@ -7,7 +7,12 @@ import duckdb
 
 from collector.venues.kalshi_ws import parse_message
 from hyxlab.streamstore import StreamStore
-from simulator.queuescore import VirtualOrder, score_market, series_composition
+from simulator.queuescore import (
+    VirtualOrder,
+    score_market,
+    select_markets,
+    series_composition,
+)
 
 T0 = datetime(2026, 7, 11, 12, 0)
 
@@ -118,3 +123,34 @@ def test_series_composition_groups_by_prefix_high_to_low():
     # grouped by the prefix before the first '-', ordered high-to-low
     assert comp == {"KXFED": 3, "KXHIGHNY": 2, "KXHIGHMIA": 1}
     assert list(comp)[0] == "KXFED"
+
+
+def _tape_market(store, mid, seq0):
+    """A market with a print + a book delta so it qualifies for a bracket."""
+    store.append_events(_image(mid, seq0, T0))
+    store.append_events(_delta(mid, seq0 + 1, T0 + timedelta(seconds=1), "yes", "0.1000", "1.00"))
+    store.append_trades(_trade(mid, seq0 + 2, T0 + timedelta(seconds=30), "0.4000", "5.00", "no"))
+
+
+def test_select_markets_series_filter_restricts_to_category(tmp_path):
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    # two weather markets (more prints) and one financial market
+    _tape_market(store, "KXHIGHNY-26JUL13-B84.5", 10)
+    store.append_trades(
+        _trade("KXHIGHNY-26JUL13-B84.5", 13, T0 + timedelta(seconds=40), "0.4000", "5.00", "no")
+    )
+    _tape_market(store, "KXHIGHMIA-26JUL13-B90.5", 20)
+    _tape_market(store, "KXFED-26DEC-T4.50", 30)
+    store.flush()
+
+    conn = duckdb.connect(str(db), read_only=True)
+    since = T0 - timedelta(minutes=1)
+    # default: weather markets dominate by print count
+    top = select_markets(conn, since, top_n=8)
+    assert top[0] == "KXHIGHNY-26JUL13-B84.5"
+    assert "KXFED-26DEC-T4.50" in top
+    # --series restricts to the requested category only
+    fed = select_markets(conn, since, top_n=8, series=["KXFED"])
+    conn.close()
+    assert fed == ["KXFED-26DEC-T4.50"]

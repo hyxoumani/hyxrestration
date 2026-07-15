@@ -21,12 +21,14 @@ an order's lifetime (orders are 30-min capped, and gap-heavy windows
 show up as unmatched noise, not bias); the crossing rule is evaluated
 once per snapshot at full remaining qty capped at displayed ask size.
 
-Coverage note: markets are the top-N Kalshi series by stream trade-print
-count. In practice these are dominated by `KXHIGH*` weather high-temp
-markets (the most-active stream series), so the bracket's conclusions
-generalize to weather high-temp — the report's `market_composition`
-field records the actual series mix per run. A maker registration in
-any other category has NO queue-bounds validation from this bracket.
+Coverage note: by default markets are the top-N Kalshi series by stream
+trade-print count. In practice these are dominated by `KXHIGH*` weather
+high-temp markets (the most-active stream series), so the default
+bracket's conclusions generalize to weather high-temp — the report's
+`market_composition` field records the actual series mix per run. To
+validate a maker registration in another category, pass `--series`
+(e.g. `--series KXCPI,KXCPIYOY,KXFED`) to run the bracket against that
+category's markets and close the coverage gap.
 """
 
 from __future__ import annotations
@@ -81,6 +83,29 @@ def series_composition(orders: list[VirtualOrder]) -> dict[str, int]:
         series = o.market_id.split("-", 1)[0]
         comp[series] = comp.get(series, 0) + 1
     return dict(sorted(comp.items(), key=lambda kv: -kv[1]))
+
+
+def select_markets(
+    conn, since: datetime, top_n: int, series: list[str] | None = None
+) -> list[str]:
+    """Top-N Kalshi markets by stream-print count in the window that also
+    carry L2 deltas (a bracket needs both tape and book). When `series` is
+    given, restrict to markets whose series prefix (before the first '-')
+    is in that set — this is how a bracket targets a non-weather category
+    to close the coverage gap noted in the module docstring."""
+    sql = (
+        "SELECT t.market_id FROM stream_trades t WHERE t.venue='kalshi'"
+        " AND t.recv_ts > ? AND EXISTS (SELECT 1 FROM book_events b"
+        "   WHERE b.market_id = t.market_id AND b.kind='delta')"
+    )
+    params: list = [since]
+    if series:
+        placeholders = ",".join("?" for _ in series)
+        sql += f" AND split_part(t.market_id, '-', 1) IN ({placeholders})"
+        params.extend(series)
+    sql += " GROUP BY 1 ORDER BY count(*) DESC LIMIT ?"
+    params.append(top_n)
+    return [r[0] for r in conn.execute(sql, params).fetchall()]
 
 
 def score_market(conn, market_id: str, since: datetime, qty: float) -> list[VirtualOrder]:
@@ -154,6 +179,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="maker fill-model calibration bracket")
     ap.add_argument("--hours", type=float, default=24.0)
     ap.add_argument("--markets", type=int, default=8, help="top-N by prints")
+    ap.add_argument(
+        "--series",
+        default=None,
+        help="comma-separated Kalshi series prefixes to restrict to"
+        " (e.g. KXCPI,KXCPIYOY,KXFED); default = all, which is weather-dominated",
+    )
     ap.add_argument("--qty", type=float, default=5.0)
     ap.add_argument("--stream-db", default=STREAM_DB)
     ap.add_argument("--out", default="reports/maker_bracket")
@@ -164,17 +195,12 @@ def main() -> None:
         "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
         [int(args.hours)],
     ).fetchone()[0]
-    markets = [
-        r[0]
-        for r in conn.execute(
-            "SELECT t.market_id FROM stream_trades t WHERE t.venue='kalshi'"
-            " AND t.recv_ts > ? AND EXISTS (SELECT 1 FROM book_events b"
-            "   WHERE b.market_id = t.market_id AND b.kind='delta')"
-            " GROUP BY 1 ORDER BY count(*) DESC LIMIT ?",
-            [since, args.markets],
-        ).fetchall()
-    ]
-    print(f"[queuescore] window since {since}, {len(markets)} markets")
+    series = [s.strip() for s in args.series.split(",") if s.strip()] if args.series else None
+    markets = select_markets(conn, since, args.markets, series)
+    print(
+        f"[queuescore] window since {since}, {len(markets)} markets"
+        + (f", series={series}" if series else "")
+    )
 
     all_orders: list[VirtualOrder] = []
     for m in markets:

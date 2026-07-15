@@ -1,8 +1,18 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-14 (maker-bracket category hypothesis killed: all six
-brackets are 100% KXHIGH weather high-temp — coverage gap flagged, bias
-flips within a single category; `market_composition` now in the report)** (physical package split shipped 07-09:
+Updated: **2026-07-15 02:18 UTC (coverage gap CLOSED — first non-weather
+maker bracket: queuescore now takes `--series`; run on Financials/
+Economics KXCPI+KXCPIYOY+KXFED, 184 orders / 100% non-weather — crossing
+26 vs queue [32 pess, 34 opt], crossing UNDER-awards below the
+pessimistic floor, 18 real pess fills forgone vs 12 crossing-not-pess.
+Confirms the crossing-rule bias is regime-dependent ACROSS categories,
+not just within weather; a Financials maker registration cannot borrow
+the weather bracket's calibration and must score via queue-pess bounds
+on its own markets. Report: `reports/maker_bracket/20260714T211807.json`.
+Suite 240→242.)** (prior 2026-07-14: maker-bracket category hypothesis
+killed: all six brackets were 100% KXHIGH weather high-temp — coverage
+gap flagged, bias flips within a single category; `market_composition`
+now in the report) (physical package split shipped 07-09:
 `collector/` / `simulator/` / `strategies/` / `hyxlab` kernel, systemd
 units vendored in `scripts/systemd/`, promote.sh installs them. QA
 negative-levels root cause found and fixed 07-11: flush() dropped its
