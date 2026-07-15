@@ -1,6 +1,24 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-15 08:22 UTC (SECOND non-weather maker bracket — the
+Updated: **2026-07-15 14:16 UTC (ATLAS re-run on +5,659 fresh settled
+markets — first real increment since 07-14. The 07-15 kalshi sweep
+fired 12:15 UTC (settled 56,949→62,608, candles 2.91M→3.06M), so atlas
+is no longer data-gated. Flagged 74→78. The favorite-longshot signature
+STRENGTHENS again: all 10 newly-flagged buckets are signature-direction
+(longshot deciles overpriced — Economics 1h d2 .243→.141, Financials 7d
+d0 .031→0, Commodities 6h d3 .345→.259; favorite deciles underpriced —
+Economics 1h d6 .642→.804, Financials 1h d8 .849→.895, Commodities 1h d6
+.646→.741). 6 dropped, none against the thesis: 3 extreme-favorite at
+24h/72h (Economics 24h d9, 6h d8, 72h d9 — realized nudging toward 1.0,
+crossing inside Wilson) and 3 Commodities-72h longshot buckets (d0/d1/d2)
+whose overpricing edge weakened below significance at the longest
+horizon — an honest note that the longshot edge is thinnest at 72h,
+strongest intraday. Max gap drift on the 68 common buckets 0.053
+(Financials 1h d4), modest and non-directional. Three atlas re-runs now
+across +7.3k settled markets (07-13→07-15) all confirm: persistent, not
+a one-window artifact; favorite-longshot PRE-REG remains the test, no
+drift to chase. Report: `reports/atlas/20260715T141537.json`.)** (prior
+2026-07-15 08:22 UTC: SECOND non-weather maker bracket — the
 econ crossing-rule bias FLIPS SIGN, just like weather. Run on the
 book-covered econ series KXFED,KXCPI,KXCPIYOY,KXJOBLESSCLAIMS with
 `--markets 24` (needed to surface the live 26JUL forward contracts; the
@@ -31,7 +49,7 @@ kalshi sweep fires 11:10 UTC (06:10 CDT, box is UTC-5) and hasn't run
 yet, so no new settled markets since 07-14; atlas data-gated, no drift.
 Reports: `reports/maker_bracket/20260715T032022.json` (273-order
 broader run, the headline); `20260715T031804.json` (thin CPI-only,
-51 orders); atlas `reports/atlas/20260715T081535.json`.)** (prior 2026-07-15 02:18 UTC:
+51 orders); atlas `reports/atlas/20260715T081535.json`.) (prior 2026-07-15 02:18 UTC:
 coverage gap CLOSED — first non-weather
 maker bracket: queuescore now takes `--series`; run on Financials/
 Economics KXCPI+KXCPIYOY+KXFED, 184 orders / 100% non-weather — crossing
