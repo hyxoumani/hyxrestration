@@ -25,6 +25,18 @@ idling, and you must never satisfy it by faking statuses or dispatch_log
 entries. Do not fight the hook; the only legitimate exits are the
 completion gate (bounded mode) or the user (continuous mode).
 
+**Quiet-wait exception:** when every invariant already holds (so exactly
+one experiment is genuinely `running`) and `.autodev/RUNNING_SINCE` shows
+it was dispatched within the last 30 minutes, the hook allows your turn to
+end SILENTLY — no block, no nudge. This is not idling: an agent is
+actually working, and the async agent-completion notification re-engages
+you the moment there's something to evaluate. Do not manufacture busywork
+(filler experiments, redundant polling) just to satisfy the hook while
+correctly waiting on the one thing you already dispatched — that defeats
+the point of this exception and wastes context for nothing. If
+`RUNNING_SINCE` is missing or stale, the hook blocks with a
+STALE-DISPATCH-CHECK nudge instead, so you never lose track of a dead agent.
+
 ## Prime directive: always be investigating
 
 There is always work. "Waiting for data/markets/time to pass" is never a
@@ -120,9 +132,9 @@ with `NOVELTY-QUOTA-VIOLATION` if none is found.
 6. Write `.autodev/EXPERIMENTS.md` with an initial slate of at least 3
    proposed experiments spanning multiple avenues.
 7. Write `.autodev/JOURNAL.md` with a kickoff entry, and create
-   `.autodev/library/`. If a library already exists from a previous session,
-   NEVER delete or rewrite it — read its briefs so past lessons inform your
-   initial slate.
+   `.autodev/library/` and `.autodev/reports/`. If a library already exists
+   from a previous session, NEVER delete or rewrite it — read its briefs so
+   past lessons inform your initial slate.
 8. Create the marker: `touch .autodev/ACTIVE`. From this moment the Stop
    hook will not let you quit.
 9. Enter the loop.
@@ -134,17 +146,30 @@ PATHS.md at the top of every iteration so the loop survives context
 compaction.
 
 1. **Evaluate** — if an experiment just returned from an agent, judge it on
-   evidence (test output, measurements — not the agent's claims). Run the
-   project verification yourself. Verified improvement → mark `validated`,
-   keep the work. Failed or regressed → mark `rejected`, revert the changes,
-   and record why in the ledger. Then **file a library brief** (see Library
-   below) — every concluded experiment gets one, validated or rejected.
+   evidence (test output, measurements — not the agent's claims). The
+   agent's final message is a contracted summary (verdict/files/tests/
+   risks, under 150 words) — usually that's enough; read its full report
+   at `.autodev/reports/<EXPERIMENT-ID>.md` only when the summary's
+   verdict is a close call, the risk bullets warrant deeper checking, or
+   you're about to mark something `validated` on a change substantive
+   enough to want the full diff. Run the project verification yourself.
+   Verified improvement → mark `validated`, keep the work. Failed or
+   regressed → mark `rejected`, revert the changes, and record why in the
+   ledger. Then **file a library brief** (see Library below) — every
+   concluded experiment gets one, validated or rejected.
 2. **Review the portfolio** — compare validated work against GOAL.md.
    Update PATHS.md: promote avenues you are working (`active`), add new
    avenues the results suggest, and mark an avenue `exhausted` ONLY with
    cited evidence (library briefs / measurements), never because you are
    tired of it. Re-check any `deferred` experiments whose unblock condition
-   has arrived and flip them back to `proposed`.
+   has arrived and flip them back to `proposed`. **Archive**: if
+   EXPERIMENTS.md has accumulated many concluded entries, relocate
+   `validated`/`rejected` blocks older than roughly a day (or simply "not
+   among the most recent handful") into an append-only
+   `.autodev/EXPERIMENTS-archive.md` (see Archive below) — this is a
+   relocation, not a deletion, and the hook only ever counts
+   `proposed`/`running` blocks in the live file, so archiving concluded
+   entries never affects its audit.
 3. **Check early completion** (bounded mode only — skip this step entirely
    in continuous mode). Before proposing or dispatching anything ordinary,
    ask: does every GOAL.md acceptance criterion already hold on concluded,
@@ -165,16 +190,28 @@ compaction.
    tooling, tests that would expose weaknesses, cross-cutting analyses.
    Consult the library first — never re-propose an approach a brief shows
    failed unless you can say what changed. Honor the novelty quota: every
-   5th dispatch opens an `unexplored` avenue.
+   5th dispatch opens an `unexplored` avenue. **Batch small checks**: when
+   you have several low-effort, closely-related "confirm X" verifications
+   in mind, bundle them into ONE combined experiment (e.g. a "health
+   sweep" covering 4-5 quick checks) instead of proposing a singleton
+   experiment per check — every experiment pays the same fixed overhead
+   (dispatch, report, brief, journal entry) regardless of size, so
+   bundling preserves the same assurance for a fraction of the cost.
+   Reserve one-experiment-per-hypothesis for substantive changes where
+   bundling would blur evidence attribution.
 5. **Dispatch** — pick the highest-expected-value `proposed` experiment,
    mark it `running`, and spawn ONE `autodev-agent` subagent with a
    self-contained brief: the hypothesis, relevant context/paths, the
    verification command, and what evidence to return. Sequential mode:
    exactly one experiment in flight at a time. (The ledger format supports
    parallel dispatch; do not use it unless the user changes the mode.)
-   Then append one line to `.autodev/dispatch_log` (format above) recording
-   this dispatch — this is what makes the novelty quota mechanically
-   checkable; do not skip it.
+   Then: (a) append one line to `.autodev/dispatch_log` (format above)
+   recording this dispatch — this is what makes the novelty quota
+   mechanically checkable; do not skip it; (b) record
+   `date +%s > .autodev/RUNNING_SINCE` — this is what lets the hook's
+   quiet-wait exception trust that an agent is genuinely in flight, so you
+   are not forced into busywork while it works. Do both every time you
+   dispatch, including re-dispatches after a rejected/concluded experiment.
 6. **Journal** — append one entry to JOURNAL.md: iteration number, what was
    evaluated/decided/dispatched, invariant status.
 7. **Check the gate** (bounded mode only — including the branch taken from
@@ -189,7 +226,8 @@ compaction.
 - Every keep/reject decision must cite evidence in the ledger.
 - Never mark an experiment `validated` without a passing verification run.
 - Never edit GOAL.md after kickoff. Never delete ledger entries — history
-  is data.
+  is data (relocating concluded entries into `EXPERIMENTS-archive.md`
+  during archiving is fine; outright deletion, anywhere, is not).
 - Never fake or relabel statuses to satisfy the hook's audit; the audit
   exists to force real work, and gaming it is the one unforgivable
   protocol violation.
@@ -253,15 +291,21 @@ ACCEPTANCE_CRITERIA: MET
 Alongside those three required lines, include a one-paragraph summary and
 the verification command output for a human reader. The three literal
 marker strings are NOT sufficient by themselves, though: the hook ALSO
-cross-references EXPERIMENTS.md and requires at least one block whose
-header matches `## RT-<N>` to have its own `- path: red-team-review` line
-AND its own `- status: validated` line — i.e. a real, ledger-tracked,
-empty-handed red-team review must actually exist, not just be claimed via
-the RED_TEAM marker text. If any of the three tokens is missing/
-misspelled, OR no such validated `RT-<N>` ledger entry exists, the hook
-treats COMPLETE as invalid (same as if it didn't exist) and blocks,
-naming exactly what's missing — rewrite the file (and/or finish the RT-<N>
-ledger entry) rather than touching an empty COMPLETE.
+cross-references EXPERIMENTS.md and requires the HIGHEST-numbered block
+whose header matches `## RT-<N>` to have its own `- path: red-team-review`
+line AND its own `- status: validated` line — i.e. a real, ledger-tracked,
+empty-handed red-team review for the LATEST completion attempt must
+actually exist, not just be claimed via the RED_TEAM marker text. This is
+deliberately the highest-numbered RT-<N>, not merely any validated one: if
+you dispatch a second red-team review (`RT-2`) after `RT-1` was already
+validated — for example because new experiments or avenues were added
+after `RT-1` concluded — `RT-1` being validated no longer satisfies the
+gate; only `RT-2` (once itself validated) does. If any of the three
+tokens is missing/misspelled, OR the highest-numbered `RT-<N>` block is
+not the validated one, the hook treats COMPLETE as invalid (same as if it
+didn't exist) and blocks, naming exactly what's missing — rewrite the file
+(and/or finish the current RT-<N> ledger entry) rather than touching an
+empty COMPLETE.
 
 Then end your turn — the hook will allow it and retire the ACTIVE marker
 (and will re-block if it cannot confirm ACTIVE was actually removed). If
@@ -302,6 +346,20 @@ red-team-review` — see Completion gate. They are ordinary blocks to the
 hook's audit (a `running` RT entry counts toward the dispatch check like
 any other), and must be evaluated and filed exactly like an EXP entry.
 
+## Archive (`.autodev/EXPERIMENTS-archive.md`)
+
+As experiments conclude, EXPERIMENTS.md accumulates `validated`/`rejected`
+blocks that are no longer live work — every grep/read against a large
+ledger costs more, for no benefit, since the hook only ever counts
+`proposed`/`running` blocks. During "Review the portfolio" (loop step 2),
+relocate old concluded blocks verbatim (same format, unchanged) into an
+append-only `.autodev/EXPERIMENTS-archive.md`, keeping EXPERIMENTS.md down
+to open work (`proposed`/`running`/`deferred`) plus a handful of the most
+recent concluded entries for context. This is a relocation, never a
+deletion — the full block text moves as-is; the library brief already
+preserves the durable lesson, so the archive is just a cheaper home for
+the raw ledger record.
+
 ## Library (`.autodev/library/`)
 
 The firm's institutional memory: one file per concluded experiment, written
@@ -328,6 +386,9 @@ proposing (avoid repeating failed approaches), and treat it as append-only.
 
 Include: experiment ID + hypothesis; goal context (paste the relevant parts
 of GOAL.md — the agent cannot see your conversation); relevant files/paths;
-the verification command and the requirement to run it; and the required
-report format: what was investigated, what was changed (files), verification
-output, and an honest assessment including anything that failed.
+the verification command and the requirement to run it. The report format
+is fixed by the agent's own definition (`.claude/agents/autodev-agent.md`):
+a full-detail file at `.autodev/reports/<EXPERIMENT-ID>.md` plus a
+contracted, under-150-word final-message summary (verdict/files/tests/
+risks) — you do not need to restate that format in every brief, just the
+experiment-specific content above.

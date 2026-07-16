@@ -27,14 +27,28 @@
 # Modes (.autodev/MODE):
 #   bounded    - COMPLETE marker (written only after the skill's completion
 #                gate, incl. red-team review) allows exit. Validity requires
-#                BOTH the 3 literal COMPLETE markers AND a real, ledger-
-#                tracked, `validated` `## RT-<N>` (`path: red-team-review`)
-#                block in EXPERIMENTS.md — the literal RED_TEAM marker text
-#                alone is never sufficient (a hand-written COMPLETE with no
-#                actual red-team ledger entry is rejected as invalid).
+#                BOTH the 3 literal COMPLETE markers AND the HIGHEST-numbered
+#                `## RT-<N>` block in EXPERIMENTS.md being `validated` with
+#                `path: red-team-review` — the literal RED_TEAM marker text
+#                alone is never sufficient, and a stale earlier-validated
+#                RT-<N> does not count if a newer RT-<N> block exists (e.g.
+#                still `running` or `rejected`): only the latest attempt can
+#                satisfy the gate.
 #   continuous - COMPLETE is INVALID: the hook deletes it and blocks anyway.
 #                The only exits are the user interrupting the session or an
 #                explicitly user-requested /autodev stop (removes ACTIVE).
+#
+# Quiet-wait exception: if ALL invariants above hold (queue/dispatch/
+# exploration/novelty), the running experiment IS the exactly-one required
+# by the dispatch invariant, and .autodev/RUNNING_SINCE shows it was
+# dispatched within the last STALE_SECONDS, the hook allows a SILENT turn-
+# end (no block, no output) instead of manufacturing a "keep going" nudge.
+# This is not idling: there is a genuinely in-flight agent, and the async
+# agent-completion notification (or any other real event) re-engages the
+# loop when there's actually something to do. If RUNNING_SINCE is missing/
+# stale (agent may have died silently, or the orchestrator forgot to
+# record it), the hook still blocks with a STALE-DISPATCH-CHECK nudge
+# rather than staying quiet indefinitely.
 #
 # There is deliberately NO iteration cap.
 
@@ -42,6 +56,7 @@ set -u
 
 STATE_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}/.autodev"
 MIN_PROPOSED=3
+STALE_SECONDS=$((30 * 60))
 
 # No active session -> allow stopping normally.
 if [[ ! -f "$STATE_DIR/ACTIVE" ]]; then
@@ -86,25 +101,34 @@ if [[ -f "$STATE_DIR/COMPLETE" ]]; then
   done
 
   # Cross-check the ledger: require a real, ledger-tracked red-team review,
-  # not just the literal marker text. A block qualifies only if its OWN
-  # header matches `## RT-<N>`, its own first `- path:` line is exactly
-  # `- path: red-team-review`, and its own first `- status:` line is
-  # exactly `- status: validated` (empty-handed).
+  # not just the literal marker text. It must be the HIGHEST-numbered
+  # `## RT-<N>` block in the ledger (not just any validated one) — this
+  # stops a stale, earlier validated RT-<N> from satisfying a completion
+  # claim made after newer experiments/avenues were added post-review. The
+  # highest-numbered RT block qualifies only if its own first `- path:`
+  # line is exactly `- path: red-team-review` and its own first
+  # `- status:` line is exactly `- status: validated` (empty-handed).
   rt_ledger_valid=$(awk '
     function block_ok() {
-      return (header ~ /^## RT-[0-9]+/ && status == "- status: validated" && path == "- path: red-team-review")
+      return (status == "- status: validated" && path == "- path: red-team-review")
     }
-    /^## / {
-      if (in_block && block_ok()) { found = 1 }
-      in_block = 1; header = $0; status = ""; path = ""; next
+    function rt_num(h,    n) {
+      n = h; sub(/^## RT-/, "", n); sub(/[^0-9].*/, "", n); return n + 0
     }
+    function check_prev() {
+      if (in_block && header ~ /^## RT-[0-9]+/) {
+        n = rt_num(header)
+        if (n > maxn) { maxn = n; maxvalid = block_ok() }
+      }
+    }
+    /^## / { check_prev(); in_block = 1; header = $0; status = ""; path = ""; next }
     in_block && status == "" && /^- status:/ { status = $0 }
     in_block && path == "" && /^- path:/ { path = $0 }
-    END { if (in_block && block_ok()) { found = 1 }; print (found ? "yes" : "no") }
+    END { check_prev(); print (maxn > 0 && maxvalid ? "yes" : "no") }
   ' "$STATE_DIR/EXPERIMENTS.md" 2>/dev/null)
   if [[ "$rt_ledger_valid" != "yes" ]]; then
     complete_valid=0
-    missing_markers+="[no validated RT-<N> red-team-review ledger entry found in EXPERIMENTS.md — need a '## RT-<N>' block with its own '- path: red-team-review' and '- status: validated' lines] "
+    missing_markers+="[no validated RT-<N> red-team-review ledger entry found in EXPERIMENTS.md, or the highest-numbered RT-<N> block is not the validated one — need the LATEST '## RT-<N>' block to have its own '- path: red-team-review' and '- status: validated' lines] "
   fi
 fi
 
@@ -193,7 +217,19 @@ fi
 if [[ -n "$violations" ]]; then
   directive="Fix the named violations this iteration, then continue the loop."
 else
-  directive="Invariants hold. Continue the loop: evaluate any returned results (keep/revert with evidence, file a library brief), refresh PATHS.md, propose, and keep exactly one experiment running."
+  # All invariants hold, which (given the dispatch check above) means
+  # exactly one experiment is 'status: running'. Check whether it's
+  # freshly dispatched enough to trust that an agent is genuinely working
+  # on it — if so, allow a silent quiet-wait instead of forcing busywork.
+  running_since_raw=$(cat "$STATE_DIR/RUNNING_SINCE" 2>/dev/null || echo "")
+  running_since=0
+  [[ "$running_since_raw" =~ ^[0-9]+$ ]] && running_since="$running_since_raw"
+  now=$(date +%s)
+  elapsed=$(( now - running_since ))
+  if (( running_since > 0 && elapsed < STALE_SECONDS )); then
+    exit 0
+  fi
+  directive="STALE-DISPATCH-CHECK: the one running experiment's .autodev/RUNNING_SINCE is missing or older than $((STALE_SECONDS / 60)) minutes. Confirm the dispatched agent is genuinely still working — if it silently failed, crashed, or was never actually dispatched, fix the ledger (redispatch or demote) and record a fresh RUNNING_SINCE. If it's legitimately still running, touch .autodev/RUNNING_SINCE again (date +%s > .autodev/RUNNING_SINCE) and continue waiting."
 fi
 
 reason="AUTODEV ENFORCEMENT (iteration $count, mode $MODE): session ACTIVE — you may not stop. ${violations}${directive} Always be investigating: waiting on time or data is never a reason to idle; generating new hypotheses is itself the job. Never weaken GOAL.md, never fake ledger statuses to satisfy this audit."

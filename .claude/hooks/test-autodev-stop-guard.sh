@@ -187,12 +187,59 @@ EOF
   printf 'bounded' > "$dir/.autodev/MODE"
   canonical_ledger 3 > "$dir/.autodev/EXPERIMENTS.md"
   canonical_paths > "$dir/.autodev/PATHS.md"
+  date +%s > "$dir/.autodev/RUNNING_SINCE"
   run_hook "$dir"
   ok=0
   assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
-  assert_contains "reason" "$HOOK_STDOUT" "Invariants hold" || ok=1
-  assert_not_contains "reason" "$HOOK_STDOUT" "VIOLATION" || ok=1
-  report "3 proposed + 1 running + 1 active avenue -> Invariants hold, no violations" "$ok"
+  # Invariants hold AND RUNNING_SINCE is fresh -> quiet-wait silent allow,
+  # not a "keep going" nudge (the busywork this exception exists to avoid).
+  assert_eq "stdout" "" "$HOOK_STDOUT" || ok=1
+  report "3 proposed + 1 running + 1 active avenue + fresh RUNNING_SINCE -> silent quiet-wait allow" "$ok"
+}
+
+# ---- scenario 4-stale-missing: invariants hold, RUNNING_SINCE absent -----
+{
+  dir=$(new_scenario_dir "04-stale-missing-running-since")
+  touch "$dir/.autodev/ACTIVE"
+  printf 'bounded' > "$dir/.autodev/MODE"
+  canonical_ledger 3 > "$dir/.autodev/EXPERIMENTS.md"
+  canonical_paths > "$dir/.autodev/PATHS.md"
+  # No RUNNING_SINCE written at all.
+  run_hook "$dir"
+  ok=0
+  assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
+  assert_contains "reason" "$HOOK_STDOUT" "STALE-DISPATCH-CHECK" || ok=1
+  report "invariants hold but RUNNING_SINCE missing -> STALE-DISPATCH-CHECK, not silent" "$ok"
+}
+
+# ---- scenario 4-stale-old: invariants hold, RUNNING_SINCE > 30 min old ----
+{
+  dir=$(new_scenario_dir "04-stale-old-running-since")
+  touch "$dir/.autodev/ACTIVE"
+  printf 'bounded' > "$dir/.autodev/MODE"
+  canonical_ledger 3 > "$dir/.autodev/EXPERIMENTS.md"
+  canonical_paths > "$dir/.autodev/PATHS.md"
+  echo $(( $(date +%s) - 3600 )) > "$dir/.autodev/RUNNING_SINCE"
+  run_hook "$dir"
+  ok=0
+  assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
+  assert_contains "reason" "$HOOK_STDOUT" "STALE-DISPATCH-CHECK" || ok=1
+  report "invariants hold but RUNNING_SINCE is 1 hour old -> STALE-DISPATCH-CHECK" "$ok"
+}
+
+# ---- scenario 4-stale-garbage: RUNNING_SINCE contains non-numeric junk ----
+{
+  dir=$(new_scenario_dir "04-stale-garbage-running-since")
+  touch "$dir/.autodev/ACTIVE"
+  printf 'bounded' > "$dir/.autodev/MODE"
+  canonical_ledger 3 > "$dir/.autodev/EXPERIMENTS.md"
+  canonical_paths > "$dir/.autodev/PATHS.md"
+  printf 'not-a-timestamp' > "$dir/.autodev/RUNNING_SINCE"
+  run_hook "$dir"
+  ok=0
+  assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
+  assert_contains "reason" "$HOOK_STDOUT" "STALE-DISPATCH-CHECK" || ok=1
+  report "RUNNING_SINCE contains non-numeric garbage -> treated as missing, STALE-DISPATCH-CHECK" "$ok"
 }
 
 # ---- scenario 4a: exactly 2 proposed (below MIN_PROPOSED=3) -> QUEUE-VIOLATION
@@ -221,12 +268,13 @@ EOF
   printf 'bounded' > "$dir/.autodev/MODE"
   canonical_ledger 3 > "$dir/.autodev/EXPERIMENTS.md"
   canonical_paths > "$dir/.autodev/PATHS.md"
+  date +%s > "$dir/.autodev/RUNNING_SINCE"
   run_hook "$dir"
   ok=0
   assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
   assert_not_contains "reason" "$HOOK_STDOUT" "QUEUE-VIOLATION" || ok=1
-  assert_contains "reason" "$HOOK_STDOUT" "Invariants hold" || ok=1
-  report "exactly 3 proposed (== MIN_PROPOSED) -> no QUEUE-VIOLATION" "$ok"
+  assert_eq "stdout" "" "$HOOK_STDOUT" || ok=1
+  report "exactly 3 proposed (== MIN_PROPOSED) -> no QUEUE-VIOLATION (silent quiet-wait)" "$ok"
 }
 
 # ---- scenario 5: anchoring — own status wins over prose substring ---------
@@ -242,14 +290,14 @@ but that was corrected; the block's real, own status line above is proposed.
 "
   canonical_ledger 3 "$extra" > "$dir/.autodev/EXPERIMENTS.md"
   canonical_paths > "$dir/.autodev/PATHS.md"
+  date +%s > "$dir/.autodev/RUNNING_SINCE"
   run_hook "$dir"
   ok=0
   assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
   # Exactly one real running block (R1) exists; the anchoring prose in Q1
   # must NOT be double-counted as a second running block, so this must
-  # still read as healthy with no DISPATCH-VIOLATION over-dispatch text.
-  assert_contains "reason" "$HOOK_STDOUT" "Invariants hold" || ok=1
-  assert_not_contains "reason" "$HOOK_STDOUT" "DISPATCH-VIOLATION" || ok=1
+  # still read as healthy (silent quiet-wait) with no DISPATCH-VIOLATION.
+  assert_eq "stdout" "" "$HOOK_STDOUT" || ok=1
   report "prose containing 'status: running' inside a proposed block is not counted as running" "$ok"
 }
 
@@ -453,6 +501,77 @@ EOF
   report "valid COMPLETE + RT-<N> with path-before-status field order -> still recognized as valid" "$ok"
 }
 
+# ---- scenario 10c: stale earlier-validated RT-<N>, newer RT-<N> not validated
+# The exact CodeRabbit-flagged gap: RT-1 was validated, but a newer RT-2 was
+# later dispatched (e.g. because new experiments/avenues were added) and is
+# still running/unresolved. RT-1 being validated must NOT satisfy the gate;
+# only the highest-numbered block (RT-2) counts.
+{
+  dir=$(new_scenario_dir "10c-stale-earlier-validated-rt")
+  touch "$dir/.autodev/ACTIVE"
+  printf 'bounded' > "$dir/.autodev/MODE"
+  cat > "$dir/.autodev/EXPERIMENTS.md" <<'EOF'
+## RT-1: red-team review of completion claim
+- status: validated
+- path: red-team-review
+- outcome: empty-handed on the state as of that iteration.
+
+## RT-2: red-team review of completion claim
+- status: running
+- path: red-team-review
+- outcome:
+EOF
+  cat > "$dir/.autodev/COMPLETE" <<'EOF'
+VERIFICATION: PASS
+RED_TEAM: EMPTY_HANDED
+ACCEPTANCE_CRITERIA: MET
+EOF
+  run_hook "$dir"
+  ok=0
+  assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
+  assert_contains "reason" "$HOOK_STDOUT" "COMPLETE-INVALID" || ok=1
+  assert_contains "reason" "$HOOK_STDOUT" "highest-numbered RT-<N>" || ok=1
+  if [[ ! -f "$dir/.autodev/ACTIVE" ]]; then
+    echo "    FAIL detail: ACTIVE was removed even though the highest-numbered RT-<N> (RT-2) is not validated"
+    ok=1
+  fi
+  report "stale validated RT-1 does not satisfy gate when newer RT-2 exists and isn't validated -> COMPLETE-INVALID" "$ok"
+}
+
+# ---- scenario 10d: newest RT-<N> is the validated one -> valid ------------
+# Same shape as 10c but RT-2 (the higher number) is the validated one; RT-1's
+# earlier status (rejected) is irrelevant since only the highest counts.
+{
+  dir=$(new_scenario_dir "10d-newest-rt-validated")
+  touch "$dir/.autodev/ACTIVE"
+  printf 'bounded' > "$dir/.autodev/MODE"
+  cat > "$dir/.autodev/EXPERIMENTS.md" <<'EOF'
+## RT-1: red-team review of completion claim
+- status: rejected
+- path: red-team-review
+- outcome: found unblocked experiments; added to queue.
+
+## RT-2: red-team review of completion claim
+- status: validated
+- path: red-team-review
+- outcome: empty-handed — no unblocked positive-EV experiment found.
+EOF
+  cat > "$dir/.autodev/COMPLETE" <<'EOF'
+VERIFICATION: PASS
+RED_TEAM: EMPTY_HANDED
+ACCEPTANCE_CRITERIA: MET
+EOF
+  run_hook "$dir"
+  ok=0
+  assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
+  assert_eq "stdout" "" "$HOOK_STDOUT" || ok=1
+  if [[ -f "$dir/.autodev/ACTIVE" ]]; then
+    echo "    FAIL detail: ACTIVE still present even though highest-numbered RT-2 is validated"
+    ok=1
+  fi
+  report "highest-numbered RT-2 validated (RT-1 rejected) -> valid, ACTIVE removed" "$ok"
+}
+
 # ---- scenario 11: valid COMPLETE, continuous -> blocked, COMPLETE deleted -
 {
   dir=$(new_scenario_dir "11-valid-complete-continuous")
@@ -490,12 +609,12 @@ EOF
   canonical_ledger 3 > "$dir/.autodev/EXPERIMENTS.md"
   canonical_paths > "$dir/.autodev/PATHS.md"
   printf '1\tEXP-001\tAvenue A\topened-unexplored: no\n2\tEXP-002\tAvenue A\topened-unexplored: no\n3\tEXP-003\tAvenue B\topened-unexplored: no\n4\tEXP-004\tAvenue B\topened-unexplored: no\n' > "$dir/.autodev/dispatch_log"
+  date +%s > "$dir/.autodev/RUNNING_SINCE"
   run_hook "$dir"
   ok=0
   assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
-  assert_contains "reason" "$HOOK_STDOUT" "Invariants hold" || ok=1
-  assert_not_contains "reason" "$HOOK_STDOUT" "NOVELTY-QUOTA-VIOLATION" || ok=1
-  report "dispatch_log with 4 lines, none opened unexplored -> not enforced yet" "$ok"
+  assert_eq "stdout" "" "$HOOK_STDOUT" || ok=1
+  report "dispatch_log with 4 lines, none opened unexplored -> not enforced yet (silent quiet-wait)" "$ok"
 }
 
 # ---- scenario 13: dispatch_log with exactly 5 lines, none opened unexplored
@@ -521,12 +640,12 @@ EOF
   canonical_ledger 3 > "$dir/.autodev/EXPERIMENTS.md"
   canonical_paths > "$dir/.autodev/PATHS.md"
   printf '1\tEXP-001\tAvenue A\topened-unexplored: no\n2\tEXP-002\tAvenue A\topened-unexplored: no\n3\tEXP-003\tAvenue B\topened-unexplored: yes\n4\tEXP-004\tAvenue B\topened-unexplored: no\n5\tEXP-005\tAvenue B\topened-unexplored: no\n' > "$dir/.autodev/dispatch_log"
+  date +%s > "$dir/.autodev/RUNNING_SINCE"
   run_hook "$dir"
   ok=0
   assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
-  assert_contains "reason" "$HOOK_STDOUT" "Invariants hold" || ok=1
-  assert_not_contains "reason" "$HOOK_STDOUT" "NOVELTY-QUOTA-VIOLATION" || ok=1
-  report "dispatch_log with 5 lines, one opened unexplored -> no violation" "$ok"
+  assert_eq "stdout" "" "$HOOK_STDOUT" || ok=1
+  report "dispatch_log with 5 lines, one opened unexplored -> no violation (silent quiet-wait)" "$ok"
 }
 
 # ---- scenario 15: > 5 lines, only last 5 matter (old violation ignored) ---
@@ -540,11 +659,11 @@ EOF
   # but they fall outside the last-5 window, so they must not cause a
   # false violation as long as the last 5 contain at least one "yes".
   printf '1\tEXP-001\tAvenue A\topened-unexplored: no\n2\tEXP-002\tAvenue A\topened-unexplored: no\n3\tEXP-003\tAvenue A\topened-unexplored: no\n4\tEXP-004\tAvenue B\topened-unexplored: no\n5\tEXP-005\tAvenue B\topened-unexplored: no\n6\tEXP-006\tAvenue B\topened-unexplored: yes\n7\tEXP-007\tAvenue B\topened-unexplored: no\n8\tEXP-008\tAvenue B\topened-unexplored: no\n' > "$dir/.autodev/dispatch_log"
+  date +%s > "$dir/.autodev/RUNNING_SINCE"
   run_hook "$dir"
   ok=0
   assert_eq "exit code" "0" "$HOOK_EXIT" || ok=1
-  assert_contains "reason" "$HOOK_STDOUT" "Invariants hold" || ok=1
-  assert_not_contains "reason" "$HOOK_STDOUT" "NOVELTY-QUOTA-VIOLATION" || ok=1
+  assert_eq "stdout" "" "$HOOK_STDOUT" || ok=1
   report "dispatch_log with 8 lines, only last 5 evaluated (one 'yes' at line 6) -> no violation" "$ok"
 }
 
