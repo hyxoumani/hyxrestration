@@ -1,6 +1,22 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-15 20:15 UTC (DIVERGENCE re-run on the main shadow
+Updated: **2026-07-16 14:15 UTC (ATLAS re-run on +5,323 fresh settled
+markets — the 07-16 kalshi sweep fired (settled 62,608→67,931, candles
+3.056M→3.115M). Flagged 78→79. The favorite-longshot signature HOLDS,
+no drift to chase: of 3 newly-flagged buckets, 2 are signature-direction
+(Economics 7d d0 extreme-longshot overpriced implied .030 vs realized
+.018 n=728; Financials 1h d7 favorite underpriced .752→.868 n=242) and
+1 is mid-decile (Financials 6h d4 .455→.504); of 2 dropped, both are
+mid/weakened non-signature (Commodities 1h d5 .544→.609 mid; Financials
+6h d3 longshot .339→.278 edge weakened below significance). Max gap
+drift on the 76 common buckets 0.112 (Financials 1h d4, a MID decile,
+gap −0.212→−0.100: the anomaly is CONVERGING toward implied as it gained
++142 fresh fills — mean-reverting, non-directional, and not a
+favorite-longshot bucket). Four atlas re-runs now across +15.2k settled
+markets (07-13→07-16) all confirm the signature is persistent, not a
+one-window artifact; favorite-longshot PRE-REG remains the test. Report:
+`reports/atlas/20260716T141520.json`.) (prior 2026-07-15 20:15 UTC:
+DIVERGENCE re-run on the main shadow
 run 20260713T064302, now 9,222 fills spanning 2.5 days — 4× the prior
 07-13 check (2,185 fills, one day). The exact-convergence
 simulation-honesty finding holds, and TIGHTENS on the larger sample:
