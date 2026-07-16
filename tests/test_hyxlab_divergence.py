@@ -204,6 +204,40 @@ def test_fill_outside_nearest_window_stays_unmatched():
     assert rep["matched_all_vs_replay"] == 0
 
 
+def test_unmatched_fills_classified_by_cause():
+    """The leftover fills no tier could pair are labelled by cause, so
+    the 'boundary/coverage, not price disagreement' reading is verified
+    rather than inferred from the count gap. A fill within 60s of the
+    window edge is `boundary`, one inside a coverage break is `gap`, and
+    a mid-window fill with no gap is `unexplained` — the only class that
+    would signal a hidden fill-model discrepancy."""
+    anchor = datetime(2026, 7, 12, 1, 0, 0)
+    end = anchor + timedelta(hours=2)
+    boundary = _RF(5.0, end - timedelta(seconds=10))  # near the window edge
+    gap = _RF(5.0, anchor + timedelta(minutes=30))  # inside a coverage break
+    lonely = _RF(5.0, anchor + timedelta(minutes=60), market_id="M2")  # clear window
+    gaps = [(anchor + timedelta(minutes=29), anchor + timedelta(minutes=31))]
+
+    rep = compare([], [boundary, gap, lonely], anchor=anchor, end=end, gaps=gaps)
+
+    assert rep["unmatched_replay"] == 3
+    assert rep["unmatched_replay_by_cause"] == {"boundary": 1, "gap": 1, "unexplained": 1}
+    assert rep["unmatched_shadow"] == 0
+    samples = rep["unmatched_unexplained_samples"]
+    assert len(samples) == 1 and samples[0]["market"] == "M2"
+
+
+def test_unmatched_without_context_defaults_to_unexplained():
+    """Called context-free (the many unit tests do this), an unpaired
+    fill can't be excused as boundary/gap and is honestly `unexplained`
+    — a nonzero count is never silently absorbed."""
+    rep = compare([_shadow(5.0, T)], [_RF(4.0, T + timedelta(seconds=10))])
+    assert rep["unmatched_shadow"] == 1
+    assert rep["unmatched_replay"] == 1
+    assert rep["unmatched_shadow_by_cause"]["unexplained"] == 1
+    assert rep["unmatched_replay_by_cause"]["unexplained"] == 1
+
+
 def test_shuffled_input_order_produces_identical_report():
     """Determinism: the report is a pure function of the fill sets,
     not of their arrival order."""

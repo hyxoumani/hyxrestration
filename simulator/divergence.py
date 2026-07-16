@@ -62,8 +62,14 @@ def replay_run(
     strategy_names: list[str],
     stream_db: str = STREAM_DB,
     archive_db: str = "data/hyxlab.duckdb",
+    return_gaps: bool = False,
 ) -> list:
-    """Reproduce a shadow run offline; returns the replay's fills."""
+    """Reproduce a shadow run offline; returns the replay's fills.
+
+    With `return_gaps=True` returns `(fills, gaps)` so the caller can
+    classify unmatched fills against the same coverage breaks the replay
+    traded through.
+    """
     store = Store(archive_db, read_only=True)
     try:
         markets = store.markets()
@@ -94,11 +100,18 @@ def replay_run(
         ).fetchall()
         for snap in replay_snapshots(_events(conn, anchor, end), gaps=gaps, replayer=replayer):
             sim.step(snap)
-    return [f for f in sim.result.fills if f.ts <= end]
+    fills = [f for f in sim.result.fills if f.ts <= end]
+    return (fills, gaps) if return_gaps else fills
 
 
 def compare(
-    shadow_fills: list[tuple], replay_fills: list, window: timedelta = NEAREST_WINDOW
+    shadow_fills: list[tuple],
+    replay_fills: list,
+    window: timedelta = NEAREST_WINDOW,
+    *,
+    anchor: datetime | None = None,
+    end: datetime | None = None,
+    gaps: list | None = None,
 ) -> dict:
     """Tiered per-(market, side) matching; price deltas per tier.
 
@@ -114,6 +127,17 @@ def compare(
     calibration read never silently mixes tiers.
 
     shadow_fills rows: (market_id, side, qty, price, fee, maker, ts).
+
+    When `anchor`/`end`/`gaps` are supplied the leftover (unmatched)
+    fills — the ones no tier could pair — are classified by cause so the
+    "boundary/coverage, not price disagreement" reading is verified, not
+    inferred from the count gap: `boundary` (within the 60s exact
+    tolerance of the window edge, so a true counterpart falls just
+    outside the compared window), `gap` (inside a coverage break ±window,
+    where the two streams re-seed differently), else `unexplained` — a
+    genuine fill one stream produced and the other did not, which is the
+    only place a hidden fill-model discrepancy could hide. Samples of any
+    unexplained fills are emitted so a nonzero count is never silent.
     """
     from collections import defaultdict
 
@@ -220,6 +244,41 @@ def compare(
     n_r = sum(len(v) for v in r_by.values())
     n_all_s = matched + n_nearest + split_s_fills
     n_all_r = matched + n_nearest + split_r_fills
+
+    # True leftovers: exact removes matches from s_by (only misses reach
+    # s_left) and pops replay hits out of r_left; split mutates both
+    # lists in place; nearest matches by identity without removing, so
+    # subtract those. What remains is what no tier could pair.
+    near_s = {id(s) for _, s, _ in nearest_pairs}
+    near_r = {id(r) for _, _, r in nearest_pairs}
+    unmatched_s = [(k, f) for k, fills in s_left.items() for f in fills if id(f) not in near_s]
+    unmatched_r = [(k, f) for k, fills in r_left.items() for f in fills if id(f) not in near_r]
+
+    def _cause(ts):
+        if anchor is not None and ts - anchor <= MATCH_TOLERANCE:
+            return "boundary"
+        if end is not None and end - ts <= MATCH_TOLERANCE:
+            return "boundary"
+        for g0, g1 in gaps or ():
+            if g0 - window <= ts <= g1 + window:
+                return "gap"
+        return "unexplained"
+
+    def _breakdown(unmatched):
+        counts = {"boundary": 0, "gap": 0, "unexplained": 0}
+        samples = []
+        for (m, side), f in unmatched:
+            cause = _cause(f[0])
+            counts[cause] += 1
+            if cause == "unexplained" and len(samples) < 20:
+                samples.append(
+                    {"market": m, "side": side, "ts": str(f[0]), "qty": f[1], "price": f[2]}
+                )
+        return counts, samples
+
+    unmatched_s_by_cause, unmatched_s_samples = _breakdown(unmatched_s)
+    unmatched_r_by_cause, unmatched_r_samples = _breakdown(unmatched_r)
+
     deltas.sort()
     return {
         "matching_note": (
@@ -254,6 +313,11 @@ def compare(
         "shadow_fills": n_s,
         "replay_fills": n_r,
         "matched": matched,
+        "unmatched_shadow": len(unmatched_s),
+        "unmatched_replay": len(unmatched_r),
+        "unmatched_shadow_by_cause": unmatched_s_by_cause,
+        "unmatched_replay_by_cause": unmatched_r_by_cause,
+        "unmatched_unexplained_samples": unmatched_s_samples + unmatched_r_samples,
         "match_rate_vs_shadow": round(matched / n_s, 4) if n_s else None,
         "match_rate_vs_replay": round(matched / n_r, 4) if n_r else None,
         "price_delta_mean": round(sum(deltas) / len(deltas), 6) if deltas else None,
@@ -321,7 +385,7 @@ def main() -> None:
         raise SystemExit(f"run {run_id} has no recorded anchor; pass --anchor (see journal)")
 
     print(f"[divergence] run {run_id} anchor={anchor} end={end} latency={latency}s")
-    replay_fills = replay_run(
+    replay_fills, gaps = replay_run(
         run_id,
         anchor,
         end,
@@ -329,6 +393,7 @@ def main() -> None:
         strategies.split(","),
         stream_db=args.stream_db,
         archive_db=args.archive_db,
+        return_gaps=True,
     )
     report = {
         "run_id": run_id,
@@ -337,7 +402,14 @@ def main() -> None:
         "latency_s": latency,
         "strategies": strategies,
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None)),
-        **compare(shadow_fills, replay_fills, window=timedelta(seconds=args.nearest_window)),
+        **compare(
+            shadow_fills,
+            replay_fills,
+            window=timedelta(seconds=args.nearest_window),
+            anchor=anchor,
+            end=end,
+            gaps=gaps,
+        ),
     }
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
