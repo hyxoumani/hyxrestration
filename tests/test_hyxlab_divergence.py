@@ -221,10 +221,53 @@ def test_unmatched_fills_classified_by_cause():
     rep = compare([], [boundary, gap, lonely], anchor=anchor, end=end, gaps=gaps)
 
     assert rep["unmatched_replay"] == 3
-    assert rep["unmatched_replay_by_cause"] == {"boundary": 1, "gap": 1, "unexplained": 1}
+    assert rep["unmatched_replay_by_cause"] == {
+        "boundary": 1,
+        "gap": 1,
+        "reseed_twin": 0,
+        "unexplained": 1,
+    }
     assert rep["unmatched_shadow"] == 0
     samples = rep["unmatched_unexplained_samples"]
     assert len(samples) == 1 and samples[0]["market"] == "M2"
+
+
+def test_unmatched_fill_with_identical_twin_is_reseed_twin():
+    """A leftover fill whose exact (market, side, qty, price) also occurs
+    in the opposite stream — just time-shifted beyond the match window —
+    is `reseed_twin`, the start-of-run seed-settling signature, NOT
+    `unexplained`. This is the real cause of the 07-13 shadow run's
+    leftover fills (probed: same qty/price fills fire minutes apart while
+    the seeded books converge), which the first classifier lumped into
+    `unexplained`."""
+    anchor = datetime(2026, 7, 12, 1, 0, 0)
+    end = anchor + timedelta(hours=2)
+    # Same market/side/qty/price, 5 min apart: past the 60s exact and 2s
+    # nearest windows, both mid-window (neither boundary nor gap).
+    t = anchor + timedelta(minutes=40)
+    shadow = [_shadow(5.0, t)]
+    replay = [_RF(5.0, t + timedelta(minutes=5))]
+    rep = compare(shadow, replay, anchor=anchor, end=end, gaps=[])
+    assert rep["matched"] == 0
+    assert rep["unmatched_shadow_by_cause"]["reseed_twin"] == 1
+    assert rep["unmatched_replay_by_cause"]["reseed_twin"] == 1
+    assert rep["unmatched_shadow_by_cause"]["unexplained"] == 0
+    assert rep["unmatched_unexplained_samples"] == []
+
+
+def test_unmatched_fill_without_twin_stays_unexplained():
+    """A leftover with a DIFFERENT price than anything opposite has no
+    twin and remains `unexplained` — the twin refinement never rescues a
+    genuine fill-model residual."""
+    anchor = datetime(2026, 7, 12, 1, 0, 0)
+    end = anchor + timedelta(hours=2)
+    t = anchor + timedelta(minutes=40)
+    shadow = [_shadow(5.0, t, price=0.40)]
+    replay = [_RF(5.0, t + timedelta(minutes=5), price=0.55)]  # different level
+    rep = compare(shadow, replay, anchor=anchor, end=end, gaps=[])
+    assert rep["unmatched_shadow_by_cause"]["reseed_twin"] == 0
+    assert rep["unmatched_shadow_by_cause"]["unexplained"] == 1
+    assert rep["unmatched_replay_by_cause"]["unexplained"] == 1
 
 
 def test_unmatched_without_context_defaults_to_unexplained():

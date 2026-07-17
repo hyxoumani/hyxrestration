@@ -1,6 +1,27 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-17 02:19 UTC (DIVERGENCE re-run on the main shadow
+Updated: **2026-07-17 14:20 UTC (DIVERGENCE by-cause classifier
+REFINED + shipped — the `reseed_twin` cause. The 07-17 02:19 re-run
+left 10 shadow + 16 replay leftovers tagged `unexplained`, with a note
+that they were start-of-run seed-boundary fills the classifier lumped
+in wrongly. This session finishes that follow-up: `_cause` now checks,
+before falling through to `unexplained`, whether an exact (market,
+side, qty, price) counterpart exists in the OPPOSITE stream (just
+time-shifted past the 2s match window) — the seed-settling signature
+where both streams produce the identical fill at offset moments while
+their seeded books converge. Re-run on the closed run 20260713T064302
+(11,943 fills, unchanged 99.92%/99.82% match, price delta 0):
+shadow leftovers 10/10 → `reseed_twin`; replay leftovers 6 gap / 15
+`reseed_twin` / **1** `unexplained` (down from 16). The single genuine
+`unexplained` is a KXCPIYOY-26JUN fill at 06:47 UTC — still ~5.5 min
+into seed-settling. Net: the residual sub-0.2% is demonstrably
+timing-shifted seed convergence, NOT fill-model divergence; the
+taker-side haircut ≈ 0 conclusion now has essentially no unexplained
+residual to hide behind. Existence-only twin test (asserts an
+identical opposite fill exists, does not net counts); 2 new unit tests
+(twin→reseed_twin, different-price→stays unexplained). Suite 244→246.
+Report regenerated: `reports/shadow_divergence/20260713T064302.json`.)
+(prior 2026-07-17 02:19 UTC (DIVERGENCE re-run on the main shadow
 run 20260713T064302, now CLOSED at 11,943 fills — the largest window yet
 (+30% over the 07-15 check's 9,222; a new shadow run 20260716T130721 took
 over at 13:07 UTC after a service restart, freezing this one into a

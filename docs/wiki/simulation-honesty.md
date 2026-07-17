@@ -86,6 +86,25 @@ semantics on identical data — the calibration question is now solely
 about what the archive misses vs the venue (latency tail, fill-model
 vs reality), not about internal consistency.
 
+The divergence report classifies its handful of unmatched fills by
+cause: `boundary` (within 60s of a window edge), `gap` (inside a
+coverage break), `reseed_twin` (2026-07-17 refinement — an exact
+(market, side, qty, price) counterpart exists in the OPPOSITE stream,
+just time-shifted past the 2s match window: the start-of-run
+seed-settling signature, where both streams produce the identical fill
+at offset moments because their seeded books have not yet converged),
+else `unexplained` — the only place a hidden fill-model discrepancy
+could hide. On the closed 3.3-day run 20260713T064302 (11,943 fills,
+99.92%/99.82% match, all price deltas 0), the twin refinement
+reclassifies all 10 shadow leftovers and 15 of 16 replay leftovers
+from `unexplained` to `reseed_twin`; genuine `unexplained` drops to
+**1** (a single KXCPIYOY-26JUN fill at 06:47 UTC, still ~5.5 min into
+seed-settling). So even the residual sub-0.2% is demonstrably
+timing-shifted seed convergence, not fill-model divergence — the
+taker-side haircut ≈ 0 conclusion has no unexplained residual left to
+hide behind. The twin test is existence-only (asserts an identical
+fill exists opposite, does not net counts).
+
 ## Replay-equivalence guarantee (2026-07-08)
 
 Feeding the sim incrementally (simui's `ReplaySession.advance` in

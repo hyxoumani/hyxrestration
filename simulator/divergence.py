@@ -134,9 +134,16 @@ def compare(
     inferred from the count gap: `boundary` (within the 60s exact
     tolerance of the window edge, so a true counterpart falls just
     outside the compared window), `gap` (inside a coverage break ±window,
-    where the two streams re-seed differently), else `unexplained` — a
-    genuine fill one stream produced and the other did not, which is the
-    only place a hidden fill-model discrepancy could hide. Samples of any
+    where the two streams re-seed differently), `reseed_twin` (an exact
+    (market, side, qty, price) counterpart exists elsewhere in the
+    OPPOSITE stream, just time-shifted beyond the match window — the
+    start-of-run seed-settling signature, where both streams produce the
+    identical fill at offset moments because their seeded books have not
+    yet converged), else `unexplained` — a fill one stream produced and
+    the other never did in any form, which is the only place a hidden
+    fill-model discrepancy could hide. The twin test is existence-only
+    (it does not net counts), so `reseed_twin` asserts an identical fill
+    exists opposite, not that fill counts balance exactly. Samples of any
     unexplained fills are emitted so a nonzero count is never silent.
     """
     from collections import defaultdict
@@ -254,7 +261,14 @@ def compare(
     unmatched_s = [(k, f) for k, fills in s_left.items() for f in fills if id(f) not in near_s]
     unmatched_r = [(k, f) for k, fills in r_left.items() for f in fills if id(f) not in near_r]
 
-    def _cause(ts):
+    # Economics multisets (existence-only): a leftover whose exact
+    # (market, side, qty, price) also occurs in the opposite stream has a
+    # timing-shifted twin — the seed-settling signature — not a fill the
+    # other stream never produced.
+    shadow_econ = {(m, side, qty, price) for m, side, qty, price, *_ in shadow_fills}
+    replay_econ = {(f.market_id, f.side, f.qty, f.price) for f in replay_fills}
+
+    def _cause(ts, key, opposite_econ):
         if anchor is not None and ts - anchor <= MATCH_TOLERANCE:
             return "boundary"
         if end is not None and end - ts <= MATCH_TOLERANCE:
@@ -262,13 +276,15 @@ def compare(
         for g0, g1 in gaps or ():
             if g0 - window <= ts <= g1 + window:
                 return "gap"
+        if key in opposite_econ:
+            return "reseed_twin"
         return "unexplained"
 
-    def _breakdown(unmatched):
-        counts = {"boundary": 0, "gap": 0, "unexplained": 0}
+    def _breakdown(unmatched, opposite_econ):
+        counts = {"boundary": 0, "gap": 0, "reseed_twin": 0, "unexplained": 0}
         samples = []
         for (m, side), f in unmatched:
-            cause = _cause(f[0])
+            cause = _cause(f[0], (m, side, f[1], f[2]), opposite_econ)
             counts[cause] += 1
             if cause == "unexplained" and len(samples) < 20:
                 samples.append(
@@ -276,8 +292,8 @@ def compare(
                 )
         return counts, samples
 
-    unmatched_s_by_cause, unmatched_s_samples = _breakdown(unmatched_s)
-    unmatched_r_by_cause, unmatched_r_samples = _breakdown(unmatched_r)
+    unmatched_s_by_cause, unmatched_s_samples = _breakdown(unmatched_s, replay_econ)
+    unmatched_r_by_cause, unmatched_r_samples = _breakdown(unmatched_r, shadow_econ)
 
     deltas.sort()
     return {
