@@ -1,6 +1,25 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-17 14:20 UTC (DIVERGENCE by-cause classifier
+Updated: **2026-07-17 20:16 UTC (ATLAS re-run on +5,320 fresh settled
+markets — the 07-17 06:10 kalshi sweep fired (settled 67,931→73,251,
+candles 3.115M→3.161M). Flagged 79→81, and the favorite-longshot
+signature HOLDS with no drift to chase: of 4 newly-flagged buckets 3
+are signature-direction (Economics 72h d0 extreme-longshot overpriced
+implied .029 vs realized .018 n=947; Financials 1h d6 favorite
+underpriced .649→.750 n=204; Financials 6h d3 longshot overpriced .342
+vs .297 n=529) and 1 is mid-decile (Climate 24h d5 .544→.584); of 2
+dropped, neither is a directional reversal — Financials 1h d8 (a
+signature favorite bucket) gained +41 fills and its realized converged
+.917→.852 toward implied .847 (gap +0.071→+0.006, mean-reverting, now
+inside Wilson), and Financials 6h d4 is a mid-decile that likewise
+converged .504→.466. Max gap drift on the 109 meaningful-n (≥200 both
+runs) common buckets 0.084 (Financials 1h d5, a MID-favorite decile,
+gap +0.245→+0.161 as it gained +45 fills — converging toward implied,
+non-directional, not a favorite-longshot bucket). Five atlas re-runs
+now across +20.5k settled markets (07-13→07-17) all confirm the
+signature is persistent, not a one-window artifact; favorite-longshot
+PRE-REG remains the test. Report:
+`reports/atlas/20260717T201600.json`.) (prior 2026-07-17 14:20 UTC (DIVERGENCE by-cause classifier
 REFINED + shipped — the `reseed_twin` cause. The 07-17 02:19 re-run
 left 10 shadow + 16 replay leftovers tagged `unexplained`, with a note
 that they were start-of-run seed-boundary fills the classifier lumped
