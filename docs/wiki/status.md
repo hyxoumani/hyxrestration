@@ -1,6 +1,28 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-16 20:16 UTC (MAKER BRACKET re-run — 7th weather
+Updated: **2026-07-17 02:19 UTC (DIVERGENCE re-run on the main shadow
+run 20260713T064302, now CLOSED at 11,943 fills — the largest window yet
+(+30% over the 07-15 check's 9,222; a new shadow run 20260716T130721 took
+over at 13:07 UTC after a service restart, freezing this one into a
+fully-closed 3.3-day window 06:41 07-13 → 13:06 07-16). The
+exact-convergence simulation-honesty finding holds and TIGHTENS again:
+match rate 99.92% vs shadow / 99.82% vs replay (up from 99.89%/99.76%),
+price_delta mean = median = abs_mean = 0.0 across all 11,933 matched
+fills — every matched fill is price-identical shadow↔offline-replay.
+Fees near-identical (shadow 458.56 vs replay 459.22, +0.14%); gross cash
+8086.13 vs 8098.67. 10 unmatched shadow (all `unexplained`) / 22 unmatched
+replay (6 gap, 16 `unexplained`), 0.08–0.18%. Note on the new
+by-cause classifier (af01c63): the 10 shadow-unmatched all fall in the
+first ~55 min after anchor (06:44→07:35 UTC) — start-of-run seed-boundary
+fills the classifier tags `unexplained` rather than `boundary` (they
+predate the replayer's book seed settling), NOT price disagreement; a
+follow-up could widen the `boundary` window to the first minute of a run
+to reclassify them. Fourth divergence re-run across the 07-13 run's life
+(2,185 → 9,222 → 11,943 fills) all confirm the taker-side fill-model
+haircut ≈ 0 on a fully-closed 3.3-day live-shadow window, not just the
+original convergence slice. Report:
+`reports/shadow_divergence/20260713T064302.json`.) (prior
+2026-07-16 20:16 UTC (MAKER BRACKET re-run — 7th weather
 bracket, first since 07-15 03:20 (~41h; the report draws on
 continuously-accumulating stream trade data, so this is a genuinely
 fresh window, not a re-score). Default weather-dominated run, 190
