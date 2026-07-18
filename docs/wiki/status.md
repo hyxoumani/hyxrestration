@@ -1,6 +1,38 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-18 08:20 UTC (hylshi_fade.py provenance RESOLVED —
+Updated: **2026-07-18 14:15 UTC (ATLAS re-run on +3,959 fresh settled
+markets — the 07-18 11:10 UTC kalshi sweep fired (settled
+73,251→77,210, candles 3.161M→3.244M). Flagged 81→80. Headline verdict
+unchanged — the favorite-longshot signature HOLDS — but this is the
+first window with a genuinely counter-signature CLUSTER, and the
+chase-drift analysis attributes it to a correlated settlement cohort,
+not regime change. What moved: the Financials FAVORITE arm weakened
+sharply — 1h d6/d7/d9 all dropped by converging to implied (d6 gap
++0.101→+0.007, the max drift 0.094 on 110 common meaningful-n
+buckets), and newly-flagged 1h d8 / 6h d4 / 72h d9 flipped to
+NEGATIVE gaps (favorites overpriced, counter-signature). Marginal
+(new-fill-only) realized rates expose the cause: EVERY Financials
+favorite decile realized far below implied on the increment (1h d6
+marginal .175 vs implied .649; d8 .417 vs .849; d9 .674 vs .979; 6h d5
+.203 vs .549) while Economics/Commodities favorites stayed at/above
+implied — and the Financials LONGSHOT deciles simultaneously realized
+~0 (d1 marginal .066 vs implied .147). Both arms moving the same
+direction at once is the index-ladder-correlation signature: the fresh
+Financials cohort is dominated by KXDJI/KXINXU ladders, and 07-17 was
+a big-move day (KXDJI 348 no / 82 yes; KXINXU 311 no / 109 yes, vs a
+balanced 07-16) — one day's index level settles hundreds of sibling
+strikes together, so effective n on the increment is closer to ~2
+day-outcomes than to 3,959 markets. This is the documented atlas
+correlation caveat made concrete: bucket Wilson intervals OVERSTATE
+confidence for ladder-heavy categories, and any favorite-longshot
+pre-reg must not treat Financials-1h favorite buckets as independent
+evidence. Non-Financials signature intact (Commodities 72h d2 newly
+flagged signature-direction; Econ/Commodities favorite marginals
+normal). WATCH: if Financials favorite gaps keep collapsing across the
+NEXT 2–3 sweeps (different day-outcomes), that arm is genuinely
+fading — cumulative-gap convergence over multiple independent days
+would be real drift, not cohort noise. Report:
+`reports/atlas/20260718T141523.json`.) (prior 2026-07-18 08:20 UTC (hylshi_fade.py provenance RESOLVED —
 the 07-13 "unexplained untracked file" mystery is closed. "hylshi" is a
 real sibling project on this box (`/home/devs/workspace/hylshi`): an
 active LIVE-trading Kalshi weather-fade stack with its own git repo,
