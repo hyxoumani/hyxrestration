@@ -1,6 +1,31 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-18 02:16 UTC (MAKER BRACKET re-run — 8th weather
+Updated: **2026-07-18 08:20 UTC (hylshi_fade.py provenance RESOLVED —
+the 07-13 "unexplained untracked file" mystery is closed. "hylshi" is a
+real sibling project on this box (`/home/devs/workspace/hylshi`): an
+active LIVE-trading Kalshi weather-fade stack with its own git repo,
+venv, experiment ledger (EXP-nnn), and systemd units
+(`hylshi-watchdog.service`, `hylshi-trade-quality-review.timer` —
+installed 07-13, NOT ours, they run from the hylshi workspace).
+`strategies/hylshi_fade.py` is the leftover artifact of hylshi's
+**EXP-423** ("Replay the live weather-fade playbook through
+hyxrestration's order-lifecycle simulator as an independent
+execution-level validation") — the USER STOPPED that dispatched agent
+mid-run; hylshi's ledger marks it DEFERRED, "not re-dispatching
+without an explicit user request." File created 07-13 13:58 UTC,
+exactly the flagged window. Disposition unchanged and now grounded:
+left untracked/untouched — the user actively stopped the run, and in
+this lab the file is still the retro-rescue pattern (live rules
+presented as a candidate without pre-registration); it enters
+`strategies/` only via normal pre-reg if the user asks. Also learned:
+hylshi reads OUR archives directly (its EXP-016/EXP-423 notes name
+hyxlab.duckdb and even our .venv python) — a second cross-project
+READER on the single-writer DuckDB, same class as our own lock-aware
+readers; no action needed (readers don't take writer.lock) but it
+explains any occasional read contention. Same session: 07-18 07:00 UTC
+QA all-PASS verified; atlas data-gated until the 11:10 UTC kalshi
+sweep; maker bracket fresh at 02:16 UTC; divergence current on the
+closed run.) (prior 2026-07-18 02:16 UTC (MAKER BRACKET re-run — 8th weather
 bracket, first since 07-16 15:16 (~35h; the report draws on
 continuously-accumulating stream trade data, so this is a genuinely
 fresh 24h window 07-17 02:16→07-18 02:16, not a re-score). Default
@@ -394,18 +419,18 @@ permission mode.
 
 ## Standing user items (non-blocking)
 
-**Unexplained untracked file flagged, not actioned** (2026-07-13
-14:16 UTC): `strategies/hylshi_fade.py` appeared untracked, created
-minutes before this session, with zero provenance anywhere in the
-repo — no wiki mention, no session doc, no mistakes-log entry, no
-git history; "hylshi"/"EXP-423" appear nowhere else. Its docstring
-claims to encode "the live hylshi weather-fade rule" from prior
-studies that don't exist in this project. Left untouched (not
-deleted, not registered, not committed) pending USER confirmation of
-origin — this is the retro-rescue pattern the hard rules exclude
-(presenting a strategy as already-validated to fast-track past
-pre-registration), and weather brackets already have a killed
-precedent (WeatherNWS v1).
+**`strategies/hylshi_fade.py` — provenance RESOLVED 2026-07-18,
+disposition still user-gated**: the file is the partial artifact of
+sibling project hylshi's EXP-423 (replay its live weather-fade
+playbook through our simulator), whose dispatched agent the USER
+STOPPED mid-run on 07-13; hylshi's ledger defers it pending an
+explicit user request. Left untracked/untouched here: it is still the
+retro-rescue pattern (live rules presented as a pre-validated
+candidate), and weather has a killed precedent (WeatherNWS v1). If
+the user wants the EXP-423 sim validation, it runs as a normal
+pre-registered backtest in this lab — or delete the stray file; both
+are user calls. See the 2026-07-18 08:20 status entry for full
+evidence.
 
 **Off-box backup destination** (local tier SHIPPED 2026-07-12:
 `hyxlab-backup.timer` daily 03:30 UTC, 7-slot rotation in
