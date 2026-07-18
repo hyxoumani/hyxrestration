@@ -105,6 +105,18 @@ taker-side haircut ≈ 0 conclusion has no unexplained residual left to
 hide behind. The twin test is existence-only (asserts an identical
 fill exists opposite, does not net counts).
 
+**2026-07-18 — first PERFECT convergence, on a second independent
+multi-day run.** Run 20260716T130721 (post-restart successor to the
+07-13 run; 2.3 days, 11,228 fills, first divergence check): 100.00%
+match both directions, ZERO unmatched fills in either stream (all
+four causes 0), every match exact-tier, all price deltas 0, fees and
+gross cash identical to the cent. This run's book seed settled
+cleanly inside a gap-free stream window, so there were no
+seed-boundary leftovers to classify — confirming that the 07-13
+run's sub-0.2% residual was start-of-run noise, and that taker
+haircut ≈ 0 is a property of the machinery, not one lucky window.
+Report: `reports/shadow_divergence/20260716T130721.json`.
+
 ## Replay-equivalence guarantee (2026-07-08)
 
 Feeding the sim incrementally (simui's `ReplaySession.advance` in

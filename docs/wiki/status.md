@@ -1,6 +1,24 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-18 14:15 UTC (ATLAS re-run on +3,959 fresh settled
+Updated: **2026-07-18 20:20 UTC (DIVERGENCE first check on the NEW
+shadow run 20260716T130721 — the run that took over after the 07-16
+13:07 service restart, now 2.3 days / 11,228 fills, never previously
+divergence-checked. Result is the lab's first PERFECT convergence:
+match rate 100.00% both directions (11,228/11,228), zero unmatched
+fills in EITHER stream (all four causes 0 — no boundary, no gap, no
+reseed_twin, no unexplained), every match at the exact tier (0 split,
+0 nearest-relaxed), price_delta mean = median = abs_mean = 0.0, and
+fees and gross cash identical to the cent (fees 460.47 / gross
+8147.46 on both sides). This beats the closed 07-13 run's best
+(99.92%/99.82% with a sub-0.2% timing-shifted residual) and shows the
+residual there really was seed-boundary noise from that run's messier
+start: this run's post-restart book seed settled cleanly inside a
+gap-free stream window, leaving nothing to classify. Exact
+convergence of the taker-side fill model is now confirmed on a
+SECOND independent multi-day run — different days, different anchor,
+different seed — taker haircut ≈ 0 is a property of the machinery,
+not of one lucky window. Report:
+`reports/shadow_divergence/20260716T130721.json`.) (prior 2026-07-18 14:15 UTC (ATLAS re-run on +3,959 fresh settled
 markets — the 07-18 11:10 UTC kalshi sweep fired (settled
 73,251→77,210, candles 3.161M→3.244M). Flagged 81→80. Headline verdict
 unchanged — the favorite-longshot signature HOLDS — but this is the
