@@ -1,6 +1,20 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-17 20:16 UTC (ATLAS re-run on +5,320 fresh settled
+Updated: **2026-07-18 02:16 UTC (MAKER BRACKET re-run — 8th weather
+bracket, first since 07-16 15:16 (~35h; the report draws on
+continuously-accumulating stream trade data, so this is a genuinely
+fresh 24h window 07-17 02:16→07-18 02:16, not a re-score). Default
+weather-dominated run, 223 join-the-touch virtual orders across 8
+KXHIGH markets (NY 122 / MIA 51 / CHI 50): crossing rule fills 127 vs
+queue [118 pess, 131 opt] — crossing lands INSIDE the bracket this time
+(29 crossing-not-pess vs 20 pess-not-crossing, near symmetric). The
+weather sign sequence is now under/over/under/inside/over/inside/over/
+INSIDE across eight runs — still no stable sign, so the
+regime-dependent crossing-rule bias conclusion firmly HOLDS and there
+is still no fixed-haircut shortcut: any maker registration must score
+fills via queue-PESSIMISTIC bounds on its own markets. Report:
+`reports/maker_bracket/20260717T211609.json`.) (prior
+2026-07-17 20:16 UTC (ATLAS re-run on +5,320 fresh settled
 markets — the 07-17 06:10 kalshi sweep fired (settled 67,931→73,251,
 candles 3.115M→3.161M). Flagged 79→81, and the favorite-longshot
 signature HOLDS with no drift to chase: of 4 newly-flagged buckets 3
