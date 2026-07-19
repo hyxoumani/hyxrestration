@@ -78,7 +78,9 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 - `simulator/queuebounds.py` + `simulator/queuescore.py` — FIFO maker
   queue-position bounds and the crossing-rule calibration bracket.
 - `simulator/atlas.py` — calibration atlas (implied vs realized,
-  Wilson flags). `simulator/iterate.py` — DSR, purged folds,
+  Wilson flags; plus a cluster-robust flag tier with n = distinct
+  (series, close_time) ladders — the correlation worst case; pre-regs
+  size evidence on `clusters`, not n). `simulator/iterate.py` — DSR, purged folds,
   family_report (B5 core). `simulator/pair_candidates.py` — cross-venue
   leads (user-gated activation). `simulator/run_favlong.py` — the
   killed pre-reg's runner (record).

@@ -1,6 +1,34 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-19 14:20 UTC (BOTH LOCK-GATED ITEMS CLEARED — the
+Updated: **2026-07-19 20:20 UTC (ATLAS CLUSTER-ROBUST TIER SHIPPED —
+the 07-18 ladder-correlation caveat is now quantitative machinery, not
+a prose warning (b554473). Sibling strikes of one (series, close_time)
+ladder settle on ONE outcome (avg cluster size: Commodities 36.3,
+Financials 15.5, Economics 12.3, Weather 7.4), so every atlas bucket
+now reports `clusters` and a `flagged_robust` tier — the Wilson
+interval recomputed with n = clusters, the perfect-within-cluster-
+correlation worst case; true confidence lies between the tiers. The
+original `flagged` field is untouched for cross-report comparability
+(the divergence-matcher precedent). Full-archive run
+`reports/atlas/20260719T201823.json`: **79 flagged → 58 robust**. All
+21 demotions are small-|gap| (~0.01–0.06) extreme-decile buckets —
+Commodities/Economics d0/d9 at every horizon, Econ 7d d0, Sci-Tech 1h
+d9 / 6h d0 — exactly where ladder-inflated n was manufacturing
+significance; the favorite-longshot signature SURVIVES the robust tier
+(39/58 signature-direction, incl. the big Financials/Commodities 1h–6h
+favorite and longshot deciles at 100–300 clusters each). The lone
+counter-signature robust survivor is Financials 1h d8 (realized .787
+vs implied .849, 161 clusters) — this FEEDS the open WATCH item on
+collapsing Financials favorite gaps: the fade is now cluster-robust,
+not just cohort noise, though still one bucket; next weekday sweeps
+still decide. Pre-reg implication recorded: any favorite-longshot
+registration should size its evidence on `clusters`, not n. Suite
+248→250 (single-ladder-collapses-flag + independent-markets-keep-flag
+regressions). Also: shadow RSS watch item at ~12h into run
+20260719T082112 — VmRSS 285MB, DOWN from 305MB at 6h (killed run was
+~500MB and climbing at 10h): the equity-curve trim is plateauing as
+predicted; final full-day confirmation ~08:21 07-20.)** (prior
+2026-07-19 14:20 UTC (BOTH LOCK-GATED ITEMS CLEARED — the
 poly sweep's writer lock released; ran the FINAL closed-window
 divergence check on shadow run 20260716T130721 AND the 11:10-sweep
 atlas re-run in one pass. (1) DIVERGENCE, full closed run 13:07 07-16
