@@ -258,6 +258,13 @@ class ShadowRunner:
         equity = self.sim.result.equity_curve[-1] if self.sim.result.equity_curve else None
         self.ledger.persist(self.run_id, new_fills, equity)
         self._n_fills_persisted = len(self.sim.result.fills)
+        # The sim appends one equity point PER SNAPSHOT (~2.3M/day at
+        # stream rates) and shadow runs forever: the curve grew to ~800MB
+        # in 2.3 days and got the daemon kernel-OOM-killed mid-run at the
+        # unit's 1G cap (2026-07-18 22:03 UTC). The full curve is already
+        # persisted per-poll to shadow_equity, and max_drawdown is a
+        # running stat in the sim — keep only the latest point in memory.
+        del self.sim.result.equity_curve[:-1]
         return n
 
 

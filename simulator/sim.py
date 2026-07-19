@@ -92,6 +92,11 @@ class Simulator:
         # Component ledger for I1 and per-market I3.
         self._purchases = self._proceeds = self._fees = self._payouts = 0.0
         self._by_market: dict[tuple[str, str, str], dict[str, float]] = {}
+        # Running drawdown stats, updated at every equity_curve append —
+        # so long-lived callers (shadow) may trim the in-memory curve
+        # without corrupting finalize()'s max_drawdown.
+        self._eq_peak = float("-inf")
+        self._max_dd = 0.0
 
     # -- fee & book helpers ----------------------------------------------
 
@@ -259,7 +264,10 @@ class Simulator:
                     )
                 else:
                     self._submit(strat.name, cmd, snap)
-        self.result.equity_curve.append((snap.ts, self._equity()))
+        eq = self._equity()
+        self.result.equity_curve.append((snap.ts, eq))
+        self._eq_peak = max(self._eq_peak, eq)
+        self._max_dd = max(self._max_dd, self._eq_peak - eq)
 
     def finalize(self) -> SimResult:
         """End of data: count undeliverable pending orders, settle, compute
@@ -373,14 +381,10 @@ class Simulator:
             for strat_name in {s.name for s in self.strategies}:
                 m = by_strat.setdefault(strat_name, self._blank_metrics())
                 m["n_dropped_pending"] = self._dropped.get(strat_name, 0)
-        peak, max_dd = float("-inf"), 0.0
-        for _, eq in self.result.equity_curve:
-            peak = max(peak, eq)
-            max_dd = max(max_dd, peak - eq)
         by_strat["_portfolio"] = {
             "final_equity": self._equity(),
             "cash": self.result.cash,
-            "max_drawdown": max_dd,
+            "max_drawdown": self._max_dd,
             "n_fills": float(len(self.result.fills)),
         }
         self.result.metrics = by_strat

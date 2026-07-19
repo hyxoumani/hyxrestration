@@ -237,3 +237,68 @@ def test_shadow_ignores_gaps_from_other_venues_and_channels(tmp_path):
     sstore.append_events(delta)
     sstore.flush()
     assert runner.poll_once() == 1  # book state survives foreign gaps
+
+
+def test_shadow_bounds_in_memory_equity_curve(tmp_path):
+    """Regression (mid-run OOM-kill 2026-07-18 22:03 UTC): the sim appends
+    one equity point per snapshot and shadow runs forever — the in-memory
+    curve reached ~800MB in 2.3 days and blew the unit's 1G cap. After each
+    poll's ledger persist, at most ONE point may remain in memory; the full
+    per-poll curve lives in shadow_equity."""
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+    shadow_db = tmp_path / "shadow.duckdb"
+
+    from hyxlab.store import Store
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.flush()
+
+    runner = ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ShadowLedger(shadow_db),
+    )
+    runner.poll_once()  # anchor
+    for i in range(2, 8):  # 6 polls x 1 snapshot each (price moves, so none dedup)
+        sstore.append_events(
+            _snapshot_frame("M1", i, 40 + i, 55, T0 + timedelta(seconds=30 * i))
+        )
+        sstore.flush()
+        runner.poll_once()
+        assert len(runner.sim.result.equity_curve) <= 1
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        n_eq = conn.execute("SELECT count(*) FROM shadow_equity").fetchone()[0]
+    assert n_eq == 6  # ledger still has every per-poll point
+
+
+def test_max_drawdown_survives_equity_curve_trim():
+    """max_drawdown is a running stat updated at append time, so trimming
+    the in-memory curve mid-run (as shadow does) must not change it."""
+    # Unsettled market (no result): the position marks to the bid, so the
+    # mid-run price dip carves a genuine drawdown into the curve.
+    markets = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1")}
+    prices = [(0.40, 0.41), (0.60, 0.61), (0.20, 0.21), (0.50, 0.51)]
+    snaps = [
+        snap("M1", T0 + timedelta(seconds=i), bid, ask) for i, (bid, ask) in enumerate(prices)
+    ]
+
+    ref = Simulator(markets, [BuyFirst()]).run(list(snaps))
+
+    trimmed = Simulator(markets, [BuyFirst()])
+    for s in snaps:
+        trimmed.step(s)
+        del trimmed.result.equity_curve[:-1]
+    got = trimmed.finalize()
+
+    assert ref.metrics["_portfolio"]["max_drawdown"] > 0  # non-vacuous
+    assert (
+        got.metrics["_portfolio"]["max_drawdown"] == ref.metrics["_portfolio"]["max_drawdown"]
+    )
