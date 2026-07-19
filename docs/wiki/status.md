@@ -1,6 +1,19 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-18 20:20 UTC (DIVERGENCE first check on the NEW
+Updated: **2026-07-19 02:16 UTC (MAKER BRACKET re-run — 9th weather
+bracket, exactly 24h since the 8th (07-18 02:16 → 07-19 02:16, a
+genuinely fresh window of continuously-accumulating stream trade
+data). Default weather-dominated run, 240 join-the-touch virtual
+orders across 8 KXHIGH markets (NY 102 / MIA 80 / CHI 58): crossing
+rule fills 147 vs queue [150 pess, 160 opt] — crossing sits BELOW the
+pessimistic floor, UNDER-awarding this window (26 real pess fills the
+sim forgoes vs 23 crossing-not-pess). The weather sign sequence is now
+under/over/under/inside/over/inside/over/inside/UNDER across nine
+runs — still no stable sign, so the regime-dependent crossing-rule
+bias conclusion firmly HOLDS and there is still no fixed-haircut
+shortcut: any maker registration must score fills via
+queue-PESSIMISTIC bounds on its own markets. Report:
+`reports/maker_bracket/20260718T211601.json`.) (prior 2026-07-18 20:20 UTC (DIVERGENCE first check on the NEW
 shadow run 20260716T130721 — the run that took over after the 07-16
 13:07 service restart, now 2.3 days / 11,228 fills, never previously
 divergence-checked. Result is the lab's first PERFECT convergence:
