@@ -92,3 +92,45 @@ def test_atlas_flags_large_miscalibrated_bucket(tmp_path):
     assert flagged[0]["decile"] == 9 and flagged[0]["n"] == 250
     assert flagged[0]["realized"] == 1.0
     store.close()
+
+
+def _bulk_atlas(tmp_path, series_for):
+    """250 miscalibrated markets (implied ~.90, all settle yes); the
+    per-market flag always fires — series_for(i) controls the clustering."""
+    store = Store(tmp_path / "a.duckdb")
+    infos, candles = [], []
+    t = (CLOSE - timedelta(hours=2)).replace(tzinfo=None)
+    for i in range(250):
+        mid = 0.90 + (i % 5) * 0.001
+        infos.append(
+            MarketInfo(
+                venue="kalshi",
+                market_id=f"F{i}",
+                series=series_for(i),
+                result="yes",
+                close_time=CLOSE,
+            )
+        )
+        candles.append(_candle(mid, f"F{i}", t))
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    atlas = build_atlas(store.conn)
+    store.close()
+    return [b for b in atlas["flagged"] if b["horizon"] == "1h"][0]
+
+
+def test_single_ladder_collapses_robust_flag(tmp_path):
+    # all 250 markets are sibling strikes of ONE ladder (same series,
+    # same close): one underlying outcome, so clusters=1 and the
+    # cluster-robust Wilson interval must swallow the flag
+    b = _bulk_atlas(tmp_path, lambda i: "KXDJI")
+    assert b["flagged"] and b["clusters"] == 1
+    assert not b["flagged_robust"]
+
+
+def test_independent_markets_keep_robust_flag(tmp_path):
+    # 250 markets in 250 distinct series: genuinely independent
+    # evidence, the robust tier must agree with the per-market flag
+    b = _bulk_atlas(tmp_path, lambda i: f"S{i}")
+    assert b["flagged"] and b["clusters"] == 250
+    assert b["flagged_robust"]

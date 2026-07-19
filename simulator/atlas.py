@@ -15,6 +15,16 @@ flagged as candidate inefficiencies (the favorite-longshot signature
 appears as realized > implied in the top deciles). A flag is a lead
 for a pre-registered strategy, never a verdict by itself.
 
+Correlation caveat, made quantitative (2026-07-19): sibling strikes of
+one ladder (same series, same close_time) settle on ONE underlying
+outcome, so per-market n overstates the evidence — the 07-18 Financials
+cohort showed hundreds of KXDJI/KXINXU markets moving as ~2 day-
+outcomes. Each bucket therefore also reports `clusters` = distinct
+(series, close_time) groups and a `flagged_robust` tier: the Wilson
+interval recomputed with n = clusters (the perfect-within-cluster-
+correlation worst case; true confidence lies between the two tiers).
+The original `flagged` field is unchanged for cross-report comparability.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -46,7 +56,7 @@ def wilson(successes: float, n: int, z: float = Z95) -> tuple[float, float]:
 
 BUCKET_SQL = """
 WITH settled AS (
-  SELECT m.market_id, m.close_time, m.result,
+  SELECT m.market_id, m.close_time, m.result, m.series,
          coalesce(s.category, '?') AS category
   FROM markets m
   LEFT JOIN series s ON s.venue = m.venue AND s.ticker = m.series
@@ -54,6 +64,7 @@ WITH settled AS (
     AND m.close_time IS NOT NULL
 ), pts AS (
   SELECT st.market_id, st.category, st.result, h.h_label,
+         st.series, st.close_time,
          arg_max((c.yes_bid_close + c.yes_ask_close) / 2, c.end_ts) AS mid
   FROM settled st
   CROSS JOIN (VALUES ('1h',1),('6h',6),('24h',24),('72h',72),('7d',168))
@@ -63,12 +74,13 @@ WITH settled AS (
     AND c.yes_bid_close IS NOT NULL AND c.yes_ask_close IS NOT NULL
     AND c.yes_bid_close <= c.yes_ask_close             -- crossed-candle gate
     AND NOT (c.yes_ask_close >= 0.995 AND c.yes_bid_close <= 0.005)  -- sentinel
-  GROUP BY 1, 2, 3, 4
+  GROUP BY 1, 2, 3, 4, 5, 6
 )
 SELECT category, h_label,
        CAST(least(floor(mid * 10), 9) AS INTEGER) AS decile,
        count(*) AS n, avg(mid) AS implied,
-       avg(CASE WHEN result = 'yes' THEN 1.0 ELSE 0.0 END) AS realized
+       avg(CASE WHEN result = 'yes' THEN 1.0 ELSE 0.0 END) AS realized,
+       count(DISTINCT (series, close_time)) AS clusters
 FROM pts
 GROUP BY 1, 2, 3
 ORDER BY 1, 2, 3
@@ -78,20 +90,27 @@ ORDER BY 1, 2, 3
 def build_atlas(conn) -> dict:
     rows = conn.execute(BUCKET_SQL).fetchall()
     buckets = []
-    for category, h_label, decile, n, implied, realized in rows:
+    for category, h_label, decile, n, implied, realized, clusters in rows:
         lo, hi = wilson(realized * n, n)
         flagged = n >= 200 and not (lo <= implied <= hi)
+        # worst case: every market in a (series, close_time) ladder settles
+        # on one shared outcome, so at most `clusters` independent draws
+        rlo, rhi = wilson(realized * clusters, clusters)
         buckets.append(
             {
                 "category": category,
                 "horizon": h_label,
                 "decile": decile,
                 "n": n,
+                "clusters": clusters,
                 "implied": round(implied, 4),
                 "realized": round(realized, 4),
                 "wilson_lo": round(lo, 4),
                 "wilson_hi": round(hi, 4),
                 "flagged": flagged,
+                "wilson_robust_lo": round(rlo, 4),
+                "wilson_robust_hi": round(rhi, 4),
+                "flagged_robust": flagged and not (rlo <= implied <= rhi),
             }
         )
     fingerprint = {
@@ -104,8 +123,13 @@ def build_atlas(conn) -> dict:
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None, microsecond=0)),
         "data_fingerprint": fingerprint,
         "flag_rule": "n >= 200 and implied outside Wilson 95% of realized",
+        "flag_rule_robust": (
+            "flagged AND implied outside Wilson 95% with n = clusters "
+            "(distinct (series, close_time) ladders; perfect-correlation worst case)"
+        ),
         "buckets": buckets,
         "flagged": [b for b in buckets if b["flagged"]],
+        "flagged_robust": [b for b in buckets if b["flagged_robust"]],
     }
 
 
@@ -133,15 +157,19 @@ def main() -> None:
     out.write_text(json.dumps(atlas, indent=1) + "\n")
 
     flags = atlas["flagged"]
-    print(f"[atlas] {len(atlas['buckets'])} buckets, {len(flags)} flagged")
+    print(
+        f"[atlas] {len(atlas['buckets'])} buckets, {len(flags)} flagged"
+        f" ({len(atlas['flagged_robust'])} cluster-robust)"
+    )
     if flags:
-        print("| category | horizon | decile | n | implied | realized | wilson |")
-        print("|---|---|---|---|---|---|---|")
+        print("| category | horizon | decile | n | clusters | implied | realized | wilson | robust |")
+        print("|---|---|---|---|---|---|---|---|---|")
         for b in sorted(flags, key=lambda b: -b["n"]):
             print(
                 f"| {b['category']} | {b['horizon']} | {b['decile']} | {b['n']}"
-                f" | {b['implied']} | {b['realized']}"
-                f" | [{b['wilson_lo']}, {b['wilson_hi']}] |"
+                f" | {b['clusters']} | {b['implied']} | {b['realized']}"
+                f" | [{b['wilson_lo']}, {b['wilson_hi']}]"
+                f" | {'YES' if b['flagged_robust'] else 'no'} |"
             )
     print(f"[atlas] written to {out}")
 
