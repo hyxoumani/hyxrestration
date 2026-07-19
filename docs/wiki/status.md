@@ -1,6 +1,28 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-19 02:16 UTC (MAKER BRACKET re-run — 9th weather
+Updated: **2026-07-19 08:50 UTC (SHADOW MID-RUN OOM CLASS FOUND AND
+FIXED — hyxlab-shadow was kernel-OOM-killed AGAIN 2026-07-18 22:03 UTC,
+but mid-run at the 1G cgroup cap after 2.3 days, NOT the seed-time
+DuckDB class fixed 07-12. Root cause: `Simulator.step()` appends one
+`(datetime, equity)` tuple to `result.equity_curve` per snapshot —
+the killed run stepped 5.25M snapshots, ~800MB of curve at ~150B/entry,
+a ~340MB/day leak by design (fine for bounded backtests, unbounded for
+the forever-running daemon; the replacement run was already at ~500MB
+after 10h). Fix (5d7e4aa, promoted): max_drawdown is now a running
+stat updated at append time in the sim, and shadow trims the in-memory
+curve to the latest point after each poll's ledger persist — the full
+per-poll curve already lives in `shadow_equity`, and backtest-path
+behavior is unchanged (simui chunked≡one-shot equivalence untouched).
+Both regression tests fail without the fix; suite 246→248. Fallout:
+shadow run 20260716T130721 is now CLOSED at 11,521 fills (13:07 07-16 →
+22:03 07-18), the OOM-interrupted 20260718T220427 closed at ~1,823
+fills/10.3h, and run 20260719T082112 is live WITH the fix. NEXT: final
+closed-window divergence check on 20260716T130721 (+293 fills past the
+perfect 07-18 check, incl. the run-end boundary) — attempted this
+session but the archive is writer-locked by the ~7h poly sweep (started
+05:00 UTC); lock-gated until ~12:00 UTC, same gate as the 11:10-sweep
+atlas re-run. QA 07-19 07:00 UTC verified all-PASS.) (prior
+2026-07-19 02:16 UTC (MAKER BRACKET re-run — 9th weather
 bracket, exactly 24h since the 8th (07-18 02:16 → 07-19 02:16, a
 genuinely fresh window of continuously-accumulating stream trade
 data). Default weather-dominated run, 240 join-the-touch virtual
@@ -573,9 +595,16 @@ stray root doc moved.
   SYSTEM RAM, far above the unit's MemoryMax=1G; the seed-time ORDER BY
   blew the cap. FIXED for shadow 2026-07-12 (`stream_conn`: 512MiB
   engine cap, 2 threads, spill to `data/duckspill-shadow`, and it now
-  uses the mandated `connect_retry`). `hyxlab-simui` shares the 1G cap
-  and replays big archive windows — same exposure, unobserved so far;
-  apply the same bound if it ever OOMs.
+  uses the mandated `connect_retry`). **A SECOND, distinct OOM class
+  hit 2026-07-18 22:03 UTC**: mid-run kill after 2.3 days from the
+  per-snapshot in-memory equity curve (~340MB/day) — FIXED 2026-07-19
+  (5d7e4aa: running max_drawdown + shadow trims the curve per poll).
+  VERIFY on the live run 20260719T082112: RSS should now plateau
+  (~500MB incl. DuckDB seed working set) instead of climbing ~340MB/
+  day — check at the next iteration; if it still climbs, there is a
+  third accumulator. `hyxlab-simui` shares the 1G cap and replays big
+  archive windows — same exposure (it holds full curves by design for
+  bounded windows); apply bounds if it ever OOMs.
 
 - **Poly swept universe decline is partly a measurement artifact**
   (found 2026-07-12): day-buckets MATURE for ~2 days as later sweeps
