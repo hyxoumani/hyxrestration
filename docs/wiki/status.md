@@ -1,6 +1,33 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-19 08:50 UTC (SHADOW MID-RUN OOM CLASS FOUND AND
+Updated: **2026-07-19 14:20 UTC (BOTH LOCK-GATED ITEMS CLEARED — the
+poly sweep's writer lock released; ran the FINAL closed-window
+divergence check on shadow run 20260716T130721 AND the 11:10-sweep
+atlas re-run in one pass. (1) DIVERGENCE, full closed run 13:07 07-16
+→ 22:03 07-18 (2.37 days, 11,521 fills — +293 past the 07-18 check,
+including the OOM-kill run-end boundary): PERFECT convergence again on
+the complete window — 11,521/11,521 matched both directions, ZERO
+unmatched in either stream (all four causes 0, so the abrupt OOM end
+produced no boundary leftovers), every match exact-tier, price_delta
+mean = median = abs_mean = 0.0, fees 472.75 and gross 8365.47
+identical to the cent on both sides. The run is now closed AND fully
+reconciled end-to-end; taker haircut ≈ 0 stands on two complete
+multi-day runs. Report: `reports/shadow_divergence/20260716T130721.json`
+(regenerated over the 07-18 partial check). (2) ATLAS on +1,458
+settled markets (77,210→78,668; a small weekend increment): flagged
+80→79, zero added, one dropped — Financials 7d d0, an extreme-longshot
+whose tiny gap (−0.028→−0.011) crossed inside Wilson; max gap drift on
+111 common meaningful-n buckets +0.016 (that same bucket). Signature
+HOLDS, no drift to chase. WATCH item on collapsing Financials favorite
+gaps stays OPEN but uninformative this window: the increment barely
+touched Financials 1h buckets (n +0–2 per decile; 1h d6 gap unchanged
+at +0.007), so it neither confirms nor clears the fade — needs the
+next weekday sweeps. Report: `reports/atlas/20260719T141830.json`.
+(3) Shadow OOM-fix RSS verify on live run 20260719T082112: VmRSS
+305MB at ~6h in (HWM 835MB from the DuckDB seed) vs the killed run's
+~500MB@10h climb — the equity-curve trim is holding; keep the watch
+item until a full day confirms the plateau.)** (prior
+2026-07-19 08:50 UTC (SHADOW MID-RUN OOM CLASS FOUND AND
 FIXED — hyxlab-shadow was kernel-OOM-killed AGAIN 2026-07-18 22:03 UTC,
 but mid-run at the 1G cgroup cap after 2.3 days, NOT the seed-time
 DuckDB class fixed 07-12. Root cause: `Simulator.step()` appends one
@@ -601,8 +628,10 @@ stray root doc moved.
   (5d7e4aa: running max_drawdown + shadow trims the curve per poll).
   VERIFY on the live run 20260719T082112: RSS should now plateau
   (~500MB incl. DuckDB seed working set) instead of climbing ~340MB/
-  day — check at the next iteration; if it still climbs, there is a
-  third accumulator. `hyxlab-simui` shares the 1G cap and replays big
+  day — first check 2026-07-19 14:15 UTC: VmRSS 305MB at ~6h in
+  (HWM 835MB, the DuckDB seed spike), consistent with a plateau;
+  re-check after a full day — if it climbs ~340MB/day again, there is
+  a third accumulator. `hyxlab-simui` shares the 1G cap and replays big
   archive windows — same exposure (it holds full curves by design for
   bounded windows); apply bounds if it ever OOMs.
 
