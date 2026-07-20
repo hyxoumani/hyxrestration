@@ -1,6 +1,35 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-19 20:20 UTC (ATLAS CLUSTER-ROBUST TIER SHIPPED —
+Updated: **2026-07-20 08:40 UTC (BOX-WIDE OOM STORM — external cause,
+capture survived, batch units hardened. A sibling-workspace job
+(`/home/devs/workspace/hytest`, `impl.m1.gate`, 16 shards × ~4.9G ≈
+58G of the box's 60G, no swap) saturated the machine from ~16:00 UTC
+07-19; the kernel OOM killer shot hyxlab-stream TWICE (16:53, 17:05 —
+auto-restarted, reconnects gap-marked, stats flushing normally since),
+the 07-19 20:15 autoloop's background divergence replay (app.slice,
+21:17), then today's poly sweep (06:10 UTC, 70 min in, 3.1G peak;
+Gamma keyset walk was also degraded — INCOMPLETE at 11,400 markets on
+persistent 500s) and QA (07:25 UTC, 1.6G peak, after logging stream
+age 378s — pressure-induced — and PASSing domains + book-seq with 27
+gap rows). NOT our leak: shadow's own RSS is the counter-evidence
+(below). Both missed jobs self-heal on tomorrow's timers (poly
+day-buckets mature over ~2 days; QA 07:00) — deliberately NOT retried
+today, the box still shows only ~1.9G available and a retry risks
+collateral kernel kills. hytest is the user's job; left untouched.
+HARDENING SHIPPED: all 7 timer-driven oneshot units now carry
+`OOMScoreAdjust=500` (unprivileged units can't LOWER the daemons'
+score, but raising the batch units' makes the kernel sacrifice
+restartable work before live capture); 2 unit-invariant regression
+tests, suite 250→252; promoted. SHADOW RSS WATCH ITEM CLOSED: run
+20260719T082112 at the full-day mark — VmRSS 270MB (305@6h → 285@12h
+→ 270@24h, vs the killed run's ~500MB-and-climbing at 10h), and it
+rode out the entire OOM storm untouched: the equity-curve trim is a
+confirmed plateau, the mid-run OOM class is dead. Promote restarted
+stream+shadow (routine; new shadow run begins post-promote). STILL
+PENDING, memory-gated: first divergence check on run 20260719T082112
+(the replay was OOM-killed 21:17 07-19; re-run when hytest releases
+the box). Atlas data-gated until the 11:10 kalshi sweep as usual.)**
+(prior 2026-07-19 20:20 UTC (ATLAS CLUSTER-ROBUST TIER SHIPPED —
 the 07-18 ladder-correlation caveat is now quantitative machinery, not
 a prose warning (b554473). Sibling strikes of one (series, close_time)
 ladder settle on ONE outcome (avg cluster size: Commodities 36.3,
@@ -27,7 +56,7 @@ registration should size its evidence on `clusters`, not n. Suite
 regressions). Also: shadow RSS watch item at ~12h into run
 20260719T082112 — VmRSS 285MB, DOWN from 305MB at 6h (killed run was
 ~500MB and climbing at 10h): the equity-curve trim is plateauing as
-predicted; final full-day confirmation ~08:21 07-20.)** (prior
+predicted; final full-day confirmation ~08:21 07-20.) (prior
 2026-07-19 14:20 UTC (BOTH LOCK-GATED ITEMS CLEARED — the
 poly sweep's writer lock released; ran the FINAL closed-window
 divergence check on shadow run 20260716T130721 AND the 11:10-sweep
@@ -644,6 +673,18 @@ stray root doc moved.
 
 ## Watch items (not yet alarming)
 
+- **External box-wide memory pressure (2026-07-19→)**: sibling
+  workspace `hytest` (`impl.m1.gate`, 16 shards ≈ 58G of 60G, no swap)
+  starves everything; kernel OOM killed stream ×2, one autoloop
+  replay, the 07-20 poly sweep and QA. Hardened 07-20: oneshot units
+  carry `OOMScoreAdjust=500` so batch work dies before capture
+  daemons. The user's job — do not kill it. While it runs: skip
+  memory-heavy ad-hoc work (divergence replays, atlas over full
+  archive is ~fine but monitor), expect degraded WS connects, and
+  verify the next poly sweep (05:00) and QA (07:00) complete. If a
+  matured poly day-bucket lands short, the ~2-day maturation backfill
+  covers a single missed sweep.
+
 - **DuckDB vs cgroup memory caps**: hyxlab-shadow was kernel-OOM-killed
   at boot twice (2026-07-11, 2026-07-12 — systemd auto-restart
   recovered both) because DuckDB's default memory_limit scales with
@@ -654,12 +695,10 @@ stray root doc moved.
   hit 2026-07-18 22:03 UTC**: mid-run kill after 2.3 days from the
   per-snapshot in-memory equity curve (~340MB/day) — FIXED 2026-07-19
   (5d7e4aa: running max_drawdown + shadow trims the curve per poll).
-  VERIFY on the live run 20260719T082112: RSS should now plateau
-  (~500MB incl. DuckDB seed working set) instead of climbing ~340MB/
-  day — first check 2026-07-19 14:15 UTC: VmRSS 305MB at ~6h in
-  (HWM 835MB, the DuckDB seed spike), consistent with a plateau;
-  re-check after a full day — if it climbs ~340MB/day again, there is
-  a third accumulator. `hyxlab-simui` shares the 1G cap and replays big
+  VERIFIED CLOSED 2026-07-20: run 20260719T082112 plateaued —
+  VmRSS 305MB@6h → 285MB@12h → 270MB@24h (HWM 835MB, the DuckDB seed
+  spike) — and survived the 07-19/07-20 box-wide OOM storm untouched;
+  no third accumulator. `hyxlab-simui` shares the 1G cap and replays big
   archive windows — same exposure (it holds full curves by design for
   bounded windows); apply bounds if it ever OOMs.
 

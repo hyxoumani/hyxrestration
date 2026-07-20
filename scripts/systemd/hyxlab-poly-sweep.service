@@ -2,5 +2,6 @@
 Description=hyxlab polymarket daily archival sweep
 [Service]
 Type=oneshot
+OOMScoreAdjust=500
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.poly_sweep

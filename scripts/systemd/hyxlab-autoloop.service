@@ -2,6 +2,7 @@
 Description=hyxlab autonomous development iteration (headless Claude Code)
 [Service]
 Type=oneshot
+OOMScoreAdjust=500
 WorkingDirectory=/home/devs/workspace/hyxrestration
 ExecStart=/home/devs/workspace/hyxrestration/scripts/autoloop.sh
 TimeoutStartSec=3h
