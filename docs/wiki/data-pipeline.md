@@ -36,10 +36,13 @@ the next snapshot re-seeds).
   2026-07-08 walking 4k+ markets). Sim-side readers must degrade
   gracefully and retry lazily (simui's `ensure_metadata` pattern),
   never block on it.
-- **Enumeration tripwire (TODO)**: the Gamma offset-cap regression
+- **Enumeration tripwire** (`collector/qa.py::qa_archive`, "poly
+  swept universe not shrinking"): the Gamma offset-cap regression
   (see [venues](venues.md)) would have silently halved the poly sweep;
-  it was caught by a lucky dead probe, not QA. The sweep should alarm
-  when the enumerated universe shrinks sharply vs. the archive count.
+  it was caught by a lucky dead probe, not QA. Fixed by comparing the
+  last completed day's distinct swept markets against the prior
+  week's peak (0.5x threshold, absorbing the ~5%/day organic decline
+  from resolving markets) — a step-function halving now fails QA.
 - **Provenance**: every signal row carries when it became knowable
   (forecast runtime, vintage release, poll time). The no-lookahead
   boundary is enforced by this column, not convention.
