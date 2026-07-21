@@ -56,6 +56,14 @@ structure — see [venues](venues.md)).
    in Financials/Commodities/Climate bands (where the atlas gap lives),
    the weather-only bracket gives it NO queue-bounds validation — it
    must run its own bracket on its own markets before registration.
+   **Partially closed 2026-07-21:** `--series` support (already in
+   queuescore) run against Economics (KXCPI/KXCPIYOY/KXFED/KXU3, n=6,363,
+   full 14-day history) — crossing lands INSIDE queue bounds [368 pess,
+   404 crossing, 436 opt], same qualitative shape as weather runs, so
+   the "no stable sign, score via queue-PESS" conclusion is not a
+   weather artifact. Financials/Commodities specifically still need
+   their own bracket once stream coverage there is dense enough to seat
+   orders (`reports/maker_bracket/20260721T152147.json`).
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive

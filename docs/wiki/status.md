@@ -1,6 +1,28 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-21 08:20 UTC (11th MAKER BRACKET — first
+Updated: **2026-07-21 20:25 UTC (FIRST NON-WEATHER MAKER BRACKET —
+coverage caveat closed for Economics. All 11 prior brackets were 100%
+`KXHIGH*` weather (top-print-count default); ran
+`simulator.queuescore --series KXCPI,KXCPIYOY,KXFED,KXU3,
+KXJOBLESSCLAIMS,KXPAYROLLS --hours 336` (full 14-day stream history for
+those series) to test whether the crossing-rule bracket generalizes
+outside weather. Result: 6,363 virtual orders across KXCPI/KXCPIYOY/
+KXFED/KXU3 (KXJOBLESSCLAIMS/KXPAYROLLS too thin to seat an order) —
+crossing 404 vs queue [368 pess, 436 opt]: crossing lands INSIDE the
+bracket, same qualitative shape as most weather runs, with
+crossing_but_not_pess=250 / pess_but_not_crossing=214 showing the same
+two-sided noise. This is real evidence, not an assumption: the
+"no stable sign, score via queue-PESS on your own markets" conclusion
+now has a non-weather data point behind it, not just weather brackets
+extrapolated across categories. Report:
+`reports/maker_bracket/20260721T152147.json`. Meanwhile the poly sweep
+(05:00 UTC start, PID 33990) ran unusually long today — past its usual
+~2-7h into a 15h+ tail, ~600 markets short of the full 16,237-market
+universe as of this check, actively writing (DB mtime keeps advancing)
+so not hung, just slow (possibly heavier 429 backoff) — divergence
+check on shadow run 20260719T082112 stays lock-gated one more window;
+don't wait on it in a loop.)** (prior
+2026-07-21 08:20 UTC (11th MAKER BRACKET — first
 crossing-ABOVE-optimistic run. Box is calm post-storm (17Gi free, no
 hytest processes), but the daily poly sweep (started 05:00 UTC, PID
 33990) holds the archive writer lock until ~12:00 UTC, so the
