@@ -1,6 +1,26 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-20 08:40 UTC (BOX-WIDE OOM STORM — external cause,
+Updated: **2026-07-21 08:20 UTC (11th MAKER BRACKET — first
+crossing-ABOVE-optimistic run. Box is calm post-storm (17Gi free, no
+hytest processes), but the daily poly sweep (started 05:00 UTC, PID
+33990) holds the archive writer lock until ~12:00 UTC, so the
+memory-gated divergence check on shadow run 20260719T082112 is now
+merely lock-gated — same "don't wait on the lock in a loop" rule,
+deferred to next window. Ran the maker bracket instead (stream-db
+only, no archive dependency): crossing 40 vs queue [31 pess, 35 opt]
+— crossing sits ABOVE the optimistic ceiling, not just above pess.
+Every prior "over" run (7th, 8th run-9-adjacent) landed within/near
+the opt bound; this is the first time crossing exceeds BOTH bounds
+outright. Likely small-sample: only 59 orders this window (vs 179–285
+on recent runs) after a quiet stretch, so treat as noisy until the
+next run confirms — but flagging since a fixed-haircut model would
+have been wrong in the over-award direction here too. Sign sequence
+now: under/over/under/inside/over/inside/over/inside/under/inside/
+OVER-OPT. Still no stable sign — regime-dependent crossing-rule bias
+conclusion holds; any maker registration must score fills via
+queue-PESSIMISTIC bounds on its own markets, not a crossing proxy.
+Report: `reports/maker_bracket/20260721T031553.json`.)** (prior
+2026-07-20 08:40 UTC (BOX-WIDE OOM STORM — external cause,
 capture survived, batch units hardened. A sibling-workspace job
 (`/home/devs/workspace/hytest`, `impl.m1.gate`, 16 shards × ~4.9G ≈
 58G of the box's 60G, no swap) saturated the machine from ~16:00 UTC
