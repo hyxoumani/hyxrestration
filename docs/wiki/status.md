@@ -1,6 +1,26 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-22 02:17 UTC (DIVERGENCE CHECK CLEARED — the
+Updated: **2026-07-22 08:20 UTC (QA FAILURE FIXED — trade-tape
+retention gap closed at the root, not just the symptom. The 07-22
+02:00 UTC `hyxlab-qa` run FAILED for the first time in a while:
+"trade tape covers retention window — 1 traded markets unswept"
+(`KXHIGHTLV-26JUL18-B102.5`). Root cause: `collector.trades_backfill`
+— the retro-pass designed to catch `collector.sweep`'s per-market
+trade-fetch `HTTPError`s — was never wired to a systemd timer; it only
+ran once historically for the initial 60-day retention catch-up.
+Meanwhile `sweep.py`'s inline trade fetch swallowed `HTTPError`
+silently (`except requests.HTTPError: pass`, no log line), and once a
+series' watermark advances past a market, the daily sweep can never
+retry it — only the (unscheduled) retro-pass could. Found 154 pending
+markets total (not just the 1 QA's 55-day/volume>0 filter flagged); ran
+`trades_backfill` manually to clear the backlog — 85,038 trades
+inserted, 0 errors, QA now all-PASS. Shipped so it self-heals going
+forward (a75916e): `hyxlab-tradepass.timer` (daily 06:35 UTC, between
+sweep 06:10 and QA 07:00), enabled + armed; `sweep.py`'s HTTPError
+branch now logs the ticker + status code instead of swallowing it.
+Suite still 252 (existing glob-based `test_systemd_units.py` invariants
+cover the new unit files with no new tests needed); promoted + pushed.)**
+(prior 2026-07-22 02:17 UTC (DIVERGENCE CHECK CLEARED — the
 memory-gated pending item on shadow run 20260719T082112 is resolved.
 Poly sweep's writer lock had released (last run finished before 21:15
 UTC 07-21 collect; `flock -n` on `data/writer.lock` confirmed free), so
