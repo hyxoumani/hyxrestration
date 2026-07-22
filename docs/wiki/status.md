@@ -1,6 +1,31 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-22 14:16 UTC (DIVERGENCE — fourth run reconciled,
+Updated: **2026-07-22 20:16 UTC (ATLAS RE-RUN — Financials
+favorite-collapse WATCH item gets its first real data point, and it
+points the opposite way. Kalshi sweep finished this morning (07:21 UTC,
+5,887 markets) and the archive writer lock was free, so ran a fresh
+full-archive atlas (`reports/atlas/20260722T201636.json`) against the
+07-19 20:18 UTC baseline. Headline counts: 85 flagged (was 79, +6) but
+56 robust (was 58, -2) — churn in both directions, nothing systemic
+(9 newly flagged incl. some mid-decile buckets like Financials 1h d3/d9
+and Commodities 6h d4/d6, 3 cleared; robust gained Commodities 6h d4 +
+Financials 24h d1/d7, lost Commodities 1h d4/d6/24h d2 + Financials
+1h d8/6h d3). Signature count 36/56 robust buckets in the classic
+favorite-longshot direction, zero counter-signature robust survivors —
+still intact. The specific WATCH item (07-18: "if Financials favorite
+gaps keep collapsing across the next 2-3 sweeps, that arm is genuinely
+fading") now has its first follow-up cluster-robust reading: Financials
+1h d9 (n=4,145→4,926, clusters 350→395) implied .979→.9775, realized
+.9805→.9834 — gap widened from +0.15pp to +0.59pp in the
+favorite-underpriced direction (now `flagged=True`, still not
+`flagged_robust` — cluster count too small to clear Wilson at that
+gap). That's the opposite of collapsing; one more sweep still needed
+before calling it (only two robust-tagged readings exist so far, this
+being the second), but the fade thesis has no supporting data yet.
+Maker bracket still fresh at 07-21 15:21 UTC (~29h), divergence current
+as of the last entry, QA next runs 07-23 02:00 UTC. No code changes
+this pass — pure report re-run; suite unchanged at 252.)** (prior
+2026-07-22 14:16 UTC (DIVERGENCE — fourth run reconciled,
 near-perfect again. Found shadow run `20260721T032349` had closed
 (superseded by two restarts at 08:18 UTC today, 4,997 fills, 03:24
 07-21 → 08:18 07-22) and never been divergence-checked; archive writer
