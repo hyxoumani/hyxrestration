@@ -1,0 +1,7 @@
+[Unit]
+Description=hyxlab trade-tape retro-pass daily 06:35 UTC
+[Timer]
+OnCalendar=*-*-* 06:35:00
+Persistent=true
+[Install]
+WantedBy=timers.target

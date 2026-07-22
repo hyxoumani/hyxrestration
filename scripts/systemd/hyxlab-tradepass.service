@@ -1,0 +1,7 @@
+[Unit]
+Description=hyxlab trade-tape retro-pass (catches sweep's silent HTTPError gaps)
+[Service]
+Type=oneshot
+OOMScoreAdjust=500
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.trades_backfill

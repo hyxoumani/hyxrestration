@@ -124,8 +124,12 @@ def sweep_series(
             store.insert_trades(rows)
             status = "truncated" if truncated else ("ok" if rows else "empty")
             store.mark_trades_swept(m["ticker"], len(rows), status)
-        except requests.HTTPError:
-            pass  # stays unmarked; the retro-pass or next sweep retries
+        except requests.HTTPError as e:
+            # Stays unmarked here (watermark advances past it regardless,
+            # so a later sweep won't retry) — hyxlab-tradepass.timer's daily
+            # retro-pass is what actually catches it.
+            code = e.response.status_code if e.response is not None else "?"
+            print(f"[sweep] {m.get('ticker', '?')} trade tape fetch HTTP {code}", flush=True)
         close_dt = datetime.fromtimestamp(close_ts, tz=UTC)
         max_close = max(max_close, close_dt)
         time.sleep(CANDLES_PAUSE_S)
