@@ -1,6 +1,21 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-21 20:25 UTC (FIRST NON-WEATHER MAKER BRACKET —
+Updated: **2026-07-22 02:17 UTC (DIVERGENCE CHECK CLEARED — the
+memory-gated pending item on shadow run 20260719T082112 is resolved.
+Poly sweep's writer lock had released (last run finished before 21:15
+UTC 07-21 collect; `flock -n` on `data/writer.lock` confirmed free), so
+ran the closed-run divergence check: PERFECT convergence again, 4,573/
+4,573 fills matched both directions, zero unmatched in either stream,
+price_delta mean/median/abs_mean all 0.0, fees 174.28 and gross cash
+3044.18 identical to the cent shadow vs replay. Third full closed run
+now reconciled bit-for-bit (after 20260713T064302's 11,943 fills and
+20260716T130721's 11,521) — taker haircut ≈ 0 keeps holding, no drift
+to chase. Report: `reports/shadow_divergence/20260719T082112.json`.
+Current shadow run 20260721T032349 is still open (started post the
+07-21 03:23 UTC restart, 4,052 fills and counting) — next divergence
+check waits for it to close. Maker bracket and atlas are current as of
+the prior entry; suite 252 green, no code changes this pass.)** (prior
+2026-07-21 20:25 UTC (FIRST NON-WEATHER MAKER BRACKET —
 coverage caveat closed for Economics. All 11 prior brackets were 100%
 `KXHIGH*` weather (top-print-count default); ran
 `simulator.queuescore --series KXCPI,KXCPIYOY,KXFED,KXU3,
