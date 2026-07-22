@@ -1,6 +1,21 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-22 08:20 UTC (QA FAILURE FIXED — trade-tape
+Updated: **2026-07-22 14:16 UTC (DIVERGENCE — fourth run reconciled,
+near-perfect again. Found shadow run `20260721T032349` had closed
+(superseded by two restarts at 08:18 UTC today, 4,997 fills, 03:24
+07-21 → 08:18 07-22) and never been divergence-checked; archive writer
+lock was free so ran it. Result: 99.98% match vs shadow / 99.84% vs
+replay (4,996/4,997 shadow, 4,996/5,004 replay), price_delta mean/
+median/abs_mean all 0.0 across every matched fill, fees 205.67 (shadow)
+vs 206.19 (replay) and gross cash 3650.18 vs 3660.84 — near-identical,
+not the bit-identical 100% of the last two closed runs, but the tiny
+gap resolves entirely via existing classifiers: 1 shadow leftover is
+`reseed_twin`, replay's 8 leftovers are 6 `gap` + 2 `reseed_twin`, ZERO
+`unexplained` on either side. The taker-haircut-≈0 finding now holds on
+a fourth independent closed run with full cause-accounting, no residual
+mystery. Report: `reports/shadow_divergence/20260721T032349.json`. No
+code changes this pass — pure report re-run; suite unchanged at 252.)**
+(prior 2026-07-22 08:20 UTC (QA FAILURE FIXED — trade-tape
 retention gap closed at the root, not just the symptom. The 07-22
 02:00 UTC `hyxlab-qa` run FAILED for the first time in a while:
 "trade tape covers retention window — 1 traded markets unswept"
