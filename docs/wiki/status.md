@@ -1,6 +1,21 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-23 14:16 UTC (ATLAS RE-RUN — fresh data from the
+Updated: **2026-07-23 20:16 UTC (13th WEATHER MAKER BRACKET —
+no drift, crossing still inside bounds. Prior weather bracket was
+07-22 21:17 UTC (~23h stale); archive writer lock was free, so
+re-ran the default top-print-count window (`python -m
+simulator.queuescore --hours 24`): 173 virtual orders across 8
+markets (KXHIGHNY 93, KXHIGHMIA 80) — crossing 96 vs queue [95 pess,
+112 opt], landing INSIDE the bracket again, crossing_but_not_pess=22
+/ pess_but_not_crossing=21 — near-symmetric two-sided noise, no sign
+flip. Consistent with the standing conclusion: no stable sign for the
+crossing rule's bias, score any maker registration via queue-PESS on
+its own markets, not a borrowed calibration. Report:
+`reports/maker_bracket/20260723T151636.json`. Atlas (07-23 14:16 UTC),
+econ maker bracket (07-23 03:16 UTC), QA (07-23 07:00 UTC, all-PASS)
+all current; divergence has nothing new — shadow run 20260722T081852
+still open (~36h). No code changes this pass — pure report re-run;
+suite unchanged at 252.)** (prior 2026-07-23 14:16 UTC (ATLAS RE-RUN — fresh data from the
 06:10 UTC kalshi sweep, which finished 07:15:53 UTC today (5,395
 markets, 56,560 candles, 38 errors); archive writer lock was free.
 Ran a full-archive atlas against the 07-22 20:16 UTC baseline. Headline
