@@ -1,6 +1,27 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-23 08:16 UTC (SECOND NON-WEATHER (ECON) MAKER
+Updated: **2026-07-23 14:16 UTC (ATLAS RE-RUN — fresh data from the
+06:10 UTC kalshi sweep, which finished 07:15:53 UTC today (5,395
+markets, 56,560 candles, 38 errors); archive writer lock was free.
+Ran a full-archive atlas against the 07-22 20:16 UTC baseline. Headline
+counts: 85 flagged (unchanged), 56→59 robust (+3) — 2 newly flagged
+(Economics 6h d8, Financials 24h d8), 2 cleared (Commodities 24h d2,
+Financials 1h d8), 5 newly robust, 2 lost robust — routine churn, no
+systemic shift. Signature check: 38/59 robust buckets in the classic
+favorite-longshot direction, zero counter-signature robust survivors —
+still intact. The Financials 1h d9 favorite-collapse WATCH item (open
+since 07-18, first data point 07-22) gets a third reading: implied
+.9775→.9776 (flat), realized .9834→.9846 — gap widened again, +0.59pp
+→ +0.70pp, still favorite-underpriced, still not `flagged_robust`
+(cluster count 395→419, still short of Wilson clearance at that gap).
+Three consecutive readings now point away from "collapsing"; the fade
+thesis remains unsupported. Report: `reports/atlas/20260723T141618.json`.
+Maker bracket (econ, 08:16 UTC) and weather bracket (02:17 UTC) both
+current; divergence has nothing new — shadow run 20260722T081852 is
+still open (~30h, 4,428 fills, healthy) with no closed run since the
+last reconciliation; QA all-PASS at 07:00 UTC. No code changes this
+pass — pure report re-run; suite unchanged at 252.)** (prior
+2026-07-23 08:16 UTC (SECOND NON-WEATHER (ECON) MAKER
 BRACKET RE-RUN, rolling 14-day window — under-award confirmed again,
 signature unchanged from the single 07-21 data point. QA at 07:00 UTC
 07-23 (02:00 CDT) ran all-PASS — the first run since the tradepass fix
