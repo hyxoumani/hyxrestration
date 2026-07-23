@@ -1,6 +1,35 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-23 02:17 UTC (12th WEATHER MAKER BRACKET — no
+Updated: **2026-07-23 08:16 UTC (SECOND NON-WEATHER (ECON) MAKER
+BRACKET RE-RUN, rolling 14-day window — under-award confirmed again,
+signature unchanged from the single 07-21 data point. QA at 07:00 UTC
+07-23 (02:00 CDT) ran all-PASS — the first run since the tradepass fix
+(a75916e) shipped, and the "trade tape covers retention window" check
+that failed 07-22 passed cleanly, closing that loop. Archive writer
+lock was free but atlas is data-gated (next kalshi sweep 11:10 UTC,
+hasn't fired yet) and the live shadow run (20260722T081852, 23h in,
+3,560+ fills, RSS 418MB — healthy) is still open so divergence has
+nothing new to reconcile; ran the econ-series maker bracket instead
+since it has only 3 prior data points vs weather's 12+. `python -m
+simulator.queuescore --series KXCPI,KXCPIYOY,KXFED,KXU3,
+KXJOBLESSCLAIMS,KXPAYROLLS --hours 336` (same series/window shape as
+07-21, window rolled forward ~2 days): 1,867 virtual orders across 8
+markets (KXCPI 969 / KXCPIYOY 532 / KXFED 366 — KXU3/KXJOBLESSCLAIMS/
+KXPAYROLLS still too thin) — crossing 169 vs queue [183 pess, 220 opt]:
+crossing sits BELOW the pessimistic floor, UNDER-awarding (14 real pess
+fills the sim forgoes net; crossing_but_not_pess=93 /
+pess_but_not_crossing=107, two-sided noise as usual). Order volume
+dropped sharply vs 07-21's 6,363 (same series/cap) — expected, not
+alarming: the window rolled past the 26JUN CPI print's peak trading
+burst, leaving mostly quieter 26JUL forward-contract activity plus the
+now-frozen 26JUN post-settlement tail. Econ bracket sign sequence is
+now under(07-14)/over(07-15a)/over(07-15b)/over(07-21)/UNDER — still no
+stable sign, reinforcing the standing weather conclusion: score any
+maker registration via queue-PESS on its own markets, category and
+window don't matter. Report:
+`reports/maker_bracket/20260723T031612.json`. No code changes this
+pass — pure report re-run; suite unchanged at 252.)** (prior
+2026-07-23 02:17 UTC (12th WEATHER MAKER BRACKET — no
 drift, crossing rule still lands inside queue bounds. Prior weather
 bracket was 07-21 03:15 UTC (~46h stale); archive writer lock was
 free, so re-ran the default top-print-count window (`python -m
