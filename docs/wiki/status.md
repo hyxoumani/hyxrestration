@@ -1,6 +1,33 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-24 08:15 UTC (COLD-START CHECK — everything
+Updated: **2026-07-24 14:15 UTC (ATLAS RE-RUN — the 11:10 UTC kalshi
+sweep fired (completed 12:14 UTC, sweep_log confirms), unsticking the
+data-gate flagged in the 08:15 UTC cold-start check: candle max end_ts
+advanced from a flat 07-23 11:00 UTC to 07-24 11:00 UTC. Ran atlas
+against the 07-23 14:16 UTC baseline. Headline counts: 85→86 flagged
+(+1), 59→57 robust (-2) — 2 newly flagged (Economics 72h d0, Financials
+6h d9), 1 cleared (Economics 6h d8), 0 newly robust, 2 lost robust
+(Commodities 1h d6, Financials 6h d4) — routine churn, no systemic
+shift. The Financials 1h d9 favorite-collapse WATCH item (open since
+07-18) gets a fourth reading: implied .9776 (flat), realized
+.9846→.9849 (flat, +0.03pp) — gap essentially unchanged this time
+(prior readings widened +0.59pp then +0.70pp; this one holds flat),
+cluster count 419→433, still short of Wilson clearance
+(`flagged_robust: false`). Four consecutive readings, no sustained
+widening trend — fade thesis remains unsupported, watch item downgraded
+to routine monitoring rather than active-widening concern. Report:
+`reports/atlas/20260724T141551.json`. Weather bracket (07-24 02:17 UTC),
+econ bracket (07-23 03:16 UTC), QA (07-24 07:00 UTC, all-PASS) all
+still within normal re-run cadence; divergence has nothing new — shadow
+run 20260722T081852 still open (~54h, no ended_at); checked the
+daemon directly this pass (`systemctl --user status hyxlab-shadow`):
+active/running since 07-22 08:18 UTC, RSS 501MB (under the 1G cap),
+still logging fresh poll/fill counts every ~5min (fills=8344 as of
+08:47 UTC) — confirmed alive and healthy, not stuck; the long open
+duration is just the shadow_runs table having no closed-run signal
+available, as previously noted. No code
+changes this pass — pure report re-run; suite unchanged at 252.)**
+(prior 2026-07-24 08:15 UTC (COLD-START CHECK — everything
 current or gated, no report re-run warranted. QA fired again at 07-24
 07:00 UTC (02:00 CDT) — all-PASS, second clean run since the
 tradepass fix, nothing new to root-cause. Weather maker bracket
