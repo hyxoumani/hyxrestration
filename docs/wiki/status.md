@@ -1,6 +1,35 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-24 14:15 UTC (ATLAS RE-RUN — the 11:10 UTC kalshi
+Updated: **2026-07-24 20:16 UTC (15th WEATHER MAKER BRACKET —
+largest sample yet, lands AT the optimistic ceiling with an
+asymmetric skew. Prior bracket was 07-23 21:17 UTC (~23h stale, at
+the edge of the ~6-24h cadence); archive writer lock was free
+(hyxlab-stream running normally, no sweep holding it). Ran
+`python -m simulator.queuescore --hours 24`: 294 virtual orders
+across 8 markets (KXHIGHNY 111, KXHIGHMIA 107, KXHIGHCHI 76) — the
+biggest window yet (prior runs: 173-260). Crossing 193 vs queue
+[171 pess, 192 opt] — crossing lands 1 order ABOVE the optimistic
+bound, not just inside it. More notably, crossing_but_not_pess=38 vs
+pess_but_not_crossing=16 — a 2.4:1 skew toward the sim over-awarding
+fills, breaking the near-symmetric noise pattern of the last several
+runs (12th/13th/14th were all ~1:1). The 11th run (07-21, report
+`20260721T031553.json`) was the only prior crossing-above-opt event,
+but that was a thin 59-order sample flagged as likely noise; this is
+294 orders and still shows the same direction. One reading isn't
+enough to call a regime shift — sign sequence remains under/over/
+under/inside/over/inside/over/inside/under/inside/OVER-OPT(thin)/
+inside/inside/inside/OVER-OPT(large,skewed) — but this is the first
+large-sample over-optimistic reading and worth a confirming re-run
+next cycle rather than filing as routine churn. Standing conclusion
+holds regardless: no stable sign for the crossing rule's bias, score
+any maker registration via queue-PESSIMISTIC on its own markets, not
+a crossing proxy. Report: `reports/maker_bracket/20260724T151636.json`.
+Atlas (07-24 14:15 UTC), econ bracket (07-23 03:16 UTC), QA (07-24
+07:00 UTC, all-PASS) all still within normal re-run cadence;
+divergence has nothing new — shadow run 20260722T081852 still open
+(~60h, confirmed alive/healthy as of the prior pass). No code changes
+this pass — pure report re-run; suite unchanged at 252.)**
+(prior 2026-07-24 14:15 UTC (ATLAS RE-RUN — the 11:10 UTC kalshi
 sweep fired (completed 12:14 UTC, sweep_log confirms), unsticking the
 data-gate flagged in the 08:15 UTC cold-start check: candle max end_ts
 advanced from a flat 07-23 11:00 UTC to 07-24 11:00 UTC. Ran atlas
