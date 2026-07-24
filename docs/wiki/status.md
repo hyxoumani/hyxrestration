@@ -1,6 +1,22 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-24 02:17 UTC (14th WEATHER MAKER BRACKET —
+Updated: **2026-07-24 08:15 UTC (COLD-START CHECK — everything
+current or gated, no report re-run warranted. QA fired again at 07-24
+07:00 UTC (02:00 CDT) — all-PASS, second clean run since the
+tradepass fix, nothing new to root-cause. Weather maker bracket
+(02:17 UTC, ~6h old) and econ maker bracket (03:16 UTC, ~5h old) are
+both well inside the recent ~6-24h re-run cadence, not stale enough
+to re-run yet. Atlas remains data-gated: next kalshi sweep fires
+11:10 UTC 07-24, hasn't happened (`collector.sweep --doctor` still
+shows Climate/Weather candle counts flat vs the 07-23 sweep).
+Divergence: `shadow_runs` in `data/hyxshadow.duckdb` shows no run_id
+newer than `20260722T081852` (still the latest started_at, no closed-
+run signal available from that table — confirms the standing "still
+open" read, nothing to reconcile). No code changes this pass; suite
+unchanged at 252. Untracked `strategies/hylshi_fade.py` re-confirmed
+present and still correctly left alone per the 07-18 provenance
+resolution — sibling project's artifact, user-gated, not touched.)**
+(prior 2026-07-24 02:17 UTC (14th WEATHER MAKER BRACKET —
 no drift, crossing still inside bounds. Prior weather bracket was
 07-23 20:16 UTC (~11h stale, in line with the recent ~6-24h cadence);
 archive writer lock (stream side) was held by the live stream daemon
