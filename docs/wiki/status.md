@@ -1,6 +1,26 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-23 20:16 UTC (13th WEATHER MAKER BRACKET —
+Updated: **2026-07-24 02:17 UTC (14th WEATHER MAKER BRACKET —
+no drift, crossing still inside bounds. Prior weather bracket was
+07-23 20:16 UTC (~11h stale, in line with the recent ~6-24h cadence);
+archive writer lock (stream side) was held by the live stream daemon
+but queuescore's reader retried and completed fine, consistent with
+the standing "readers don't take writer.lock" note. Re-ran the default
+top-print-count window (`python -m simulator.queuescore --hours 24`):
+260 virtual orders across 8 markets (KXHIGHNY 99, KXHIGHMIA 86,
+KXHIGHCHI 75) — crossing 142 vs queue [140 pess, 163 opt], landing
+INSIDE the bracket again, crossing_but_not_pess=32 / pess_but_not_crossing=30
+— near-symmetric two-sided noise, no sign flip. Consistent with the
+standing conclusion: no stable sign for the crossing rule's bias, score
+any maker registration via queue-PESS on its own markets, not a
+borrowed calibration. Report: `reports/maker_bracket/20260723T211702.json`.
+Atlas (07-23 14:16 UTC) is data-gated until the next kalshi sweep
+(11:10 UTC 07-24, hasn't fired yet — candles max end_ts still 07-23
+11:00 UTC); econ maker bracket (07-23 03:16 UTC) and QA (07-23 07:00
+UTC, all-PASS) both current; divergence has nothing new — shadow run
+20260722T081852 still open (~42h, no ended_at recorded, matches the
+standing "still open, healthy" read). No code changes this pass — pure
+report re-run; suite unchanged at 252.)** (prior 2026-07-23 20:16 UTC (13th WEATHER MAKER BRACKET —
 no drift, crossing still inside bounds. Prior weather bracket was
 07-22 21:17 UTC (~23h stale); archive writer lock was free, so
 re-ran the default top-print-count window (`python -m
