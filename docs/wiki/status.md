@@ -1,6 +1,34 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-25 14:15 UTC (ATLAS RE-RUN — most overdue standing
+Updated: **2026-07-25 20:16 UTC (17th WEATHER MAKER BRACKET RE-RUN —
+the confirming re-run for the active watch item (two consecutive
+over-optimistic readings, 15th and 16th, both landing exactly 1 order
+above the optimistic ceiling with ~2:1 skew). Prior weather bracket
+was 07-25 08:15 UTC (~12h stale, inside normal cadence). Ran
+`python -m simulator.queuescore --hours 24`: 145 virtual orders
+across 4 markets (KXHIGHMIA 65, KXHIGHNY 54, KXHIGHCHI 25, KXHIGHAUS
+1) — smaller sample than the 15th (294) or 16th (165). Crossing 89 vs
+queue [84 pess, 92 opt]: crossing lands **inside** the bounds this
+time, breaking the two-run over-optimistic streak. crossing_but_not_
+pess=25 vs pess_but_not_crossing=20, ~1.25:1 — much closer to
+symmetric than the 15th's 2.4:1 or 16th's 2:1. Sign sequence: .../
+inside/inside/inside/OVER-OPT(15th)/OVER-OPT(16th)/inside(17th) — the
+third reading does **not** confirm a directional bias; the back-to-
+back pair was the first of its kind in the sequence but resolves as
+noise rather than a regime shift. **Downgrading the active watch item
+back to routine monitoring** — standing conclusion holds unchanged:
+no fixed-haircut shortcut, score maker registrations via
+queue-PESSIMISTIC on their own markets. Report:
+`reports/maker_bracket/20260725T151622.json`. Atlas (07-25 14:15 UTC,
+87 flagged/59 robust, Financials favorite-collapse watch item flat on
+fifth reading), econ bracket (07-25 02:16 UTC, under-award narrowing),
+QA (07-25 07:00 UTC per timer log, all timers green) all within
+normal cadence; divergence has nothing new — shadow run 20260722T081852
+still open (no closed-run signal available). No code changes this
+pass — pure report re-run; suite unchanged at 252. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly
+left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-25 14:15 UTC (ATLAS RE-RUN — most overdue standing
 report (prior run 07-24 14:15 UTC, exactly 24h stale, at the edge of
 cadence); the 06:10 UTC kalshi sweep had fired ~3h prior per the
 timer log, so fresh candle data was available. Ran `python -m
