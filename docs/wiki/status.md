@@ -1,6 +1,28 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-24 20:16 UTC (15th WEATHER MAKER BRACKET —
+Updated: **2026-07-25 02:16 UTC (THIRD ECON MAKER BRACKET RE-RUN —
+`--series KXCPI,KXCPIYOY,KXFED --hours 336`, most overdue standing
+report (last run 07-23 03:16 UTC, ~47h stale vs the usual cadence).
+2,071 virtual orders across 8 markets (KXCPI 1189, KXCPIYOY 501,
+KXFED 381) — crossing 177 vs queue [181 pess, 221 opt]: crossing
+still lands AT/BELOW the pessimistic floor (under-award), same
+direction as the prior run (169 vs [183, 220]), but the skew
+narrowed — crossing_but_not_pess 93→100, pess_but_not_crossing
+107→104, moving from ~0.87:1 toward near-symmetric ~0.96:1. Econ
+sign sequence is now over(07-21) / under(07-23) / under-narrowing
+(07-25) — two consecutive under-award readings, but the shrinking
+gap means this isn't a clean confirmation of a stable econ-side bias
+either; same standing conclusion as weather: no fixed-haircut
+shortcut, score maker registrations via queue-PESSIMISTIC on their
+own markets. Report: `reports/maker_bracket/20260724T211645.json`.
+Weather bracket (07-24 20:16 UTC, largest-sample over-optimistic
+reading, awaiting its own confirming re-run), atlas (07-24 14:15
+UTC), QA (07-24 07:00 UTC, all-PASS) all still within normal cadence;
+divergence has nothing new — shadow run 20260722T081852 still open
+(~66h, no closed-run signal available, previously confirmed
+alive/healthy). No code changes this pass — pure report re-run;
+suite unchanged at 252.)**
+(prior 2026-07-24 20:16 UTC (15th WEATHER MAKER BRACKET —
 largest sample yet, lands AT the optimistic ceiling with an
 asymmetric skew. Prior bracket was 07-23 21:17 UTC (~23h stale, at
 the edge of the ~6-24h cadence); archive writer lock was free
