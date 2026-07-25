@@ -1,6 +1,32 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-25 08:15 UTC (16th WEATHER MAKER BRACKET RE-RUN —
+Updated: **2026-07-25 14:15 UTC (ATLAS RE-RUN — most overdue standing
+report (prior run 07-24 14:15 UTC, exactly 24h stale, at the edge of
+cadence); the 06:10 UTC kalshi sweep had fired ~3h prior per the
+timer log, so fresh candle data was available. Ran `python -m
+simulator.atlas` against the same 07-23 14:16 UTC-derived baseline
+lineage. Headline counts: 86→87 flagged (+1), 57→59 robust (+2) — 3
+newly flagged (Science and Technology 1h d0, Financials 1h d6,
+Commodities 6h d7), 2 cleared (Financials 1h d3, Financials 72h d9),
+3 newly robust (Commodities 1h d0, Commodities 1h d6, Financials 1h
+d4), 1 lost robust (Financials 1h d3) — routine two-sided churn, no
+systemic shift. The Financials 1h d9 favorite-collapse WATCH item
+(open since 07-18, downgraded to routine monitoring on the 07-24
+14:15 UTC fourth reading) gets a fifth reading: implied 0.9775 (flat
+vs 0.9776), realized 0.9849 (flat, unchanged from the prior reading),
+cluster count 433→456 (still growing), still short of Wilson
+clearance (`flagged_robust: false`). Five consecutive readings, no
+widening trend — downgrade to routine monitoring holds. Report:
+`reports/atlas/20260725T141544.json`. Weather bracket (07-25 08:15
+UTC, active watch item — two consecutive over-optimistic readings,
+awaiting a third confirming re-run next cycle), econ bracket (07-25
+02:16 UTC), QA (07-25 07:00 UTC per timer log, all timers green) all
+within normal cadence; divergence has nothing new — shadow run
+20260722T081852 still open (no closed-run signal available). No code
+changes this pass — pure report re-run; suite unchanged at 252.
+Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-25 08:15 UTC (16th WEATHER MAKER BRACKET RE-RUN —
 confirming re-run of the prior over-optimistic reading, as flagged.
 Prior weather bracket was 07-24 20:16 UTC (~12h stale, inside the
 usual ~6-24h cadence but the flagged item to chase). Ran
