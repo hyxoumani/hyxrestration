@@ -1,6 +1,39 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-25 02:16 UTC (THIRD ECON MAKER BRACKET RE-RUN —
+Updated: **2026-07-25 08:15 UTC (16th WEATHER MAKER BRACKET RE-RUN —
+confirming re-run of the prior over-optimistic reading, as flagged.
+Prior weather bracket was 07-24 20:16 UTC (~12h stale, inside the
+usual ~6-24h cadence but the flagged item to chase). Ran
+`python -m simulator.queuescore --hours 24`: 165 virtual orders
+across 8 markets (KXHIGHAUS 47, KXHIGHMIA 36, KXHIGHNY 35, KXHIGHDEN
+25, KXHIGHCHI 22) — crossing 91 vs queue [83 pess, 90 opt]: crossing
+again lands 1 order ABOVE the optimistic ceiling, same over-award
+direction as the 15th run (which landed 1 above a 192 ceiling on 294
+orders). crossing_but_not_pess=16 vs pess_but_not_crossing=8, a 2:1
+skew toward over-awarding fills — same direction as the 15th's 2.4:1,
+though this sample (165 orders) is smaller than the 15th's 294. Sign
+sequence: ...over/inside/inside/inside/OVER-OPT(large,skewed,15th)/
+OVER-OPT(medium,skewed,16th) — **two consecutive over-optimistic
+readings now**, both skewed ~2:1, both landing exactly 1 order above
+the ceiling. This is the first back-to-back same-direction pair in
+the whole sign sequence (every prior "over" or "under" reading was
+isolated between "inside" or opposite-sign readings) — worth
+promoting from "noise, needs confirming re-run" to an active watch
+item: re-run again next cycle to see if a third consecutive
+over-optimistic reading appears, which would be the first real
+evidence of a directional sim bias rather than two-sided noise.
+Standing conclusion unchanged for now (not yet enough to call a
+regime shift, still score maker registrations via queue-PESSIMISTIC
+on their own markets): one more same-direction reading would change
+that. Report: `reports/maker_bracket/20260725T031532.json`. Econ
+bracket (07-25 02:16 UTC, under-award narrowing), atlas (07-24 14:15
+UTC), QA (07-24 07:00 UTC, all-PASS) all within normal cadence;
+divergence has nothing new — shadow run 20260722T081852 still open
+(no closed-run signal available). No code changes this pass — pure
+report re-run; suite unchanged at 252. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly
+left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-25 02:16 UTC (THIRD ECON MAKER BRACKET RE-RUN —
 `--series KXCPI,KXCPIYOY,KXFED --hours 336`, most overdue standing
 report (last run 07-23 03:16 UTC, ~47h stale vs the usual cadence).
 2,071 virtual orders across 8 markets (KXCPI 1189, KXCPIYOY 501,
