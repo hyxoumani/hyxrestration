@@ -1,6 +1,28 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-26 14:15 UTC (ATLAS RE-RUN ON FRESH 07-26 KALSHI
+Updated: **2026-07-26 15:16 UTC (19TH WEATHER MAKER BRACKET RE-RUN —
+most overdue standing report (prior weather bracket 07-26 02:16 UTC,
+~13h stale vs the usual ~6h cadence; atlas ran 09:15 UTC and is
+current, econ bracket ran 03:15 UTC and is within cadence). Ran
+`python -m simulator.queuescore --hours 24`: 192 virtual orders
+across 8 markets (KXHIGHNY 73, KXHIGHMIA 67, KXHIGHCHI 52). Crossing
+118 vs queue [114 pess, 125 opt]: crossing lands **inside** the
+bounds again. crossing_but_not_pess=23 vs pess_but_not_crossing=19,
+~1.21:1 — mild over-award lean, well within normal noise. Sign
+sequence: .../OVER-OPT(15th)/OVER-OPT(16th)/inside(17th)/
+inside(18th)/inside(19th) — third consecutive inside reading, the
+17th's streak-break is now solidly confirmed as the new baseline.
+Standing conclusion holds: no fixed-haircut shortcut, score maker
+registrations via queue-PESSIMISTIC on their own markets. Report:
+`reports/maker_bracket/20260726T151616.json`. Atlas (07-26 09:15 UTC,
+87/59, favorite-collapse watch flat 6th reading), econ bracket (07-26
+03:15 UTC, resolved inside-bounds), QA (07-26 07:00 UTC, all-PASS)
+all within normal cadence; divergence unchanged — shadow run
+20260722T081852 still open. No code changes this pass — pure report
+re-run; suite unchanged at 252. Untracked `strategies/hylshi_fade.py`
+re-confirmed present, still correctly left alone per the 07-18
+provenance resolution.)**
+(prior 2026-07-26 14:15 UTC (ATLAS RE-RUN ON FRESH 07-26 KALSHI
 SWEEP — the sweep (06:10 UTC, finished 06:49 UTC) had been the
 data-gate blocking this since the prior atlas run at 07-25 14:15 UTC;
 ran `python -m simulator.atlas`. Result: 87 flagged / 59 robust,
