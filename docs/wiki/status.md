@@ -1,6 +1,31 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-26 02:16 UTC (18th WEATHER MAKER BRACKET RE-RUN —
+Updated: **2026-07-26 03:15 UTC (FOURTH ECON MAKER BRACKET RE-RUN —
+`--series KXCPI,KXCPIYOY,KXFED --hours 336`, most overdue standing
+report (prior run 07-25 02:16 UTC, ~25h stale vs the usual cadence;
+atlas remains data-gated until the 06:10 CDT / 11:10 UTC kalshi
+sweep, weather bracket last ran 6h ago and is within cadence). 1,992
+virtual orders across 8 markets (KXCPI 1136, KXCPIYOY 466, KXFED
+390) — crossing 172 vs queue [167 pess, 201 opt]: crossing now lands
+**inside** the bounds, reversing the prior two under-award readings
+(07-23 and 07-25, both landing at/below the pessimistic floor).
+crossing_but_not_pess=101 vs pess_but_not_crossing=96, ~1.05:1 —
+near-perfectly symmetric, the closest to balanced of any econ
+reading yet. Econ sign sequence is now over(07-21) / under(07-23) /
+under-narrowing(07-25) / inside(07-26) — the under-award lean fully
+resolves this run rather than confirming as a stable bias. Standing
+conclusion holds unchanged: no fixed-haircut shortcut, score maker
+registrations via queue-PESSIMISTIC on their own markets. Report:
+`reports/maker_bracket/20260726T031532.json`. Weather bracket (07-26
+02:16 UTC, 18th re-run, second consecutive inside-bounds reading),
+atlas (07-25 14:15 UTC, data-gated pending 11:10 UTC sweep), QA
+(07-26 02:00 CDT / 07:00 UTC per timer, all-PASS) all within normal
+cadence; divergence has nothing new — shadow run 20260722T081852
+still open (no closed-run signal available). No code changes this
+pass — pure report re-run; suite unchanged at 252. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly
+left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-26 02:16 UTC (18th WEATHER MAKER BRACKET RE-RUN —
 second consecutive inside-bounds reading, confirming the 17th's
 streak-break. Prior weather bracket was 07-25 20:16 UTC (~6h stale,
 within cadence). Ran `python -m simulator.queuescore --hours 24`: 241
