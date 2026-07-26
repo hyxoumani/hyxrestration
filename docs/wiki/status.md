@@ -1,6 +1,24 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-26 03:15 UTC (FOURTH ECON MAKER BRACKET RE-RUN —
+Updated: **2026-07-26 14:15 UTC (ATLAS RE-RUN ON FRESH 07-26 KALSHI
+SWEEP — the sweep (06:10 UTC, finished 06:49 UTC) had been the
+data-gate blocking this since the prior atlas run at 07-25 14:15 UTC;
+ran `python -m simulator.atlas`. Result: 87 flagged / 59 robust,
+bucket set IDENTICAL to the 07-25 run — zero new, zero dropped, same
+counts. The Financials 1h d9 favorite-collapse WATCH item is flat
+again (realized 0.9849 > implied 0.9775, still favorite-underpriced
+direction, not collapsing) — sixth consecutive flat reading. Cleanest
+possible stability confirmation: the favorite-longshot signature is
+holding with zero drift on this increment. Report:
+`reports/atlas/20260726T141531.json`. Econ maker bracket (07-26 03:15
+UTC, 4th re-run, resolved to inside-bounds), weather bracket (07-26
+02:16 UTC, 18th re-run, second inside-bounds), QA (07-26 07:00 UTC,
+all-PASS) all within normal cadence; divergence unchanged — shadow
+run 20260722T081852 still open. No code changes this pass — pure
+report re-run; suite unchanged at 252. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly
+left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-26 03:15 UTC (FOURTH ECON MAKER BRACKET RE-RUN —
 `--series KXCPI,KXCPIYOY,KXFED --hours 336`, most overdue standing
 report (prior run 07-25 02:16 UTC, ~25h stale vs the usual cadence;
 atlas remains data-gated until the 06:10 CDT / 11:10 UTC kalshi
