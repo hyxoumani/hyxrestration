@@ -1,6 +1,30 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-25 20:16 UTC (17th WEATHER MAKER BRACKET RE-RUN —
+Updated: **2026-07-26 02:16 UTC (18th WEATHER MAKER BRACKET RE-RUN —
+second consecutive inside-bounds reading, confirming the 17th's
+streak-break. Prior weather bracket was 07-25 20:16 UTC (~6h stale,
+within cadence). Ran `python -m simulator.queuescore --hours 24`: 241
+virtual orders across 8 markets (KXHIGHNY 65, KXHIGHCHI 65, KXHIGHAUS
+58, KXHIGHMIA 53) — largest market-count sample in the sequence.
+Crossing 130 vs queue [120 pess, 132 opt]: crossing lands **inside**
+the bounds again. crossing_but_not_pess=38 vs pess_but_not_crossing=28,
+~1.36:1 — mild over-award lean but well within normal two-sided noise,
+nowhere near the 15th/16th's 2:1-2.4:1 skew that breached the ceiling.
+Sign sequence: .../inside/inside/inside/OVER-OPT(15th)/OVER-OPT(16th)/
+inside(17th)/inside(18th) — two consecutive inside readings now confirm
+the 17th was the real streak-break, not a one-off. Standing conclusion
+holds: no fixed-haircut shortcut, score maker registrations via
+queue-PESSIMISTIC on their own markets. Report:
+`reports/maker_bracket/20260725T211647.json`. Atlas (07-25 14:15 UTC,
+data-gated — next kalshi sweep not due until 11:10 UTC 07-26), econ
+bracket (07-25 15:16 UTC, within cadence), QA (07-25 07:00 UTC per
+timer log, all-PASS) all within normal cadence; divergence has nothing
+new — shadow run 20260722T081852 still open (no closed-run signal
+available). No code changes this pass — pure report re-run; suite
+unchanged at 252. Untracked `strategies/hylshi_fade.py` re-confirmed
+present, still correctly left alone per the 07-18 provenance
+resolution.)**
+(prior 2026-07-25 20:16 UTC (17th WEATHER MAKER BRACKET RE-RUN —
 the confirming re-run for the active watch item (two consecutive
 over-optimistic readings, 15th and 16th, both landing exactly 1 order
 above the optimistic ceiling with ~2:1 skew). Prior weather bracket
