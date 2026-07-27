@@ -74,6 +74,53 @@ class VirtualOrder:
         }
 
 
+def order_key(o: VirtualOrder) -> list:
+    """Identity of a virtual order across runs: same market, same seat time,
+    same limit. Deterministic, so two runs whose windows overlap re-derive
+    byte-identical keys for the orders they share."""
+    return [o.market_id, str(o.placed), o.price]
+
+
+def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition: dict) -> dict:
+    """How much of this run's evidence is NEW since the last comparable run.
+
+    The window is trailing (`max(recv_ts) - N hours`), so re-running sooner
+    than `--hours` re-scores orders the prior run already counted. A 336h
+    econ bracket re-run 18h later shares ~90% of its orders; consecutive
+    readings then agree because they are largely the same measurement, not
+    because a signal confirmed. Weather brackets escape this only
+    incidentally — `KXHIGH*` markets expire daily, so the top-N market set
+    churns on its own.
+
+    Comparison is against the most recent prior report sharing a series with
+    this run, which keeps weather and econ sequences from being compared to
+    each other. Returns null counts when there is no comparable prior run.
+    """
+    keys = {tuple(order_key(o)) for o in orders}
+    prior_name, prior_keys = None, None
+    for path in sorted(out_dir.glob("*.json"), reverse=True):
+        try:
+            prior = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not set(prior.get("market_composition", {})) & set(composition):
+            continue
+        prior_name = path.name
+        prior_keys = {
+            (d["market_id"], d["placed"], d["price"]) for d in prior.get("orders_detail", [])
+        }
+        break
+    if prior_keys is None:
+        return {"prior_report": None, "orders_new": None, "orders_shared": None, "new_share": None}
+    new = len(keys - prior_keys)
+    return {
+        "prior_report": prior_name,
+        "orders_new": new,
+        "orders_shared": len(keys & prior_keys),
+        "new_share": round(new / len(keys), 4) if keys else None,
+    }
+
+
 def series_composition(orders: list[VirtualOrder]) -> dict[str, int]:
     """Count virtual orders per Kalshi series (market_id prefix before the
     first '-'), high-to-low. Surfaces the bracket's coverage: in practice
@@ -216,6 +263,7 @@ def main() -> None:
     cross_only = [o for o in all_orders if o.crossed_at and o.tracker.filled_pess == 0]
     pess_only = [o for o in all_orders if not o.crossed_at and o.tracker.filled_pess > 0]
     composition = series_composition(all_orders)
+    out_dir = Path(args.out)
     report = {
         "generated_at": str(datetime.now().replace(microsecond=0)),
         "window_hours": args.hours,
@@ -226,15 +274,18 @@ def main() -> None:
         "crossing_but_not_pess": len(cross_only),
         "pess_but_not_crossing": len(pess_only),
         "market_composition": composition,
+        "independence": independence_vs_prior(out_dir, all_orders, composition),
         "note": (
             "crossing rule = what backtests award today; queue bounds ="
             " what L2+tape evidence supports (pess is the floor)."
             " crossing_but_not_pess counts fills the sim may be inventing;"
             " pess_but_not_crossing counts real fills the sim forgoes."
+            " independence.new_share is the fraction of orders not scored by"
+            " the prior comparable run — a low share means this reading is"
+            " mostly the prior one re-measured, not a confirmation of it."
         ),
         "orders_detail": [o.summary() for o in all_orders],
     }
-    out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{datetime.now():%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")

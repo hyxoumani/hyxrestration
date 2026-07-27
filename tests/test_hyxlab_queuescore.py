@@ -1,6 +1,7 @@
 """queuescore end-to-end on a synthetic archive: the two fill models
 disagree exactly where they should."""
 
+import json
 from datetime import datetime, timedelta
 
 import duckdb
@@ -9,6 +10,7 @@ from collector.venues.kalshi_ws import parse_message
 from hyxlab.streamstore import StreamStore
 from simulator.queuescore import (
     VirtualOrder,
+    independence_vs_prior,
     score_market,
     select_markets,
     series_composition,
@@ -154,3 +156,66 @@ def test_select_markets_series_filter_restricts_to_category(tmp_path):
     fed = select_markets(conn, since, top_n=8, series=["KXFED"])
     conn.close()
     assert fed == ["KXFED-26DEC-T4.50"]
+
+
+def _order(mid, placed, price=0.4):
+    """A VirtualOrder carrying only the fields the independence key reads."""
+    return VirtualOrder(mid, "yes", price, 5.0, placed, tracker=None)
+
+
+def _write_report(out_dir, name, composition, orders):
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / name).write_text(
+        json.dumps(
+            {
+                "market_composition": composition,
+                "orders_detail": [
+                    {"market_id": m, "placed": str(p), "price": pr} for m, p, pr in orders
+                ],
+            }
+        )
+    )
+
+
+def test_independence_flags_overlapping_rerun_as_mostly_not_new(tmp_path):
+    """A trailing-window re-run that re-scores the prior run's orders is not
+    an independent reading — new_share must expose the overlap."""
+    out = tmp_path / "maker_bracket"
+    shared = [("KXCPI-26JUL", T0 + timedelta(minutes=i), 0.4) for i in range(9)]
+    _write_report(out, "20260726T000000.json", {"KXCPI": 9}, shared)
+
+    orders = [_order(m, p, pr) for m, p, pr in shared]
+    orders.append(_order("KXCPI-26JUL", T0 + timedelta(minutes=99)))
+    res = independence_vs_prior(out, orders, {"KXCPI": 10})
+
+    assert res["prior_report"] == "20260726T000000.json"
+    assert res["orders_new"] == 1
+    assert res["orders_shared"] == 9
+    assert res["new_share"] == 0.1
+
+
+def test_independence_compares_within_series_and_handles_first_run(tmp_path):
+    """Weather and econ sequences must not be compared to each other, and a
+    run with no comparable prior reports reports null rather than 100% new."""
+    out = tmp_path / "maker_bracket"
+    _write_report(
+        out,
+        "20260726T000000.json",
+        {"KXHIGHNY": 2},
+        [("KXHIGHNY-26JUL26", T0, 0.4), ("KXHIGHNY-26JUL26", T0 + timedelta(minutes=1), 0.4)],
+    )
+
+    econ = [_order("KXCPI-26JUL", T0)]
+    # only a weather report exists, so the econ run has no comparable prior
+    assert independence_vs_prior(out, econ, {"KXCPI": 1}) == {
+        "prior_report": None,
+        "orders_new": None,
+        "orders_shared": None,
+        "new_share": None,
+    }
+    # a weather run does match the weather report, and is fully new
+    weather = [_order("KXHIGHNY-26JUL27", T0 + timedelta(hours=5))]
+    res = independence_vs_prior(out, weather, {"KXHIGHNY": 1})
+    assert res["prior_report"] == "20260726T000000.json"
+    assert res["orders_new"] == 1 and res["orders_shared"] == 0
+    assert res["new_share"] == 1.0

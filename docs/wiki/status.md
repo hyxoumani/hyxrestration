@@ -1,6 +1,58 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-27 14:20 UTC (ATLAS RE-RUN — ZERO DRIFT AGAIN, AND
+Updated: **2026-07-27 20:20 UTC (21ST WEATHER MAKER BRACKET — AND THE
+SAME "IS THIS ACTUALLY A NEW READING?" BUG CLASS FOUND IN THE BRACKET
+SEQUENCE, WHERE IT BITES THE ECON TRACK HARD. Yesterday's atlas pass
+found that weekend "flat" Financials readings were the same data
+re-measured, and shipped `settled_by_category` to catch it. Applied the
+same question to the maker bracket and it does not survive: the window
+is trailing (`max(recv_ts) - N hours`, queuescore.py:194), so any re-run
+sooner than `--hours` re-scores orders the prior run already counted.
+Measured over the archived reports — each **econ** 336h re-run carried
+only 11–26% new orders (07-23 11%, 07-24 26%, 07-26a 13%, 07-26b 21%),
+and against ALL prior runs combined just 11–14%. So the econ sign
+sequence over(07-21)/under(07-23)/under-narrowing(07-25)/inside(07-26)/
+inside(07-27) is NOT five independent readings — it is roughly one
+reading plus four ~12% increments. **The status log's "second
+consecutive inside-bounds reading confirms the under-award lean
+resolved" is therefore overstated the same way the atlas confirmation
+count was**: those two readings share 79% of their orders, so they were
+near-guaranteed to agree. Corrected here; the standing conclusion (no
+fixed-haircut shortcut, score via queue-PESSIMISTIC) is unaffected —
+it never rested on the econ sequence length. **Weather is clean**, and
+for a reason worth recording: it has the identical trailing window but
+`KXHIGH*` markets expire daily, so the top-8 market set churns on its
+own and supplies independence incidentally rather than by design.
+HARDENING SHIPPED: every bracket report now carries an `independence`
+block (`prior_report`, `orders_new`, `orders_shared`, `new_share`),
+compared against the most recent prior report sharing a series so
+weather and econ sequences are never cross-compared; null (not 100%)
+when no comparable prior exists. Two regression tests (overlapping
+re-run exposed as mostly-not-new; series-scoping + first-run null); red
+without the fix, green with. Suite 253→255, ruff clean. THE RUN ITSELF
+(21st weather bracket, prior 07-27 08:15 UTC, ~12h stale): 225 virtual
+orders across 8 markets (KXHIGHMIA 106, KXHIGHCHI 61, KXHIGHNY 58),
+crossing 146 vs queue [145 pess, 162 opt] — **inside** the bounds, with
+`new_share: 1.0` (225/225 new, all 26JUL27 markets vs the prior run's
+26JUL26) — a genuinely independent reading, the first one labelled as
+such. crossing_but_not_pess=21 vs pess_but_not_crossing=20, ~1.05:1,
+the most symmetric split yet. Sign sequence: .../inside(17th)/
+inside(18th)/inside(19th)/UNDER-by-1(20th)/inside(21st) — the 20th's
+one-order breach resolves as the noise it was called, on a fully
+independent sample. Routine monitoring holds. Report:
+`reports/maker_bracket/20260727T151833.json`. NOTE FOR FUTURE PASSES:
+report filenames are LOCAL time (queuescore/`datetime.now()`, box is
+UTC-5) while this log labels them UTC — so staleness read off filenames
+has been running ~5h pessimistic. Not chased this pass; atlas already
+uses UTC, so the fix is to align queuescore. Atlas (07-27 14:20 UTC,
+87/59) within cadence and data-gated until the 07-28 11:10 UTC kalshi
+sweep — which is also the next INFORMATIVE Financials reading (Monday
+settlements); econ bracket (07-27 07:16 UTC) within cadence and now
+known to need ≥336h spacing for an independent reading; QA (07-27 07:00
+UTC, all-PASS); divergence unchanged — shadow run 20260722T081852 still
+open. Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-27 14:20 UTC (ATLAS RE-RUN — ZERO DRIFT AGAIN, AND
 THE "FLAT" FAVORITE-COLLAPSE READINGS TURN OUT TO BE NON-READINGS;
 FINGERPRINT HARDENED. Atlas was the most overdue standing report (prior
 run 07-26 14:15 UTC, exactly 24h) and its data-gate had opened — the

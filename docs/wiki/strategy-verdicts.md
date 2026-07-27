@@ -64,6 +64,21 @@ structure — see [venues](venues.md)).
    weather artifact. Financials/Commodities specifically still need
    their own bracket once stream coverage there is dense enough to seat
    orders (`reports/maker_bracket/20260721T152147.json`).
+   **Reading-independence caveat (2026-07-27):** the bracket window is
+   trailing (`max(recv_ts) - N hours`), so a re-run sooner than `--hours`
+   re-scores orders the prior run already counted. Measured across the
+   archived reports: each **econ** 336h re-run carried only 11–26% new
+   orders (11–14% against all prior runs combined), so its five-reading
+   sign sequence is roughly one reading plus four ~12% increments —
+   consecutive econ readings agree largely because they are the same
+   measurement, and must NOT be counted as independent confirmations.
+   **Weather** brackets are genuinely independent despite the same
+   trailing window, incidentally: `KXHIGH*` markets expire daily, so the
+   top-N market set churns (the 07-27 21st run scored 100% new orders).
+   Every report now carries an `independence` block (`new_share`); check
+   it before treating a re-run as a confirming reading. To get an
+   independent econ reading, space re-runs by at least `--hours` or
+   shorten the window.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
