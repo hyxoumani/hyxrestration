@@ -1,6 +1,33 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-26 15:16 UTC (19TH WEATHER MAKER BRACKET RE-RUN —
+Updated: **2026-07-27 02:16 UTC (FIFTH ECON MAKER BRACKET RE-RUN —
+`--series KXCPI,KXCPIYOY,KXFED --hours 336`, most overdue standing
+report (prior econ run 07-26 03:15 UTC, ~23h stale; weather bracket ran
+07-26 15:16 UTC and is within cadence at ~11h; atlas is data-gated —
+the 07-27 06:10 UTC kalshi sweep has not fired). Archive writer lock
+was free. 2,204 virtual orders across 8 markets (KXCPI 1066, KXCPIYOY
+741, KXFED 397) — crossing 205 vs queue [182 pess, 217 opt]: crossing
+lands **inside** the bounds for the second consecutive run.
+crossing_but_not_pess=126 vs pess_but_not_crossing=103, ~1.22:1 — a
+mild over-award lean, well inside normal two-sided noise and a mirror
+image of the weather side's current ~1.21:1. Econ sign sequence is now
+over(07-21) / under(07-23) / under-narrowing(07-25) / inside(07-26) /
+inside(07-27) — the two-run under-award lean is now confirmed resolved
+rather than a stable bias, matching how the weather side's over-award
+streak resolved. Both category tracks are simultaneously sitting
+inside-bounds with mild ~1.2:1 over-award skew — the cleanest joint
+reading of the series so far. Standing conclusion holds unchanged: no
+fixed-haircut shortcut, score maker registrations via queue-PESSIMISTIC
+on their own markets. Report:
+`reports/maker_bracket/20260726T211629.json`. Weather bracket (07-26
+15:16 UTC, 19th re-run, third inside-bounds), atlas (07-26 14:15 UTC,
+87/59, favorite-collapse watch flat 6th reading), QA (07-26 07:00 UTC,
+all-PASS) all within normal cadence; divergence unchanged — shadow run
+20260722T081852 still open. No code changes this pass — pure report
+re-run; suite unchanged at 252. Untracked `strategies/hylshi_fade.py`
+re-confirmed present, still correctly left alone per the 07-18
+provenance resolution.)**
+(prior 2026-07-26 15:16 UTC (19TH WEATHER MAKER BRACKET RE-RUN —
 most overdue standing report (prior weather bracket 07-26 02:16 UTC,
 ~13h stale vs the usual ~6h cadence; atlas ran 09:15 UTC and is
 current, econ bracket ran 03:15 UTC and is within cadence). Ran
