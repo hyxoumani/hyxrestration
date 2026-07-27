@@ -1,6 +1,37 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-27 02:16 UTC (FIFTH ECON MAKER BRACKET RE-RUN —
+Updated: **2026-07-27 08:16 UTC (20TH WEATHER MAKER BRACKET RE-RUN —
+most overdue runnable standing report (prior weather bracket 07-26
+15:16 UTC, ~17h stale; econ bracket ran 07-27 02:16 UTC and is within
+cadence at ~6h; atlas is data-gated — the kalshi sweep next fires
+06:10 CDT / 11:10 UTC and has not fired since 07-26). QA fired 07-27
+07:00 UTC: **all-PASS** (stream age 7s, 14 seq holes all gap-marked,
+7.19 GB stream disk; the archive-reachable check skipped as designed
+because the live writer held the lock). Archive writer lock was free
+for the bracket run. Ran `python -m simulator.queuescore --hours 24`:
+220 virtual orders across 8 markets (KXHIGHNY 58, KXHIGHCHI 55,
+KXHIGHMIA 48, KXHIGHDEN 32, KXHIGHAUS 27). Crossing 110 vs queue
+[111 pess, 120 opt]: crossing lands **1 order BELOW the pessimistic
+floor** — a marginal under-award, breaking the three-run inside-bounds
+streak, but by the narrowest possible margin on a mid-size sample.
+crossing_but_not_pess=19 vs pess_but_not_crossing=20, ~0.95:1 — the
+most symmetric disagreement split of any weather run to date (prior
+runs ran 1.2–2.4:1 over-award). Sign sequence: .../OVER-OPT(15th)/
+OVER-OPT(16th)/inside(17th)/inside(18th)/inside(19th)/UNDER-by-1(20th)
+— a one-order breach with near-perfectly balanced two-sided
+disagreement is textbook noise, not a directional flip, and it is the
+opposite sign from the 15th/16th over-award pair, so it does not
+revive that watch item. Routine monitoring holds. Standing conclusion
+unchanged: no fixed-haircut shortcut, score maker registrations via
+queue-PESSIMISTIC on their own markets. Report:
+`reports/maker_bracket/20260727T031529.json`. Econ bracket (07-27
+02:16 UTC, second inside-bounds), atlas (07-26 14:15 UTC, 87/59,
+favorite-collapse watch flat 6th reading) both within cadence;
+divergence unchanged — shadow run 20260722T081852 still open. No code
+changes this pass — pure report re-run; suite unchanged at 252.
+Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-27 02:16 UTC (FIFTH ECON MAKER BRACKET RE-RUN —
 `--series KXCPI,KXCPIYOY,KXFED --hours 336`, most overdue standing
 report (prior econ run 07-26 03:15 UTC, ~23h stale; weather bracket ran
 07-26 15:16 UTC and is within cadence at ~11h; atlas is data-gated —
