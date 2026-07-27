@@ -87,6 +87,16 @@ ORDER BY 1, 2, 3
 """
 
 
+SETTLED_BY_CATEGORY_SQL = """
+SELECT coalesce(s.category, '?') AS category, count(*) AS n
+FROM markets m
+LEFT JOIN series s ON s.venue = m.venue AND s.ticker = m.series
+WHERE m.venue='kalshi' AND m.result IN ('yes','no') AND m.close_time IS NOT NULL
+GROUP BY 1
+ORDER BY 1
+"""
+
+
 def build_atlas(conn) -> dict:
     rows = conn.execute(BUCKET_SQL).fetchall()
     buckets = []
@@ -118,6 +128,14 @@ def build_atlas(conn) -> dict:
             "SELECT count(*) FROM markets WHERE venue='kalshi' AND result IN ('yes','no')"
         ).fetchone()[0],
         "candles": conn.execute("SELECT count(*) FROM candles").fetchone()[0],
+        # per-category counts: a bucket reading is only an INDEPENDENT
+        # confirmation if its category actually gained settled markets since
+        # the prior run. Index-ladder categories (Financials) gain nothing
+        # over a weekend, so consecutive "flat" readings there can be the
+        # same data re-measured rather than new evidence.
+        "settled_by_category": dict(
+            conn.execute(SETTLED_BY_CATEGORY_SQL).fetchall()
+        ),
     }
     return {
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None, microsecond=0)),

@@ -134,3 +134,29 @@ def test_independent_markets_keep_robust_flag(tmp_path):
     b = _bulk_atlas(tmp_path, lambda i: f"S{i}")
     assert b["flagged"] and b["clusters"] == 250
     assert b["flagged_robust"]
+
+
+def test_fingerprint_counts_settled_markets_per_category(tmp_path):
+    # two categories settling at different rates: consecutive atlas runs
+    # are only INDEPENDENT evidence for a category that actually gained
+    # settled markets, so the fingerprint must break the count out by
+    # category rather than reporting one archive-wide total
+    store = Store(tmp_path / "a.duckdb")
+    store.upsert_series(
+        [
+            ("kalshi", "KXDJI", "Dow", "Financials", None, None, None),
+            ("kalshi", "KXHIGHNY", "NY high", "Climate and Weather", None, None, None),
+        ]
+    )
+    store.upsert_markets(
+        [
+            MarketInfo(venue="kalshi", market_id="F1", series="KXDJI", result="yes", close_time=CLOSE),
+            MarketInfo(venue="kalshi", market_id="W1", series="KXHIGHNY", result="yes", close_time=CLOSE),
+            MarketInfo(venue="kalshi", market_id="W2", series="KXHIGHNY", result="no", close_time=CLOSE),
+            # unsettled markets never count toward the fingerprint
+            MarketInfo(venue="kalshi", market_id="W3", series="KXHIGHNY", close_time=CLOSE),
+        ]
+    )
+    by_cat = build_atlas(store.conn)["data_fingerprint"]["settled_by_category"]
+    assert by_cat == {"Financials": 1, "Climate and Weather": 2}
+    store.close()

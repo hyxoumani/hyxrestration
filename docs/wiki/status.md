@@ -1,6 +1,48 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-27 08:16 UTC (20TH WEATHER MAKER BRACKET RE-RUN —
+Updated: **2026-07-27 14:20 UTC (ATLAS RE-RUN — ZERO DRIFT AGAIN, AND
+THE "FLAT" FAVORITE-COLLAPSE READINGS TURN OUT TO BE NON-READINGS;
+FINGERPRINT HARDENED. Atlas was the most overdue standing report (prior
+run 07-26 14:15 UTC, exactly 24h) and its data-gate had opened — the
+06:10 CDT / 11:10 UTC kalshi sweep fired ~3h prior. The 05:00 UTC poly
+sweep was still holding the archive writer lock at 9h in (its known
+long-tail case), but atlas is a reader and completed fine — no waiting
+on the lock. Result vs the 07-26 baseline: 87 flagged / 59 robust,
+bucket set **IDENTICAL for the second consecutive run** — zero new,
+zero dropped, zero robust churn; max gap drift 0.0069 on 163 common
+n>=100 buckets (Climate/Weather 6h d8); zero counter-signature robust
+survivors. **The real finding is why it was flat.** The Financials 1h
+d9 favorite-collapse WATCH item read bit-identical to 07-26 — n 5684,
+clusters 456, implied 0.9775, realized 0.9849, every digit unchanged —
+which is not "stable", it is *no new data*. Broke the increment down by
+category: the +2,921 settled markets landed as Commodities 1233 /
+Climate-and-Weather 284 / Economics 17 on the 1h horizon and
+**Financials 0**. Same for 07-26 (Financials 0). The 07-25 run, by
+contrast, added 1,555 Financials 1h markets. Cause is the calendar:
+Financials is KXDJI/KXINXU index ladders, which do not settle on
+Sat/Sun, and the 07-26 and 07-27 sweeps both cover weekend windows. So
+the status log's "sixth consecutive flat reading" and today's would-be
+seventh are the SAME measurement re-run twice — the watch item has **5
+informative readings, not 7**, and the daily atlas cadence is simply
+uninformative for ladder-heavy categories across a weekend. The
+downgrade-to-routine-monitoring call still holds (it was made on the
+five genuinely independent readings), but the confirmation count was
+overstated and is corrected here. Next informative Financials reading:
+the 07-28 sweep, which covers Monday settlements. HARDENING SHIPPED:
+`data_fingerprint` now carries `settled_by_category` alongside the
+archive-wide totals, so "did this category actually gain evidence since
+the last run?" is a one-line diff of two reports instead of manual
+bucket arithmetic — the check that caught this was hand-rolled and
+would not have been repeated. Regression test asserts the per-category
+split and excludes unsettled markets; red without the fix (KeyError),
+green with. Suite 252→253, ruff clean. Report:
+`reports/atlas/20260727T141742.json`. Weather maker bracket (07-27
+03:15 UTC), econ bracket (07-27 02:16 UTC), QA (07-27 07:00 UTC,
+all-PASS) all within cadence; divergence unchanged — shadow run
+20260722T081852 still open. Untracked `strategies/hylshi_fade.py`
+re-confirmed present, still correctly left alone per the 07-18
+provenance resolution.)**
+(prior 2026-07-27 08:16 UTC (20TH WEATHER MAKER BRACKET RE-RUN —
 most overdue runnable standing report (prior weather bracket 07-26
 15:16 UTC, ~17h stale; econ bracket ran 07-27 02:16 UTC and is within
 cadence at ~6h; atlas is data-gated — the kalshi sweep next fires

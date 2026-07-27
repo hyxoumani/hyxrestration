@@ -80,7 +80,13 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 - `simulator/atlas.py` — calibration atlas (implied vs realized,
   Wilson flags; plus a cluster-robust flag tier with n = distinct
   (series, close_time) ladders — the correlation worst case; pre-regs
-  size evidence on `clusters`, not n). `simulator/iterate.py` — DSR, purged folds,
+  size evidence on `clusters`, not n). Consecutive atlas runs are only
+  independent evidence for a category that GAINED settled markets in
+  between — diff `data_fingerprint.settled_by_category` before counting
+  a flat bucket as a confirming reading. Index-ladder categories
+  (Financials = KXDJI/KXINXU) add zero settled markets over a weekend,
+  so weekend re-runs replay the prior reading verbatim (07-27).
+  `simulator/iterate.py` — DSR, purged folds,
   family_report (B5 core). `simulator/pair_candidates.py` — cross-venue
   leads (user-gated activation). `simulator/run_favlong.py` — the
   killed pre-reg's runner (record).
