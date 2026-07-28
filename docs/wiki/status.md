@@ -1,6 +1,72 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-28 14:20 UTC (ATLAS ON THE FIRST INFORMATIVE
+Updated: **2026-07-28 20:20 UTC (ALL STANDING REPORTS GATED — SO THE
+UNIT-OF-INDEPENDENCE LENS WAS TURNED ON THE MAKER BRACKET ITSELF, AND
+IT LANDS. Gate check first: atlas ran 14:20 UTC and is data-gated until
+the 07-29 11:10 UTC kalshi sweep; weather bracket ran 02:17 UTC (~18h)
+and per the 07-28 spacing rule needs >~24h to cross a daily expiry;
+econ bracket needs >=336h (next ~08-10); QA fired 07:00 UTC; divergence
+unchanged — shadow run 20260722T081852 still open. Nothing runnable, so
+ladder rung 4. THE FINDING: the same bug class has now bitten three
+times (atlas weekend non-readings, trailing-window bracket re-runs,
+same-day Financials ladders). The maker bracket's HEADLINE is the
+fourth instance and had not been checked. `crossing 147 vs [148 pess,
+165 opt]` treats a run's N virtual orders as N independent draws, but
+all orders in a market ride ONE book — a market whose ask happens to
+walk down repeatedly contributes dozens of same-signed disagreements
+off a single price path. PROBED BEFORE BUILDING, on the archived
+reports: in EVERY run the per-market disagreement dwarfs the aggregate.
+07-28 read `agg_net -1` against 15 of absolute per-market net; 07-27
+read -1 against 15, with ONE market supplying -7 (47%). So the
+aggregate is not a tight measurement, it is heavy cancellation of large
+opposing per-market effects, and **a one-order breach is ~7% of the
+disagreement actually present**. This mechanically explains the prior
+pass's empirical finding that a 10% data increment flipped the verdict
+from inside to under-by-1: the +/-1-order calls this log has been
+reporting for 22 weather runs are far inside the resolution of the
+measurement. HARDENING SHIPPED (1d7a2b8): every bracket report now
+carries a `concentration` block — per-market cross_only/pess_only nets,
+`abs_net_by_market` (the disagreement without letting markets cancel),
+`top_market_net_share`, a market-level over/under/tied split, and
+`direction_market_robust`, true only when the aggregate direction is
+backed by a strict majority of the markets that lean either way.
+Headline fields untouched for cross-report comparability, per the
+divergence-matcher and atlas-day-tier precedent. Three regression tests
+(30 same-signed orders in one market vs 2 opposing markets — aggregate
++28, direction correctly REFUSED; the same net spread same-sign across
+4 markets — correctly kept, so the tier discriminates rather than
+killing everything; a cancelling split — undirected). Suite 314->317,
+ruff clean, pushed. No promote — queuescore is sim-side, no timer runs
+it. VALIDATED ON REAL DATA WITHOUT MANUFACTURING A NON-READING: rather
+than re-run a spacing-gated bracket to exercise the path, rehydrated
+`orders_detail` from all 31 archived reports and ran the shipped
+function over the full history. Result: the last three weather runs
+(07-27 03:15, 07-27 15:18, 07-28 02:17) are all
+`direction_market_robust: false` — the knife-edge verdicts are
+correctly refused. The 07-26 econ run (agg +23, markets 5/2) IS
+market-robust, confirming the tier is not vacuous. **THE LEAD, AND WHY
+IT IS EXPLICITLY NOT A FINDING YET**: across the archive the aggregate
+net sign runs +16/-6 weather and +6/-3 econ — a visible lean toward the
+sim OVER-awarding fills, which would matter for any maker
+registration. It CANNOT be tested, and saying so is the whole point of
+this thread of work: those 22 weather runs share orders pairwise, so a
+cross-run sign test is the identical bug one level up. Only **one** run
+in the entire archive (`20260727T151833.json`) carries a certified
+`new_share: 1.0` — the independence block only shipped 07-27, so the
+independent sample size for this question is n=1. NAMED DATA GATE for
+future passes: accumulate `new_share >= ~0.9` weather brackets (one per
+>24h expiry-crossing run, so ~1/day) and re-test the over-award lean at
+n>=8; do not act on the 16/6 tally before then. PRACTICAL RULE, joining
+the 07-28 atlas rule (`top_day_share` > ~0.3 = a bet on one day):
+**read `direction_market_robust` before calling any bracket over/under
+verdict, and compare `abs_net_by_market` against `net_disagreement` —
+a near-zero aggregate built from large opposing per-market nets is
+cancellation, not precision.** Standing conclusion unaffected and now
+better supported: no fixed-haircut shortcut, score maker registrations
+via queue-PESSIMISTIC on their own markets. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-28 14:20 UTC (ATLAS ON THE FIRST INFORMATIVE
 FINANCIALS INCREMENT SINCE THE WEEKEND — REAL DRIFT, CHASED TO A
 CORRELATION BUG ONE LEVEL ABOVE THE CLUSTER TIER; SETTLEMENT-DAY TIER
 SHIPPED. Atlas was the overdue standing report (prior 07-27 14:17 UTC,
