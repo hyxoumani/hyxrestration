@@ -25,6 +25,22 @@ interval recomputed with n = clusters (the perfect-within-cluster-
 correlation worst case; true confidence lies between the two tiers).
 The original `flagged` field is unchanged for cross-report comparability.
 
+Correlation caveat, one level up (2026-07-28): ladders are not independent
+of each other either. All same-day Financials ladders resolve off ONE index
+path, so a whole settlement day is closer to one draw than to `clusters`
+draws — measured on the 07-28 run, Financials 24h d3/d4/d5/d6 ALL flipped
+gap sign together when 07-27 landed, and that single day supplied 46-61% of
+each bucket's n across only ~16 "clusters". Each bucket therefore also
+reports `days` (distinct settlement days), `top_day_share` (largest single
+day's share of n — the concentration diagnostic) and a `flagged_day_robust`
+tier: Wilson with n = days, the perfect-within-DAY-correlation worst case.
+The tiers nest (days <= clusters <= n), so each is strictly more
+conservative than the last. The day tier is deliberately too harsh for
+categories whose same-day markets have unrelated underlyings (weather across
+cities); it is a bound, not an estimate. `top_day_share` is the tier-neutral
+read: a bucket carrying most of its evidence on one day is a bet on that
+day, not a calibration finding.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -75,14 +91,32 @@ WITH settled AS (
     AND c.yes_bid_close <= c.yes_ask_close             -- crossed-candle gate
     AND NOT (c.yes_ask_close >= 0.995 AND c.yes_bid_close <= 0.005)  -- sentinel
   GROUP BY 1, 2, 3, 4, 5, 6
+), keyed AS (
+  SELECT category, h_label, result, series, close_time, mid,
+         CAST(least(floor(mid * 10), 9) AS INTEGER) AS decile,
+         CAST(close_time AS DATE) AS close_day
+  FROM pts
+), agg AS (
+  SELECT category, h_label, decile,
+         count(*) AS n, avg(mid) AS implied,
+         avg(CASE WHEN result = 'yes' THEN 1.0 ELSE 0.0 END) AS realized,
+         count(DISTINCT (series, close_time)) AS clusters,
+         count(DISTINCT close_day) AS days
+  FROM keyed
+  GROUP BY 1, 2, 3
+), per_day AS (
+  SELECT category, h_label, decile, close_day, count(*) AS day_n
+  FROM keyed
+  GROUP BY 1, 2, 3, 4
+), top_day AS (
+  SELECT category, h_label, decile, max(day_n) AS top_day_n
+  FROM per_day
+  GROUP BY 1, 2, 3
 )
-SELECT category, h_label,
-       CAST(least(floor(mid * 10), 9) AS INTEGER) AS decile,
-       count(*) AS n, avg(mid) AS implied,
-       avg(CASE WHEN result = 'yes' THEN 1.0 ELSE 0.0 END) AS realized,
-       count(DISTINCT (series, close_time)) AS clusters
-FROM pts
-GROUP BY 1, 2, 3
+SELECT a.category, a.h_label, a.decile, a.n, a.implied, a.realized,
+       a.clusters, a.days, t.top_day_n
+FROM agg a
+JOIN top_day t USING (category, h_label, decile)
 ORDER BY 1, 2, 3
 """
 
@@ -100,12 +134,17 @@ ORDER BY 1
 def build_atlas(conn) -> dict:
     rows = conn.execute(BUCKET_SQL).fetchall()
     buckets = []
-    for category, h_label, decile, n, implied, realized, clusters in rows:
+    for row in rows:
+        (category, h_label, decile, n, implied, realized, clusters, days, top_day_n) = row
         lo, hi = wilson(realized * n, n)
         flagged = n >= 200 and not (lo <= implied <= hi)
         # worst case: every market in a (series, close_time) ladder settles
         # on one shared outcome, so at most `clusters` independent draws
         rlo, rhi = wilson(realized * clusters, clusters)
+        flagged_robust = flagged and not (rlo <= implied <= rhi)
+        # one level up: every ladder closing on the same day can share one
+        # underlying path (index ladders do), so at most `days` draws
+        dlo, dhi = wilson(realized * days, days)
         buckets.append(
             {
                 "category": category,
@@ -113,6 +152,8 @@ def build_atlas(conn) -> dict:
                 "decile": decile,
                 "n": n,
                 "clusters": clusters,
+                "days": days,
+                "top_day_share": round(top_day_n / n, 4) if n else 0.0,
                 "implied": round(implied, 4),
                 "realized": round(realized, 4),
                 "wilson_lo": round(lo, 4),
@@ -120,7 +161,10 @@ def build_atlas(conn) -> dict:
                 "flagged": flagged,
                 "wilson_robust_lo": round(rlo, 4),
                 "wilson_robust_hi": round(rhi, 4),
-                "flagged_robust": flagged and not (rlo <= implied <= rhi),
+                "flagged_robust": flagged_robust,
+                "wilson_day_lo": round(dlo, 4),
+                "wilson_day_hi": round(dhi, 4),
+                "flagged_day_robust": flagged_robust and not (dlo <= implied <= dhi),
             }
         )
     fingerprint = {
@@ -145,9 +189,15 @@ def build_atlas(conn) -> dict:
             "flagged AND implied outside Wilson 95% with n = clusters "
             "(distinct (series, close_time) ladders; perfect-correlation worst case)"
         ),
+        "flag_rule_day_robust": (
+            "flagged_robust AND implied outside Wilson 95% with n = days "
+            "(distinct settlement days; same-day ladders can share one "
+            "underlying path — perfect-within-day-correlation worst case)"
+        ),
         "buckets": buckets,
         "flagged": [b for b in buckets if b["flagged"]],
         "flagged_robust": [b for b in buckets if b["flagged_robust"]],
+        "flagged_day_robust": [b for b in buckets if b["flagged_day_robust"]],
     }
 
 

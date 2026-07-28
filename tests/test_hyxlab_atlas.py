@@ -94,24 +94,25 @@ def test_atlas_flags_large_miscalibrated_bucket(tmp_path):
     store.close()
 
 
-def _bulk_atlas(tmp_path, series_for):
+def _bulk_atlas(tmp_path, series_for, close_for=lambda i: CLOSE):
     """250 miscalibrated markets (implied ~.90, all settle yes); the
-    per-market flag always fires — series_for(i) controls the clustering."""
+    per-market flag always fires — series_for(i) controls the clustering
+    and close_for(i) controls how many settlement days they span."""
     store = Store(tmp_path / "a.duckdb")
     infos, candles = [], []
-    t = (CLOSE - timedelta(hours=2)).replace(tzinfo=None)
     for i in range(250):
         mid = 0.90 + (i % 5) * 0.001
+        close = close_for(i)
         infos.append(
             MarketInfo(
                 venue="kalshi",
                 market_id=f"F{i}",
                 series=series_for(i),
                 result="yes",
-                close_time=CLOSE,
+                close_time=close,
             )
         )
-        candles.append(_candle(mid, f"F{i}", t))
+        candles.append(_candle(mid, f"F{i}", (close - timedelta(hours=2)).replace(tzinfo=None)))
     store.upsert_markets(infos)
     store.insert_candles(candles)
     atlas = build_atlas(store.conn)
@@ -134,6 +135,32 @@ def test_independent_markets_keep_robust_flag(tmp_path):
     b = _bulk_atlas(tmp_path, lambda i: f"S{i}")
     assert b["flagged"] and b["clusters"] == 250
     assert b["flagged_robust"]
+
+
+def test_single_settlement_day_collapses_day_robust_flag(tmp_path):
+    # 250 DISTINCT series -> 250 clusters, so the cluster tier sees
+    # fully independent evidence and keeps the flag. But every market
+    # settles on the SAME day, and same-day ladders can resolve off one
+    # underlying path (Financials 24h d3-d6 all flipped gap sign together
+    # when 07-27 landed). The day tier must swallow the flag, and
+    # top_day_share must expose the concentration.
+    b = _bulk_atlas(tmp_path, lambda i: f"S{i}")
+    assert b["flagged_robust"] and b["clusters"] == 250
+    assert b["days"] == 1 and b["top_day_share"] == 1.0
+    assert not b["flagged_day_robust"]
+
+
+def test_evidence_spread_across_days_keeps_day_robust_flag(tmp_path):
+    # same 250 independent series, but one market per settlement day:
+    # no single day can carry the finding, so the day tier agrees
+    b = _bulk_atlas(
+        tmp_path,
+        lambda i: f"S{i}",
+        close_for=lambda i: CLOSE - timedelta(days=i),
+    )
+    assert b["flagged_robust"] and b["days"] == 250
+    assert b["top_day_share"] == pytest.approx(1 / 250)
+    assert b["flagged_day_robust"]
 
 
 def test_fingerprint_counts_settled_markets_per_category(tmp_path):
