@@ -10,6 +10,7 @@ from collector.venues.kalshi_ws import parse_message
 from hyxlab.streamstore import StreamStore
 from simulator.queuescore import (
     VirtualOrder,
+    concentration_by_market,
     independence_vs_prior,
     score_market,
     select_markets,
@@ -125,6 +126,74 @@ def test_series_composition_groups_by_prefix_high_to_low():
     # grouped by the prefix before the first '-', ordered high-to-low
     assert comp == {"KXFED": 3, "KXHIGHNY": 2, "KXHIGHMIA": 1}
     assert list(comp)[0] == "KXFED"
+
+
+class _Tracker:
+    """Minimal stand-in carrying only the field concentration reads."""
+
+    def __init__(self, filled_pess):
+        self.filled_pess = filled_pess
+
+
+def _disagreeing(mid, kind, i):
+    """A virtual order that disagrees in one direction: `cross` = the sim
+    awards a fill the queue evidence doesn't support, `pess` = the reverse."""
+    return VirtualOrder(
+        mid,
+        "yes",
+        0.4,
+        5.0,
+        T0 + timedelta(minutes=i),
+        tracker=_Tracker(0.0 if kind == "cross" else 5.0),
+        crossed_at=T0 + timedelta(minutes=i) if kind == "cross" else None,
+    )
+
+
+def test_concentration_refuses_a_direction_carried_by_one_market():
+    """A large aggregate net that comes from a single market is that market's
+    idiosyncrasy, not a fill-model bias: every order in one market rides one
+    book, so 30 orders there are nowhere near 30 independent draws."""
+    orders = [_disagreeing("KXHIGHNY-26JUL27-B83.5", "cross", i) for i in range(30)]
+    for j, mid in enumerate(("KXHIGHMIA-26JUL27-B90.5", "KXHIGHCHI-26JUL27-B88.5")):
+        orders.append(_disagreeing(mid, "pess", 100 + j))
+
+    c = concentration_by_market(orders)
+
+    assert c["net_disagreement"] == 28  # +30 / -1 / -1
+    assert c["markets_net_over"] == 1 and c["markets_net_under"] == 2
+    assert c["top_market_net_share"] == 0.9375  # 30 of 32
+    # majority of decisive markets lean the OTHER way -> direction not robust
+    assert c["direction_market_robust"] is False
+
+
+def test_concentration_keeps_a_direction_agreed_across_markets():
+    """The same aggregate net spread same-sign across markets is a real
+    directional reading — the coarser unit must not swallow it."""
+    orders = [
+        _disagreeing(f"KXHIGHNY-26JUL27-B8{m}.5", "cross", m * 10 + i)
+        for m in range(4)
+        for i in range(7)
+    ]
+    orders.append(_disagreeing("KXHIGHMIA-26JUL27-B90.5", "pess", 99))
+
+    c = concentration_by_market(orders)
+
+    assert c["net_disagreement"] == 27
+    assert c["markets_net_over"] == 4 and c["markets_net_under"] == 1
+    assert c["direction_market_robust"] is True
+
+
+def test_concentration_calls_a_cancelling_split_undirected():
+    """Near-zero aggregate net built from large opposing per-market nets is
+    the bracket's normal state — no direction to be robust about."""
+    orders = [_disagreeing("KXHIGHNY-26JUL27-B83.5", "cross", i) for i in range(7)]
+    orders += [_disagreeing("KXHIGHMIA-26JUL27-B90.5", "pess", 20 + i) for i in range(7)]
+
+    c = concentration_by_market(orders)
+
+    assert c["net_disagreement"] == 0
+    assert c["abs_net_by_market"] == 14  # aggregate hides 14 of disagreement
+    assert c["direction_market_robust"] is False
 
 
 def _tape_market(store, mid, seq0):

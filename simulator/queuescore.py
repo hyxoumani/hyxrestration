@@ -121,6 +121,69 @@ def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition
     }
 
 
+def concentration_by_market(orders: list[VirtualOrder]) -> dict:
+    """Is the crossing-vs-queue disagreement a fill-model bias, or one market?
+
+    The headline bracket compares `crossing_filled` against the queue bounds
+    as if the run's N virtual orders were N independent draws. They are not:
+    every order in a market is seated on the SAME book, so a market whose ask
+    happens to walk down repeatedly contributes dozens of same-signed
+    disagreements off one price path. This is the maker-side instance of the
+    unit-of-independence class that the atlas settlement-day tier addresses
+    (`docs/wiki/`): the coarser unit here is the market.
+
+    Reported per run:
+
+    - `net_disagreement` = crossing_but_not_pess - pess_but_not_crossing, the
+      aggregate the headline verdict rests on;
+    - `abs_net_by_market`, the same quantity summed WITHOUT letting markets
+      cancel — when it dwarfs `net_disagreement`, a near-zero aggregate is
+      cancellation of large opposing effects, not a tight measurement;
+    - `top_market_net_share`, the tier-neutral concentration read;
+    - `direction_market_robust`: the aggregate direction is supported by a
+      strict majority of the markets that lean either way. False when the
+      aggregate is zero (no direction to support). This is a BOUND on the
+      headline verdict, deliberately harsh where markets genuinely differ —
+      the headline fields are untouched for cross-report comparability, per
+      the divergence-matcher and atlas-day-tier precedent.
+    """
+    per: dict[str, list[int]] = {}
+    for o in orders:
+        e = per.setdefault(o.market_id, [0, 0, 0])
+        e[0] += 1
+        if o.crossed_at is not None and o.tracker.filled_pess == 0:
+            e[1] += 1
+        elif o.crossed_at is None and o.tracker.filled_pess > 0:
+            e[2] += 1
+
+    nets = {m: v[1] - v[2] for m, v in per.items()}
+    agg = sum(nets.values())
+    abs_total = sum(abs(v) for v in nets.values())
+    over = sum(1 for v in nets.values() if v > 0)
+    under = sum(1 for v in nets.values() if v < 0)
+    decisive = over + under
+    agreeing = over if agg > 0 else under if agg < 0 else 0
+    return {
+        "markets": len(per),
+        "top_market_order_share": (
+            round(max(v[0] for v in per.values()) / len(orders), 4) if orders else None
+        ),
+        "net_disagreement": agg,
+        "abs_net_by_market": abs_total,
+        "top_market_net_share": (
+            round(max(abs(v) for v in nets.values()) / abs_total, 4) if abs_total else None
+        ),
+        "markets_net_over": over,
+        "markets_net_under": under,
+        "markets_net_tied": len(per) - decisive,
+        "direction_market_robust": agg != 0 and agreeing * 2 > decisive,
+        "per_market": [
+            {"market_id": m, "orders": per[m][0], "cross_only": per[m][1], "pess_only": per[m][2]}
+            for m in sorted(per, key=lambda m: -abs(nets[m]))
+        ],
+    }
+
+
 def series_composition(orders: list[VirtualOrder]) -> dict[str, int]:
     """Count virtual orders per Kalshi series (market_id prefix before the
     first '-'), high-to-low. Surfaces the bracket's coverage: in practice
@@ -274,6 +337,7 @@ def main() -> None:
         "crossing_but_not_pess": len(cross_only),
         "pess_but_not_crossing": len(pess_only),
         "market_composition": composition,
+        "concentration": concentration_by_market(all_orders),
         "independence": independence_vs_prior(out_dir, all_orders, composition),
         "note": (
             "crossing rule = what backtests award today; queue bounds ="
@@ -283,6 +347,12 @@ def main() -> None:
             " independence.new_share is the fraction of orders not scored by"
             " the prior comparable run — a low share means this reading is"
             " mostly the prior one re-measured, not a confirmation of it."
+            " concentration treats the MARKET as the independent unit (all"
+            " orders in a market ride one book): read"
+            " direction_market_robust before calling any over/under verdict,"
+            " and compare abs_net_by_market against net_disagreement — a"
+            " near-zero aggregate built from large opposing per-market nets"
+            " is cancellation, not precision."
         ),
         "orders_detail": [o.summary() for o in all_orders],
     }
