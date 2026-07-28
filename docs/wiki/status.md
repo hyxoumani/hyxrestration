@@ -1,6 +1,69 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-28 02:20 UTC (REPORT CLOCKS ALIGNED TO UTC — the
+Updated: **2026-07-28 14:20 UTC (ATLAS ON THE FIRST INFORMATIVE
+FINANCIALS INCREMENT SINCE THE WEEKEND — REAL DRIFT, CHASED TO A
+CORRELATION BUG ONE LEVEL ABOVE THE CLUSTER TIER; SETTLEMENT-DAY TIER
+SHIPPED. Atlas was the overdue standing report (prior 07-27 14:17 UTC,
+24h) and its data-gate had opened — the 11:10 UTC kalshi sweep fired 3h
+prior. **The `settled_by_category` hardening from the 07-27 pass paid
+off on its first use**: Financials +1,030 settled markets (vs 0 on each
+of the prior two runs), so this is the informative Monday-settlement
+reading that pass predicted, not another weekend non-reading. Headline
+87→93 flagged, 59→63 robust, and unlike the last two runs this is NOT
+flat: 6 of the 8 newly flagged and 3 of the 7 newly robust buckets are
+Financials, and the top-3 gap drifts on 163 common n>=100 buckets are
+all Financials 24h (0.2098 d3, 0.1761 d5, 0.1141 d4) — an order of
+magnitude above the 0.0069 max drift of the prior run. THE DRIFT DOES
+NOT SURVIVE INSPECTION, AND THE REASON IS A NEW BUG CLASS. Financials
+24h d3/d4/d5/d6 ALL flipped gap sign together (d3 -0.147→+0.063, d4
+-0.056→+0.058, d5 -0.026→+0.150, d6 +0.022→+0.101) while their n
+roughly doubled but their cluster counts barely moved (d5 n 114→293,
+clusters 66→82). Broke each bucket down by settlement day: **07-27
+alone supplies 46-61% of each bucket's n (d5: 179 of 293 = 61%) across
+only ~16 "clusters"**, and that one day reads +0.262 for d5 while
+07-13 reads -0.409 and 07-20 reads +0.336 — every mid-decile moving
+together *within* a day, in whichever direction the index went that
+day. So the 07-19 cluster tier is not conservative enough: it treats
+each (series, close_time) ladder as an independent draw, but all
+same-day index ladders resolve off ONE underlying path. Financials 24h
+d5 was promoted to `flagged_robust` this run on evidence that is 61%
+one day's move. HARDENING SHIPPED (80e7623): every bucket now reports
+`days` (distinct settlement days), `top_day_share` (largest day's share
+of n) and a `flagged_day_robust` tier — Wilson with n = days, the
+perfect-within-DAY-correlation worst case. Tiers nest (days <= clusters
+<= n), each strictly more conservative than the last;
+`flagged`/`flagged_robust` untouched for cross-report comparability per
+the divergence-matcher precedent. The day tier is deliberately TOO
+harsh where same-day markets have unrelated underlyings (weather across
+89 days collapses 16,397 markets and 3,372 genuine clusters to 89
+draws) — it is a bound, not an estimate, and `top_day_share` is the
+tier-neutral read. Two regression tests (250 independent series on ONE
+day: cluster tier keeps the flag, day tier must swallow it,
+top_day_share 1.0; same 250 spread one-per-day: day tier agrees); red
+on exactly those two (KeyError 'days'), green with. Suite 312→314, ruff
+clean, pushed. No promote — atlas is sim-side, no timer runs it. **THE
+RESULT, AND IT STRENGTHENS THE STANDING CONCLUSION**: 93 flagged → 63
+robust → **12 day-robust**, and all 12 survivors are
+signature-direction, ZERO counter-signature. The motivating bucket
+(Financials 24h d5, `top_day_share` 0.61 — the highest in the report)
+is correctly killed. So is the run's single counter-signature robust
+bucket (Financials 1h d3, newly flagged AND newly robust this run,
+gap +0.0589) — the "zero counter-signature survivors" claim, which
+would have broken 62/63 at the cluster tier this run, holds intact at
+the strictest bound available. Every day-tier survivor carries
+|gap| >= 0.08. Report: `reports/atlas/20260728T141944.json` (the
+pre-fix run is `20260728T141518.json`). PRACTICAL RULE going forward,
+alongside the 07-28 bracket-spacing rule: **an atlas bucket with
+`top_day_share` above ~0.3 is a bet on one day, not a calibration
+finding** — read `flagged_day_robust` before treating any Financials
+mid-decile bucket as a strategy lead. STANDING REPORTS: weather maker
+bracket (07-28 02:17 UTC) within cadence and, per the new spacing rule,
+not an independent reading until it crosses a daily expiry (>~24h);
+econ bracket (07-27 02:16 UTC) needs >=336h; QA (07-28 07:00 UTC);
+divergence unchanged — shadow run 20260722T081852 still open. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-28 02:20 UTC (REPORT CLOCKS ALIGNED TO UTC — the
 deferred item from the prior pass, shipped; and the first real use of
 the new independence block correctly REFUSES to call this run a
 reading, while narrowing yesterday's "weather is clean" claim.
