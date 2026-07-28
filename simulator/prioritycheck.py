@@ -38,7 +38,7 @@ import argparse
 import json
 import statistics
 from collections import defaultdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from hyxlab.store import connect_retry
@@ -173,7 +173,7 @@ def main() -> None:
             "within_1ms_frac": round(sum(1 for x in dt_ms if abs(x) <= 1) / len(dt_ms), 4),
         }
     report = {
-        "generated_at": str(datetime.now().replace(microsecond=0)),
+        "generated_at": str(datetime.now(UTC).replace(tzinfo=None, microsecond=0)),
         "window_hours": args.hours,
         "markets": len(markets),
         "trades": tot,
@@ -194,7 +194,7 @@ def main() -> None:
     }
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{datetime.now():%Y%m%dT%H%M%S}.json"
+    out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
     for k, v in report.items():
         if k not in ("per_market", "note"):

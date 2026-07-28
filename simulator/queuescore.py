@@ -36,7 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from hyxlab.store import connect_retry
@@ -265,7 +265,7 @@ def main() -> None:
     composition = series_composition(all_orders)
     out_dir = Path(args.out)
     report = {
-        "generated_at": str(datetime.now().replace(microsecond=0)),
+        "generated_at": str(datetime.now(UTC).replace(tzinfo=None, microsecond=0)),
         "window_hours": args.hours,
         "orders": n,
         "crossing_filled": len(crossed),
@@ -287,7 +287,7 @@ def main() -> None:
         "orders_detail": [o.summary() for o in all_orders],
     }
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{datetime.now():%Y%m%dT%H%M%S}.json"
+    out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
     for k, v in report.items():
         if k != "orders_detail":
