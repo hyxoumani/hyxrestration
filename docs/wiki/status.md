@@ -1,6 +1,65 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-27 20:20 UTC (21ST WEATHER MAKER BRACKET — AND THE
+Updated: **2026-07-28 02:20 UTC (REPORT CLOCKS ALIGNED TO UTC — the
+deferred item from the prior pass, shipped; and the first real use of
+the new independence block correctly REFUSES to call this run a
+reading, while narrowing yesterday's "weather is clean" claim.
+THE FIX (b8f51b1): `queuescore.py` and `prioritycheck.py` stamped
+`generated_at` and their report FILENAMES with a naive
+`datetime.now()`, while `atlas`/`shadow`/`harness`/`divergence`/
+`pair_candidates` all used `datetime.now(UTC)`. The box runs UTC-5, so
+every maker-bracket filename read ~5h earlier than the instant it was
+written, and every staleness figure in this log computed off a bracket
+filename has been ~5h pessimistic. Both modules now use the atlas
+idiom. Filename ordering stays monotone across the switch (a UTC name
+is always later than the local name of the same instant), so
+`independence_vs_prior`'s sorted-glob "most recent comparable prior"
+lookup is unaffected; historical filenames are deliberately NOT
+rewritten — they are inputs to that lookup, and rewriting them would be
+a retro-rescue. The test is a tree-wide AST invariant (no
+`datetime.now()` without an explicit tz, across all four packages)
+rather than two call-site assertions, because atlas was already correct
+and queuescore was simply missed — a per-site test would not have
+caught this one and would not catch the next report module either. Red
+on exactly the two files, green on the other 55, which also proves no
+other module violates it. Suite 255->312 (+57 parametrized module
+checks), ruff clean, pushed. No promote: both are sim-side tools, no
+timer runs them. THE VERIFICATION RUN, and why it is NOT the 22nd
+weather bracket: ran `queuescore --hours 24` to exercise the changed
+path end-to-end. Filename `20260728T021715.json` now matches `date -u`
+— fix confirmed in the real pipeline. But `independence` reports
+**`new_share: 0.10`** (25 new orders of 250; prior
+`20260727T151833.json`) — the prior weather run was only ~6h ago
+against a 24h trailing window, so this is 90% the SAME orders
+re-measured. It is logged as a non-reading and the sign sequence is
+UNCHANGED at .../inside(19th)/UNDER-by-1(20th)/inside(21st). For the
+record only, since a future pass will otherwise wonder: it scored
+crossing 147 vs queue [148 pess, 165 opt], nominally 1 below the floor,
+with crossing_but_not_pess=21 vs pess_but_not_crossing=22 (~0.95:1,
+symmetric). That the SAME order set drifts from inside (146 vs 145
+pess) to under-by-1 (147 vs 148) on a 10% data increment is a useful
+calibration fact in its own right: the +/-1-order boundary calls this
+log has been reporting are well inside the resolution of the
+measurement, which retroactively supports having called both the 20th's
+and this breach noise. THE REFINEMENT: yesterday's pass concluded
+"weather is clean" because `KXHIGH*` markets expire daily and churn the
+top-8 set incidentally. This run narrows that — weather's independence
+comes from spacing that CROSSES a daily expiry boundary, not from
+weather as a category. At 6h spacing both runs sit inside the same
+26JUL27 expiry and share 90% of orders; the 21st run scored
+`new_share: 1.0` only because it crossed 26JUL26 -> 26JUL27. Practical
+rule going forward: **a weather bracket is an independent reading only
+if the prior run was on a different expiry day (spacing >~24h); econ
+needs >=336h.** Re-running sooner is not wrong, it is just not a
+confirmation, and the report now says so itself. STANDING REPORTS:
+atlas (07-27 14:17 UTC) data-gated until the 07-28 11:10 UTC kalshi
+sweep, which is also the next INFORMATIVE Financials reading (Monday
+settlements, per the weekend-non-reading finding); econ bracket (07-27
+02:16 UTC) within cadence and needs >=336h spacing; QA (07-27 07:00
+UTC, all-PASS); divergence unchanged — shadow run 20260722T081852 still
+open. Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-27 20:20 UTC (21ST WEATHER MAKER BRACKET — AND THE
 SAME "IS THIS ACTUALLY A NEW READING?" BUG CLASS FOUND IN THE BRACKET
 SEQUENCE, WHERE IT BITES THE ECON TRACK HARD. Yesterday's atlas pass
 found that weekend "flat" Financials readings were the same data
