@@ -1,6 +1,90 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-29 14:20 UTC (ATLAS ON THE WEDNESDAY-SETTLEMENT
+Updated: **2026-07-29 20:45 UTC (EVERY STANDING REPORT GATED, SO THE
+UNIT-OF-COUNTING LENS WENT WHERE IT HAD NEVER BEEN POINTED — *ACROSS*
+ATLAS BUCKETS — AND FOUND TWO THINGS, THE SECOND ONE UNDERMINING THE
+DRIFT METHOD ITSELF. Gate check first: atlas ran 14:18 UTC and is
+data-gated until the 07-30 11:10 UTC kalshi sweep (confirmed hard, not
+estimated: all 260 buckets' `n` are unchanged since that report);
+weather bracket ran 07-29 02:15 UTC and per the spacing rule needs
+>~24h to cross a daily expiry, so 07-30 02:15; econ needs >=336h (next
+~08-10); QA fired 07:00 UTC; divergence unchanged — shadow run
+20260722T081852 still open. Nothing runnable, so ladder rung 4.
+**FINDING 1, AND IT IS THE EIGHTH INSTANCE OF THE CLASS**: atlas has
+three correlation tiers (n -> clusters -> days) and every one of them
+bounds correlation *within* a bucket. Nothing bounded it BETWEEN
+buckets, and the horizon dimension duplicates evidence by construction
+— a market enters up to five horizon buckets and its `result` is the
+SAME in all of them. PROBED BEFORE BUILDING: 89,371 settled markets
+produce 205,602 bucket observations (2.3x reuse), Climate and Weather
+1h d0 and 6h d0 share **98.8%** of the smaller bucket's markets, and
+among the 16 day-robust survivors Financials 24h d8 / 6h d8 share 58%.
+So every headline this log has reported for weeks — 87/93/91 flagged,
+59/67 robust, 12/16 day-robust — is a count of BUCKETS presented as a
+count of findings. HARDENING SHIPPED (705273e): `cross_bucket_overlap`
+unions survivors sharing >=30% of the smaller bucket's markets and
+reports `groups`. **91 flagged -> 28 groups, 67 robust -> 28, 16
+day-robust -> 11.** Share is measured against the SMALLER bucket
+because a small bucket wholly inside a large one is fully redundant
+however small a fraction of the large one it is; `groups` is a LOWER
+bound and `buckets` an UPPER bound, since union-find is transitive and
+pairwise-linked adjacent deciles collapse even where the chain's ends
+share nothing (the Commodities d0-d4 group). Same standing as the day
+tier: a bound, not an estimate. Headline/bucket fields untouched for
+comparability per the divergence-matcher / atlas-day-tier /
+bracket-concentration precedent. **THE STANDING CLAIM SURVIVES ITS
+STRICTEST TEST YET**: 11 distinct day-tier findings, still ZERO
+counter-signature, min |gap| 0.083. **FINDING 2, FOUND WHILE BUILDING
+FINDING 1, AND IT HITS THE METHOD RATHER THAN A NUMBER**: the last
+several passes all work by diffing two atlas reports and chasing the
+drift, which assumes an identical run on unchanged data gives identical
+numbers. It did not. `implied` was `avg(mid)`, and DuckDB accumulates a
+float average in a parallelism-dependent order. Measured over 8
+back-to-back runs of the same query on the same connection: **238 of
+260 buckets returned a different raw `implied`, and 3 flipped their
+reported 4th decimal** (Climate/Weather 1h d2 0.2371<->0.2372,
+Climate/Weather 7d d3 0.3637<->0.3638, Science and Tech 72h d2
+0.2612<->0.2613) because their exact mean sits on a rounding boundary —
+and `flagged` was likewise non-deterministic for any bucket whose
+implied sat on a Wilson endpoint. No past conclusion is affected (the
+phantom is 1e-4 against a smallest-ever-chased drift of 0.033) but a
+future pass would have chased it, and the 14:18 report demonstrably
+captured a coin-flip: re-running on identical data prints Science and
+Tech 72h d2 as 0.2612 where that report says 0.2613. FIXED (7462e5c):
+`implied` is summed in exact DECIMAL, which is order-independent — 8
+identical runs are now bit-identical on the live archive. `realized`
+was left as `avg()` on measurement, not assumption: a sum of exact
+1.0/0.0 doubles is exact regardless of order and it never varied.
+Nondeterminism needs production scan sizes and cannot be provoked on a
+fixture, so its tests assert the mechanism (no float `avg` in the
+implied projection, `--` comments stripped so the fix's own comment
+cannot satisfy the check — it did on the first try) plus exact
+correctness on a hand-picked mid triple whose float and exact means are
+different doubles. Overlap tier tests: same 250 markets at 1h and 6h
+must read as ONE group; two disjoint flagged buckets must stay two (so
+the tier discriminates rather than collapsing everything); and the
+smaller-bucket denominator, verified by mutation — flipping min to max
+reddens only that test. Suite 325->330, ruff clean, pushed. No promote
+— atlas is sim-side, no timer runs it (verified against
+`scripts/systemd/`). Verification report:
+`reports/atlas/20260729T203821.json`, explicitly a pipeline
+verification and NOT a reading, since no bucket gained an observation
+since 14:18. PRACTICAL RULES, joining the `top_day_share`,
+`direction_underlying_robust`, connection-scoped-`seq` and
+own-(category,horizon) rules: **(a) read
+`cross_bucket_overlap.tiers.<tier>.groups`, not the length of the
+survivor list, as an atlas tier's sample size — the flagged count
+overstates findings by ~3x; (b) atlas reports written before 7462e5c
+have 4th-decimal `implied` noise, so any pre-07-29-20:38 drift below
+~1e-3 is uninterpretable.** NEXT PASS: the 07-30 02:15 UTC weather
+bracket is independent run #3 and the first to carry the event tier
+natively — two under-award events in a row at the strictest tier would
+be the first real directional signal in 23 runs; the 07-30 11:10 UTC
+sweep then opens the atlas gate for the first reading whose drift is
+measured against a reproducible baseline. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-29 14:20 UTC (ATLAS ON THE WEDNESDAY-SETTLEMENT
 INCREMENT — THE HEADLINE DRIFT IS REAL AND SIGNATURE-CONFIRMING, BUT
 THE BUCKET THE LAST PASS KILLED IS BIT-IDENTICAL AND
 `settled_by_category` CANNOT SEE IT. SEVENTH INSTANCE OF THE
