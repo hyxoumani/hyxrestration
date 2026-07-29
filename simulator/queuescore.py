@@ -121,6 +121,38 @@ def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition
     }
 
 
+def event_ticker(market_id: str) -> str:
+    """The Kalshi EVENT a market belongs to: `SERIES-EVENT-STRIKE` -> `SERIES-EVENT`.
+
+    Every strike on one event resolves off a single underlying path — the three
+    `KXHIGHNY-26JUL28-B{77.5,79.5,81.5}` brackets are one New York temperature,
+    and `KXCPI-26JUL-T{-0.1,0.0,0.1}` is one CPI print. Split from the LEFT, not
+    with `rsplit`: strike suffixes can themselves contain '-' (`...-T-0.1`),
+    while Kalshi series tickers do not.
+    """
+    return "-".join(market_id.split("-", 2)[:2])
+
+
+def _direction_tier(nets: dict[str, int], agg: int) -> dict:
+    """Shared over/under/tied split and majority test for one unit of grouping."""
+    over = sum(1 for v in nets.values() if v > 0)
+    under = sum(1 for v in nets.values() if v < 0)
+    decisive = over + under
+    agreeing = over if agg > 0 else under if agg < 0 else 0
+    abs_total = sum(abs(v) for v in nets.values())
+    return {
+        "units": len(nets),
+        "abs_net": abs_total,
+        "top_net_share": (
+            round(max(abs(v) for v in nets.values()) / abs_total, 4) if abs_total else None
+        ),
+        "net_over": over,
+        "net_under": under,
+        "net_tied": len(nets) - decisive,
+        "robust": agg != 0 and agreeing * 2 > decisive,
+    }
+
+
 def concentration_by_market(orders: list[VirtualOrder]) -> dict:
     """Is the crossing-vs-queue disagreement a fill-model bias, or one market?
 
@@ -146,6 +178,12 @@ def concentration_by_market(orders: list[VirtualOrder]) -> dict:
       headline verdict, deliberately harsh where markets genuinely differ —
       the headline fields are untouched for cross-report comparability, per
       the divergence-matcher and atlas-day-tier precedent.
+
+    The market is not the coarsest unit, so the same fields are reported one
+    level up over the EVENT (`direction_underlying_robust`, see
+    `event_ticker`). A weather run's "8 markets" are in practice 3-4 city-days
+    of strike ladders, and an econ run's are 4-5 prints; the tiers nest
+    (underlyings <= markets <= orders), each strictly more conservative.
     """
     per: dict[str, list[int]] = {}
     for o in orders:
@@ -163,6 +201,12 @@ def concentration_by_market(orders: list[VirtualOrder]) -> dict:
     under = sum(1 for v in nets.values() if v < 0)
     decisive = over + under
     agreeing = over if agg > 0 else under if agg < 0 else 0
+
+    und_nets: dict[str, int] = {}
+    for m, v in nets.items():
+        u = event_ticker(m)
+        und_nets[u] = und_nets.get(u, 0) + v
+    und = _direction_tier(und_nets, agg)
     return {
         "markets": len(per),
         "top_market_order_share": (
@@ -177,6 +221,17 @@ def concentration_by_market(orders: list[VirtualOrder]) -> dict:
         "markets_net_under": under,
         "markets_net_tied": len(per) - decisive,
         "direction_market_robust": agg != 0 and agreeing * 2 > decisive,
+        "underlyings": und["units"],
+        "abs_net_by_underlying": und["abs_net"],
+        "top_underlying_net_share": und["top_net_share"],
+        "underlyings_net_over": und["net_over"],
+        "underlyings_net_under": und["net_under"],
+        "underlyings_net_tied": und["net_tied"],
+        "direction_underlying_robust": und["robust"],
+        "per_underlying": [
+            {"event_ticker": u, "net": und_nets[u]}
+            for u in sorted(und_nets, key=lambda u: -abs(und_nets[u]))
+        ],
         "per_market": [
             {"market_id": m, "orders": per[m][0], "cross_only": per[m][1], "pess_only": per[m][2]}
             for m in sorted(per, key=lambda m: -abs(nets[m]))
@@ -352,7 +407,11 @@ def main() -> None:
             " direction_market_robust before calling any over/under verdict,"
             " and compare abs_net_by_market against net_disagreement — a"
             " near-zero aggregate built from large opposing per-market nets"
-            " is cancellation, not precision."
+            " is cancellation, not precision. Markets are not the coarsest"
+            " unit either: every strike on one EVENT (city-day, CPI print)"
+            " rides one underlying path, so direction_underlying_robust is the"
+            " strictest bound available and underlyings is the honest sample"
+            " size — a weather run's 8 markets are 3-4 city-days."
         ),
         "orders_detail": [o.summary() for o in all_orders],
     }

@@ -11,6 +11,7 @@ from hyxlab.streamstore import StreamStore
 from simulator.queuescore import (
     VirtualOrder,
     concentration_by_market,
+    event_ticker,
     independence_vs_prior,
     score_market,
     select_markets,
@@ -181,6 +182,51 @@ def test_concentration_keeps_a_direction_agreed_across_markets():
     assert c["net_disagreement"] == 27
     assert c["markets_net_over"] == 4 and c["markets_net_under"] == 1
     assert c["direction_market_robust"] is True
+
+
+def test_underlying_tier_refuses_a_direction_carried_by_one_strike_ladder():
+    """The market tier's own "agreed across markets" case is four strikes on
+    ONE New York day — one temperature path, not four draws. The strictest
+    tier must refuse it while the market tier keeps it."""
+    orders = [
+        _disagreeing(f"KXHIGHNY-26JUL27-B8{m}.5", "cross", m * 10 + i)
+        for m in range(4)
+        for i in range(7)
+    ]
+    orders.append(_disagreeing("KXHIGHMIA-26JUL27-B90.5", "pess", 99))
+
+    c = concentration_by_market(orders)
+
+    assert c["direction_market_robust"] is True  # 4 markets vs 1
+    assert c["underlyings"] == 2  # ...which are 2 city-days
+    assert c["underlyings_net_over"] == 1 and c["underlyings_net_under"] == 1
+    assert c["top_underlying_net_share"] == round(28 / 29, 4)
+    assert c["direction_underlying_robust"] is False
+
+
+def test_underlying_tier_keeps_a_direction_agreed_across_events():
+    """The same net spread over separate city-days survives — the tier
+    discriminates rather than killing every reading."""
+    orders = [
+        _disagreeing(f"KXHIGH{city}-26JUL27-B80.5", "cross", c0 * 10 + i)
+        for c0, city in enumerate(("NY", "MIA", "CHI"))
+        for i in range(7)
+    ]
+    orders.append(_disagreeing("KXHIGHDEN-26JUL27-T93", "pess", 99))
+
+    c = concentration_by_market(orders)
+
+    assert c["underlyings"] == 4
+    assert c["underlyings_net_over"] == 3 and c["underlyings_net_under"] == 1
+    assert c["direction_underlying_robust"] is True
+
+
+def test_event_ticker_keeps_negative_strike_suffixes_out_of_the_key():
+    """`KXCPI-26JUL-T-0.1` is one CPI print: the strike itself carries a '-',
+    so the event key must be split from the left, never rsplit."""
+    assert event_ticker("KXCPI-26JUL-T-0.1") == "KXCPI-26JUL"
+    assert event_ticker("KXCPI-26JUL-T0.1") == "KXCPI-26JUL"
+    assert event_ticker("KXHIGHNY-26JUL28-B79.5") == "KXHIGHNY-26JUL28"
 
 
 def test_concentration_calls_a_cancelling_split_undirected():
