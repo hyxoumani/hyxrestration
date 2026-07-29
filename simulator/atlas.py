@@ -131,6 +131,15 @@ ORDER BY 1
 """
 
 
+def _observations_by_category_horizon(buckets: list[dict]) -> dict[str, int]:
+    """Per (category, horizon) observation counts, keyed 'category|horizon'."""
+    out: dict[str, int] = {}
+    for b in buckets:
+        key = f"{b['category']}|{b['horizon']}"
+        out[key] = out.get(key, 0) + b["n"]
+    return out
+
+
 def build_atlas(conn) -> dict:
     rows = conn.execute(BUCKET_SQL).fetchall()
     buckets = []
@@ -179,6 +188,17 @@ def build_atlas(conn) -> dict:
         # same data re-measured rather than new evidence.
         "settled_by_category": dict(
             conn.execute(SETTLED_BY_CATEGORY_SQL).fetchall()
+        ),
+        # one level finer, and the granularity that actually matters: the
+        # bucket key is (category, HORIZON, decile), and a market only enters
+        # the horizon-h bucket if it carries a candle h before its close.
+        # Same-day index ladders (Financials 24h) therefore gain nothing from
+        # an increment that adds thousands of settled Financials markets, so
+        # settled_by_category can read "+1113 new evidence" over buckets that
+        # are bit-identical. Summed from `buckets` rather than re-queried, so
+        # it describes exactly the population the buckets are built from.
+        "observations_by_category_horizon": _observations_by_category_horizon(
+            buckets
         ),
     }
     return {

@@ -187,3 +187,57 @@ def test_fingerprint_counts_settled_markets_per_category(tmp_path):
     by_cat = build_atlas(store.conn)["data_fingerprint"]["settled_by_category"]
     assert by_cat == {"Financials": 1, "Climate and Weather": 2}
     store.close()
+
+
+def _financials_store(tmp_path):
+    """One Financials series; F_SHORT has a book only 2h before close (so it
+    reaches the 1h bucket alone), F_LONG has one 30h before close (so it
+    reaches 1h/6h/24h). This is the production shape: same-day index ladders
+    never carry a candle 24h before their own close."""
+    store = Store(tmp_path / "a.duckdb")
+    store.upsert_series([("kalshi", "KXDJI", "Dow", "Financials", None, None, None)])
+    store.upsert_markets(
+        [
+            MarketInfo(venue="kalshi", market_id="F_SHORT", series="KXDJI", result="yes", close_time=CLOSE),
+            MarketInfo(venue="kalshi", market_id="F_LONG", series="KXDJI", result="no", close_time=CLOSE),
+        ]
+    )
+    store.insert_candles(
+        [
+            _candle(0.40, "F_SHORT", (CLOSE - timedelta(hours=2)).replace(tzinfo=None)),
+            _candle(0.40, "F_LONG", (CLOSE - timedelta(hours=30)).replace(tzinfo=None)),
+        ]
+    )
+    return store
+
+
+def test_fingerprint_breaks_observations_out_by_horizon(tmp_path):
+    # a category can gain settled markets while a given HORIZON gains none:
+    # a market only enters the horizon-h bucket if it has a candle h before
+    # close. settled_by_category cannot express that, so a category-level
+    # count reads "new evidence" for buckets that are bit-identical.
+    store = _financials_store(tmp_path)
+    fp = build_atlas(store.conn)["data_fingerprint"]
+    obs = fp["observations_by_category_horizon"]
+    assert obs["Financials|1h"] == 2
+    assert obs["Financials|24h"] == 1
+    # the category total is blind to the split that matters
+    assert fp["settled_by_category"]["Financials"] == 2
+    # horizons no market reaches are absent, not silently zero-filled
+    assert "Financials|7d" not in obs
+    store.close()
+
+
+def test_fingerprint_horizon_counts_match_bucket_population(tmp_path):
+    # contract: the fingerprint must describe exactly the observations the
+    # buckets are built from. settled_by_category is a separate query over
+    # `markets` and can drift from BUCKET_SQL's candle gates; this one must
+    # not.
+    store = _financials_store(tmp_path)
+    atlas = build_atlas(store.conn)
+    summed = {}
+    for b in atlas["buckets"]:
+        k = f"{b['category']}|{b['horizon']}"
+        summed[k] = summed.get(k, 0) + b["n"]
+    assert atlas["data_fingerprint"]["observations_by_category_horizon"] == summed
+    store.close()
