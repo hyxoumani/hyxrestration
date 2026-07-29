@@ -146,6 +146,47 @@ def _stream_with_books(path, frames_at):
     return store
 
 
+def test_reconnect_seq_restart_is_not_a_hole(tmp_path):
+    """seq is connection-scoped and restarts at 1 on reconnect, while Kalshi
+    reuses sid=1 for each new connection. Grouping by sid alone welds the
+    runs into one min..max range: a window-truncated run at seq 50..52
+    followed by a fresh run at 1..3 reads as 47 phantom holes. Both runs are
+    internally contiguous, so the check must stay silent."""
+    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
+              ((50, 40), (51, 39), (52, 38), (1, 20), (2, 19), (3, 18))]
+    _stream_with_books(tmp_path / "s.duckdb", frames)
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "book seq contiguous or gap-marked" not in failed
+
+
+def test_hole_not_excused_by_non_overlapping_gap_row(tmp_path):
+    """A gap row excuses only the run it overlaps. The old check passed on
+    ANY gap row in the window, which made it vacuous in production (392 gap
+    rows in a 26h window would excuse every hole in it)."""
+    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
+              ((1, 20), (2, 19), (9, 18))]
+    store = _stream_with_books(tmp_path / "s.duckdb", frames)
+    stale = NOW - timedelta(hours=10)
+    store.append_gap("kalshi", "books", stale, stale, "unrelated")
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "book seq contiguous or gap-marked" in failed
+
+
+def test_hole_excused_by_overlapping_gap_row(tmp_path):
+    """The mirror of the above: the tier must not kill everything — a gap
+    row spanning the run's own interval still excuses its hole."""
+    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
+              ((1, 20), (2, 19), (9, 18))]
+    store = _stream_with_books(tmp_path / "s.duckdb", frames)
+    store.append_gap(
+        "kalshi", "books", NOW - timedelta(minutes=19), NOW - timedelta(minutes=18), "seq_gap"
+    )
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "book seq contiguous or gap-marked" not in failed
+
+
 def test_negative_levels_seq_reset_across_epochs_passes(tmp_path):
     """Kalshi seq resets per re-subscription, so an early snapshot can
     carry the highest seq. Reconstruction must key on the time-latest

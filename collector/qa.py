@@ -86,25 +86,56 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     ).fetchone()[0]
     check("trade price/qty domains", bad == 0, f"{bad} bad rows in window")
 
-    # Seq continuity per sid within the window's connections. A hole the
-    # SeqTracker missed = daemon bug; a hole WITH a matching gap row is fine,
-    # so only alert when holes exist and no gap row covers the window.
-    holes = conn.execute(
-        "SELECT coalesce(sum(mx - mn + 1 - cnt), 0) FROM ("
-        " SELECT sid, min(seq) mn, max(seq) mx, count(DISTINCT seq) cnt"
-        " FROM book_events WHERE recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)"
-        " AND sid IS NOT NULL GROUP BY sid)",
+    # Seq continuity. seq is CONNECTION-scoped and restarts at 1 on every
+    # reconnect, while Kalshi hands out the same sid (1) to the first
+    # subscription of each new connection — so grouping by sid alone welds
+    # every connection in the window into one min..max range and reports the
+    # interleaving as holes (measured 2026-07-29: 8 reconnects in a 26h
+    # window, a garbage count that swung 0 <-> 1.4M on where the window cut).
+    # Segment into connection runs first: ordered by time, a seq that goes
+    # BACKWARDS starts a new run. Holes are then measured strictly inside a
+    # run, and a hole is excused only by a gap row whose interval actually
+    # OVERLAPS that run — "some gap row exists in the window" excuses
+    # everything and makes the check vacuous.
+    runs = conn.execute(
+        """
+        WITH ev AS (
+          SELECT DISTINCT sid, seq, recv_ts FROM book_events
+          WHERE recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
+            AND sid IS NOT NULL AND seq IS NOT NULL
+        ), marked AS (
+          SELECT sid, seq, recv_ts, CASE WHEN seq < lag(seq)
+                   OVER (PARTITION BY sid ORDER BY recv_ts, seq)
+                 THEN 1 ELSE 0 END AS reset
+          FROM ev
+        ), runs AS (
+          SELECT sid, seq, recv_ts, sum(reset) OVER (
+                   PARTITION BY sid ORDER BY recv_ts, seq
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS run
+          FROM marked
+        )
+        SELECT max(seq) - min(seq) + 1 - count(DISTINCT seq) AS holes,
+               min(recv_ts) AS t0, max(recv_ts) AS t1
+        FROM runs GROUP BY sid, run
+        """,
         [now, int(hours)],
-    ).fetchone()[0]
-    gaps = conn.execute(
-        "SELECT count(*) FROM stream_gaps WHERE ended_at > ? - INTERVAL 1 HOUR *"
-        " CAST(? AS INTEGER)",
+    ).fetchall()
+    gap_spans = conn.execute(
+        "SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ?"
+        " - INTERVAL 1 HOUR * CAST(? AS INTEGER)",
         [now, int(hours)],
-    ).fetchone()[0]
+    ).fetchall()
+    holes = sum(h for h, _, _ in runs)
+    unexcused = [
+        (h, t0, t1)
+        for h, t0, t1 in runs
+        if h > 0 and not any(g0 <= t1 and g1 >= t0 for g0, g1 in gap_spans)
+    ]
     check(
         "book seq contiguous or gap-marked",
-        holes == 0 or gaps > 0,
-        f"{holes} seq holes, {gaps} gap rows in window",
+        not unexcused,
+        f"{holes} seq holes over {len(runs)} connection runs, "
+        f"{len(gap_spans)} gap rows, {len(unexcused)} unexcused runs",
     )
 
     # Reconstruct each Kalshi book from its time-latest snapshot image
