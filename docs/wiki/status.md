@@ -1,6 +1,71 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-29 02:30 UTC (22ND WEATHER MAKER BRACKET — THE
+Updated: **2026-07-29 08:30 UTC (THE QA SEQ-CONTINUITY CHECK HAS BEEN
+REPORTING A GARBAGE NUMBER AND COULD NOT FAIL — SAME UNIT-OF-COUNTING
+BUG CLASS, SIXTH INSTANCE, NOW IN THE DAILY DATA-QUALITY GATE ITSELF.
+Gate check first: atlas data-gated until the 07-29 11:10 UTC kalshi
+sweep (not yet fired at 08:15); weather bracket ran 02:15 UTC (~6h) and
+per the spacing rule needs >~24h to cross a daily expiry, so the next
+independent reading is 07-30; econ needs >=336h (next ~08-10);
+divergence unchanged — shadow run 20260722T081852 still open. QA DID
+fire 07-29 07:00 UTC and was the one fresh standing report: all-PASS,
+but **`book seq contiguous or gap-marked — 1468944 seq holes, 418 gap
+rows`** against the 07-27 log line's `14 seq holes`. A 100,000x jump
+that still PASSES is the drift worth chasing. PROBED BEFORE BUILDING,
+against the live stream archive: the 26h window holds 6,547,930 book
+events under exactly **one distinct sid**, with `seq` going BACKWARDS
+to 1 at eight separate instants (07-28 06:43, 08:04, 09:20, 14:31,
+21:40, 22:40, 07-29 06:00, 07:01). Kalshi's `seq` is CONNECTION-scoped
+and restarts at 1 on every reconnect, while the server hands `sid=1`
+to the first subscription of each new connection — a fact the file's
+own reconstruction comment 20 lines below already recorded (`seq is NOT
+usable as an ordering key here: it is subscription-scoped and resets on
+every reconnect`) while the check above it grouped by sid alone. So the
+query welded 9 disjoint connection runs into one min..max range and
+called the interleaving holes. It is not merely wrong, it is
+UNSTABLE: re-running the identical query at 08:16 instead of 07:00 gave
+**0** holes, because the artifact is entirely a function of where the
+window truncates the leading run (a run clipped to seq 800k..1.39M
+followed by a restart at 1 fabricates ~600k phantom holes; a window
+whose runs happen to tile 1..max densely fabricates none). Every seq
+hole figure in this log's QA lines is therefore uninterpretable noise,
+including the reassuring `14`. SECOND, INDEPENDENT DEFECT in the same
+three lines: the pass condition was `holes == 0 or gaps > 0` — ANY gap
+row anywhere in the 26h window excused ANY number of holes, and
+production carries 392 of them. The check could not fail in production
+regardless of daemon behaviour; it has been decorative since it was
+written. HARDENING SHIPPED (a556b31): holes are now measured strictly
+inside a connection run (ordered by time, a backwards `seq` opens a new
+run via a windowed reset-cumsum), and a hole is excused only by a gap
+row whose `[started_at, ended_at]` interval OVERLAPS that run. Unlike
+the atlas/queuescore tier precedent the old headline is NOT preserved
+for comparability — it is an artifact, not a coarser valid measure, so
+it is replaced outright and the historical values are void. Three
+regression tests: window-truncated run at seq 50..52 followed by a
+fresh run at 1..3 must stay silent (old code: 47 phantom holes, RED);
+a real hole with a non-overlapping gap row 10h away must trip (old
+code: excused, RED); the mirror control, a real hole with a gap row
+spanning the run's own interval, still excused (green both ways, so the
+tier discriminates rather than killing everything). Suite 320->323,
+ruff clean, pushed, and **PROMOTED** — unlike the last four passes this
+is collector-side and the `hyxlab-qa` timer runs it from the stable
+worktree; verified in that worktree post-promote. THE CORRECTED
+READING, and the daemon is fine: **44 seq holes over 9 connection runs,
+392 gap rows, 0 unexcused runs.** Every real hole is covered by a gap
+row the SeqTracker logged, which is exactly the healthy signature. The
+alarming 1.47M was never a data-loss event. PRACTICAL RULE, joining the
+atlas `top_day_share` and bracket `direction_underlying_robust` rules:
+**`seq` is only comparable within one connection — any query that
+groups Kalshi book events by `sid` alone is counting across reconnects.
+Read `unexcused runs`, not the raw hole count.** NEXT PASS: the 07-29
+11:10 UTC sweep opens the atlas gate (Wednesday settlements, so an
+informative Financials increment), and the 07-30 weather bracket is
+independent run #3 — the first to carry the event tier natively; two
+under-award events in a row at the strictest tier would be the first
+real directional signal in 22 runs. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-29 02:30 UTC (22ND WEATHER MAKER BRACKET — THE
 SPACING GATE OPENED AND THE RUN IS THE STRONGEST READING IN THE
 ARCHIVE, IN THE OPPOSITE DIRECTION TO THE LEAN THE LAST PASS GATED.
 Gate check first: prior weather bracket 07-28 02:17 UTC, so at 02:15

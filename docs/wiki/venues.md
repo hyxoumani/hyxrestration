@@ -33,7 +33,16 @@ markets/candles are unrecoverable. Streams are unrecoverable everywhere.
   over `ts_ms + "GET" + path`, headers KALSHI-ACCESS-{KEY,TIMESTAMP,
   SIGNATURE}. Creds: `.env` + `.secrets/kalshi.pem`. `trade` channel =
   exchange-wide firehose (~105 ev/s); book/ticker channels need
-  market_tickers.
+  market_tickers. **`seq` is CONNECTION-scoped and restarts at 1 on
+  every reconnect, and `sid` does NOT distinguish connections** — the
+  server hands `sid=1` to the first subscription of each new connection,
+  so the archive holds many disjoint seq runs under one sid (measured
+  2026-07-29: 8 reconnects in a 26h window, all sid=1). Any query that
+  groups book events by `sid` alone is counting across reconnects; the
+  in-flight `SeqTracker` is safe because the daemon builds a fresh one
+  per connection, but archive-side continuity must segment on a
+  backwards `seq` first (`collector/qa.py`). Likewise `seq` is unusable
+  as a replay ordering key — key on `recv_ts`.
 - Polymarket WS `ws-subscriptions-clob.polymarket.com/ws/market`: no
   auth; send `{"type":"market","assets_ids":[...]}`; initial `book` per
   token then `price_change` deltas; ~5 connections/IP.

@@ -111,6 +111,24 @@ Format: what happened → root cause → error type → prevention tier
     lines, hiding that ALL series failed — diagnose from full logs or
     journals, never a tail-truncated pipe.
 
+14. **A green check that could not go red, on a metric that was noise
+    (2026-07-29).** `qa.py`'s seq-continuity check grouped Kalshi book
+    events by `sid`, but `seq` is connection-scoped and `sid=1` is
+    reused per connection — so 9 reconnect runs were welded into one
+    min..max range and the interleaving reported as holes. The figure
+    was not just wrong but window-dependent: 1,468,944 at 07:00, 0 at
+    08:16, same data. Its pass condition (`holes == 0 or gaps > 0`) was
+    separately satisfied by any one of production's ~392 gap rows, so
+    the check had never been able to fail. Corrected reading: 44 holes
+    over 9 runs, 0 unexcused. Type: `wrong-assumption` (venue semantics
+    unverified) + `vacuous-assertion`. The tell that should have been
+    caught earlier: the SAME file, 20 lines below, already documented
+    `seq ... resets on every reconnect` for the reconstruction query —
+    **a constraint recorded in one code path is not enforced in its
+    neighbours; grep the invariant, don't trust the comment's scope.**
+    Escalated to test (three regressions incl. a non-vacuity control)
+    and to `venues.md` as durable venue semantics.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
