@@ -41,6 +41,26 @@ cities); it is a bound, not an estimate. `top_day_share` is the tier-neutral
 read: a bucket carrying most of its evidence on one day is a bet on that
 day, not a calibration finding.
 
+Reproducibility (2026-07-29): the last several passes' method is "diff two
+atlas reports and chase the drift", which silently assumes that running the
+atlas twice on unchanged data gives the same numbers. It did not. `implied`
+was `avg(mid)`, and DuckDB accumulates a floating-point average in an order
+that depends on how it parallelises the scan — so the low bits move between
+identical runs. Measured over 8 back-to-back runs of the same query on the
+same connection: 238 of 260 buckets returned a different raw `implied`, and
+THREE flipped their reported 4-decimal value (Climate and Weather 1h d2
+0.2371<->0.2372, Climate and Weather 7d d3 0.3637<->0.3638, Science and
+Technology 72h d2 0.2612<->0.2613) because their exact mean lands on a
+rounding boundary. No past conclusion is affected — the phantom is 1e-4 and
+the smallest drift ever chased here was 0.033 — but a future pass diffing
+reports would have found up to three buckets "drifting" with no new data, and
+`flagged` itself was non-deterministic for any bucket whose implied sat on a
+Wilson endpoint. `implied` is now summed in exact DECIMAL, which is
+order-independent. This is a property of production-scale parallelism and
+cannot be reproduced on a unit-test fixture, so the regression test asserts
+the mechanism (no floating-point `avg` in the implied projection) plus exact
+correctness on a hand-computed fixture.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -98,7 +118,15 @@ WITH settled AS (
   FROM pts
 ), agg AS (
   SELECT category, h_label, decile,
-         count(*) AS n, avg(mid) AS implied,
+         count(*) AS n,
+         -- NOT avg(mid): see the reproducibility note in the module docstring.
+         -- DuckDB accumulates a floating-point avg in a parallelism-dependent
+         -- order, so `implied` was not reproducible run-to-run. Exact DECIMAL
+         -- addition is order-independent, so this is.
+         CAST(sum(CAST(mid AS DECIMAL(18, 6))) AS DOUBLE) / count(*) AS implied,
+         -- realized is already reproducible: a sum of exact 1.0/0.0 doubles is
+         -- itself exact, so summation order cannot change it. Measured, not
+         -- assumed — it never varied across 8 identical production runs.
          avg(CASE WHEN result = 'yes' THEN 1.0 ELSE 0.0 END) AS realized,
          count(DISTINCT (series, close_time)) AS clusters,
          count(DISTINCT close_day) AS days

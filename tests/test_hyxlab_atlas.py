@@ -7,7 +7,7 @@ import pytest
 
 from hyxlab.models import MarketInfo
 from hyxlab.store import Store
-from simulator.atlas import build_atlas, wilson
+from simulator.atlas import BUCKET_SQL, build_atlas, wilson
 
 CLOSE = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 
@@ -161,6 +161,41 @@ def test_evidence_spread_across_days_keeps_day_robust_flag(tmp_path):
     assert b["flagged_robust"] and b["days"] == 250
     assert b["top_day_share"] == pytest.approx(1 / 250)
     assert b["flagged_day_robust"]
+
+
+def test_implied_is_not_a_floating_point_average():
+    # `implied` must not be a float avg(). DuckDB accumulates one in a
+    # parallelism-dependent order, so the value moved between identical runs
+    # on production data: 238/260 buckets differed in their raw implied and 3
+    # flipped their reported 4th decimal, which the report-diff drift method
+    # would read as real drift. Asserted on the SQL because the nondeterminism
+    # only appears at production scan sizes and cannot be provoked by a
+    # fixture — same reasoning as the tree-wide datetime.now() tz invariant.
+    # `--` comments are stripped first: the fix's own comment names avg(mid),
+    # and a check that a comment can satisfy is not a check.
+    code = "\n".join(line.split("--")[0] for line in BUCKET_SQL.splitlines())
+    assert "avg(mid)" not in code
+    assert "sum(CAST(mid AS DECIMAL(18, 6)))" in code
+
+
+def test_implied_is_the_exact_mean_not_the_float_mean(tmp_path):
+    # the value half of the same fix: exact DECIMAL accumulation must also be
+    # RIGHT. Mids 0.200/0.205/0.290 all sit in decile 2 and were chosen because
+    # their float mean (0.2316666666666667) and their exact mean
+    # (0.23166666666666666) are different doubles — so this fails with avg()
+    # and passes with the exact sum.
+    store = Store(tmp_path / "a.duckdb")
+    infos, candles = [], []
+    t = (CLOSE - timedelta(hours=2)).replace(tzinfo=None)
+    for i, mid in enumerate((0.200, 0.205, 0.290)):
+        infos.append(MarketInfo(venue="kalshi", market_id=f"M{i}", result="yes", close_time=CLOSE))
+        candles.append(_candle(mid, f"M{i}", t))
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    row = [r for r in store.conn.execute(BUCKET_SQL).fetchall() if r[1] == "1h"]
+    assert len(row) == 1 and row[0][2] == 2 and row[0][3] == 3
+    assert row[0][4] == 0.23166666666666666
+    store.close()
 
 
 def test_fingerprint_counts_settled_markets_per_category(tmp_path):
