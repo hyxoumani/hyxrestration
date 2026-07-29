@@ -1,6 +1,79 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-28 20:20 UTC (ALL STANDING REPORTS GATED — SO THE
+Updated: **2026-07-29 02:30 UTC (22ND WEATHER MAKER BRACKET — THE
+SPACING GATE OPENED AND THE RUN IS THE STRONGEST READING IN THE
+ARCHIVE, IN THE OPPOSITE DIRECTION TO THE LEAN THE LAST PASS GATED.
+Gate check first: prior weather bracket 07-28 02:17 UTC, so at 02:15
+UTC today the >~24h expiry-crossing rule was satisfied to the minute —
+and the report confirms it rather than my arithmetic, `new_share: 1.0`
+(249/249 new, all 26JUL28 markets vs the prior run's 26JUL27). Atlas
+still data-gated until the 07-29 11:10 UTC kalshi sweep; econ needs
+>=336h (next ~08-10); QA fires 07:00 UTC; divergence unchanged — shadow
+run 20260722T081852 still open. THE RUN: 249 virtual orders across 8
+markets (KXHIGHNY 94, KXHIGHCHI 66, KXHIGHMIA 59, KXHIGHDEN 30),
+crossing **156 vs queue [165 pess, 177 opt]** — 9 orders BELOW the
+pessimistic floor, with crossing_but_not_pess=21 vs
+pess_but_not_crossing=30 (~0.7:1, the most under-skewed split of any
+weather run). This is the first breach in the whole sequence that is
+not a +/-1 knife-edge: last pass established a one-order call is ~7% of
+the disagreement actually present, and 9 is outside that. It is also
+`direction_market_robust: true` (4 of 6 leaning markets under, 2 over,
+2 tied; abs_net_by_market 21 vs net -9, top_market_net_share 0.33).
+**So it is simultaneously certified-independent AND market-robust — the
+first reading in the archive that is both.** Report:
+`reports/maker_bracket/20260729T021553.json`. THE FINDING, AND IT IS
+THE SAME BUG CLASS FOR THE FIFTH TIME, NOW INSIDE THE TIER SHIPPED
+LAST PASS: the market tier counts `markets: 8`, but those 8 are
+`KXHIGHNY-26JUL28-B{77.5,79.5,81.5}` and friends — three STRIKES on one
+New York temperature, on one day. Same for econ, where
+`KXCPI-26JUL-T{-0.1,0.0,0.1}` is one CPI print. The honest unit is the
+Kalshi EVENT, and the run's 8 markets are **4 city-days**. PROBED
+BEFORE BUILDING, by rehydrating `orders_detail` from all 32 archived
+reports and computing both tiers: the event tier demotes 4 runs the
+market tier called direction-robust — 07-23 15:16, 07-23 21:17, 07-26
+15:16, and most pointedly `20260726T211629.json`, the econ run (agg
++23) that LAST PASS CITED as proof the market tier is not vacuous. At
+event level that run is 2 events over / 2 under: no majority, no
+direction. Corrected here. HARDENING SHIPPED (7efd88b): `concentration`
+now carries `underlyings`, `abs_net_by_underlying`,
+`top_underlying_net_share`, the over/under/tied event split, and
+`direction_underlying_robust`; tiers nest (underlyings <= markets <=
+orders), headline and market fields untouched for cross-report
+comparability per the divergence-matcher and atlas-day-tier precedent.
+Three regression tests, one of which is the load-bearing subtlety: the
+event key must be split from the LEFT, because strike suffixes can
+themselves contain '-' (`KXCPI-26JUL-T-0.1` rsplits to
+`KXCPI-26JUL-T`). Weather IDs cannot catch that — verified by
+monkeypatching `event_ticker` to the plausible-wrong `rsplit` and
+confirming only the econ-ID test goes red. Suite 317->320, ruff clean,
+pushed. No promote — queuescore is sim-side, no timer runs it. TODAY'S
+RUN SURVIVES THE NEW TIER: 4 events, 3 under (NY -8, CHI -4, DEN -3) vs
+1 over (MIA +6), `direction_underlying_robust: true`. The archived
+report file is deliberately NOT rewritten to carry the new block —
+reports are immutable inputs to `independence_vs_prior`, same call as
+the 07-28 filename decision; the next run carries it. **WHAT THIS DOES
+TO THE GATED LEAN**: last pass named a data gate — accumulate
+`new_share >= ~0.9` weather brackets and re-test the archive's raw
++16/-6 over-award tally at n>=8. Today is independent run **#2**
+(#1 was `20260727T151833`, agg +1, market tier undirected). Two
+certified-independent readings now exist and NEITHER shows over-award;
+this one is robustly UNDER. That is not a finding at n=2 and the gate
+stands unchanged — but the raw tally it was gating is now actively
+contradicted by every reading that was allowed to count, which is the
+whole reason it was gated. NEXT PASS: the 07-30 weather bracket (>24h
+from 02:15 today) is independent run #3 and the first to carry the
+event tier natively; two under-award events in a row at the strictest
+tier would be the first real directional signal in 22 runs. Standing
+conclusion unaffected: no fixed-haircut shortcut, score maker
+registrations via queue-PESSIMISTIC on their own markets — if anything
+today strengthens the case for the pessimistic floor being the honest
+one. PRACTICAL RULE, superseding last pass's: **read
+`direction_underlying_robust`, not `direction_market_robust`, before
+calling any bracket over/under verdict, and read `underlyings` as the
+sample size — a bracket's market count overstates it by ~2x.**
+Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-28 20:20 UTC (ALL STANDING REPORTS GATED — SO THE
 UNIT-OF-INDEPENDENCE LENS WAS TURNED ON THE MAKER BRACKET ITSELF, AND
 IT LANDS. Gate check first: atlas ran 14:20 UTC and is data-gated until
 the 07-29 11:10 UTC kalshi sweep; weather bracket ran 02:17 UTC (~18h)
