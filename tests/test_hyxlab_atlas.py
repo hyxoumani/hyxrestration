@@ -198,6 +198,89 @@ def test_implied_is_the_exact_mean_not_the_float_mean(tmp_path):
     store.close()
 
 
+def _overlap_tier(store, tier="flagged"):
+    return build_atlas(store.conn)["cross_bucket_overlap"]["tiers"][tier]
+
+
+def test_same_markets_at_two_horizons_are_one_finding(tmp_path):
+    # 250 miscalibrated markets whose only candle sits 7h before close, so each
+    # one enters BOTH the 1h and the 6h bucket at the same decile. Two buckets
+    # flag, but they are the identical market population and a market settles
+    # the same way at every horizon — so this is ONE finding, not two. The
+    # survivor COUNT was the number the status log has been reporting.
+    store = Store(tmp_path / "a.duckdb")
+    infos, candles = [], []
+    t = (CLOSE - timedelta(hours=7)).replace(tzinfo=None)
+    for i in range(250):
+        infos.append(MarketInfo(venue="kalshi", market_id=f"F{i}", series=f"S{i}", result="yes", close_time=CLOSE))
+        candles.append(_candle(0.90, f"F{i}", t))
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    tierinfo = _overlap_tier(store)
+    assert tierinfo["buckets"] == 2
+    assert tierinfo["groups"] == 1
+    assert tierinfo["max_share_of_smaller"] == 1.0
+    assert tierinfo["shared_groups"] == [["?|1h|d9", "?|6h|d9"]]
+    store.close()
+
+
+def test_disjoint_flagged_buckets_stay_separate(tmp_path):
+    # the discrimination control: two flagged buckets built from disjoint
+    # markets must stay two findings, or the tier would collapse everything and
+    # be as useless as it is conservative
+    store = Store(tmp_path / "a.duckdb")
+    infos, candles = [], []
+    t = (CLOSE - timedelta(hours=2)).replace(tzinfo=None)
+    for i in range(250):
+        infos.append(MarketInfo(venue="kalshi", market_id=f"H{i}", series=f"S{i}", result="yes", close_time=CLOSE))
+        candles.append(_candle(0.90, f"H{i}", t))
+        # a second, disjoint population landing in decile 1 and also flagging
+        infos.append(MarketInfo(venue="kalshi", market_id=f"L{i}", series=f"T{i}", result="yes", close_time=CLOSE))
+        candles.append(_candle(0.10, f"L{i}", t))
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    tierinfo = _overlap_tier(store)
+    assert tierinfo["buckets"] == 2 and tierinfo["groups"] == 2
+    assert tierinfo["shared_groups"] == [] and tierinfo["max_share_of_smaller"] == 0.0
+    store.close()
+
+
+def test_overlap_share_is_measured_against_the_smaller_bucket(tmp_path):
+    # the load-bearing choice. 1h|d9 holds 250 markets, 6h|d9 holds 350, and
+    # they share 100. Against the SMALLER that is 0.40 (redundant, must link);
+    # against the larger it is 0.286 and would fall under the threshold. A
+    # small bucket wholly inside a big one is fully redundant regardless of
+    # what fraction of the big one it is.
+    store = Store(tmp_path / "a.duckdb")
+    infos, candles = [], []
+    seven = (CLOSE - timedelta(hours=7)).replace(tzinfo=None)
+    two = (CLOSE - timedelta(hours=2)).replace(tzinfo=None)
+
+    def add(mid_6h, mid_1h, tag, count):
+        for i in range(count):
+            mid = f"{tag}{i}"
+            infos.append(MarketInfo(venue="kalshi", market_id=mid, series=f"S{tag}{i}", result="yes", close_time=CLOSE))
+            if mid_6h is not None:
+                candles.append(_candle(mid_6h, mid, seven))
+            if mid_1h is not None:
+                candles.append(_candle(mid_1h, mid, two))
+
+    add(0.90, 0.55, "A", 250)  # 6h d9 only (the 1h read is a later, lower candle)
+    add(0.90, None, "B", 100)  # both 6h d9 and 1h d9 — the shared markets
+    add(None, 0.90, "C", 150)  # 1h d9 only
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    tierinfo = _overlap_tier(store)
+    pair = [
+        p for p in tierinfo["linked_pairs"]
+        if {p["a"], p["b"]} == {"?|1h|d9", "?|6h|d9"}
+    ]
+    assert len(pair) == 1, tierinfo["linked_pairs"]
+    assert pair[0]["shared_markets"] == 100
+    assert pair[0]["share_of_smaller"] == pytest.approx(0.4)
+    store.close()
+
+
 def test_fingerprint_counts_settled_markets_per_category(tmp_path):
     # two categories settling at different rates: consecutive atlas runs
     # are only INDEPENDENT evidence for a category that actually gained

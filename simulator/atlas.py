@@ -41,6 +41,24 @@ cities); it is a bound, not an estimate. `top_day_share` is the tier-neutral
 read: a bucket carrying most of its evidence on one day is a bet on that
 day, not a calibration finding.
 
+Correlation caveat ACROSS buckets (2026-07-29): the three tiers above all
+bound correlation inside one bucket. Nothing bounded it between buckets, and
+the horizon dimension duplicates evidence by construction — a market enters up
+to five horizon buckets and its `result` is the SAME in all of them (89,371
+settled markets currently produce 205,602 bucket observations, 2.3x reuse). So
+a tier's survivor COUNT is a count of buckets, not of findings: measured on the
+07-29 archive, Climate and Weather 1h d0 and 6h d0 share 98.8% of the smaller
+bucket's markets. Every report therefore carries `cross_bucket_overlap`, which
+unions survivors sharing >= 30% of the smaller bucket's markets and reports
+`groups`. On the 07-29 data: 91 flagged -> 28 groups, 67 cluster-robust -> 28,
+16 day-robust -> 11. Share is measured against the SMALLER bucket because a
+small bucket wholly contained in a large one is fully redundant however small a
+fraction of the large one it is. `groups` is a LOWER bound and `buckets` an
+UPPER bound on distinct findings — union-find is transitive, so a chain of
+adjacent deciles linked pairwise collapses into one group even where the ends
+share nothing (the Commodities d0-d4 group). Same standing as the day tier: a
+bound, not an estimate.
+
 Reproducibility (2026-07-29): the last several passes' method is "diff two
 atlas reports and chase the drift", which silently assumes that running the
 atlas twice on unchanged data gives the same numbers. It did not. `implied`
@@ -90,7 +108,15 @@ def wilson(successes: float, n: int, z: float = Z95) -> tuple[float, float]:
     return center - half, center + half
 
 
-BUCKET_SQL = """
+# The per-observation base: one row per (market, horizon) carrying a clean
+# candle h before its close. Shared verbatim by BUCKET_SQL and OVERLAP_SQL so
+# the two can never disagree about which observations exist — same rationale as
+# summing `observations_by_category_horizon` from `buckets` instead of
+# re-querying it. The decile expression is a constant rather than duplicated
+# text for the same reason.
+_DECILE_EXPR = "CAST(least(floor(mid * 10), 9) AS INTEGER)"
+
+_OBSERVATIONS_CTE = """
 WITH settled AS (
   SELECT m.market_id, m.close_time, m.result, m.series,
          coalesce(s.category, '?') AS category
@@ -111,9 +137,14 @@ WITH settled AS (
     AND c.yes_bid_close <= c.yes_ask_close             -- crossed-candle gate
     AND NOT (c.yes_ask_close >= 0.995 AND c.yes_bid_close <= 0.005)  -- sentinel
   GROUP BY 1, 2, 3, 4, 5, 6
-), keyed AS (
+)
+"""
+
+
+BUCKET_SQL = _OBSERVATIONS_CTE + f"""
+, keyed AS (
   SELECT category, h_label, result, series, close_time, mid,
-         CAST(least(floor(mid * 10), 9) AS INTEGER) AS decile,
+         {_DECILE_EXPR} AS decile,
          CAST(close_time AS DATE) AS close_day
   FROM pts
 ), agg AS (
@@ -149,6 +180,27 @@ ORDER BY 1, 2, 3
 """
 
 
+# Shared markets between every pair of buckets. A market contributes one
+# observation per horizon it reaches, and its `result` is the SAME at every
+# horizon — so two buckets sharing markets are re-counting identical outcomes,
+# and the report's flag COUNTS overstate how many distinct findings exist.
+OVERLAP_SQL = _OBSERVATIONS_CTE + f"""
+, keyed AS (
+  SELECT market_id, category, h_label, {_DECILE_EXPR} AS decile FROM pts
+)
+SELECT a.category, a.h_label, a.decile,
+       b.category, b.h_label, b.decile,
+       count(*) AS shared
+FROM keyed a
+JOIN keyed b ON a.market_id = b.market_id
+-- one row per unordered pair; a market is unique within a bucket (pts is
+-- keyed by (market_id, h_label)) so self-pairs cannot arise
+WHERE a.category || '|' || a.h_label || '|' || CAST(a.decile AS VARCHAR)
+    < b.category || '|' || b.h_label || '|' || CAST(b.decile AS VARCHAR)
+GROUP BY 1, 2, 3, 4, 5, 6
+"""
+
+
 SETTLED_BY_CATEGORY_SQL = """
 SELECT coalesce(s.category, '?') AS category, count(*) AS n
 FROM markets m
@@ -166,6 +218,76 @@ def _observations_by_category_horizon(buckets: list[dict]) -> dict[str, int]:
         key = f"{b['category']}|{b['horizon']}"
         out[key] = out.get(key, 0) + b["n"]
     return out
+
+
+OVERLAP_THRESHOLD = 0.3
+
+
+def _bucket_label(key: tuple[str, str, int]) -> str:
+    return f"{key[0]}|{key[1]}|d{key[2]}"
+
+
+def _cross_bucket_groups(
+    buckets: list[dict],
+    overlaps: list[tuple],
+    tier: str,
+    threshold: float = OVERLAP_THRESHOLD,
+) -> dict:
+    """Collapse a tier's surviving buckets into groups that share markets.
+
+    The three existing tiers all bound correlation WITHIN a bucket. Nothing
+    bounded it ACROSS buckets, and the horizon dimension duplicates outcomes by
+    construction: one market enters up to 5 horizon buckets and settles the
+    same way in all of them. So a tier's survivor COUNT — the "16 day-robust,
+    zero counter-signature" headline — is a count of buckets, not of distinct
+    findings. Buckets linked by sharing at least `threshold` of the smaller
+    one's markets are unioned into one group; `groups` is the honest sample
+    size. Share is measured against the SMALLER bucket on purpose: a 250-market
+    bucket entirely contained in a 3,000-market one is fully redundant even
+    though it is only 8% of the larger.
+    """
+    members = {
+        (b["category"], b["horizon"], b["decile"]): b for b in buckets if b[tier]
+    }
+    parent = {k: k for k in members}
+
+    def find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    pairs, max_share = [], 0.0
+    for ca, ha, da, cb, hb, db, shared in overlaps:
+        ka, kb = (ca, ha, da), (cb, hb, db)
+        if ka not in members or kb not in members:
+            continue
+        share = shared / min(members[ka]["n"], members[kb]["n"])
+        max_share = max(max_share, share)
+        if share >= threshold:
+            pairs.append(
+                {
+                    "a": _bucket_label(ka),
+                    "b": _bucket_label(kb),
+                    "shared_markets": shared,
+                    "share_of_smaller": round(share, 4),
+                }
+            )
+            ra, rb = find(ka), find(kb)
+            if ra != rb:
+                parent[ra] = rb
+    grouped: dict[tuple, list[str]] = {}
+    for k in members:
+        grouped.setdefault(find(k), []).append(_bucket_label(k))
+    return {
+        "buckets": len(members),
+        "groups": len(grouped),
+        "shared_groups": sorted(
+            (sorted(g) for g in grouped.values() if len(g) > 1), key=len, reverse=True
+        ),
+        "max_share_of_smaller": round(max_share, 4),
+        "linked_pairs": sorted(pairs, key=lambda p: -p["share_of_smaller"]),
+    }
 
 
 def build_atlas(conn) -> dict:
@@ -229,9 +351,26 @@ def build_atlas(conn) -> dict:
             buckets
         ),
     }
+    overlaps = conn.execute(OVERLAP_SQL).fetchall()
     return {
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None, microsecond=0)),
         "data_fingerprint": fingerprint,
+        # how many DISTINCT findings each tier's survivor count represents: the
+        # three Wilson tiers bound correlation within a bucket, but one market
+        # reaches up to 5 horizon buckets and settles the same way in all of
+        # them, so survivors that share markets are re-counting one outcome set.
+        "cross_bucket_overlap": {
+            "rule": (
+                f"survivors sharing >= {OVERLAP_THRESHOLD:.0%} of the smaller "
+                "bucket's markets are unioned into one group; `groups` is the "
+                "honest count of distinct findings in the tier"
+            ),
+            "threshold_share_of_smaller": OVERLAP_THRESHOLD,
+            "tiers": {
+                tier: _cross_bucket_groups(buckets, overlaps, tier)
+                for tier in ("flagged", "flagged_robust", "flagged_day_robust")
+            },
+        },
         "flag_rule": "n >= 200 and implied outside Wilson 95% of realized",
         "flag_rule_robust": (
             "flagged AND implied outside Wilson 95% with n = clusters "
