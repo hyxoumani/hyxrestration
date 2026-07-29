@@ -1,6 +1,73 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-29 08:30 UTC (THE QA SEQ-CONTINUITY CHECK HAS BEEN
+Updated: **2026-07-29 14:20 UTC (ATLAS ON THE WEDNESDAY-SETTLEMENT
+INCREMENT — THE HEADLINE DRIFT IS REAL AND SIGNATURE-CONFIRMING, BUT
+THE BUCKET THE LAST PASS KILLED IS BIT-IDENTICAL AND
+`settled_by_category` CANNOT SEE IT. SEVENTH INSTANCE OF THE
+UNIT-OF-COUNTING CLASS, THIS TIME IN THE ANTI-NON-READING GUARD
+ITSELF. Gate check first: the 11:10 UTC kalshi sweep fired 3h prior, so
+the atlas data-gate named last pass had OPENED and atlas was the
+runnable report (prior run 07-28 14:19 UTC). Weather bracket ran 02:15
+UTC today and per the spacing rule needs >~24h to cross a daily expiry
+— next independent reading 07-30, unchanged; econ needs >=336h (next
+~08-10); QA fired 07-29 07:00 UTC; divergence unchanged — shadow run
+20260722T081852 still open. THE RUN: **93->91 flagged, 63->67 robust,
+12->16 day-robust**, and it is the informative Financials increment the
+07-28 pass predicted (`settled_by_category` Financials +1,113). All
+four newly day-robust buckets are Financials (1h d5, 6h d1/d6/d7). The
+standing claim survives its largest test yet: of all **16** day-tier
+survivors, **ZERO are counter-signature** (deciles <=4 all negative
+gap, >=5 all positive) and every one carries |gap| >= 0.083. Top-3 gap
+drift on 163 common n>=100 buckets is Financials 1h d5 (0.039), 1h d6
+(0.036), 1h d7 (0.033) — an order of magnitude BELOW the prior run's
+0.210, and all in the signature-widening direction, so there is no
+anomalous drift to chase. Report:
+`reports/atlas/20260729T141801.json` (pre-fix run
+`20260729T141518.json`). THE FINDING, AND IT IS THE SAME BUG CLASS FOR
+THE SEVENTH TIME: the 07-28 pass's motivating bucket — Financials 24h
+d5, `top_day_share` 0.61, the one the settlement-day tier was built to
+kill — reads **bit-identical** this run: n 293->293, clusters 82->82,
+days 27->27, gap +0.1502->+0.1502, every digit. So does 24h d4 and 24h
+d6. Under the 07-27 guard this looks like fresh confirmation, because
+`settled_by_category` says Financials gained 1,113 markets. PROBED
+BEFORE BUILDING, by summing bucket `n` per (category, horizon) across
+both reports: the increment landed **1h +1,036 / 6h +986 / 24h -1**.
+Cause is structural, not calendar: a market enters the horizon-h bucket
+only if it carries a candle h before its close (`BUCKET_SQL` pts CTE),
+and Financials is same-day KXDJI/KXINXU index ladders that open and
+close inside one session — they can never have a candle 24h before
+their own close. Financials 24h is a nearly-frozen 5,187-observation
+population that daily atlas runs do not re-test at all. The 07-27 guard
+answers "did this CATEGORY gain evidence" while the bucket key is
+(category, HORIZON, decile) — right question, wrong granularity, and it
+fails precisely on the category it was written for. HARDENING SHIPPED
+(8a49b17): the fingerprint now carries
+`observations_by_category_horizon`, summed from `buckets` rather than
+re-queried, so it describes exactly the population the buckets are
+built from and cannot drift from `BUCKET_SQL`'s candle gates the way a
+second query over `markets` can. `settled_by_category` untouched for
+cross-report comparability, per the divergence-matcher / atlas-day-tier
+/ bracket-concentration precedent. Two regression tests on a fixture
+with the production shape (a short-lived market reaching only 1h vs one
+reaching 24h): the horizon split must be visible where the category
+total is blind to it, and the per-horizon counts must equal the summed
+bucket population. Red on both (KeyError), green with. Suite 323->325,
+ruff clean, pushed. No promote — atlas is sim-side, no timer runs it.
+Verified in the real pipeline: the shipped report reproduces the
+hand-computed Financials|24h 5187 exactly. PRACTICAL RULE, joining the
+`top_day_share`, `direction_underlying_robust` and connection-scoped-
+`seq` rules: **before calling any atlas bucket reading a confirmation,
+diff `observations_by_category_horizon` for that bucket's OWN
+(category, horizon) — not the category total. Financials 24h in
+particular is structurally frozen and its readings are not independent
+evidence at any cadence.** The day-tier verdict on Financials 24h d5
+therefore stands on ONE reading, not two. NEXT PASS: the 07-30 weather
+bracket (>24h from 02:15 today) is independent run #3 and the first to
+carry the event tier natively — two under-award events in a row at the
+strictest tier would be the first real directional signal in 22 runs.
+Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-29 08:30 UTC (THE QA SEQ-CONTINUITY CHECK HAS BEEN
 REPORTING A GARBAGE NUMBER AND COULD NOT FAIL — SAME UNIT-OF-COUNTING
 BUG CLASS, SIXTH INSTANCE, NOW IN THE DAILY DATA-QUALITY GATE ITSELF.
 Gate check first: atlas data-gated until the 07-29 11:10 UTC kalshi

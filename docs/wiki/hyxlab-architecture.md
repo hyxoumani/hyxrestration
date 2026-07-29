@@ -81,11 +81,20 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   Wilson flags; plus a cluster-robust flag tier with n = distinct
   (series, close_time) ladders — the correlation worst case; pre-regs
   size evidence on `clusters`, not n). Consecutive atlas runs are only
-  independent evidence for a category that GAINED settled markets in
-  between — diff `data_fingerprint.settled_by_category` before counting
-  a flat bucket as a confirming reading. Index-ladder categories
-  (Financials = KXDJI/KXINXU) add zero settled markets over a weekend,
-  so weekend re-runs replay the prior reading verbatim (07-27).
+  independent evidence for a bucket that GAINED observations in
+  between — diff `data_fingerprint.observations_by_category_horizon`
+  for the bucket's own (category, horizon) before counting a flat
+  bucket as a confirming reading. `settled_by_category` is the coarser
+  07-27 version and is NOT sufficient: it answers at category level
+  while the bucket key is (category, horizon, decile). Two ways a
+  reading is a replay rather than evidence — (a) calendar: index-ladder
+  categories (Financials = KXDJI/KXINXU) add zero settled markets over
+  a weekend, so weekend re-runs replay verbatim (07-27); (b)
+  structural: a market only enters the horizon-h bucket if it carries a
+  candle h before close, and same-day index ladders never do, so
+  **Financials 24h is a frozen population that no cadence re-tests** —
+  the 07-29 sweep added +1,113 Financials markets, 1h +1,036 / 6h +986
+  / 24h -1, leaving every Financials 24h bucket bit-identical (07-29).
   `simulator/iterate.py` — DSR, purged folds,
   family_report (B5 core). `simulator/pair_candidates.py` — cross-venue
   leads (user-gated activation). `simulator/run_favlong.py` — the
