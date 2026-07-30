@@ -1,6 +1,96 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-30 02:35 UTC (23RD WEATHER MAKER BRACKET, THE
+Updated: **2026-07-30 08:35 UTC (THE QA SEQ CHECK FAILED FOR THE FIRST
+TIME SINCE IT WAS HARDENED — AND THE FAILURE IS AN ARTIFACT OF THE FIX,
+NOT A DAEMON FAULT. TENTH INSTANCE OF THE UNIT-OF-COUNTING CLASS, THIS
+TIME INSIDE THE REPAIR SHIPPED FOR THE SIXTH. Gate check first: atlas
+still data-gated until the 07-30 11:10 UTC kalshi sweep (the timer last
+fired 07-29 06:10 CDT, confirmed against `systemctl list-timers`); the
+weather bracket ran 07-30 02:15 UTC so independent run #4 is 07-31
+~02:15; econ needs >=336h (next ~08-10); divergence unchanged — shadow
+run 20260722T081852 still open. QA DID fire 07-30 07:00 UTC and it is
+the one fresh standing report: **`FAIL book seq contiguous or
+gap-marked — 70 seq holes over 8 connection runs, 14 gap rows, 1
+unexcused runs`**, the first non-PASS the check has ever produced.
+**FINDING 1 — THE FAIL IS THE OPEN RUN, AND THE CHECK IS STILL
+VACUOUS FOR EVERY OTHER RUN.** Replayed the shipped query at the exact
+QA instant: the single unexcused run is run 7, the connection that was
+still LIVE at 07:00:03 with no terminating gap row yet. Re-running the
+identical check at 08:15 reads it EXCUSED, because its reconnect landed
+at 07:00:18 — the alarm self-cleared without anything being fixed. The
+mechanism is that a556b31 scoped excusal to the RUN: a gap row
+overlapping any part of a run pardons every hole in it. Every completed
+run ends in a logged reconnect whose gap row touches the run's endpoint,
+so **every completed run is pardoned wholesale** — verified on the live
+archive, run 6's 22 holes occur at 17:55:19 and 18:07:42 and are
+pardoned by the 21:29:36 reconnect, 3.4h later. So the only run that can
+ever fail is the open one, and it fails spuriously. The 07-29 pass's
+reassuring `0 unexcused runs` is void for the same reason. A second,
+independent scoping defect sits beside it: the gap query pulls EVERY gap
+row in the window, so a polymarket or kalshi-trades reconnect excuses a
+kalshi-books hole — 3 of the 13 rows in this window are foreign.
+**FINDING 2, FOUND BY ASKING WHAT A HOLE IN `book_events` ACTUALLY
+MEANS, AND IT IS THE LOAD-BEARING ONE.** Under point-scoped,
+channel-scoped excusal the honest reading is **70 missing seq in 9 hole
+events, ALL unexcused** — not one gap row covers a single real hole;
+they all sit at run boundaries where seq resets, which is not a hole at
+all. But the daemon is not losing data: **`SeqTracker` observes every
+frame on the wire and writes a `seq_gap` row plus forces a reconnect on
+any discontinuity, and there is not one `seq_gap` row in the 26h
+window** — all 13 are `reconnect`/`daemon_start`. The wire was
+contiguous. So those frames ARRIVED and parsed to zero archived rows:
+`parse_message` returns `([], [])` for control frames and for an
+`orderbook_snapshot` whose ladders are empty, and their seq is consumed
+and never recorded. Ruled out the alternatives against the archive
+rather than assuming: the missing seq are absent under every sid (Kalshi
+is sid=1 only, poly is sid NULL), they are not trades (the trades
+channel is a separate connection, its seq was 2.3M while books was
+138k), and they are not mid-run snapshots (snapshots appear only at
+connection start — 441 frames at 17:29, 400 at 07:00, zero in between).
+**A hole in `book_events` is therefore not evidence of loss, and the
+check has been asserting a property of the WIRE by counting ARCHIVED
+ROWS — which differ by exactly the frames the parser discards.**
+HARDENING SHIPPED, both halves: (f91517b) excusal is now scoped to the
+HOLE's own interval and to the owning venue/channel, and the reported
+unit becomes unexcused hole events plus missing-seq count — the old
+headline is an artifact, not a coarser valid measure, so it is replaced
+outright rather than preserved for comparability, same call as a556b31
+and unlike the atlas/queuescore tier precedent; (fc628fc) every frame
+carrying sid/seq that archives no book row is now written as a
+`kind='void'` row, so the archive records the full wire sequence.
+Replay filters on snap/delta and ignores void; the sentinel also makes a
+Kalshi schema change loud, since a new frame type swallowed by
+`parse_message` would otherwise just silently thin book capture. Five
+regression tests: the run-terminating-gap case and the foreign-channel
+case (both RED on the old code); void rows for a sequenced control frame
+and for an empty snapshot; and the integration one that shows a void row
+closing the hole it explains. Suite 333->338, ruff clean, pushed, and
+**PROMOTED** — this is collector-side, `hyxlab-qa` runs from the stable
+worktree and `hyxlab-stream` needed the restart to pick up the parse
+change (daemon back up 08:26:18 UTC). **THE CHECK IS DELIBERATELY RED
+RIGHT NOW AND THAT IS THE POINT**: run against the live archive it reads
+`58 missing seq in 8 hole events, 8 own-channel gap rows, 8 unexcused`,
+reproducing the probe exactly. No historical hole carries a void row, so
+QA will FAIL until the 26h window rolls past the 08:26 restart. **THIS
+IS A FALSIFIABLE PREDICTION, NOT A KNOWN-GOOD STATE**: if the discarded
+frames are the whole explanation, void rows fill the holes and QA goes
+green by ~07-31 10:30 UTC on its own. If it stays red past that, the
+remaining holes are real loss that `SeqTracker` cannot see, which would
+be a genuine data-integrity finding and the first evidence of one.
+PRACTICAL RULE, joining connection-scoped-`seq` / `new_share_vs_all` /
+`cross_bucket_overlap.groups` / `direction_underlying_robust` /
+`top_day_share` / own-(category,horizon): **a gap in archived `seq` is
+not a gap on the wire — read `seq_gap` gap rows for wire loss, and treat
+`book_events` seq holes as unexplained frames until a void row accounts
+for them. Every "unexcused runs" figure this log reported on 07-29 is
+void.** NEXT PASS: check whether QA cleared on its own at 07-31 07:00
+UTC per the prediction above; the 07-30 11:10 UTC sweep opens the atlas
+gate for the first reading measured against a reproducible `implied`
+baseline with survivors read as `groups`; the 07-31 ~02:15 UTC weather
+bracket is independent run #4, the first carrying `new_share_vs_all`
+natively. Untracked `strategies/hylshi_fade.py` re-confirmed present,
+still correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-30 02:35 UTC (23RD WEATHER MAKER BRACKET, THE
 INDEPENDENT RUN #3 THE LAST FIVE PASSES BUILT TOWARD — AND THE PREDICTED
 SIGNAL DOES NOT APPEAR. NINTH INSTANCE OF THE UNIT-OF-COUNTING CLASS,
 THIS TIME IN THE INDEPENDENCE CERTIFICATE ITSELF. Gate check first: the
