@@ -94,10 +94,17 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     # window, a garbage count that swung 0 <-> 1.4M on where the window cut).
     # Segment into connection runs first: ordered by time, a seq that goes
     # BACKWARDS starts a new run. Holes are then measured strictly inside a
-    # run, and a hole is excused only by a gap row whose interval actually
-    # OVERLAPS that run — "some gap row exists in the window" excuses
-    # everything and makes the check vacuous.
-    runs = conn.execute(
+    # run. A hole is then excused only by a gap row overlapping THE HOLE's own
+    # interval — not the run's. Run-scoped excusal (2026-07-29 → 07-30) was
+    # still vacuous: every completed run ends in a logged reconnect, whose gap
+    # row touches the run's endpoint and so excused every hole in it however
+    # far away (measured: 22 holes at 17:55 excused by a 21:29 reconnect). Only
+    # the currently-OPEN run, which has no terminating gap yet, could ever
+    # fail — which is exactly the false alarm the 07-30 07:00 run emitted and
+    # that self-cleared an hour later. Gap rows are also scoped to the channel
+    # that owns these runs: a polymarket or kalshi-trades reconnect says
+    # nothing about the kalshi books connection.
+    holes = conn.execute(
         """
         WITH ev AS (
           SELECT DISTINCT sid, seq, recv_ts FROM book_events
@@ -113,29 +120,34 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
                    PARTITION BY sid ORDER BY recv_ts, seq
                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS run
           FROM marked
+        ), uniq AS (
+          SELECT sid, run, seq, min(recv_ts) AS recv_ts
+          FROM runs GROUP BY sid, run, seq
         )
-        SELECT max(seq) - min(seq) + 1 - count(DISTINCT seq) AS holes,
-               min(recv_ts) AS t0, max(recv_ts) AS t1
-        FROM runs GROUP BY sid, run
+        SELECT seq - lag(seq) OVER w - 1 AS missing,
+               lag(recv_ts) OVER w AS t0, recv_ts AS t1
+        FROM uniq WINDOW w AS (PARTITION BY sid, run ORDER BY seq)
+        QUALIFY missing > 0
         """,
         [now, int(hours)],
     ).fetchall()
     gap_spans = conn.execute(
         "SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ?"
-        " - INTERVAL 1 HOUR * CAST(? AS INTEGER)",
+        " - INTERVAL 1 HOUR * CAST(? AS INTEGER)"
+        " AND ((venue = 'kalshi' AND channel = 'books') OR venue = '*')",
         [now, int(hours)],
     ).fetchall()
-    holes = sum(h for h, _, _ in runs)
     unexcused = [
-        (h, t0, t1)
-        for h, t0, t1 in runs
-        if h > 0 and not any(g0 <= t1 and g1 >= t0 for g0, g1 in gap_spans)
+        (m, t0, t1)
+        for m, t0, t1 in holes
+        if not any(g0 <= t1 and g1 >= t0 for g0, g1 in gap_spans)
     ]
     check(
         "book seq contiguous or gap-marked",
         not unexcused,
-        f"{holes} seq holes over {len(runs)} connection runs, "
-        f"{len(gap_spans)} gap rows, {len(unexcused)} unexcused runs",
+        f"{sum(m for m, _, _ in holes)} missing seq in {len(holes)} hole events, "
+        f"{len(gap_spans)} own-channel gap rows, "
+        f"{len(unexcused)} unexcused ({sum(m for m, _, _ in unexcused)} seq)",
     )
 
     # Reconstruct each Kalshi book from its time-latest snapshot image

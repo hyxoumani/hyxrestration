@@ -187,6 +187,39 @@ def test_hole_excused_by_overlapping_gap_row(tmp_path):
     assert "book seq contiguous or gap-marked" not in failed
 
 
+def test_hole_not_excused_by_run_terminating_gap_row(tmp_path):
+    """Excusal is scoped to the HOLE, not to the run that contains it. Every
+    completed run ends in a logged reconnect whose gap row touches the run's
+    endpoint — under run-scoped excusal that pardoned every hole in the run
+    however far away (measured 2026-07-29: 22 holes at 17:55 pardoned by a
+    21:29 reconnect), leaving only the still-open run able to fail."""
+    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
+              ((1, 200), (2, 199), (9, 198), (10, 30))]
+    store = _stream_with_books(tmp_path / "s.duckdb", frames)
+    # the run's terminating reconnect, ~3h after the hole at minute 198
+    store.append_gap(
+        "kalshi", "books", NOW - timedelta(minutes=30), NOW - timedelta(minutes=29), "reconnect"
+    )
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "book seq contiguous or gap-marked" in failed
+
+
+def test_hole_not_excused_by_another_channels_gap_row(tmp_path):
+    """A polymarket or kalshi-trades reconnect says nothing about the kalshi
+    books connection these runs belong to. Production carried 3 such foreign
+    gap rows out of 13 in the 2026-07-30 window."""
+    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
+              ((1, 20), (2, 19), (9, 18))]
+    store = _stream_with_books(tmp_path / "s.duckdb", frames)
+    store.append_gap(
+        "polymarket", "market", NOW - timedelta(minutes=19), NOW - timedelta(minutes=18), "reconnect"
+    )
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "book seq contiguous or gap-marked" in failed
+
+
 def test_negative_levels_seq_reset_across_epochs_passes(tmp_path):
     """Kalshi seq resets per re-subscription, so an early snapshot can
     carry the highest seq. Reconstruction must key on the time-latest
