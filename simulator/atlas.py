@@ -59,6 +59,24 @@ adjacent deciles linked pairwise collapses into one group even where the ends
 share nothing (the Commodities d0-d4 group). Same standing as the day tier: a
 bound, not an estimate.
 
+Day weighting (2026-07-30): the day tier above is internally inconsistent. It
+takes its sample size from days (`wilson(realized * days, days)`) but its point
+estimate from markets — `realized` and `implied` are both market-weighted. So a
+day carrying 106 markets outvotes a day carrying 1 market 106:1 in the mean
+while both count as a single draw in n, which is exactly the correlation the
+tier exists to bound. Measured on the 07-30 archive over the 13 day-robust
+survivors: re-weighting both sides so each day contributes once shrinks
+Financials 24h d8 from +0.1289 to +0.0208 (6.2x) and Economics 1h d6 from
++0.1453 to +0.0444 (3.3x); no survivor flips sign, and the effect is NOT
+uniformly conservative — it inflates a gap wherever the largest days happen to
+agree with the signature. Every bucket therefore also reports
+`implied_day_weighted` / `realized_day_weighted` and a `flagged_day_weighted`
+tier, which is the day tier with the same unit on both sides. The existing
+`flagged_day_robust` and its market-weighted `implied`/`realized` are unchanged
+for cross-report comparability, per the divergence-matcher / day-tier /
+overlap-tier / bracket-concentration precedent — unlike the QA seq headline,
+this one is a coarser valid measure rather than an artifact, so it is kept.
+
 Reproducibility (2026-07-29): the last several passes' method is "diff two
 atlas reports and chase the drift", which silently assumes that running the
 atlas twice on unchanged data gives the same numbers. It did not. `implied`
@@ -164,16 +182,24 @@ BUCKET_SQL = _OBSERVATIONS_CTE + f"""
   FROM keyed
   GROUP BY 1, 2, 3
 ), per_day AS (
-  SELECT category, h_label, decile, close_day, count(*) AS day_n
+  SELECT category, h_label, decile, close_day, count(*) AS day_n,
+         -- exact DECIMAL for the same reproducibility reason as `implied`
+         CAST(sum(CAST(mid AS DECIMAL(18, 6))) AS DOUBLE) / count(*) AS day_implied,
+         avg(CASE WHEN result = 'yes' THEN 1.0 ELSE 0.0 END) AS day_realized
   FROM keyed
   GROUP BY 1, 2, 3, 4
 ), top_day AS (
-  SELECT category, h_label, decile, max(day_n) AS top_day_n
+  SELECT category, h_label, decile, max(day_n) AS top_day_n,
+         -- EQUALLY weighted across days: one day is one draw, so a 106-market
+         -- day and a 1-market day count the same here. See the day-weighting
+         -- note in the module docstring.
+         avg(day_implied) AS implied_dw,
+         avg(day_realized) AS realized_dw
   FROM per_day
   GROUP BY 1, 2, 3
 )
 SELECT a.category, a.h_label, a.decile, a.n, a.implied, a.realized,
-       a.clusters, a.days, t.top_day_n
+       a.clusters, a.days, t.top_day_n, t.implied_dw, t.realized_dw
 FROM agg a
 JOIN top_day t USING (category, h_label, decile)
 ORDER BY 1, 2, 3
@@ -294,7 +320,10 @@ def build_atlas(conn) -> dict:
     rows = conn.execute(BUCKET_SQL).fetchall()
     buckets = []
     for row in rows:
-        (category, h_label, decile, n, implied, realized, clusters, days, top_day_n) = row
+        (
+            category, h_label, decile, n, implied, realized, clusters, days,
+            top_day_n, implied_dw, realized_dw,
+        ) = row
         lo, hi = wilson(realized * n, n)
         flagged = n >= 200 and not (lo <= implied <= hi)
         # worst case: every market in a (series, close_time) ladder settles
@@ -304,6 +333,13 @@ def build_atlas(conn) -> dict:
         # one level up: every ladder closing on the same day can share one
         # underlying path (index ladders do), so at most `days` draws
         dlo, dhi = wilson(realized * days, days)
+        flagged_day_robust = flagged_robust and not (dlo <= implied <= dhi)
+        # ...and the same unit on BOTH sides of the comparison: the tier above
+        # takes its sample size from days but its point estimate from markets,
+        # so an unequally-sized day set lets one big day dominate the mean
+        # while counting as a single draw. Re-weight implied and realized so
+        # each day contributes once, then apply the same n = days Wilson.
+        dwlo, dwhi = wilson(realized_dw * days, days)
         buckets.append(
             {
                 "category": category,
@@ -323,7 +359,14 @@ def build_atlas(conn) -> dict:
                 "flagged_robust": flagged_robust,
                 "wilson_day_lo": round(dlo, 4),
                 "wilson_day_hi": round(dhi, 4),
-                "flagged_day_robust": flagged_robust and not (dlo <= implied <= dhi),
+                "flagged_day_robust": flagged_day_robust,
+                "implied_day_weighted": round(implied_dw, 4),
+                "realized_day_weighted": round(realized_dw, 4),
+                "wilson_day_weighted_lo": round(dwlo, 4),
+                "wilson_day_weighted_hi": round(dwhi, 4),
+                "flagged_day_weighted": (
+                    flagged_day_robust and not (dwlo <= implied_dw <= dwhi)
+                ),
             }
         )
     fingerprint = {
@@ -368,7 +411,12 @@ def build_atlas(conn) -> dict:
             "threshold_share_of_smaller": OVERLAP_THRESHOLD,
             "tiers": {
                 tier: _cross_bucket_groups(buckets, overlaps, tier)
-                for tier in ("flagged", "flagged_robust", "flagged_day_robust")
+                for tier in (
+                    "flagged",
+                    "flagged_robust",
+                    "flagged_day_robust",
+                    "flagged_day_weighted",
+                )
             },
         },
         "flag_rule": "n >= 200 and implied outside Wilson 95% of realized",
@@ -381,10 +429,17 @@ def build_atlas(conn) -> dict:
             "(distinct settlement days; same-day ladders can share one "
             "underlying path — perfect-within-day-correlation worst case)"
         ),
+        "flag_rule_day_weighted": (
+            "flagged_day_robust AND day-weighted implied outside Wilson 95% of "
+            "day-weighted realized with n = days — the day tier with the SAME "
+            "unit on both sides, so unequal day sizes cannot let one large day "
+            "set the mean while counting as one draw"
+        ),
         "buckets": buckets,
         "flagged": [b for b in buckets if b["flagged"]],
         "flagged_robust": [b for b in buckets if b["flagged_robust"]],
         "flagged_day_robust": [b for b in buckets if b["flagged_day_robust"]],
+        "flagged_day_weighted": [b for b in buckets if b["flagged_day_weighted"]],
     }
 
 

@@ -198,6 +198,89 @@ def test_implied_is_the_exact_mean_not_the_float_mean(tmp_path):
     store.close()
 
 
+def _day_weighted_atlas(tmp_path, day_specs):
+    """Build a 1h bucket from `day_specs` = [(n_markets, n_yes), ...], one
+    entry per settlement day, all at mid 0.60 and each market in its own
+    series (so clusters == n and the cluster tier never interferes)."""
+    store = Store(tmp_path / "a.duckdb")
+    infos, candles, i = [], [], 0
+    for day, (n_markets, n_yes) in enumerate(day_specs):
+        close = CLOSE - timedelta(days=day)
+        for k in range(n_markets):
+            mid, mid_ = 0.60, f"F{i}"
+            infos.append(
+                MarketInfo(
+                    venue="kalshi",
+                    market_id=mid_,
+                    series=f"S{i}",
+                    result="yes" if k < n_yes else "no",
+                    close_time=close,
+                )
+            )
+            candles.append(
+                _candle(mid, mid_, (close - timedelta(hours=2)).replace(tzinfo=None))
+            )
+            i += 1
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    atlas = build_atlas(store.conn)
+    store.close()
+    return [b for b in atlas["buckets"] if b["horizon"] == "1h" and b["decile"] == 6][0]
+
+
+# one 300-market day that settles all-yes, plus 40 five-market days that
+# settle at exactly the implied 0.60. Market-weighted, the big day drags
+# realized to 0.84 against implied 0.60 — a +0.24 gap the day tier calls
+# robust off n = 41. But that is 41 draws' worth of variance applied to a
+# mean 60% supplied by ONE draw, which is the correlation the tier exists
+# to bound. Weight each day once and the gap is +0.01.
+_ONE_BIG_DAY = [(300, 300)] + [(5, 3)] * 40
+_EVEN_DAYS = [(10, 10)] * 42 + [(10, 0)] * 8  # same 0.84 realized, evenly spread
+
+
+def test_day_tier_mean_is_dominated_by_one_large_day(tmp_path):
+    b = _day_weighted_atlas(tmp_path, _ONE_BIG_DAY)
+    assert b["flagged_robust"] and b["days"] == 41
+    # the market-weighted day tier is satisfied and reports a large gap...
+    assert b["flagged_day_robust"]
+    assert b["realized"] - b["implied"] == pytest.approx(0.24, abs=1e-3)
+    # ...but that gap is one day's outcome; re-weighted it all but vanishes
+    assert b["realized_day_weighted"] - b["implied_day_weighted"] == pytest.approx(
+        0.0098, abs=1e-3
+    )
+    assert not b["flagged_day_weighted"]
+
+
+def test_day_weighted_tier_keeps_evenly_spread_evidence(tmp_path):
+    # the discrimination control: the SAME 0.84 realized against the same
+    # implied 0.60, but no day larger than any other. Nothing is being
+    # carried by one draw, so the day-weighted tier must agree — otherwise
+    # the tier is merely always-stricter rather than measuring day balance.
+    b = _day_weighted_atlas(tmp_path, _EVEN_DAYS)
+    assert b["flagged_day_robust"] and b["days"] == 50
+    assert b["realized"] == pytest.approx(b["realized_day_weighted"], abs=1e-9)
+    assert b["flagged_day_weighted"]
+
+
+def test_day_weighted_fields_weight_each_day_equally(tmp_path):
+    # the fields themselves, independent of the tier: implied/realized
+    # day-weighted must be the mean OVER DAYS, not the market mean.
+    b = _day_weighted_atlas(tmp_path, _ONE_BIG_DAY)
+    assert b["realized"] == pytest.approx(420 / 500, abs=1e-4)  # market-weighted
+    assert b["realized_day_weighted"] == pytest.approx(
+        (1.0 + 40 * 0.6) / 41, abs=1e-4
+    )  # (one all-yes day + 40 days at 0.6) / 41 days
+    assert b["implied_day_weighted"] == pytest.approx(0.60, abs=1e-6)
+
+
+def test_day_weighted_tier_nests_inside_day_robust(tmp_path):
+    # tiers must nest (day_weighted <= day_robust <= robust <= flagged) so
+    # the report cannot claim a survivor a looser tier already rejected
+    b = _day_weighted_atlas(tmp_path, _EVEN_DAYS)
+    assert b["flagged"] >= b["flagged_robust"] >= b["flagged_day_robust"]
+    assert b["flagged_day_robust"] >= b["flagged_day_weighted"]
+
+
 def _overlap_tier(store, tier="flagged"):
     return build_atlas(store.conn)["cross_bucket_overlap"]["tiers"][tier]
 
