@@ -1,6 +1,103 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-30 14:25 UTC (ATLAS ON THE FIRST INCREMENT THAT
+Updated: **2026-07-30 20:55 UTC (THE VOID-ROW PREDICTION IS VERIFIED
+FOR ONE HOLE CLASS AND UNTESTED FOR THE ONE THAT PRODUCES ALL THE
+VOLUME — AND CHASING IT FOUND THAT THE FIX ITSELF *INVERTED* THE
+DETECTION IT CLAIMED TO ADD. Gate check first, hard rather than
+estimated: the kalshi sweep last fired 07-30 11:10 UTC and atlas ran
+14:20 UTC after it, so atlas is data-gated until the 07-31 11:10 UTC
+sweep (`systemctl list-timers`); weather bracket ran 07-30 02:15 UTC and
+needs >~24h to cross a daily expiry, so 07-31 ~02:15 (independent run
+#4); econ needs >=336h (next ~08-10); QA next fires 07-31 07:00 UTC;
+divergence unchanged — shadow run 20260722T081852 still open. Nothing
+standing was runnable, so the 08:35 pass's FALSIFIABLE PREDICTION was
+probed ~14h early instead of waiting for the 07-31 QA run. **RESULT:
+THE MECHANISM IS CONFIRMED, BUT ONLY FOR HALF THE PROBLEM.** Post-
+restart the check reads clean — a window starting after the 08:26
+restart gives `0 missing seq in 0 hole events` — and the proof that void
+rows are what closed it, rather than a coincidentally clean wire, is a
+re-run with `kind <> 'void'` excluded: **exactly 4 one-seq holes
+reappear, at exactly the 4 void-row timestamps** (09:42:01, 11:49:09).
+**BUT THE 72h HOLE HISTORY SPLITS INTO TWO CLASSES AND ONLY ONE HAS
+BEEN TESTED.** Class A is connection-start, `seq 34->36` and `36->38`,
+one per run — these are the empty-ladder CPI snapshots, and the 6 void
+rows written so far are exactly this class (seq 35/37/104,
+`KXCPI-26OCT-T0.1` etc). Verified closed. Class B is MID-RUN bursts of
+4-12 seq inside a ~50ms window, and it is where every large hole count
+in this log came from: 07-28/29/30 all show it at **04:59:19, 05:59:19
+and 06:59:19 UTC and nowhere else** (plus two 07-29 outliers at 17:55:19
+and 18:07:41), repeatable to the second across days. Since the 08:26
+restart the archive has covered 09:00-20:15 UTC — eleven hourly
+opportunities and both outlier times — and produced **zero class-B
+events and zero class-B void rows**. So the class that produces all the
+volume has simply not recurred yet and the prediction is UNTESTED for
+it. **The first real test is 07-31 04:59 UTC**, not the QA run: QA at
+07-31 07:00 will still be RED regardless, because its 26h window still
+reaches back to the pre-restart 07-30 05:59/06:59 holes. The clean read
+is 07-31 ~08:00+ UTC. Ruled out the obvious class-B explanation against
+the archive rather than assuming — `parse_message` returns on
+`typ == "trade"` BEFORE `_void()` exists, so a trade frame on the books
+connection would leave a hole the fix cannot close; but the trade rows
+whose `seq` fall inside each class-B hole have `recv_ts` scattered
+across the whole month, i.e. they are the trades connection's own
+counter colliding by coincidence. Confirms the 08:35 pass's separate-
+connection finding; class B remains unidentified. **THE FINDING, AND IT
+IS THE LOAD-BEARING ONE, FOUND BY ASKING WHO READS THE SENTINEL**:
+nothing did. `grep` for `void` outside the writer returns only the
+writer. So fc628fc's own stated rationale — "a void row also makes a
+Kalshi schema change loud" — was never implemented, and the rows carried
+no frame type either, so an empty snapshot, a control ack and an
+unrecognised NEW frame type all wrote the identical row. That is not
+merely a missing feature, it is an **INVERSION**: before the fix, a
+frame type this parser does not understand left a seq hole and turned
+the QA seq check RED; after it, that frame writes a void row, the seq
+check reads GREEN, and no other check looks. The fix traded a detectable
+failure for an invisible one while asserting the opposite. HARDENING
+SHIPPED (22c9556): the void row now carries the frame's `type` in
+`side` (meaningless for a row archiving no book level, so it is the free
+column), and QA gains `void frames are known types`, alarming on any
+type outside the benign set (empty `orderbook_snapshot` plus sequenced
+control acks). Legacy void rows carry `''` and are counted but
+unattributable, so they cannot red the check and they roll out of the
+26h window on their own. Four regression tests; the load-bearing one
+asserts BOTH halves on one fixture — the seq check must stay SILENT on
+an unknown frame type (proving it is blind, not redundant) and the void
+check must fire naming the type — plus a discrimination control (the
+empty snapshot that actually occurs in production must stay benign, so
+the check is not merely always-red) and the legacy-`''` case. Verified
+by mutation: reverting `side` to `''` reddens exactly the two
+type-recording tests and leaves the control and legacy tests green;
+counting `''` as unknown reddens exactly the legacy test. Suite
+342->346, ruff clean, pushed, and **PROMOTED** — this is collector-side,
+`hyxlab-qa` runs from the stable worktree and `hyxlab-stream` needed the
+restart to record frame types (daemon back up 20:21:35 UTC). Live
+reading, and note it is deliberately NOT a manufactured green: `PASS
+void frames are known types — 6 void frames (6 legacy unattributed); all
+known`, alongside the still-red seq check (`30 missing seq in 4 hole
+events, 4 unexcused`) which is the expected pre-restart residue. No new
+void row had been written in the 2 min after the restart, so attribution
+lands on the next occurrence — definitively at 07-31 04:59 UTC if class
+B is a void producer at all. PRACTICAL RULE, joining
+`flagged_day_weighted` / connection-scoped-`seq` / `new_share_vs_all` /
+`cross_bucket_overlap.groups` / `direction_underlying_robust` /
+`top_day_share` / own-(category,horizon): **a green seq check is not
+evidence the parser understands the wire — read `void frames are known
+types` alongside it, because every frame the parser fails to recognise
+now lands there silently instead of reddening the seq check. Void rows
+written before 22c9556 carry `''` and can never be attributed.** NEXT
+PASS: **07-31 04:59 UTC is the discriminating instant** — if class-B
+frames appear as void rows carrying a type, the discarded-frame
+explanation is complete and the type NAMES what the hourly burst is; if
+they appear as seq holes again, they are loss `SeqTracker` cannot see
+and that is the first data-integrity finding. Read it at ~08:00+ UTC,
+not off the 07:00 QA run, which is still red on pre-restart residue.
+Also due: 07-31 ~02:15 weather bracket (independent run #4, first
+carrying `new_share_vs_all` natively) and the 07-31 11:10 sweep
+re-opening the atlas gate — the first atlas reading whose strictest tier
+is `flagged_day_weighted`. Untracked `strategies/hylshi_fade.py`
+re-confirmed present, still correctly left alone per the 07-18
+provenance resolution.)**
+(prior 2026-07-30 14:25 UTC (ATLAS ON THE FIRST INCREMENT THAT
 TOUCHED EVERY (CATEGORY, HORIZON) — THE STRICT TIERS DROPPED, AND
 CHASING THAT FOUND THE ELEVENTH INSTANCE OF THE UNIT-OF-COUNTING CLASS
 *INSIDE THE DAY TIER ITSELF*. THE STANDING SIGNATURE CLAIM SURVIVES BUT

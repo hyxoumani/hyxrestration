@@ -177,6 +177,30 @@ Format: what happened → root cause → error type → prevention tier
     fails on the value rather than on a missing key — verified by
     mutation) and to a reported tier (`flagged_day_weighted`).
 
+16. **2026-07-30 — a sentinel nobody reads is not an alarm, and the fix
+    for #14 removed the only detector it had.** `kind='void'` rows were
+    added so a frame that archives no book level stops reading as a seq
+    hole, and the code comment claimed they "make a Kalshi schema change
+    loud". Nothing ever read them. The rows also carried no frame type,
+    so an empty-ladder snapshot, a control ack and an unrecognised NEW
+    frame type all wrote the identical row. The net effect is an
+    INVERSION of detection: before the fix, a frame type this parser did
+    not understand left a seq hole and turned the QA seq check red;
+    after it, that frame writes a void row, the seq check reads green,
+    and no other check looks — the fix traded a detectable failure for
+    an invisible one while asserting the opposite. Type:
+    `unverified-claim` — the same class as #12 (a comment describing a
+    guarantee is a claim, not an implementation), here on a detection
+    guarantee rather than a recovery one. **A fix that closes a symptom
+    must say what now carries the signal the symptom used to carry; if
+    the answer is a row/field, name the consumer that reads it in the
+    same commit.** Escalated to test (four regressions; the load-bearing
+    one asserts BOTH halves — the seq check stays silent on an unknown
+    frame type, proving it is blind rather than redundant, and the new
+    check fires naming the type — plus a discrimination control so the
+    check is not merely always-red, both verified by mutation) and to a
+    reported check (`void frames are known types`).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
