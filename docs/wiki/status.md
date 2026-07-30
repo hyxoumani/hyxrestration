@@ -1,6 +1,91 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-29 20:45 UTC (EVERY STANDING REPORT GATED, SO THE
+Updated: **2026-07-30 02:35 UTC (23RD WEATHER MAKER BRACKET, THE
+INDEPENDENT RUN #3 THE LAST FIVE PASSES BUILT TOWARD — AND THE PREDICTED
+SIGNAL DOES NOT APPEAR. NINTH INSTANCE OF THE UNIT-OF-COUNTING CLASS,
+THIS TIME IN THE INDEPENDENCE CERTIFICATE ITSELF. Gate check first: the
+prior weather bracket ran 07-29 02:15:53 UTC and the run fired 02:15:11
+UTC today, so the >~24h expiry-crossing rule was satisfied to the second
+— and the report confirms it rather than my arithmetic (`new_share: 1.0`,
+251/251, all 26JUL29 vs the prior run's 26JUL28). Atlas is data-gated
+until the 07-30 11:10 UTC kalshi sweep; econ needs >=336h (next ~08-10);
+QA next fires 07:00 UTC; divergence unchanged — shadow run
+20260722T081852 still open. **THE RUN, AND THE PREDICTION FAILS
+CLEANLY**: 251 virtual orders across 8 markets (KXHIGHNY 99, KXHIGHMIA
+93, KXHIGHCHI 59), crossing **153 vs queue [147 pess, 167 opt]** —
+INSIDE the bounds, not the second under-award the last pass named as the
+first real directional signal in 23 runs. At the strictest tier it is
+also UNDIRECTED: 3 underlyings, 1 over (CHI +9) / 1 under (MIA -3) / 1
+tied (NY 0), `direction_underlying_robust: **false**` — and note the two
+tiers openly disagree this run (`direction_market_robust: true` off 4
+over / 3 under / 1 tied), which is the event tier earning its keep on
+live data for the first time. `top_underlying_net_share` 0.75, and
+`abs_net_by_underlying` 12 against `net_disagreement` 6, so half the
+aggregate is cancellation. Report:
+`reports/maker_bracket/20260730T021523.json`. **SO THE INDEPENDENT
+SEQUENCE IS NOW n=3 AND CARRIES NO DIRECTION**: #1 07-27 15:18 (agg +1,
+undirected), #2 07-29 02:15 (agg -9, robustly UNDER), #3 today (agg +6,
+inside, undirected). The archive's raw +16/-6 over-award tally still has
+zero support from any reading allowed to count, and the n>=8 data gate
+stands unchanged — one over, one under, one inside is exactly what noise
+looks like. **THE FINDING, FOUND BY ASKING WHAT "INDEPENDENT" CERTIFIES**:
+`independence` compares this run's orders against the SINGLE most recent
+comparable report (`queuescore.py:112`, a `break`). But the scored market
+set is only the top-N by print count (`select_markets`), and that set
+CHURNS — a strike that drops out of one run's top-N and returns in the
+next reads as fresh evidence against the immediate prior while an older
+run already counted it. "New since the last run" is not "never scored
+before". PROBED BEFORE BUILDING, by rehydrating `orders_detail` from all
+34 archived reports and diffing pairwise-vs-prior against
+vs-union-of-all-priors: **07-24 econ reads `new_share` 0.265 where the
+honest figure is 0.137 (1.93x), 07-26 econ reads 0.206 vs 0.115
+(1.79x)**, and the mechanism is confirmed order-by-order — 262
+`KXCPI-26JUL-T-0.1` orders on 07-24 and 198 `KXCPIYOY-26JUL-T3.5` orders
+on 07-26 were absent from the immediate prior's top-N but present in an
+older run. A small second mechanism sits underneath it: order placement
+is a stateful arm/cooldown walk seeded from the window start
+(`next_arm = since`), so a different `since` re-phases orders within a
+market that both runs scored — 2-3 orders per run, same direction,
+negligible. **WHAT IT DOES NOT TOUCH**: every weather run reads 1.000 on
+both tiers, so runs #1/#2/#3 are certified independent at the strictest
+tier available and nothing above is weakened. It is the ECON track that
+was over-credited — and note the 07-27 pass hand-computed the right
+11-14% figure, so the defect is that the SHIPPED instrument disagrees
+with that pass's own analysis and a future pass reading the field would
+have over-credited econ novelty. HARDENING SHIPPED (eae740c):
+`independence` now carries `priors_compared`, `orders_new_vs_all` and
+`new_share_vs_all`, unioning every comparable prior; `new_share` and
+`prior_report` untouched for cross-report comparability per the atlas
+day-tier / overlap-tier and bracket concentration-tier precedent. Three
+regression tests: the top-N churn case (a strike scored by an older run
+but dropped by the immediate prior must read 1.0 on `new_share` and 0.2
+on `new_share_vs_all` — so a bug-preserving implementation fails on the
+number, not just on a missing key); the discrimination control (a run
+sharing nothing with any prior stays 1.0 on BOTH tiers, so the tier is
+not merely always-lower); and series-scoping of the union, since pulling
+weather orders into an econ union would suppress real econ novelty. Suite
+330->333, ruff clean, pushed. No promote — queuescore is sim-side, no
+timer runs it (verified against `scripts/systemd/`). Validated in the
+real pipeline by replaying the SHIPPED function over the whole archive
+report-by-report, reproducing the probe exactly; today's run reads
+`new_share_vs_all` 1.000 against all 17 comparable priors. The archived
+`20260730T021523.json` is deliberately NOT rewritten to carry the new
+fields — reports are immutable inputs to `independence_vs_prior`, same
+call as the 07-29 event-tier decision; the next run carries it.
+PRACTICAL RULE, joining `direction_underlying_robust` /
+`cross_bucket_overlap.groups` / `observations_by_category_horizon` /
+`top_day_share` / connection-scoped-`seq`: **read `new_share_vs_all`,
+not `new_share`, before calling a bracket an independent reading —
+pairwise novelty overstates econ novelty by up to ~1.9x. Reports written
+before eae740c carry only the inflated field.** NEXT PASS: the 07-30
+11:10 UTC sweep opens the atlas gate for the first reading whose drift
+is measured against a reproducible `implied` baseline (post-7462e5c) and
+whose survivor counts are read as `groups`; the 07-31 ~02:15 UTC weather
+bracket is independent run #4, the first to carry `new_share_vs_all`
+natively, and the first that could put any direction back on the board.
+Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-07-29 20:45 UTC (EVERY STANDING REPORT GATED, SO THE
 UNIT-OF-COUNTING LENS WENT WHERE IT HAD NEVER BEEN POINTED — *ACROSS*
 ATLAS BUCKETS — AND FOUND TWO THINGS, THE SECOND ONE UNDERMINING THE
 DRIFT METHOD ITSELF. Gate check first: atlas ran 14:18 UTC and is
