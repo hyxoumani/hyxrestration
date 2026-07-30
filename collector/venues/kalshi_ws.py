@@ -116,6 +116,32 @@ def parse_message(
             )
         ]
 
+    def _void() -> tuple[list[BookEvent], list[StreamTrade]]:
+        """A frame that carried sid/seq but archives no book row still
+        CONSUMED a wire sequence number. Record it, or the archive shows a
+        hole indistinguishable from real data loss: measured 2026-07-30, 70
+        such seq in 26h while SeqTracker (which sees every frame on the wire)
+        logged not one seq_gap, so the frames arrived and simply parsed to
+        nothing. A void row also makes a Kalshi schema change loud — a new
+        frame type silently swallowed here would otherwise just thin the
+        book capture. Ignored by replay, which filters on snap/delta."""
+        if sid is None or seq is None:
+            return [], []
+        return [
+            BookEvent(
+                venue=VENUE,
+                market_id=msg.get("market_ticker") or "",
+                recv_ts=recv_ts,
+                src_ts=_src_ts(msg),
+                sid=sid,
+                seq=seq,
+                kind="void",
+                side="",
+                price=0.0,
+                qty=0.0,
+            )
+        ], []
+
     if typ == "orderbook_snapshot":
         events = []
         for side, key in (("yes", "yes_dollars_fp"), ("no", "no_dollars_fp")):
@@ -134,7 +160,7 @@ def parse_message(
                         qty=float(qty),
                     )
                 )
-        return events, []
+        return (events, []) if events else _void()
 
     if typ == "orderbook_delta":
         return [
@@ -152,7 +178,7 @@ def parse_message(
             )
         ], []
 
-    return [], []  # subscribed/ok/error/heartbeat frames
+    return _void()  # subscribed/ok/error/heartbeat frames
 
 
 class SeqTracker:

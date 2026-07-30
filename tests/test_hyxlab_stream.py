@@ -117,6 +117,56 @@ def test_kalshi_control_frames_parse_to_nothing():
     assert kalshi_ws.parse_message({"type": "subscribed", "id": 1}, RECV) == ([], [])
 
 
+def test_kalshi_sequenced_frame_with_no_book_rows_is_recorded_as_void():
+    """A frame that carries sid/seq but archives no book row still consumed a
+    wire sequence number. Dropping it leaves a hole in book_events that is
+    indistinguishable from real data loss — 70 such seq in the 2026-07-30 26h
+    window, against zero seq_gap rows from SeqTracker."""
+    events, trades = kalshi_ws.parse_message(
+        {"type": "market_lifecycle_v2", "sid": 1, "seq": 77, "msg": {"market_ticker": "M1"}}, RECV
+    )
+    (e,) = events
+    assert (e.kind, e.seq, e.market_id) == ("void", 77, "M1")
+    assert trades == []
+
+
+def test_kalshi_empty_snapshot_is_recorded_as_void():
+    """An orderbook_snapshot with empty ladders yields no level rows, so it
+    hits the same hole-in-book_events problem as a control frame."""
+    events, _ = kalshi_ws.parse_message(
+        {
+            "type": "orderbook_snapshot",
+            "sid": 1,
+            "seq": 78,
+            "msg": {"market_ticker": "M1", "yes_dollars_fp": [], "no_dollars_fp": []},
+        },
+        RECV,
+    )
+    assert [(e.kind, e.seq) for e in events] == [("void", 78)]
+
+
+def test_void_rows_close_the_seq_hole_they_explain(tmp_path):
+    """The point of the void row: the frame's seq is present in book_events,
+    so the QA continuity check sees a contiguous run instead of a hole it
+    cannot attribute."""
+    from collector import qa
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    for seq, typ in ((1, "delta"), (2, "void"), (3, "delta")):
+        frame = (
+            {"type": "orderbook_delta", "sid": 1, "seq": seq,
+             "msg": {"market_ticker": "M1", "price_dollars": "0.40",
+                     "delta_fp": "1.00", "side": "yes"}}
+            if typ == "delta"
+            else {"type": "market_lifecycle_v2", "sid": 1, "seq": seq, "msg": {}}
+        )
+        store.append_events(kalshi_ws.parse_message(frame, RECV)[0])
+    store.flush()
+    conn = qa._connect_ro(str(tmp_path / "s.duckdb"))
+    seqs = [r[0] for r in conn.execute("SELECT seq FROM book_events ORDER BY seq").fetchall()]
+    assert seqs == [1, 2, 3]
+
+
 def test_seq_tracker_flags_jump_once_per_sid():
     tr = kalshi_ws.SeqTracker()
     assert tr.observe(1, 1) is False  # first observation
