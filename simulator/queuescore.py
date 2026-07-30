@@ -95,9 +95,22 @@ def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition
     Comparison is against the most recent prior report sharing a series with
     this run, which keeps weather and econ sequences from being compared to
     each other. Returns null counts when there is no comparable prior run.
+
+    "New since the last run" is NOT "never scored before", because the scored
+    market set is only the top-N by print count (`select_markets`) and that
+    set churns: a strike that drops out of one run's top-N and returns in the
+    next reads as fresh evidence against the immediate prior while an older
+    run already counted it. Measured over the archive, this inflates
+    `new_share` by up to ~1.9x on econ re-runs (07-24 0.265 vs 0.137 honest,
+    driven by 262 `KXCPI-26JUL-T-0.1` orders absent from the prior top-N).
+    `*_vs_all` therefore compares against the union of EVERY comparable prior
+    and is the honest novelty read; `new_share` is kept unchanged for
+    cross-report comparability with reports written before this tier.
     """
     keys = {tuple(order_key(o)) for o in orders}
     prior_name, prior_keys = None, None
+    union: set[tuple] = set()
+    n_priors = 0
     for path in sorted(out_dir.glob("*.json"), reverse=True):
         try:
             prior = json.loads(path.read_text())
@@ -105,19 +118,33 @@ def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition
             continue
         if not set(prior.get("market_composition", {})) & set(composition):
             continue
-        prior_name = path.name
-        prior_keys = {
+        prior_keys_here = {
             (d["market_id"], d["placed"], d["price"]) for d in prior.get("orders_detail", [])
         }
-        break
+        if prior_keys is None:
+            prior_name, prior_keys = path.name, prior_keys_here
+        union |= prior_keys_here
+        n_priors += 1
     if prior_keys is None:
-        return {"prior_report": None, "orders_new": None, "orders_shared": None, "new_share": None}
+        return {
+            "prior_report": None,
+            "orders_new": None,
+            "orders_shared": None,
+            "new_share": None,
+            "priors_compared": 0,
+            "orders_new_vs_all": None,
+            "new_share_vs_all": None,
+        }
     new = len(keys - prior_keys)
+    new_all = len(keys - union)
     return {
         "prior_report": prior_name,
         "orders_new": new,
         "orders_shared": len(keys & prior_keys),
         "new_share": round(new / len(keys), 4) if keys else None,
+        "priors_compared": n_priors,
+        "orders_new_vs_all": new_all,
+        "new_share_vs_all": round(new_all / len(keys), 4) if keys else None,
     }
 
 
@@ -402,6 +429,10 @@ def main() -> None:
             " independence.new_share is the fraction of orders not scored by"
             " the prior comparable run — a low share means this reading is"
             " mostly the prior one re-measured, not a confirmation of it."
+            " Read new_share_vs_all, not new_share: the scored market set is"
+            " only the top-N by print count and it churns, so a strike absent"
+            " from the immediate prior but present in an older run reads as"
+            " fresh against new_share while never being new evidence at all."
             " concentration treats the MARKET as the independent unit (all"
             " orders in a market ride one book): read"
             " direction_market_robust before calling any over/under verdict,"

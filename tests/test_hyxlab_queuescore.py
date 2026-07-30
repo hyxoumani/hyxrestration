@@ -327,6 +327,9 @@ def test_independence_compares_within_series_and_handles_first_run(tmp_path):
         "orders_new": None,
         "orders_shared": None,
         "new_share": None,
+        "priors_compared": 0,
+        "orders_new_vs_all": None,
+        "new_share_vs_all": None,
     }
     # a weather run does match the weather report, and is fully new
     weather = [_order("KXHIGHNY-26JUL27", T0 + timedelta(hours=5))]
@@ -334,3 +337,71 @@ def test_independence_compares_within_series_and_handles_first_run(tmp_path):
     assert res["prior_report"] == "20260726T000000.json"
     assert res["orders_new"] == 1 and res["orders_shared"] == 0
     assert res["new_share"] == 1.0
+
+
+def test_independence_vs_all_catches_top_n_churn(tmp_path):
+    """The scored market set is only the top-N by print count, and it churns.
+    A strike absent from the immediate prior run but scored by an OLDER one is
+    not new evidence — new_share cannot see that, new_share_vs_all must."""
+    out = tmp_path / "maker_bracket"
+    churned = [("KXCPI-26JUL-T-0.1", T0 + timedelta(minutes=i), 0.4) for i in range(8)]
+    # oldest run scored the churned strike; the immediate prior dropped it
+    _write_report(out, "20260724T000000.json", {"KXCPI": 8}, churned)
+    _write_report(out, "20260725T000000.json", {"KXCPI": 2}, [("KXCPI-26JUL-T0.0", T0, 0.4)])
+
+    # this run re-scores the churned strike plus 2 genuinely new orders
+    orders = [_order(m, p, pr) for m, p, pr in churned]
+    orders += [
+        _order("KXCPI-26JUL-T0.5", T0 + timedelta(hours=9) + timedelta(minutes=i)) for i in range(2)
+    ]
+    res = independence_vs_prior(out, orders, {"KXCPI": 10})
+
+    assert res["prior_report"] == "20260725T000000.json"
+    assert res["priors_compared"] == 2
+    # against the immediate prior alone, the churned strike looks fresh: 10/10
+    assert res["orders_new"] == 10 and res["new_share"] == 1.0
+    # against every comparable prior, only the 2 truly-new orders survive
+    assert res["orders_new_vs_all"] == 2 and res["new_share_vs_all"] == 0.2
+
+
+def test_independence_vs_all_still_certifies_a_genuinely_new_run(tmp_path):
+    """Control: the tier must discriminate, not merely read lower than
+    new_share. A run sharing nothing with any prior stays 1.0 on both."""
+    out = tmp_path / "maker_bracket"
+    _write_report(
+        out, "20260728T000000.json", {"KXHIGHNY": 2}, [("KXHIGHNY-26JUL28-B80.5", T0, 0.4)]
+    )
+    _write_report(
+        out,
+        "20260729T000000.json",
+        {"KXHIGHNY": 2},
+        [("KXHIGHNY-26JUL29-B80.5", T0 + timedelta(hours=24), 0.4)],
+    )
+
+    fresh = [_order("KXHIGHNY-26JUL30-B80.5", T0 + timedelta(hours=48))]
+    res = independence_vs_prior(out, fresh, {"KXHIGHNY": 1})
+
+    assert res["priors_compared"] == 2
+    assert res["new_share"] == 1.0 and res["new_share_vs_all"] == 1.0
+
+
+def test_independence_vs_all_unions_only_comparable_priors(tmp_path):
+    """The union must stay series-scoped: pulling an unrelated category's
+    orders into it would let weather runs suppress econ novelty."""
+    out = tmp_path / "maker_bracket"
+    _write_report(
+        out, "20260726T000000.json", {"KXHIGHNY": 1}, [("KXCPI-26JUL-T0.0", T0, 0.4)]
+    )  # weather run, econ-shaped order
+    _write_report(
+        out,
+        "20260727T000000.json",
+        {"KXCPI": 1},
+        [("KXCPI-26JUL-T0.5", T0 + timedelta(hours=1), 0.4)],
+    )
+
+    econ = [_order("KXCPI-26JUL-T0.0", T0)]
+    res = independence_vs_prior(out, econ, {"KXCPI": 1})
+
+    # only the one econ prior is comparable, and it does not carry this order
+    assert res["priors_compared"] == 1
+    assert res["new_share"] == 1.0 and res["new_share_vs_all"] == 1.0
