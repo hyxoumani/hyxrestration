@@ -152,6 +152,31 @@ Format: what happened → root cause → error type → prevention tier
     to a capture-side fix (`kind='void'` rows) so the archive records
     the full wire sequence rather than only its rowful frames.
 
+15. **2026-07-30 — a conservatism tier that took its sample size from
+    one unit and its point estimate from another.** `flagged_day_robust`
+    exists because same-day ladders resolve off one underlying path, so
+    it computes Wilson with n = days. But it left `implied`/`realized`
+    market-weighted, so a 106-market day outvoted a 1-market day 106:1
+    in the mean while both counted as a single draw in n — the tier
+    applied the day model to the variance and the market model to the
+    mean, and the mismatch is the very correlation it was built to
+    bound. Measured: Financials 24h d8 read +0.1289 where the
+    day-weighted gap is +0.0208 (6.2x). Crucially the error was **not
+    conservative** — it inflated a gap wherever the largest days agreed
+    with the signature, which is the direction that manufactures
+    findings. Consequence: 13 "day-robust" survivors fell to 5, and
+    every high-decile survivor (the "favorites realize above implied"
+    half of the standing signature claim) was demoted. Type:
+    `unit-of-counting` (eleventh occurrence; first one located inside a
+    correction shipped for an earlier occurrence of the same class).
+    **When you weaken a statistic to account for correlation, weaken
+    BOTH sides — an effective sample size applied to a mean computed in
+    the un-corrected unit is not a bound, it is a different statistic.**
+    Escalated to test (four regressions; the load-bearing one asserts
+    the day-weighted gap NUMBER, so a bug-preserving implementation
+    fails on the value rather than on a missing key — verified by
+    mutation) and to a reported tier (`flagged_day_weighted`).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

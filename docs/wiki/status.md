@@ -1,6 +1,91 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-30 08:35 UTC (THE QA SEQ CHECK FAILED FOR THE FIRST
+Updated: **2026-07-30 14:25 UTC (ATLAS ON THE FIRST INCREMENT THAT
+TOUCHED EVERY (CATEGORY, HORIZON) — THE STRICT TIERS DROPPED, AND
+CHASING THAT FOUND THE ELEVENTH INSTANCE OF THE UNIT-OF-COUNTING CLASS
+*INSIDE THE DAY TIER ITSELF*. THE STANDING SIGNATURE CLAIM SURVIVES BUT
+LOSES HALF ITS DIRECTION. Gate check first: the kalshi sweep fired 11:10
+UTC (3h prior, confirmed against `systemctl list-timers`), so the atlas
+gate named last pass had OPENED and atlas was the one runnable standing
+report. QA next fires 07-31 07:00 UTC, so the void-row prediction from
+the 08:35 pass is still GATED and unchecked; weather bracket next ~07-31
+02:15 (independent run #4); econ needs >=336h (next ~08-10); divergence
+unchanged — shadow run 20260722T081852 still open. **THE RUN IS THE
+FIRST GENUINELY BROAD INCREMENT IN THE LOG**: every (category, horizon)
+gained, including `Financials|24h` +97 — the population the 07-29 pass
+called "structurally frozen", which moved for the first time. Headline
+flagged 91->91 (28 groups, flat), but the strict tiers FELL: robust
+67->63 (28->25 groups), day-robust **16->13** (11->8 groups). Three
+Financials mid-decile buckets were demoted (1h d5, 6h d5, 6h d6), all
+because their gap SHRANK on a ~10% increment. Report:
+`reports/atlas/20260730T141519.json`. **PROBED BEFORE BUILDING**, by
+breaking Financials 6h d5 down by settlement day: the entire increment
+is 07-29, 106 markets at implied 0.543 that realized **0.028**. And the
+day column is near-bimodal — 07-28 reads 0.966, 07-23 reads 0.015,
+07-21 reads 0.982 — i.e. the index went one way that day and every
+mid-decile ladder resolved with it. That is the day-correlation the day
+tier was built for, and it fired correctly. **BUT LOOKING AT THE TIER'S
+OWN ARITHMETIC IS WHERE THE FINDING IS**: `flagged_day_robust` is
+`wilson(realized * days, days)` (atlas.py:302) — it takes its SAMPLE
+SIZE from days but its POINT ESTIMATE from markets, since `implied` and
+`realized` are both market-weighted. So a 106-market day outvotes a
+1-market day 106:1 in the mean while both count as a single draw in n.
+The tier uses the day model for the variance and the market model for
+the mean, which is precisely the correlation it exists to bound.
+MEASURED over the 13 day-robust survivors: re-weighting both sides so
+each day contributes once shrinks **Financials 24h d8 from +0.1289 to
++0.0208 (6.2x)** and **Economics 1h d6 from +0.1453 to +0.0444 (3.3x)**;
+no survivor flips sign. Note the direction — the defect is NOT uniformly
+conservative, it INFLATES a gap wherever the largest days happen to
+agree with the signature. HARDENING SHIPPED (8a6ac3c): every bucket now
+carries `implied_day_weighted`, `realized_day_weighted` and a
+`flagged_day_weighted` tier — the day tier with the same unit on both
+sides. `flagged_day_robust` and the market-weighted `implied`/`realized`
+are untouched for cross-report comparability, per the divergence-matcher
+/ day-tier / overlap-tier / bracket-concentration precedent; unlike the
+QA seq headline this one is a coarser VALID measure, not an artifact, so
+it is kept rather than replaced. Four regression tests on a fixture with
+the production shape (one 300-market all-yes day plus 40 five-market
+days settling at exactly the implied 0.60): the load-bearing one asserts
+the day-weighted gap is +0.0098 where the market-weighted gap is +0.24,
+so a bug-preserving implementation fails on the NUMBER, not on a missing
+key — verified by mutation, swapping `avg(day_*)` for the
+market-weighted sum reddens exactly that test and the field-level one
+and leaves the others green; the discrimination control (the same 0.84
+realized spread evenly over 50 days must KEEP the flag, so the tier
+measures day balance rather than being merely always-stricter); and tier
+nesting. Suite 338->342, ruff clean, pushed. No promote — atlas is
+sim-side, no timer runs it (verified against `scripts/systemd/`).
+**THE RESULT, AND IT IS THE LARGEST NARROWING THE STANDING CLAIM HAS
+TAKEN**: 13 day-robust -> **5 day-weighted (8 -> 4 groups)**, report
+`reports/atlas/20260730T142000.json`. Counter-signature survivors:
+still **ZERO**, so the claim itself holds. But every one of the 5
+survivors is a LOW decile with a NEGATIVE gap — Economics 1h d2/d3/d4,
+Financials 1h d2, Financials 6h d2 — and **every high-decile survivor is
+demoted** (Financials 24h d7/d8, 6h d7/d8, Economics 1h d6). So at the
+strictest tier available only the LONGSHOT half of the favorite-longshot
+signature survives: longshots realize below implied. The "favorites
+realize above implied" half was carried by large days and does not
+survive day-weighting. That is a directional narrowing that matters for
+any strategy lead — the tradeable half of this signature in this archive
+is FADING LONGSHOTS, not backing favorites. It is not a verdict: 4
+groups is a small sample and no pre-registration exists. PRACTICAL RULE,
+joining `cross_bucket_overlap.groups` / own-(category,horizon) /
+`top_day_share` / `direction_underlying_robust` / `new_share_vs_all` /
+connection-scoped-`seq`: **read `flagged_day_weighted`, not
+`flagged_day_robust`, as an atlas bucket's strictest surviving tier —
+the day tier's market-weighted mean overstates a high-decile gap by up
+to ~6x. Reports written before 8a6ac3c carry no day-weighted field at
+all, and every "day-robust" high-decile finding this log reported is
+weaker than it reads.** NEXT PASS: the 07-31 07:00 UTC QA run is the
+falsifiable void-row prediction from the 08:35 pass — green means the
+discarded frames were the whole explanation, still-red means real loss
+`SeqTracker` cannot see, which would be the first data-integrity
+finding; the 07-31 ~02:15 UTC weather bracket is independent run #4, the
+first carrying `new_share_vs_all` natively. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-30 08:35 UTC (THE QA SEQ CHECK FAILED FOR THE FIRST
 TIME SINCE IT WAS HARDENED — AND THE FAILURE IS AN ARTIFACT OF THE FIX,
 NOT A DAEMON FAULT. TENTH INSTANCE OF THE UNIT-OF-COUNTING CLASS, THIS
 TIME INSIDE THE REPAIR SHIPPED FOR THE SIXTH. Gate check first: atlas
