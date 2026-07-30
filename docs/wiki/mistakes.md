@@ -129,6 +129,29 @@ Format: what happened → root cause → error type → prevention tier
     Escalated to test (three regressions incl. a non-vacuity control)
     and to `venues.md` as durable venue semantics.
 
+14. **2026-07-30 — the fix for #13 was vacuous in the same way, and its
+    first FAIL was an artifact of its own scoping.** a556b31 replaced
+    "any gap row in the window excuses any hole" with "a gap row
+    overlapping the RUN excuses that run". But every completed
+    connection run ends in a logged reconnect, whose gap row touches the
+    run's endpoint — so every completed run was pardoned wholesale (run
+    6's holes at 17:55 pardoned by the 21:29 reconnect, 3.4h later), and
+    the only run that could fail was the still-open one, which failed
+    spuriously and self-cleared an hour later. Narrowing a scope is not
+    the same as scoping it correctly: **an excusal must be scoped to the
+    thing it excuses (the hole), not to any container that happens to
+    hold it.** Type: `vacuous-assertion` (second occurrence in the same
+    check). The deeper defect underneath: the check asserted a property
+    of the WIRE by counting ARCHIVED ROWS, and the two differ by exactly
+    the frames `parse_message` discards — proven by SeqTracker logging
+    zero `seq_gap` rows across 70 archived holes. **Before counting
+    absences, check that the recorder writes a row for every event it
+    saw; a missing row is only evidence of a missing event if it was
+    ever going to be written.** Escalated to test (five regressions,
+    incl. the foreign-channel case and a void-row integration test) and
+    to a capture-side fix (`kind='void'` rows) so the archive records
+    the full wire sequence rather than only its rowful frames.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
