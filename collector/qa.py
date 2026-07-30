@@ -150,6 +150,42 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         f"{len(unexcused)} unexcused ({sum(m for m, _, _ in unexcused)} seq)",
     )
 
+    # Void-frame attribution. The seq check above is now BLIND to a Kalshi
+    # schema change by construction: a frame type this parser does not
+    # recognise archives no book level, and since 2026-07-30 it writes a
+    # kind='void' row that CLOSES the seq hole it would otherwise leave. So
+    # the very event the seq check used to catch (an unrecognised frame
+    # thinning book capture) now reads green there. Nothing read the void
+    # rows until this check, which is why that fix silently traded a
+    # detectable failure for an invisible one. Alarm on any void frame type
+    # outside the known-benign set: an empty-ladder orderbook_snapshot
+    # (markets with no resting book — measured 2026-07-30, the only mid-run
+    # producer) plus the sequenced control acks. Legacy void rows carry ''
+    # in `side` (written before the frame type was recorded) and are
+    # unattributable, so they are counted but cannot trip the check; they
+    # roll out of the window on their own.
+    voids = conn.execute(
+        "SELECT side, count(*) FROM book_events"
+        " WHERE venue = 'kalshi' AND kind = 'void'"
+        " AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)"
+        " GROUP BY side ORDER BY 2 DESC",
+        [now, int(hours)],
+    ).fetchall()
+    benign = {"orderbook_snapshot", "subscribed", "ok", "error", "heartbeat", "pong"}
+    unknown = [(t, n) for t, n in voids if t and t not in benign]
+    legacy = sum(n for t, n in voids if not t)
+    check(
+        "void frames are known types",
+        not unknown,
+        f"{sum(n for _, n in voids)} void frames"
+        + (f" ({legacy} legacy unattributed)" if legacy else "")
+        + (
+            "; UNKNOWN " + ", ".join(f"{t}x{n}" for t, n in unknown)
+            if unknown
+            else "; all known"
+        ),
+    )
+
     # Reconstruct each Kalshi book from its time-latest snapshot image
     # (an image is one WS frame, so its rows share recv_ts) plus the
     # signed deltas received after it. seq is NOT usable as an ordering

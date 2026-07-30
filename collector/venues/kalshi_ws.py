@@ -124,7 +124,19 @@ def parse_message(
         logged not one seq_gap, so the frames arrived and simply parsed to
         nothing. A void row also makes a Kalshi schema change loud — a new
         frame type silently swallowed here would otherwise just thin the
-        book capture. Ignored by replay, which filters on snap/delta."""
+        book capture. Ignored by replay, which filters on snap/delta.
+
+        `side` carries the frame's `type`. Without it the void row is a
+        BLIND sentinel and the "loud" claim above is false: an empty
+        snapshot, a control ack and an unrecognised new frame type all
+        write the same row, so the sentinel absorbs a schema change into
+        a plausible-looking count instead of surfacing it. Worse, before
+        void rows existed such a frame left a seq hole and turned the QA
+        seq check RED; recording it green-lights that check, so without a
+        frame-type reader the fix TRADES a detectable failure for an
+        invisible one. `side` is meaningless for a row that archives no
+        book level, so it is the free column. Legacy void rows (written
+        2026-07-30 08:26 → this commit) carry '' and are unattributable."""
         if sid is None or seq is None:
             return [], []
         return [
@@ -136,7 +148,7 @@ def parse_message(
                 sid=sid,
                 seq=seq,
                 kind="void",
-                side="",
+                side=str(typ or "?"),
                 price=0.0,
                 qty=0.0,
             )

@@ -126,8 +126,8 @@ class BookEvent:
     src_ts: datetime | None
     sid: int | None
     seq: int | None
-    kind: str  # 'snap' | 'delta'
-    side: str
+    kind: str  # 'snap' | 'delta' | 'void' (kalshi: frame archived no level)
+    side: str  # 'yes' | 'no'; for kind='void' the frame's `type` instead
     price: float
     qty: float
 

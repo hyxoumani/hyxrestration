@@ -146,6 +146,72 @@ def _stream_with_books(path, frames_at):
     return store
 
 
+def _void_frame(typ, seq, sid=1):
+    return {"type": typ, "sid": sid, "seq": seq, "msg": {"market_ticker": "M1"}}
+
+
+def test_unknown_frame_type_is_invisible_to_the_seq_check_but_trips_void_check(tmp_path):
+    """THE load-bearing one. A Kalshi frame type this parser does not
+    recognise archives no book level. Since void rows were introduced it
+    also CLOSES the seq hole it used to leave — so the seq check, which
+    caught exactly this before, now reads green. Assert both halves: the
+    seq check must be silent (proving it is blind, not merely redundant)
+    and the void check must fire naming the type."""
+    frames = [
+        (_book_frame("delta", 1, "0.40", "1.00"), NOW - timedelta(minutes=30)),
+        (_void_frame("orderbook_snapshot_v2", 2), NOW - timedelta(minutes=29)),
+        (_book_frame("delta", 3, "0.41", "1.00"), NOW - timedelta(minutes=28)),
+    ]
+    _stream_with_books(tmp_path / "s.duckdb", frames)
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "book seq contiguous or gap-marked" not in failed
+    assert "void frames are known types" in failed
+
+
+def test_empty_snapshot_void_is_benign(tmp_path):
+    """Discrimination control: the void producer that actually occurs in
+    production (a snapshot whose ladders are empty — a market with no
+    resting book) must NOT trip the check, or it is merely always-red."""
+    empty_snap = {
+        "type": "orderbook_snapshot",
+        "sid": 1,
+        "seq": 2,
+        "msg": {"market_ticker": "M1", "yes_dollars_fp": []},
+    }
+    frames = [
+        (_book_frame("delta", 1, "0.40", "1.00"), NOW - timedelta(minutes=30)),
+        (empty_snap, NOW - timedelta(minutes=29)),
+        (_book_frame("delta", 3, "0.41", "1.00"), NOW - timedelta(minutes=28)),
+    ]
+    _stream_with_books(tmp_path / "s.duckdb", frames)
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "void frames are known types" not in failed
+
+
+def test_legacy_void_row_without_frame_type_cannot_trip_the_check(tmp_path):
+    """Void rows written between 2026-07-30 08:26 and the frame-type commit
+    carry '' in `side`. They are unattributable, not unknown — counting them
+    as unknown would red the check for a day on rows that predate the
+    field."""
+    store = _stream_with_books(
+        tmp_path / "s.duckdb",
+        [(_book_frame("delta", 1, "0.40", "1.00"), NOW - timedelta(minutes=30))],
+    )
+    ev = parse_message(_void_frame("something_new", 2), NOW - timedelta(minutes=29))[0]
+    ev[0].side = ""  # legacy shape
+    store.append_events(ev)
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "void frames are known types" not in failed
+
+
+def test_void_row_records_the_frame_type(tmp_path):
+    """Field-level: the type must reach `side`, else the check above can
+    only ever see ''."""
+    events = parse_message(_void_frame("orderbook_snapshot_v2", 7), NOW)[0]
+    assert [(e.kind, e.side, e.seq) for e in events] == [("void", "orderbook_snapshot_v2", 7)]
+
+
 def test_reconnect_seq_restart_is_not_a_hole(tmp_path):
     """seq is connection-scoped and restarts at 1 on reconnect, while Kalshi
     reuses sid=1 for each new connection. Grouping by sid alone welds the
