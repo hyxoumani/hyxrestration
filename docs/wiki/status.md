@@ -1,6 +1,101 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-31 02:35 UTC (24TH WEATHER MAKER BRACKET, INDEPENDENT
+Updated: **2026-07-31 08:35 UTC (THE CLASS-B VOID-ROW PREDICTION IS
+CONFIRMED AND THE FRAME TYPE NAMES THE HOURLY BURST — AND CHASING WHAT
+THAT FRAME *MEANS* FOUND THE SENTINEL BEING RECORDED BUT NOT ACTED ON:
+REPLAY CARRIES A PHANTOM LADDER PAST EVERY CLEARED BOOK. Gate check
+first, hard rather than estimated: atlas is data-gated until the 07-31
+11:10 UTC kalshi sweep (`systemctl list-timers`: `hyxlab-sweep` next
+06:10 CDT, ~2h54m out, last fired 07-30); weather bracket ran 07-31
+02:16 UTC so independent run #5 is 08-01 ~02:15; econ needs >=336h (next
+~08-10); QA fired 07-31 07:00 UTC. The one runnable item is the
+discriminating instant the last three passes named — **07-31 04:59 UTC,
+now ~3h in the past.** **THE PREDICTION HOLDS, AND CLASS B IS
+IDENTIFIED.** The hourly bursts recurred exactly on schedule at
+04:59:18, 05:59:18 and 06:59:18 UTC and every one of them landed as
+`kind='void'` rows carrying a type — **`orderbook_snapshot`**, 30 rows
+across the three bursts. So the discarded-frame explanation is complete
+for the class that produces all the volume, no `SeqTracker`-invisible
+loss exists, and there is no data-integrity finding. The type also names
+what the burst IS: every market is a **26JUL30** ticker — the PREVIOUS
+day's expired weather ladders (KXHIGHNY/MIA at 04:59, KXHIGHCHI/AUS at
+05:59, KXHIGHDEN at 06:59). Kalshi wipes an expired daily market's book
+at the top of the hour by sending a snapshot with empty levels. Note
+this falsifies the 07-30 08:35 pass's supporting claim that "snapshots
+appear only at connection start" — these are mid-run, interleaved with
+live deltas (seq 499265 is a KXHIGHDEN-26JUL31 delta sitting between two
+void rows). Harmless to that pass's conclusion, but the log was carrying
+it. **THE FINDING, FOUND BY ASKING WHAT THE RECORDED FRAME MEANS RATHER
+THAN STOPPING AT "THE HOLE IS CLOSED", AND IT IS THE LOAD-BEARING
+HALF**: an empty snapshot is not an absence of information, it is a full
+absolute image saying **the ladder is now empty** — and it is the one
+book image that cannot be expressed as rows, because the writer emits
+one row per level and there are no levels. 22c9556 made the archive
+record that the frame arrived; nothing made replay act on it.
+`BookReplayer.apply` fell through to `if e.kind != "delta": return None`,
+so a void row was a complete no-op and the pre-clear ladder replayed
+forever. **PROBED BEFORE BUILDING, against the live archive**: for all
+30 markets the last non-void row PRECEDES the void instant and there are
+**zero** non-void rows after it, so the clear is terminal — and replaying
+the shipped code over them left **30 of 30 carrying a phantom ladder,
+1328 phantom levels in total**, e.g. `KXHIGHNY-26JUL30-B79.5` showing a
+6-level NO ladder with **79 contracts resting at 0.99** for a book that
+had been wiped and never traded again. That is a fill-simulation hazard,
+not a display nit: any maker consumer resting against that ladder trades
+with a counterparty that does not exist. HARDENING SHIPPED (494a2ac): a
+void row whose type is `orderbook_snapshot` now clears the book and
+emits the resulting empty top, so consumers SEE the clear; the fix
+**clears rather than `invalidate()`s**, and that distinction is the
+design call — an empty ladder is a KNOWN state, not broken coverage, so
+the market stays seeded and a market whose book opens EMPTY is tracked
+from there instead of discarding every delta until the next reconnect
+image. Sequenced control acks and legacy `''` rows stay no-ops. Five
+regression tests; the load-bearing one asserts the emitted top is empty
+on BOTH sides and that a following delta builds from empty rather than
+from the phantom ladder, so a fires-but-does-nothing implementation
+fails on the NUMBERS, not on a missing emit — plus the discrimination
+control (a control ack must NOT wipe a live book, so the tier keys on
+frame type rather than on `kind='void'`), the seed-from-empty case, the
+idempotence case, and the `replay_snapshots` row-group case (a void row
+is a complete image alone and must emit inline, not wait for a finalize
+that never comes). Verified by mutation, three separate ones: dropping
+the void branch reddens exactly four and leaves the control green;
+firing on any `kind='void'` regardless of type reddens exactly the
+control; and `invalidate` semantics (unseed instead of clear) reddens
+exactly the three that assert the book survives as empty. Suite
+351->356, ruff clean, pushed, and **PROMOTED** — and this one is a
+DEPARTURE from the standing "sim-side, no promote" call used for atlas
+and queuescore: `hyxlab-shadow` is a live daemon running
+`simulator.shadow`, which calls `replay_snapshots`, so the code is in
+production. Daemon back up 08:20:04 UTC on 494a2ac; stable worktree
+verified at that commit. Validated in the real pipeline by replaying the
+SHIPPED code over the same 30 markets: **30/30 phantom -> 0/30**.
+**AN HONEST LIMITATION ON THE OTHER HALF**: the seed-from-empty gain
+cannot act on anything currently in the archive. All 6 class-A void rows
+were written 07-30 08:26-11:49, BEFORE 22c9556 recorded frame types, so
+they carry `''` and are correctly unattributable. The gain is real but
+prospective — measured on the class-A markets, `KXCPI-26OCT-T0.1` had 4
+deltas and `KXCPIYOY-26NOV-T3.6` had 102 deltas discarded between the
+empty snapshot and the next reconnect image (~5.3h of coverage), and the
+next class-A occurrence recovers them. PRACTICAL RULE, joining
+`underlying_sign_p` / `flagged_day_weighted` / `new_share_vs_all` /
+`cross_bucket_overlap.groups` / `top_day_share` / connection-scoped-`seq`
+/ own-(category,horizon): **recording a frame is not handling it. A void
+row of type `orderbook_snapshot` is a book-CLEARING event; any replay or
+depth reading taken before 494a2ac carries the pre-clear ladder forward
+indefinitely for every expired daily market, and `seq` continuity being
+green says nothing about whether the book state is real.** NEXT PASS:
+the 07-31 11:10 UTC sweep re-opens the atlas gate for the first reading
+whose strictest tier is `flagged_day_weighted` — the standing longshot-
+fade narrowing is the thing to re-test; 08-01 ~02:15 UTC is weather
+bracket independent run #5, the first carrying `underlying_sign_p`
+natively, and per the retired data gate the unit to pool is leaning
+UNDERLYINGS (5 over / 7 under, k=12, p=0.387 so far), not runs. Also
+worth a pass: whether any ARCHIVED report or shadow run was computed
+against a phantom ladder. Untracked `strategies/hylshi_fade.py`
+re-confirmed present, still correctly left alone per the 07-18
+provenance resolution.)**
+(prior 2026-07-31 02:35 UTC (24TH WEATHER MAKER BRACKET, INDEPENDENT
 RUN #4 — AND CHASING WHAT CERTIFIED IT FOUND THAT NO DIRECTIONAL READING
 IN THE ENTIRE 34-RUN BRACKET ARCHIVE IS DISTINGUISHABLE FROM A COIN
 FLIP. TWELFTH INSTANCE OF THE UNIT-OF-COUNTING CLASS, THIS TIME AS A
