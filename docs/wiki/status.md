@@ -1,6 +1,115 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-31 14:35 UTC (ATLAS RE-OPENED ON A LARGE INCREMENT AND
+Updated: **2026-07-31 20:55 UTC (EVERY STANDING REPORT GATED, SO THE
+DEFERRED SHADOW-LEDGER QUESTION GOT ANSWERED — AND IT IS A CLEAN
+NEGATIVE THAT THEN LED TO A METRIC WHICH DOUBLE-COUNTS EVERY SETTLED
+WINNER AND FLIPS THE SIGN OF THE ARCHIVE'S ONLY PRE-REG RUN.
+FOURTEENTH INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: PAYING A
+POSITION OUT IS NOT RETIRING IT. Gate check first, hard rather than
+estimated (`systemctl list-timers`, `date -u` 20:16): the kalshi sweep
+last fired 07-31 11:10 UTC and atlas already ran 14:15 AFTER it, so
+atlas is gated until the 08-01 11:10 sweep; weather bracket next 08-01
+~02:15 (independent run #5, first carrying `underlying_sign_p`
+natively); econ needs >=336h (next ~08-10); QA next 08-01 02:00.
+The live item the last pass named — the 26JUL31 clear — is 08-01
+~04:59, so it too is gated: the archive holds **42** void rows and the
+newest is 07:45:07, nothing since. Nothing standing was runnable, so
+ladder rung 4. **THE DEFERRED ITEM FIRST, AND IT IS A CLEAN NEGATIVE,
+MEASURED NOT ARGUED**: the last pass shipped `_mark` forward-only and
+asserted that any shadow run between 494a2ac (08:20) and d07d8e8
+(14:23) marks expired positions at zero — but never checked whether the
+PERSISTED ledger carries the damage. Run `20260731T082004` is exactly
+that window (started 08:20:04, died 14:22:52). It has **zero 26JUL30
+fills** — every clear in the archive (04:59, 05:59, 06:59, 07:45)
+PREDATES the window, and the run that did hold the 10 expired positions
+(`20260730T202207`) ended 08:19:57, entirely under the pre-494a2ac
+code. So the 0.0-mark bug was live for 6h03m and **never touched a
+position**; no persisted equity series is contaminated. The standing
+claim is true as written but conditional, and the archive is clean.
+**THE FINDING, FOUND BY ASKING WHAT ELSE READS A POSITION FOR VALUE**:
+`_settle` credits a winner's payout to cash but leaves the position
+standing in `ctx._positions`, and `_compute_metrics` then calls
+`_equity()`, whose `_mark` returns 1.0 for a position on the winning
+side of a settled market. **Every settled winner is counted twice.**
+PROBED BEFORE BUILDING, against the archive: the only manifest carrying
+the field is the fav-long pre-reg run
+(`data/runs/20260711T230707_e7ba056d`), and it reads `final_equity`
+**+67,561.66** against a true post-settlement equity of **-3,718.34** —
+overstated by exactly the 71,280.00 of `settled_payout`, which
+**flips the sign of the run's result**. **WHAT IT DOES NOT TOUCH, AND
+THIS IS THE LOAD-BEARING HALF OF THE HONESTY**: the pre-registration's
+primary endpoint is settled net PnL (payout - cost - fees), computed
+from the ledger, which reads -3,718.34 correctly. **The FAIL (kill)
+verdict STANDS and no verdict is overturned** — the broken metric
+merely sat beside the deciding one. Losers mark 0.0 either way, so the
+overstatement is always exactly `settled_payout`; and `max_drawdown` /
+`shadow_equity` accumulate inside `step()`, where cash carries no
+payout yet, so both are unaffected and the persisted shadow ledger is
+clean. HARDENING SHIPPED (7a89992): settlement retires the contract,
+both sides regardless of sign — a settled loser marks 0.0 so the
+arithmetic cannot catch a winners-only retirement, which is why the
+loser test asserts the book state directly. Five regression tests
+asserting the NUMBERS (5.83 not 15.83; the open-position control reads
+1.38 so a fix that merely stopped counting positions fails; the mixed
+run reads 7.21 not 17.21). Verified by mutation, three: reverting the
+retirement reddens exactly the two number tests; blanket retirement
+reddens exactly the unsettled control; and winners-only initially
+**SURVIVED** — the loser test had no book assertion — which is why that
+assertion was added, and it now reddens exactly that test. **THEN THE
+PROMOTE ITSELF PRODUCED A PRODUCTION INCIDENT, AND CHASING IT FOUND THE
+SAME CLASS IN THE MEMORY GUARD**: `hyxlab-shadow` was kernel-OOM-killed
+2s into boot at 20:34:03. `DUCK_MEM` caps DuckDB at 512MiB under the
+1G cgroup, but the seed then called `.fetchall()`, building an
+unbounded PYTHON list beside the bounded engine. The seed window is
+"since the last book gap" and its size is decided by a **RACE**:
+promote.sh restarts stream and shadow together, so if shadow reads the
+floor before stream writes its `daemon_start` row it seeds from the
+PREVIOUS break. MEASURED on the live archive: **2,084,503 rows (~417MB
+of tuples) against the 21,419 the winning ordering gives — a 97x swing
+on a race.** It recovered only on the systemd restart 30s later, once
+stream's gap row existed. Same shape as the 07-11/07-12 boot OOMs the
+`DUCK_MEM` note records, which is why capping the ENGINE never closed
+it. HARDENING SHIPPED (d4d1fac): stream via `fetchmany(SEED_BATCH)`;
+the ORDER BY still buffers inside the engine where it is bounded and
+spills to `DUCK_TMP`. Two regression tests — the seed path must never
+call `fetchall()` (a connection proxy makes it raise), and a batch size
+that does not divide the row count must seed the same book as one that
+swallows it whole. Verified by mutation: reverting to `fetchall()`
+reddens exactly the first; dropping the last row of each batch
+initially **SURVIVED**, because repeated snapshots of ONE market make
+every row but the last irrelevant — the fixture now spreads events
+across four markets and it reddens exactly the boundary control. Suite
+361->366->368, ruff clean, both pushed and **PROMOTED** (same call as
+494a2ac/d07d8e8: `simulator.sim` and `simulator.shadow` run in the live
+`hyxlab-shadow` daemon). The second promote is itself the live test —
+same simultaneous restart, and shadow came up `active` with **zero
+OOMs**, seeding from 36,664 events. **AN HONEST LIMITATION**: peak
+memory on that boot was still **915MB against the 1G cap** (steady
+state 348MB), so the Python-side list is gone but the engine-side scan
+peak leaves only ~9% headroom. The OOM risk is REDUCED, NOT
+ELIMINATED, and that is the next hardening candidate. Also open and
+NOT claimed as done: the confirmatory re-run of the real fav-long
+backtest under the fix timed out at 900s mid-replay (4M
+candle-snapshots over 178k markets) and is re-running; the fix's
+validation currently rests on the fixture tests plus the manifest
+arithmetic (`open_cost` is 0.0, so true equity == cash == -3,718.34,
+and `final_equity - cash` == `settled_payout` exactly). PRACTICAL RULE,
+joining `underlying_sign_p` / `flagged_day_weighted` /
+`new_share_vs_all` / `cross_bucket_overlap.groups` / `top_day_share` /
+connection-scoped-`seq` / own-(category,horizon): **paying a position
+out is not retiring it — read `settled_net_pnl`, never `final_equity`,
+for any run containing settled markets, because `final_equity`
+overstates by exactly `settled_payout` and can flip a loss into a
+profit. And bounding an engine's memory is not bounding the result set
+it hands to Python.** NEXT PASS: 08-01 ~02:15 UTC weather bracket
+independent run #5 (pool leaning UNDERLYINGS, 5 over / 7 under, k=12,
+p=0.387 so far — not runs); 08-01 ~04:59 UTC is the 26JUL31 clear, the
+first the mark fix sees live and now also the first under a streamed
+seed; the 08-01 11:10 sweep re-opens the atlas gate for a second
+reading of the replicated longshot-fade narrowing. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-31 14:35 UTC (ATLAS RE-OPENED ON A LARGE INCREMENT AND
 THE LONGSHOT-FADE NARROWING REPLICATED — THEN THE DEFERRED PHANTOM-LADDER
 AUDIT CLEARED THE MAKER BRACKET AND FOUND THAT YESTERDAY'S FIX HAD
 SILENTLY REPURPOSED THE PHANTOM AS A 100%-LOSS MARK. THIRTEENTH INSTANCE
