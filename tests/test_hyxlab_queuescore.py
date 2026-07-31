@@ -16,6 +16,7 @@ from simulator.queuescore import (
     score_market,
     select_markets,
     series_composition,
+    sign_test_p,
 )
 
 T0 = datetime(2026, 7, 11, 12, 0)
@@ -219,6 +220,104 @@ def test_underlying_tier_keeps_a_direction_agreed_across_events():
     assert c["underlyings"] == 4
     assert c["underlyings_net_over"] == 3 and c["underlyings_net_under"] == 1
     assert c["direction_underlying_robust"] is True
+
+
+def test_sign_test_reads_a_bare_majority_of_three_underlyings_as_a_coin_flip():
+    """The load-bearing case, and it is the production shape: the 07-31 weather
+    run is 3 city-days splitting 1 over / 2 under, and `direction_underlying_
+    robust` certifies it. Both halves are asserted on one fixture — the old
+    majority tier must still say True (proving it is the thing being corrected,
+    not something already strict) while the sign test reads exactly 0.50, i.e.
+    no evidence at all."""
+    orders = [
+        _disagreeing(f"KXHIGH{city}-26JUL30-B80.5", kind, c0 * 10 + i)
+        for c0, (city, kind, n) in enumerate((("NY", "pess", 3), ("MIA", "pess", 8)))
+        for i in range(n)
+    ]
+    orders += [_disagreeing("KXHIGHCHI-26JUL30-B85.5", "cross", 90 + i) for i in range(2)]
+
+    c = concentration_by_market(orders)
+
+    assert c["net_disagreement"] == -9  # -3 NY, -8 MIA, +2 CHI
+    assert c["underlyings"] == 3
+    assert c["underlyings_net_over"] == 1 and c["underlyings_net_under"] == 2
+    assert c["direction_underlying_robust"] is True  # bare majority: 2 of 3
+    assert c["underlying_sign_p"] == 0.5  # ...which is a coin flip
+    assert c["direction_underlying_significant"] is False
+    # the ceiling is a property of the run's WIDTH, not of how it leaned:
+    # this run observed 0.5 but could not have beaten 0.125 either way
+    assert c["underlying_min_sign_p"] == 0.125
+
+
+def test_three_underlyings_cannot_reach_significance_however_they_lean():
+    """The power ceiling, and it is a property of the bracket's configuration:
+    at 3 leaning underlyings the best attainable p is 2^-3 = 0.125, so even a
+    unanimous run is not significant. `min_sign_p` must say so, otherwise a
+    future pass reads an underpowered run as a failed test of the fill model
+    rather than as a test that was never able to run."""
+    orders = [
+        _disagreeing(f"KXHIGH{city}-26JUL30-B80.5", "pess", c0 * 10 + i)
+        for c0, city in enumerate(("NY", "MIA", "CHI"))
+        for i in range(4)
+    ]
+
+    c = concentration_by_market(orders)
+
+    assert c["underlyings_net_under"] == 3 and c["underlyings_net_over"] == 0
+    assert c["direction_underlying_robust"] is True  # unanimous
+    assert c["underlying_sign_p"] == 0.125  # ...and still not significant
+    assert c["underlying_min_sign_p"] == 0.125  # the ceiling: p == best possible
+    assert c["direction_underlying_significant"] is False
+
+
+def test_sign_test_certifies_a_wide_unanimous_run():
+    """The discrimination control: the tier must not be merely always-false.
+    Six city-days all leaning the same way is 2^-6 = 0.015625 and clears 0.05,
+    so the bracket CAN produce a significant direction — it just needs a top-N
+    wide enough to reach six underlyings."""
+    orders = [
+        _disagreeing(f"KXHIGH{city}-26JUL30-B80.5", "cross", c0 * 10 + i)
+        for c0, city in enumerate(("NY", "MIA", "CHI", "DEN", "AUS", "PHIL"))
+        for i in range(3)
+    ]
+
+    c = concentration_by_market(orders)
+
+    assert c["underlyings"] == 6 and c["underlyings_net_over"] == 6
+    assert c["underlying_sign_p"] == 0.015625
+    assert c["underlying_min_sign_p"] == 0.015625
+    assert c["direction_underlying_significant"] is True
+
+
+def test_market_tier_carries_the_sign_test_too():
+    """The market tier is the same bare-majority test one level down, so it
+    gets the same treatment — 4 markets over / 1 under is p=0.1875, not a
+    verdict, even though `direction_market_robust` certifies it."""
+    orders = [
+        _disagreeing(f"KXHIGHNY-26JUL27-B8{m}.5", "cross", m * 10 + i)
+        for m in range(4)
+        for i in range(7)
+    ]
+    orders.append(_disagreeing("KXHIGHMIA-26JUL27-B90.5", "pess", 99))
+
+    c = concentration_by_market(orders)
+
+    assert c["direction_market_robust"] is True
+    assert c["market_sign_p"] == sign_test_p(4, 5) == 0.1875
+    assert c["direction_market_significant"] is False
+
+
+def test_sign_test_of_an_undirected_run_is_one():
+    """No aggregate direction means nothing to test — p must be 1.0, not the
+    p of whichever side happens to have more units."""
+    orders = [_disagreeing("KXHIGHNY-26JUL27-B83.5", "cross", i) for i in range(3)]
+    orders += [_disagreeing("KXHIGHMIA-26JUL27-B90.5", "pess", 50 + i) for i in range(3)]
+
+    c = concentration_by_market(orders)
+
+    assert c["net_disagreement"] == 0
+    assert c["underlying_sign_p"] == 1.0
+    assert c["direction_underlying_significant"] is False
 
 
 def test_event_ticker_keeps_negative_strike_suffixes_out_of_the_key():

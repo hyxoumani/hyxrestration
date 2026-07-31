@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -160,13 +161,44 @@ def event_ticker(market_id: str) -> str:
     return "-".join(market_id.split("-", 2)[:2])
 
 
+SIGN_ALPHA = 0.05
+
+
+def sign_test_p(agreeing: int, decisive: int) -> float:
+    """One-sided binomial sign test: P(X >= agreeing | X ~ Bin(decisive, 0.5)).
+
+    The null is "the fill models disagree in a direction that is a coin flip per
+    independent unit". Returns 1.0 when nothing leans, which is the honest read
+    of a run with no direction to test.
+    """
+    if decisive <= 0:
+        return 1.0
+    agreeing = max(agreeing, 0)
+    return sum(math.comb(decisive, i) for i in range(agreeing, decisive + 1)) / 2**decisive
+
+
 def _direction_tier(nets: dict[str, int], agg: int) -> dict:
-    """Shared over/under/tied split and majority test for one unit of grouping."""
+    """Shared over/under/tied split, majority test and sign test for one unit.
+
+    `robust` is a BARE-MAJORITY test and that is much weaker than it reads: with
+    an odd number of leaning units a strict majority always exists, so at k=3 —
+    the default weather bracket's usual shape — it can only fail when the
+    aggregate sign contradicts the unit majority. Measured over the 34-run
+    archive it fires on 24 runs, 10 of them at a sign-test p of exactly 0.50.
+
+    `sign_p` is therefore reported alongside it, and `min_sign_p` = 2^-k is the
+    p this run would have produced had EVERY leaning unit agreed — the run's
+    power ceiling. When `min_sign_p` > SIGN_ALPHA the run could not have
+    produced a significant direction whatever the data did, which is a property
+    of the bracket's configuration (top-N markets) and not of the fill models.
+    """
     over = sum(1 for v in nets.values() if v > 0)
     under = sum(1 for v in nets.values() if v < 0)
     decisive = over + under
     agreeing = over if agg > 0 else under if agg < 0 else 0
     abs_total = sum(abs(v) for v in nets.values())
+    sign_p = sign_test_p(agreeing, decisive) if agg != 0 else 1.0
+    min_sign_p = sign_test_p(decisive, decisive) if decisive else None
     return {
         "units": len(nets),
         "abs_net": abs_total,
@@ -177,6 +209,9 @@ def _direction_tier(nets: dict[str, int], agg: int) -> dict:
         "net_under": under,
         "net_tied": len(nets) - decisive,
         "robust": agg != 0 and agreeing * 2 > decisive,
+        "sign_p": round(sign_p, 6),
+        "min_sign_p": None if min_sign_p is None else round(min_sign_p, 6),
+        "significant": agg != 0 and sign_p <= SIGN_ALPHA,
     }
 
 
@@ -211,6 +246,11 @@ def concentration_by_market(orders: list[VirtualOrder]) -> dict:
     `event_ticker`). A weather run's "8 markets" are in practice 3-4 city-days
     of strike ladders, and an econ run's are 4-5 prints; the tiers nest
     (underlyings <= markets <= orders), each strictly more conservative.
+
+    Both tiers additionally carry `*_sign_p` / `*_min_sign_p` /
+    `direction_*_significant` — a majority is not a measurement, and at the
+    handful of independent units a bracket actually has, a bare majority is
+    usually a coin flip. See `_direction_tier`.
     """
     per: dict[str, list[int]] = {}
     for o in orders:
@@ -223,11 +263,7 @@ def concentration_by_market(orders: list[VirtualOrder]) -> dict:
 
     nets = {m: v[1] - v[2] for m, v in per.items()}
     agg = sum(nets.values())
-    abs_total = sum(abs(v) for v in nets.values())
-    over = sum(1 for v in nets.values() if v > 0)
-    under = sum(1 for v in nets.values() if v < 0)
-    decisive = over + under
-    agreeing = over if agg > 0 else under if agg < 0 else 0
+    mkt = _direction_tier(nets, agg)
 
     und_nets: dict[str, int] = {}
     for m, v in nets.items():
@@ -240,14 +276,15 @@ def concentration_by_market(orders: list[VirtualOrder]) -> dict:
             round(max(v[0] for v in per.values()) / len(orders), 4) if orders else None
         ),
         "net_disagreement": agg,
-        "abs_net_by_market": abs_total,
-        "top_market_net_share": (
-            round(max(abs(v) for v in nets.values()) / abs_total, 4) if abs_total else None
-        ),
-        "markets_net_over": over,
-        "markets_net_under": under,
-        "markets_net_tied": len(per) - decisive,
-        "direction_market_robust": agg != 0 and agreeing * 2 > decisive,
+        "abs_net_by_market": mkt["abs_net"],
+        "top_market_net_share": mkt["top_net_share"],
+        "markets_net_over": mkt["net_over"],
+        "markets_net_under": mkt["net_under"],
+        "markets_net_tied": mkt["net_tied"],
+        "direction_market_robust": mkt["robust"],
+        "market_sign_p": mkt["sign_p"],
+        "market_min_sign_p": mkt["min_sign_p"],
+        "direction_market_significant": mkt["significant"],
         "underlyings": und["units"],
         "abs_net_by_underlying": und["abs_net"],
         "top_underlying_net_share": und["top_net_share"],
@@ -255,6 +292,9 @@ def concentration_by_market(orders: list[VirtualOrder]) -> dict:
         "underlyings_net_under": und["net_under"],
         "underlyings_net_tied": und["net_tied"],
         "direction_underlying_robust": und["robust"],
+        "underlying_sign_p": und["sign_p"],
+        "underlying_min_sign_p": und["min_sign_p"],
+        "direction_underlying_significant": und["significant"],
         "per_underlying": [
             {"event_ticker": u, "net": und_nets[u]}
             for u in sorted(und_nets, key=lambda u: -abs(und_nets[u]))
@@ -440,9 +480,18 @@ def main() -> None:
             " near-zero aggregate built from large opposing per-market nets"
             " is cancellation, not precision. Markets are not the coarsest"
             " unit either: every strike on one EVENT (city-day, CPI print)"
-            " rides one underlying path, so direction_underlying_robust is the"
-            " strictest bound available and underlyings is the honest sample"
-            " size — a weather run's 8 markets are 3-4 city-days."
+            " rides one underlying path, so underlyings is the honest sample"
+            " size — a weather run's 8 markets are 3-4 city-days. But"
+            " direction_*_robust is only a BARE-MAJORITY test: with an odd"
+            " number of leaning units a strict majority always exists, so read"
+            " underlying_sign_p (one-sided binomial on the leaning underlyings)"
+            " before calling any over/under verdict —"
+            " direction_underlying_robust is routinely true at p=0.50. Read"
+            " underlying_min_sign_p too: it is the p this run would have"
+            " produced had EVERY underlying agreed, so when it exceeds 0.05 the"
+            " run could not have shown a direction whatever the data did. The"
+            " default --markets 8 reaches only ~3 city-days (min_sign_p 0.125),"
+            " so a directional verdict needs a wider top-N, not more runs."
         ),
         "orders_detail": [o.summary() for o in all_orders],
     }
