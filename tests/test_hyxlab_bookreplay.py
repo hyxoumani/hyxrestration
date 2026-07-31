@@ -118,3 +118,73 @@ def test_multi_market_independence():
     seed(r, mid="B", seq=2)
     s = r.apply(ev("delta", "yes", 0.40, -100, seq=3, mid="A"))
     assert s.market_id == "A" and s.yes_bid == 0.39
+
+
+# --- void rows: an empty orderbook_snapshot is a book-clearing image ---
+# Production case (verified 2026-07-31 on the live archive): Kalshi wipes an
+# expired daily market's ladder at the top of the hour by sending an
+# orderbook_snapshot with empty levels. That frame archives no book row, so
+# it lands as kind='void'. Ignoring it left KXHIGHNY-26JUL30-B79.5 replaying
+# a 6-level NO ladder (79 @ 0.99) forever past a book that no longer existed.
+
+
+def void(type_, seq=9, sid=1, mid="M1", ts_off=0.0):
+    return ev("void", type_, 0.0, 0.0, seq, sid, mid, ts_off)
+
+
+def test_empty_snapshot_clears_a_seeded_book_and_emits():
+    r = BookReplayer()
+    seed(r)
+    s = r.apply(void("orderbook_snapshot", ts_off=5))
+    # Emits, and the emitted top is EMPTY on both sides — not the stale
+    # 0.40/0.55 image. Asserting the values, not just that something fired,
+    # so a no-op-but-emit implementation fails on the numbers.
+    assert s is not None
+    assert (s.yes_bid, s.no_bid, s.yes_ask, s.no_ask) == (None, None, None, None)
+    assert r.depth("M1") == {"yes": [], "no": []}
+    # A later delta builds from empty, not from the phantom ladder.
+    s2 = r.apply(ev("delta", "yes", 0.10, 7, seq=10, ts_off=6))
+    assert (s2.yes_bid, s2.yes_bid_size) == (0.10, 7.0)
+
+
+def test_empty_snapshot_seeds_an_unknown_book_so_later_deltas_apply():
+    # Class A: a market whose book opens EMPTY at connection start. Before
+    # the fix it stayed unseeded and every delta until the next reconnect
+    # image was discarded (4 real KXCPI-26OCT-T0.1 deltas on 07-30, 5.3h).
+    r = BookReplayer()
+    assert r.apply(ev("delta", "yes", 0.10, 7, seq=1)) is None  # unseeded
+    r.apply(void("orderbook_snapshot", seq=2, ts_off=1))
+    s = r.apply(ev("delta", "yes", 0.10, 7, seq=3, ts_off=2))
+    assert s is not None and s.yes_bid == 0.10
+
+
+def test_control_ack_and_legacy_void_rows_do_not_touch_the_book():
+    # Discrimination control: the tier must key on the frame TYPE, not on
+    # kind='void', or every sequenced control ack would wipe a live book.
+    r = BookReplayer()
+    seed(r)
+    assert r.apply(void("ok", ts_off=5)) is None
+    assert r.apply(void("", ts_off=6)) is None  # legacy, unattributable
+    assert r.depth("M1") == {"yes": [(0.40, 100.0), (0.39, 50.0)], "no": [(0.55, 30.0)]}
+
+
+def test_repeated_empty_snapshot_does_not_re_emit():
+    r = BookReplayer()
+    seed(r)
+    assert r.apply(void("orderbook_snapshot", ts_off=5)) is not None
+    assert r.apply(void("orderbook_snapshot", seq=10, ts_off=6)) is None
+
+
+def test_empty_snapshot_does_not_open_a_row_group_in_replay_snapshots():
+    # replay_snapshots groups multi-row snap images by (market, sid, seq);
+    # a void row is a complete image on its own, so it must emit inline
+    # rather than waiting for a finalize that never comes.
+    events = [
+        ev("snap", "yes", 0.40, 100, seq=1),
+        ev("snap", "no", 0.55, 30, seq=1),
+        void("orderbook_snapshot", seq=2, ts_off=1),
+    ]
+    out = list(replay_snapshots(events))
+    assert len(out) == 2
+    assert out[0].yes_bid == 0.40
+    assert (out[1].yes_bid, out[1].no_bid) == (None, None)

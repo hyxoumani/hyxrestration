@@ -86,6 +86,28 @@ class BookReplayer:
             book.snap_ts = e.recv_ts
             return None
 
+        if e.kind == "void":
+            # A void row records a frame that archived no book level. Only
+            # an EMPTY orderbook_snapshot carries book meaning, and it is a
+            # full absolute image like any other snap: the ladder is now
+            # empty. That is a KNOWN state, not broken coverage, so it
+            # clears (and seeds) rather than invalidates — a market whose
+            # book opens empty is tracked from here instead of discarding
+            # every delta until the next reconnect image. Sequenced control
+            # acks carry no book meaning, and legacy rows (side '', written
+            # before 22c9556) cannot be attributed; both stay no-ops.
+            # A single row is the whole image, so it emits immediately.
+            if e.side != "orderbook_snapshot":
+                return None
+            before = self._finalizable_top(book) if book.seeded else None
+            book.levels = {"yes": {}, "no": {}}
+            book.snap_key = None
+            book.pending_before = None
+            book.seeded = True
+            book.snap_ts = e.recv_ts
+            after = self._top(book)
+            return None if after == before else self._snapshot(e.market_id, e.recv_ts, after)
+
         if e.kind != "delta" or not book.seeded:
             return None  # unknown book; wait for a snapshot
 
