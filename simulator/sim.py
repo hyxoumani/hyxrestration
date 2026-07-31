@@ -97,6 +97,9 @@ class Simulator:
         # without corrupting finalize()'s max_drawdown.
         self._eq_peak = float("-inf")
         self._max_dd = 0.0
+        # Last two-sided mid seen per (venue, market), for marking a
+        # position whose book has since been cleared. See _mark().
+        self._last_mid: dict[tuple[str, str], float] = {}
 
     # -- fee & book helpers ----------------------------------------------
 
@@ -321,7 +324,25 @@ class Simulator:
         snap = self.ctx.last(venue, market_id)
         mid = snap.mid() if snap is not None else None
         if mid is None:
-            return 0.0
+            # An EMPTY book is not a worthless position. Since 494a2ac a
+            # book-clearing snapshot emits a two-sided-None top, so `mid`
+            # goes None on every expired daily market while the position is
+            # still live and UNSETTLED — the result branch above only fires
+            # once the daily sweep lands it, measured at 6h36m for the
+            # 26JUL30 weather ladders (clear 04:59 UTC, `result` written
+            # 11:34 UTC) and up to ~24h when a clear lands just after the
+            # sweep. Returning 0.0 there marks WINNERS at a total loss and
+            # breaks the yes/no complementarity every other branch keeps: a
+            # long-yes + long-no pair worth exactly 1.0 under any outcome
+            # marks at 0.0. Carry the last observed mid instead — the clear
+            # is real for FILLS (no counterparty rests on an empty ladder,
+            # which is what 494a2ac fixed) but says nothing about value.
+            # 0.0 stays the fallback for a market never seen two-sided.
+            mid = self._last_mid.get((venue, market_id))
+            if mid is None:
+                return 0.0
+        else:
+            self._last_mid[(venue, market_id)] = mid
         return mid if side == "yes" else 1.0 - mid
 
     def _equity(self) -> float:
