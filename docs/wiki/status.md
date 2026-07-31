@@ -1,6 +1,112 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-30 20:55 UTC (THE VOID-ROW PREDICTION IS VERIFIED
+Updated: **2026-07-31 02:35 UTC (24TH WEATHER MAKER BRACKET, INDEPENDENT
+RUN #4 — AND CHASING WHAT CERTIFIED IT FOUND THAT NO DIRECTIONAL READING
+IN THE ENTIRE 34-RUN BRACKET ARCHIVE IS DISTINGUISHABLE FROM A COIN
+FLIP. TWELFTH INSTANCE OF THE UNIT-OF-COUNTING CLASS, THIS TIME AS A
+POWER CEILING RATHER THAN A WRONG UNIT. Gate check first, hard rather
+than estimated: the prior weather bracket ran 07-30 02:15:23 UTC and this
+run fired 02:16:26 UTC, so the >~24h expiry-crossing rule was satisfied to
+the minute — and the report confirms it rather than my arithmetic
+(`new_share_vs_all: 1.0`, 207/207 against 18 comparable priors, all
+26JUL30 markets). Atlas is data-gated until the 07-31 11:10 UTC kalshi
+sweep; econ needs >=336h (next ~08-10); QA next fires 07-31 07:00 UTC and
+will still be RED on pre-restart residue as predicted; the class-B void-row
+discriminating instant (07-31 04:59 UTC) is ~2.5h away and UNCHANGED —
+read it at ~08:00+ UTC per the last pass. **THE RUN**: 207 virtual orders
+across 8 markets (KXHIGHNY 85, KXHIGHCHI 78, KXHIGHMIA 44), crossing
+**129 vs queue [138 pess, 144 opt]** — 9 orders BELOW the pessimistic
+floor, `direction_underlying_robust: true` (2 under / 1 over),
+`abs_net_by_underlying` 13 against `net_disagreement` -9 so this run is
+mostly agreement rather than cancellation. Report:
+`reports/maker_bracket/20260731T021626.json`. Read naively that is the
+second robustly-UNDER certified-independent reading and would be the
+strongest directional evidence in the archive. **IT IS NOT, AND THAT IS
+THE FINDING.** `direction_*_robust` is a strict-MAJORITY test over the
+leaning units, and a majority is not a measurement: with an ODD number of
+leaning units a strict majority ALWAYS exists, so at the default
+`--markets 8` — which reaches only ~3 city-days — the tier can only fail
+when the aggregate sign contradicts the unit majority. Today's
+certification is 2-of-3, whose one-sided sign-test p is **exactly 0.50**.
+PROBED BEFORE BUILDING, by rehydrating `orders_detail` from all 34
+archived reports: `robust` fires on **24 of 34** runs, **10 of them at p
+exactly 0.50**, and **not one run of the 34 reaches p <= 0.05**. The
+sharper half: **31 of the 34 were underpowered BY CONSTRUCTION** — the p
+they would have produced had every underlying agreed already exceeded
+0.05 before any data was read (at k=3 the ceiling is 2^-3 = 0.125). Only
+3 runs in the whole archive ever had a reachable ceiling, all econ, and
+none attained it. HARDENING SHIPPED (fcbded3): both tiers now carry
+`*_sign_p` (one-sided binomial on the leaning units), `*_min_sign_p` (the
+run's power ceiling) and `direction_*_significant` at alpha 0.05;
+`robust` and the net-split fields are untouched for cross-report
+comparability per the divergence-matcher / atlas-day-tier / overlap-tier
+precedent — unlike the QA seq headline this is a coarser VALID bound, not
+an artifact, so it is kept rather than replaced. The market tier is
+routed through `_direction_tier` so both tiers share one implementation.
+Five regression tests; the load-bearing one asserts BOTH halves on the
+production shape (3 city-days, 1 over / 2 under: `robust` must still read
+True — proving it is the thing being corrected, not something already
+strict — while `sign_p` reads 0.50 and `min_sign_p` reads 0.125, so the
+ceiling is shown to be a property of the run's WIDTH and not of how it
+leaned), plus the power-ceiling case (a UNANIMOUS 3-underlying run is
+still not significant), the discrimination control (6 unanimous
+underlyings give 0.015625 and DO certify, so the tier is not merely
+always-false), the market tier, and the no-direction case. Verified by
+mutation, three separate ones: collapsing `significant` to the bare
+majority reddens exactly the three tier tests and leaves the
+discrimination control green; dropping the aggregate-direction guard on
+`sign_p` reddens exactly the undirected test; reporting `min_sign_p` as
+the observed p rather than the ceiling initially SURVIVED — both ceiling
+fixtures were unanimous, so ceiling and observed coincided — which is why
+the non-unanimous assertion was added, and it now reddens exactly that
+test. Suite 346->351, ruff clean, pushed. No promote — queuescore is
+sim-side, no timer runs it (verified against `scripts/systemd/`).
+Validated in the real pipeline by replaying the SHIPPED function over the
+whole archive report-by-report, reproducing the probe exactly. The
+archived `20260731T021626.json` is deliberately NOT rewritten to carry
+the new fields — reports are immutable inputs to `independence_vs_prior`,
+same call as the 07-29 event-tier and 07-30 `new_share_vs_all` decisions;
+the next run carries it. **WHAT THIS DOES TO THE STANDING DATA GATE, AND
+IT RETIRES IT AS WRITTEN**: the gate was "accumulate certified-independent
+weather brackets and re-test the over-award lean at n>=8 RUNS". That
+counts the wrong unit one more time — each run's direction is itself a
+coin flip, so eight of them is eight coin flips. Pooling the leaning
+underlyings across the four certified-independent runs instead gives **5
+over / 7 under, k=12, p=0.387** — no direction, and note it is the honest
+instrument that says so rather than a majority vote. Reaching even 50%
+power against a 60/40 bias needs ~78 pooled underlyings: ~26 more runs at
+3 city-days, or ~16 at `--markets 15` (measured against the live archive:
+top-15 reaches 5 city-days, top-23 reaches 8). Widening top-N changes the
+scored population and therefore STARTS A NEW comparability series rather
+than extending this one — that is a real cost and the reason it is named
+here as a decision rather than silently applied. **A CORRECTION TO THIS
+LOG'S OWN NARRATIVE, surfaced by replaying the strictest tier over the
+history**: the 07-29 pass wrote that "two certified-independent readings
+now exist and NEITHER shows over-award". Run #1 (`20260727T151833`) was
+assessed at the MARKET tier because the underlying tier shipped two days
+later; at the underlying tier it reads `robust: true` with agg +1 — an
+OVER lean. The certified-independent sequence is therefore OVER(p=0.50) /
+UNDER(p=0.31) / undirected(p=0.75) / UNDER(p=0.50), not the clean
+under-lean the log has been carrying. Across all 24 robust runs the split
+is 17 over / 7 under, which superficially revives the raw over-award
+tally — and every one of those readings has p >= 0.0625, so it revives
+nothing. PRACTICAL RULE, joining `flagged_day_weighted` /
+`new_share_vs_all` / `cross_bucket_overlap.groups` /
+`direction_underlying_robust` / `top_day_share` / connection-scoped-`seq`
+/ own-(category,horizon): **read `underlying_sign_p` and
+`underlying_min_sign_p`, not `direction_underlying_robust`, before
+calling any bracket over/under verdict — a bare majority of 3 underlyings
+is p=0.50, and when `min_sign_p` > 0.05 the run could not have shown a
+direction whatever the data did. Reports written before fcbded3 carry no
+sign fields; every "robust" directional reading this log has reported,
+including today's, is a coin flip.** NEXT PASS: **07-31 04:59 UTC remains
+the discriminating instant for class-B void rows** — read at ~08:00+ UTC,
+not off the 07:00 QA run which is still red on pre-restart residue; then
+the 07-31 11:10 UTC sweep re-opens the atlas gate for the first reading
+whose strictest tier is `flagged_day_weighted`. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-30 20:55 UTC (THE VOID-ROW PREDICTION IS VERIFIED
 FOR ONE HOLE CLASS AND UNTESTED FOR THE ONE THAT PRODUCES ALL THE
 VOLUME — AND CHASING IT FOUND THAT THE FIX ITSELF *INVERTED* THE
 DETECTION IT CLAIMED TO ADD. Gate check first, hard rather than

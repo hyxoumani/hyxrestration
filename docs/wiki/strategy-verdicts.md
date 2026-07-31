@@ -79,6 +79,30 @@ structure — see [venues](venues.md)).
    it before treating a re-run as a confirming reading. To get an
    independent econ reading, space re-runs by at least `--hours` or
    shorten the window.
+   **Power caveat (2026-07-31) — this one bounds every directional claim
+   the bracket has ever made.** `direction_market_robust` /
+   `direction_underlying_robust` are strict-MAJORITY tests over the
+   leaning units. A majority is not a measurement: with an odd number of
+   leaning units a strict majority always exists, so at the default
+   `--markets 8` (which reaches only ~3 city-days) the tier can only fail
+   when the aggregate sign contradicts the unit majority. Measured with
+   the shipped function over all 34 archived runs: `robust` fires on
+   **24**, ten of them at a one-sided sign-test p of **exactly 0.50**,
+   and **not one run of the 34 reaches p <= 0.05**. Worse, **31 of the 34
+   were underpowered by construction** — their `min_sign_p` (the p they
+   would have produced had every underlying agreed) already exceeded 0.05
+   before any data was read. Every report from 2026-07-31 carries
+   `underlying_sign_p`, `underlying_min_sign_p` and
+   `direction_underlying_significant`; **read those, not `robust`.**
+   Consequence for the standing data gate: pooling the leaning
+   underlyings across the four certified-independent weather runs
+   (07-27, 07-29, 07-30, 07-31) gives **5 over / 7 under, k=12,
+   p=0.387** — no direction. The gate cannot be met by accumulating runs
+   at the current width; ~78 pooled underlyings are needed for even 50%
+   power against a 60/40 bias, i.e. ~26 more runs at 3 city-days each,
+   or ~16 at `--markets 15` (measured: top-15 reaches 5 city-days).
+   Widening top-N changes the scored population, so it starts a NEW
+   comparability series rather than extending this one.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
