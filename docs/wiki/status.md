@@ -1,6 +1,117 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-31 08:35 UTC (THE CLASS-B VOID-ROW PREDICTION IS
+Updated: **2026-07-31 14:35 UTC (ATLAS RE-OPENED ON A LARGE INCREMENT AND
+THE LONGSHOT-FADE NARROWING REPLICATED — THEN THE DEFERRED PHANTOM-LADDER
+AUDIT CLEARED THE MAKER BRACKET AND FOUND THAT YESTERDAY'S FIX HAD
+SILENTLY REPURPOSED THE PHANTOM AS A 100%-LOSS MARK. THIRTEENTH INSTANCE
+OF THE CLASS, ONE LEVEL UP: RECORDING A FRAME IS NOT HANDLING IT, AND
+HANDLING IT FOR FILLS IS NOT HANDLING IT FOR VALUE. Gate check first,
+hard rather than estimated (`systemctl list-timers`): the kalshi sweep
+fired 07-31 11:10 UTC and the last atlas ran 07-30 14:20, so the atlas
+gate the last three passes named had OPENED and atlas was the one
+runnable standing report; weather bracket next 08-01 ~02:15 (independent
+run #5, the first carrying `underlying_sign_p` natively); econ needs
+>=336h (next ~08-10); QA fired 07-31 07:00 UTC; divergence unchanged.
+**THE ATLAS RUN, AND IT IS A GENUINELY BROAD INCREMENT**: Commodities|1h
++3,295, Financials|1h +1,542, Financials|6h +1,522, every active
+(category, horizon) gaining. Report:
+`reports/atlas/20260731T141517.json`. Tiers 91->94 flagged (28->27
+groups), 63->64 robust (25->26), day-robust 13->14 (8->10 groups), and
+the strictest tier **5 -> 6 day-weighted (4 -> 5 groups)**. The gained
+day-weighted survivor is `Climate and Weather|1h|d1` (n=278, 76 days,
+day-weighted gap **-0.0775**), and both day-robust demotions are again
+HIGH deciles (`Financials|24h|d7`, `Financials|6h|d7`). So the 07-30
+narrowing REPLICATES on a large independent increment rather than
+decaying: all **6** day-weighted survivors are deciles <=4 with a
+NEGATIVE gap (Climate 1h d1, Economics 1h d2/d3/d4, Financials 1h d2,
+Financials 6h d2), zero high-decile survivors, zero counter-signature.
+The tradeable half of the favorite-longshot signature in this archive
+remains FADING LONGSHOTS, now on 5 distinct groups. Still not a verdict:
+no pre-registration exists. **THEN THE DEFERRED ITEM — "whether any
+ARCHIVED report or shadow run was computed against a phantom ladder" —
+AND THE FIRST HALF IS A CLEAN NEGATIVE, MEASURED NOT ARGUED**: replayed
+`score_market` over all 30 cleared markets under the shipped code and
+under a monkeypatched pre-fix `apply` where a void row is a no-op. **178
+orders vs 178, 0 of 30 markets differing on any field.** The reason is
+structural and worth recording: the clear is TERMINAL, so a market emits
+no further events, `replay_snapshots` emits no further snapshots, and no
+order can be armed or crossed against the phantom. Every archived
+`maker_bracket` report is therefore uncontaminated, and so is the
+divergence track for the same reason. **THE FINDING IS IN THE OTHER
+CONSUMER, AND IT IS THE LOAD-BEARING HALF**: `hyxlab-shadow` HOLDS
+POSITIONS. Run 20260730T202207 carried 10 open long-yes positions in
+expired 26JUL30 ladders across the clears (~330 contracts). Marking runs
+through `Simulator._mark`, which checks `info.result` first and otherwise
+falls back to the last snapshot's `mid()` — and 494a2ac made that
+snapshot a two-sided-None top, so `mid()` is None and the fallback
+returned **0.0, for BOTH sides**. That is a total loss on a live
+position, and it breaks the yes/no complementarity every other branch in
+the function keeps: a long-yes + long-no pair worth exactly 1.0 under any
+outcome marks at 0.0. **PROBED BEFORE BUILDING, against the live
+archive**, and the window is not hypothetical: `markets.close_time` for
+these ladders is **04:59 — exactly the clear instant**, corroborating
+that the clear IS the expiry, while `updated_at` on the settlement result
+is **11:34** from the daily sweep. So the settlement branch does not
+rescue the mark for **6h36m**, and for a market clearing just after the
+11:10 sweep the wait is ~24h. Measured over the 10 real positions:
+settlement truth **+45.00** (two ladders resolved yes), carrying the last
+observed mid reads **+51.44** (14% high), and the shipped fallback reads
+**+0.00** — off by the entire position, marking 45 contracts of WINNERS
+at zero. HARDENING SHIPPED (d07d8e8): `_mark` now carries the last
+two-sided mid per (venue, market); 0.0 stays the fallback for a market
+never seen two-sided (unchanged behaviour, not silently widened), and the
+settlement branch still wins over the carry. The design call is that the
+clear is real for FILLS — no counterparty rests on an empty ladder, which
+is exactly what 494a2ac fixed and is NOT being walked back — but an empty
+book carries no information about VALUE. Five regression tests; the
+load-bearing one asserts the NUMBER (25 YES last seen at mid 0.96 must
+mark 24.0 across the clear and equity must not move), plus the
+complementarity invariant (a risk-free yes/no pair marks 10.0, not 0.0),
+the settlement-overrides-the-carry control, the never-two-sided case, and
+the production-consequence case (`max_drawdown` is a verdict metric
+accumulated per snapshot, so a 0.0 mark prints a ~24.0 drawdown that
+never happened). Verified by mutation, three separate ones: reverting to
+the 0.0 fallback reddens exactly three and leaves both controls green;
+returning the carried mid without the side complement reddens exactly the
+complementarity test; and short-circuiting the carry ABOVE the settlement
+branch initially **SURVIVED** — the control set `result` from the start,
+so no mid was ever carried and there was nothing to shadow, making the
+assertion vacuous. Rewritten to follow the real production ordering
+(book trades -> book clears -> sweep writes `result` hours later) it now
+reddens exactly that test. Suite 356->361, ruff clean, pushed, and
+**PROMOTED** — same call as 494a2ac and for the same reason:
+`hyxlab-shadow` is a live daemon running `simulator.shadow`, which drives
+`Simulator`, so this code is in production. Daemon back up 14:23:37 UTC
+on d07d8e8, seeded from 792,517 archived events; stable worktree verified
+at that commit. Validated in the real pipeline by replaying the SHIPPED
+`_mark` over the 10 real positions, reproducing the probe exactly
+(+51.44 vs +45.00 truth vs +0.00 shipped). **A NEW DATUM ON THE CLEAR
+ITSELF, which the last pass's "top of the hour" reading does not cover**:
+the archive now holds **36** clearing void rows, not 30, and the 6 extra
+are a SECOND clear of the same KXHIGHDEN-26JUL30 ladders at **07:45:07**
+— not a top-of-hour instant. The clear is therefore repeatable rather
+than once-per-market, which the fix already handles (its idempotence test
+covers exactly this) but which falsifies reading the burst as strictly
+hourly. PRACTICAL RULE, joining `underlying_sign_p` /
+`flagged_day_weighted` / `new_share_vs_all` /
+`cross_bucket_overlap.groups` / `top_day_share` / connection-scoped-`seq`
+/ own-(category,horizon): **handling a book-clearing frame for FILLS does
+not handle it for VALUE. An empty book means no counterparty, not a
+worthless position — any equity, PnL or `max_drawdown` read from a
+shadow run between 494a2ac (07-31 08:20) and d07d8e8 (07-31 14:23) marks
+every position in an expired market at zero for up to ~24h, and the
+`mid is None -> 0.0` fallback is side-blind wherever it still fires.**
+NEXT PASS: 08-01 ~02:15 UTC is weather bracket independent run #5, the
+first carrying `underlying_sign_p` natively — per the retired data gate
+the unit to pool is leaning UNDERLYINGS (5 over / 7 under, k=12, p=0.387
+so far), not runs; the 08-01 11:10 UTC sweep re-opens the atlas gate for
+a second reading of the replicated longshot-fade narrowing. Also open:
+whether the ~05:00 clear of the 26JUL31 ladders lands cleanly under
+d07d8e8 — that is the first clear the mark fix will see live, and shadow
+currently holds positions in 30 such markets. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-31 08:35 UTC (THE CLASS-B VOID-ROW PREDICTION IS
 CONFIRMED AND THE FRAME TYPE NAMES THE HOURLY BURST — AND CHASING WHAT
 THAT FRAME *MEANS* FOUND THE SENTINEL BEING RECORDED BUT NOT ACTED ON:
 REPLAY CARRIES A PHANTOM LADDER PAST EVERY CLEARED BOOK. Gate check
