@@ -48,6 +48,9 @@ SHADOW_DB = "data/hyxshadow.duckdb"
 DUCK_MEM = "512MiB"
 DUCK_THREADS = 2
 DUCK_TMP = "data/duckspill-shadow"
+# Rows pulled per fetchmany() when seeding books from the archive. Bounds
+# the Python-side result list, which DUCK_MEM does not (see _read_new).
+SEED_BATCH = 10_000
 
 
 def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
@@ -197,19 +200,43 @@ class ShadowRunner:
                     floor = conn.execute(
                         f"SELECT max(ended_at) FROM stream_gaps WHERE {BOOK_GAPS}"
                     ).fetchone()[0]
-                    rows = conn.execute(
+                    # Stream the seed rows — do NOT fetchall(). DUCK_MEM
+                    # bounds the ENGINE, not the materialized Python list,
+                    # and the seed window is "since the last book gap",
+                    # whose size is decided by a RACE: promote.sh restarts
+                    # hyxlab-stream and hyxlab-shadow together, so if
+                    # shadow reads the floor before stream writes its
+                    # `daemon_start` gap row it seeds from the PREVIOUS
+                    # break instead. Measured at the 2026-07-31 20:34
+                    # promote: 2,084,503 rows (~417MB as tuples, over the
+                    # 1G cgroup cap on top of the 512MiB engine) against
+                    # the 21,419 the winning ordering gives — a 97x swing
+                    # on a race, kernel-OOM-killed at boot, recovered only
+                    # by the systemd restart 30s later. Same shape as the
+                    # 2026-07-11/07-12 OOMs the DUCK_MEM note records.
+                    res = conn.execute(
                         "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side,"
                         " price, qty FROM book_events WHERE venue = 'kalshi'"
                         " AND recv_ts >= coalesce(?, recv_ts) ORDER BY recv_ts, seq",
                         [floor],
-                    ).fetchall()
+                    )
+                    n_rows = 0
+
+                    def _seed_events():
+                        nonlocal n_rows
+                        while True:
+                            batch = res.fetchmany(SEED_BATCH)
+                            if not batch:
+                                return
+                            for r in batch:
+                                n_rows += 1
+                                yield BookEvent(*r)
+
                     seeded = 0
-                    for _ in replay_snapshots(
-                        (BookEvent(*r) for r in rows), replayer=self.replayer
-                    ):
+                    for _ in replay_snapshots(_seed_events(), replayer=self.replayer):
                         seeded += 1
                     print(
-                        f"[shadow] seeded books from {len(rows)} archived events"
+                        f"[shadow] seeded books from {n_rows} archived events"
                         f" ({seeded} top states; trading starts at {self.cursor})",
                         flush=True,
                     )

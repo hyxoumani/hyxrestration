@@ -302,3 +302,105 @@ def test_max_drawdown_survives_equity_curve_trim():
     assert (
         got.metrics["_portfolio"]["max_drawdown"] == ref.metrics["_portfolio"]["max_drawdown"]
     )
+
+
+# -- the seed must stream, not materialize ---------------------------------
+
+SEED_MARKETS = ["M1", "M2", "M3", "M4"]
+
+
+class _NoFetchAll:
+    """Connection proxy whose results refuse fetchall(). DUCK_MEM bounds
+    the ENGINE; a fetchall() on the seed query builds an unbounded PYTHON
+    list beside it, which is what actually crossed the 1G cgroup cap."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    class _Guard:
+        def __init__(self, res):
+            self._res = res
+
+        def fetchall(self):
+            raise AssertionError("seed materialized the whole result set via fetchall()")
+
+        def __getattr__(self, name):
+            return getattr(self._res, name)
+
+    def execute(self, *a, **k):
+        return self._Guard(self._inner.execute(*a, **k))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._inner.__exit__(*exc)
+
+
+def _seed_runner(tmp_path, n_events, monkeypatch=None):
+    from hyxlab.store import Store
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id=m) for m in SEED_MARKETS])
+    store.close()
+    sstore = StreamStore(stream_db)
+    # Spread across markets: repeated full snapshots of ONE market would
+    # make every row but the last irrelevant, so a batch that silently
+    # dropped rows would seed an identical book and the boundary control
+    # below would be vacuous.
+    for i in range(n_events):  # all pre-anchor history -> all seeded
+        sstore.append_events(
+            _snapshot_frame(
+                SEED_MARKETS[i % len(SEED_MARKETS)],
+                i + 1,
+                40 + (i % 5),
+                59 - (i % 5),
+                T0 + timedelta(seconds=i),
+            )
+        )
+    sstore.flush()
+    if monkeypatch is not None:
+        import simulator.shadow as shadow_mod
+
+        real = shadow_mod.stream_conn
+        monkeypatch.setattr(shadow_mod, "stream_conn", lambda p: _NoFetchAll(real(p)))
+    return ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ShadowLedger(tmp_path / "shadow.duckdb"),
+    )
+
+
+def test_seed_does_not_materialize_the_whole_result_set(tmp_path, monkeypatch):
+    """Load-bearing: the seed path must never call fetchall(). The window
+    is 'since the last book gap', and promote.sh restarts stream and
+    shadow together — if shadow reads the floor before stream writes its
+    daemon_start row it seeds from the PREVIOUS break. Measured at the
+    2026-07-31 20:34 promote: 2,084,503 rows (~417MB of tuples) instead
+    of 21,419, kernel-OOM-killed at boot. Pre-fix this test raises."""
+    runner = _seed_runner(tmp_path, 12, monkeypatch=monkeypatch)
+    assert runner.poll_once() == 0  # first poll anchors + seeds, trades nothing
+    assert runner.sim.result.fills == []  # history is seeded, never traded
+    assert runner.replayer.depth("M1") is not None  # and it DID seed
+
+
+def test_seed_is_identical_across_batch_boundaries(tmp_path, monkeypatch):
+    """Discrimination control: streaming must not drop or duplicate rows
+    at a fetchmany() boundary. A batch size that does not divide the row
+    count must seed the same book as one that swallows it whole."""
+    import simulator.shadow as shadow_mod
+
+    monkeypatch.setattr(shadow_mod, "SEED_BATCH", 10_000)
+    whole = _seed_runner(tmp_path / "a", 12)
+    whole.poll_once()
+    monkeypatch.setattr(shadow_mod, "SEED_BATCH", 5)  # 12 rows -> 5 + 5 + 2
+    split = _seed_runner(tmp_path / "b", 12)
+    split.poll_once()
+    assert {m: split.replayer.depth(m) for m in SEED_MARKETS} == {
+        m: whole.replayer.depth(m) for m in SEED_MARKETS
+    }
+    assert all(split.replayer.depth(m) is not None for m in SEED_MARKETS)  # non-vacuous
