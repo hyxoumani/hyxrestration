@@ -352,15 +352,34 @@ class Simulator:
         return self.result.cash + pos
 
     def _settle(self) -> None:
-        for (strat, venue, market_id, side), qty in self.ctx._positions.items():
+        # Settlement RETIRES the contract, it does not merely pay it out.
+        # `_equity` marks whatever is left in `_positions`, and `_mark`'s
+        # first branch returns 1.0 for a position on the winning side of a
+        # settled market — so a position left standing here is counted a
+        # second time, once as payout in `cash` and once as a 1.0 mark.
+        # Measured on the archived fav-long pre-reg run
+        # (data/runs/20260711T230707_e7ba056d): `final_equity` read
+        # +67,561.66 against a true post-settlement equity of -3,718.34,
+        # overstated by exactly the 71,280.00 of settled payout, flipping
+        # the sign of the run's result. Losing positions mark 0.0 either
+        # way, so the overstatement is always exactly `settled_payout`.
+        # Retire both sides regardless of sign: a settled contract has
+        # ceased to exist, and leaving a zero-value loser in the book is
+        # the same inconsistency that merely happens not to show up in a
+        # sum. Iterate over a snapshot of the keys — the loop mutates.
+        for strat, venue, market_id, side in list(self.ctx._positions):
             info = self.markets.get((venue, market_id))
-            if info is not None and info.result in ("yes", "no") and qty > 0:
+            if info is None or info.result not in ("yes", "no"):
+                continue
+            qty = self.ctx._positions[(strat, venue, market_id, side)]
+            if qty > 0:
                 payout = qty * (1.0 if info.result == side else 0.0)
                 self.result.cash += payout
                 self._payouts += payout
                 self._by_market.setdefault(
                     (strat, venue, market_id), {"cost": 0.0, "fees": 0.0, "payout": 0.0}
                 )["payout"] += payout
+            self.ctx._positions[(strat, venue, market_id, side)] = 0.0
         self._check_invariants()
 
     def _check_invariants(self) -> None:

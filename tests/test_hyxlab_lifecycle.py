@@ -163,3 +163,84 @@ def test_order_rejects_typoed_fields():
         Order("kalshi", "M1", "yes", 5, action="sell")
     with pytest.raises(ValueError):
         Order("kalshi", "M1", "yes", 5, tif="FOK")
+
+
+# -- settlement retires the contract ---------------------------------------
+#
+# `_settle` paid a winning position out into cash but left it standing in
+# `ctx._positions`, and `_compute_metrics` then calls `_equity()`, whose
+# `_mark` returns 1.0 for a position on the winning side of a settled
+# market. So every settled winner was counted twice. Measured on the
+# archived fav-long pre-reg run (data/runs/20260711T230707_e7ba056d):
+# `final_equity` +67,561.66 against a true -3,718.34, overstated by exactly
+# the 71,280.00 of settled payout. These assert the NUMBERS, so an
+# implementation that pays out without retiring fails on the arithmetic
+# rather than on a missing key.
+
+_BUY10 = {0: [Order("kalshi", "M1", "yes", 10)]}  # 10 yes @ ask 0.40, fee 0.17
+_SNAPS = [snap("M1", T[0], 0.39, 0.40), snap("M1", T[1], 0.55, 0.56)]
+
+
+def test_settled_winner_is_not_marked_on_top_of_its_payout():
+    """Load-bearing: buy 10 @ 0.40 (fee 0.17), settles YES. Cash is
+    -4.17 + 10 = 5.83 and that IS the final equity. The pre-fix value was
+    15.83 — cash plus a second 1.0 mark on the un-retired position."""
+    mk = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="yes")}
+    sim, res = run(_BUY10, _SNAPS, markets=mk)
+    assert res.cash == pytest.approx(5.83)
+    assert res.metrics["_portfolio"]["final_equity"] == pytest.approx(5.83)
+    assert res.metrics["_portfolio"]["final_equity"] != pytest.approx(15.83)
+    assert sim.ctx._positions[("script", "kalshi", "M1", "yes")] == 0.0
+
+
+def test_settled_loser_equity_is_unchanged():
+    """Control: a loser marks 0.0 either way, so the overstatement is
+    exactly `settled_payout` and never touches a losing run. If this moves,
+    the fix shifted equity generally instead of retiring a double count."""
+    mk = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="no")}
+    sim, res = run(_BUY10, _SNAPS, markets=mk)
+    assert res.cash == pytest.approx(-4.17)
+    assert res.metrics["_portfolio"]["final_equity"] == pytest.approx(-4.17)
+    # A settled LOSER must be retired too. Its 0.0 mark makes the equity
+    # arithmetic identical either way, so nothing above can catch a
+    # winners-only retirement — assert the book state directly.
+    assert sim.ctx._positions[("script", "kalshi", "M1", "yes")] == 0.0
+
+
+def test_unsettled_position_is_still_marked():
+    """Discrimination control: the fix must retire SETTLED positions only.
+    An open market has no result, so the position survives finalize and
+    equity carries its mid mark: -4.17 + 10 * 0.555 = 1.38. A fix that
+    simply stopped counting positions would read -4.17 here."""
+    _, res = run(_BUY10, _SNAPS)  # default M1 has no result
+    assert res.cash == pytest.approx(-4.17)
+    assert res.metrics["_portfolio"]["final_equity"] == pytest.approx(1.38)
+
+
+def test_settlement_is_selective_within_one_run():
+    """M1 settles YES, M2 stays open, in the same portfolio. Cash is
+    -4.17 - 4.17 + 10 = 1.66 and equity adds only M2's mark: 1.66 + 5.55 =
+    7.21. Pre-fix this read 17.21."""
+    mk = {
+        ("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="yes"),
+        ("kalshi", "M2"): MarketInfo(venue="kalshi", market_id="M2"),
+    }
+    steps = {0: [Order("kalshi", "M1", "yes", 10)], 1: [Order("kalshi", "M2", "yes", 10)]}
+    snaps = [
+        snap("M1", T[0], 0.39, 0.40),
+        snap("M2", T[1], 0.39, 0.40),
+        snap("M2", T[2], 0.55, 0.56),
+    ]
+    sim, res = run(steps, snaps, markets=mk)
+    assert res.cash == pytest.approx(1.66)
+    assert res.metrics["_portfolio"]["final_equity"] == pytest.approx(7.21)
+    assert sim.ctx._positions[("script", "kalshi", "M1", "yes")] == 0.0
+    assert sim.ctx._positions[("script", "kalshi", "M2", "yes")] == 10.0
+
+
+def test_retiring_positions_keeps_the_cash_ledger_intact():
+    """Retiring a position must not touch the I1 cash ledger — settlement
+    moves value from the position into cash, it does not create any."""
+    mk = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="yes")}
+    sim, _ = run(_BUY10, _SNAPS, markets=mk)
+    sim._check_invariants()  # raises SimAccountingError if the ledger drifted
