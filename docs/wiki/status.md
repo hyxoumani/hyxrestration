@@ -1,6 +1,104 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-01 08:30 UTC (QA IS FULLY GREEN FOR THE FIRST TIME IN
+Updated: **2026-08-01 14:35 UTC (THE ATLAS GATE OPENED AND THE STRICTEST
+TIER HELD IDENTICAL FOR A THIRD READING — THEN THE COUNTER-SIGNATURE THAT
+APPEARED ONE TIER DOWN TURNED OUT TO BE MEMBERSHIP CHURN, AND THIS LOG
+HAS BEEN READING IT AS NARRATIVE. SEVENTEENTH INSTANCE OF THE
+UNIT-OF-COUNTING CLASS, ONE LEVEL UP AGAIN: A TIER'S SURVIVOR COUNT IS
+NOT ITS MEMBERSHIP. Gate check first, hard rather than estimated
+(`systemctl list-timers`, `date -u` 14:15 — journald prints CDT, so the
+06:10 CDT `hyxlab-sweep` is 11:10 UTC): the kalshi sweep fired 3h ago and
+the last atlas ran 07-31 14:15, so **the atlas gate the last three passes
+named had OPENED** and atlas was the one runnable standing report.
+Weather bracket ran 08-01 02:16 so #6 is 08-02 ~02:15; econ needs >=336h
+(next ~08-10); QA fired 08-01 02:00 (next 08-02). **THE ATLAS RUN**:
+`reports/atlas/20260801T141522.json`, a large increment (219,426 ->
+227,961 bucket observations). Headline flagged 94->98 (18->19 groups),
+robust 64->64, day-robust **14->19**, and the strictest tier
+**day-weighted 6->6 with IDENTICAL MEMBERSHIP** — all six deciles <=4
+with a positive implied-minus-realized day-weighted gap (Climate 1h d1
++0.0781, Economics 1h d2/d3/d4 +0.1253/+0.1389/+0.1811, Financials 1h d2
++0.1508, Financials 6h d2 +0.1275), zero high-decile survivors. **The
+longshot-fade narrowing REPLICATES for a third consecutive reading.**
+Still not a verdict: no pre-registration exists. **THE DRIFT IS ONE TIER
+DOWN AND IT LOOKS LIKE A COUNTER-SIGNATURE**: all five day-robust gains
+are Financials at deciles 5/6/7 with the OPPOSITE sign (realized >
+implied — favorites underpriced), the exact counter-signature the last
+three passes recorded as absent. **PROBED BEFORE BUILDING, and it is not
+one.** Every one of the five crossed on **+1 day** of evidence, and
+`Financials|24h|d7` flipped tier on **+4 markets** (day_lo 0.7498 ->
+0.7545 against implied 0.7500). All five die at the day-weighted tier,
+and the day-weighting collapses them — `6h|d6` -0.1672 -> -0.0236 (7x),
+`1h|d6` -0.1464 -> -0.0268 (5.5x). That is the 07-30 day-weighted tier
+(8a6ac3c) discriminating on live drift for the first time rather than in
+the abstract. **THEN THE LOAD-BEARING HALF, FOUND BY ASKING WHETHER THE
+TIER COUNTS THIS LOG REPORTS ARE STABLE AT ALL**: replaying tier
+membership over all 27 archived reports, **19 buckets have ever been
+day-robust and FIVE have left the tier and returned — every one of them
+a Financials mid/high decile** (`1h|d5`, `24h|d7`, `6h|d5`, `6h|d6`,
+`6h|d7`). **THIS CORRECTS THIS LOG'S OWN NARRATIVE**: the 07-31 pass
+wrote that "both day-robust demotions are again HIGH deciles
+(Financials|24h|d7, Financials|6h|d7)" and read it as the signature
+narrowing to fading longshots. Both are back today. The demotion was a
+one-reading dropout, not a narrowing — the narrowing claim survives only
+at the day-weighted tier, which has **zero** re-entries and identical
+membership across all three of its readings. INSTRUMENT SHIPPED
+(ad3f935): reports carry `tier_stability` — per tier the churn against
+the last distinct data state plus `gained`/`lost`/`oscillators`, per
+surviving bucket `persistence` and `reentered`. **THREE UNITS OF
+COUNTING DECIDE WHETHER THE NUMBER MEANS ANYTHING, and each is a
+separate test**: (1) a reading is a distinct DATA state, not a report
+file — the archive holds three duplicate-`data_fingerprint` pairs
+(07-28, 07-29, 07-30), each a re-run minutes after shipping a tier, and
+counting files gives each a guaranteed-zero churn step that biases every
+stability estimate toward stable (27 files -> 21 readings; day-robust
+mean churn 2.43 by file against 2.60 by reading); dedup keeps the LAST
+report per state, because that re-run is exactly how a new tier first
+appears and keep-first silently discards the only reading carrying it;
+(2) a tier's denominator counts only readings whose report CARRIES the
+tier, or `flagged_day_weighted` reads 2/21 for a tier that has never lost
+a member; (3) a bucket's denominator counts only readings where it was
+ELIGIBLE (present in `buckets`), since a bucket below n>=200 is absent
+from the DATA, not from the tier — otherwise every genuinely new survivor
+reads as churn. Eight regression tests. **VALIDATING IN THE REAL PIPELINE
+FOUND A DEFECT THE FIXTURES DID NOT**: on a re-run the already-written
+report shares the current run's fingerprint, so the run compares against
+ITSELF — churn reads 0 and every survivor gains a free reading. Excluded
+and tested. Verified by mutation, eight: file-counting, keep-first dedup,
+tier-blind denominator, eligibility-blind denominator,
+persistence-as-latest-reading, reentry-without-trailing-gap,
+1.0-on-no-priors and self-comparison each redden exactly their own test
+with no collateral. Suite 376->384, ruff clean, pushed. **NO PROMOTE, and
+verified rather than assumed**: `grep` over `scripts/systemd/` shows no
+unit references atlas — same call as queuescore and shadow_coverage.
+Validated live by re-running the shipped report
+(`20260801T142204.json`, identical fingerprint to the 14:15 run), which
+reproduces the ad-hoc probe exactly — 21/13/6/2 readings, churn 6/4/5/0,
+oscillators 15/2/5/0 — and correctly excludes itself. **AN HONEST
+LIMITATION**: `flagged_day_weighted` has only **2** prior readings, so
+its zero-oscillation record is the weakest-powered claim on the page —
+it is the tier with the least opportunity to churn, not yet the tier
+proven not to. Three more readings before that reads as evidence.
+PRACTICAL RULE, joining shadow-coverage-before-shadow-equity /
+NULL-guard-is-not-a-range-predicate / paying-is-not-retiring /
+`underlying_sign_p` / `flagged_day_weighted` / `new_share_vs_all` /
+`cross_bucket_overlap.groups` / `top_day_share` / connection-scoped-`seq`:
+**read `tier_stability` before reading any atlas tier COUNT as drift. A
+promotion or demotion at the day-robust tier is routinely one added day
+of evidence crossing a Wilson endpoint, five buckets have already
+oscillated in and out, and every narrative this log has built on a
+day-robust count change is churn until `persistence` says otherwise. And
+two atlas reports sharing a `data_fingerprint` are one reading.** NEXT
+PASS: 08-02 ~02:15 is weather bracket #6 (pooled 9 over / 7 under, k=16,
+p=0.402); the 08-02 11:10 sweep re-opens the atlas gate for the FOURTH
+day-weighted reading, which is the one that starts to power the
+zero-oscillation claim; QA 08-02 07:00. Still open and deliberately not
+rushed: shadow position continuity across restart (the coverage
+instrument from the 08:30 pass measures the truncation at 100% and does
+not fix it — that is a design call, not an end-of-pass hardening).
+Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-08-01 08:30 UTC (QA IS FULLY GREEN FOR THE FIRST TIME IN
 THIS LOG AND THE 26JUL31 CLEAR LANDED EXACTLY AS PREDICTED — THEN ASKING
 WHY THE MARK FIX *AGAIN* TOUCHED NOTHING FOUND THAT THE SHADOW TRACK HAS
 STOPPED OBSERVING OUTCOMES ENTIRELY, AND THAT MY OWN PROMOTE CADENCE IS
