@@ -97,6 +97,31 @@ cannot be reproduced on a unit-test fixture, so the regression test asserts
 the mechanism (no floating-point `avg` in the implied projection) plus exact
 correctness on a hand-computed fixture.
 
+Tier stability (2026-08-01): the pass method above — diff two atlas reports
+and chase the drift — reads a tier as a COUNT, and a count cannot tell a
+stable set of survivors from a set of equal size whose members swap every
+reading. Measured over the archive, the difference is real and it corrects
+this log's own narrative: five buckets have LEFT the day-robust tier and
+RETURNED, all five Financials mid/high deciles, and the 07-31 reading of
+"both day-robust demotions are again HIGH deciles" — taken then as the
+signature narrowing to fading longshots — was both of them dropping out for
+a single reading. `flagged_day_weighted` over the same span has zero
+re-entries and identical membership across three readings. Reports therefore
+carry `tier_stability`: per tier the churn against the last distinct data
+state, and per surviving bucket `persistence` and `reentered`.
+
+Three units of counting decide whether that number means anything. A reading
+is a distinct DATA state, not a report file — the archive holds three
+duplicate-`data_fingerprint` pairs, each a re-run minutes after shipping a
+tier, and each would contribute a guaranteed-zero churn step. Dedup keeps the
+LAST report per state, since that re-run is exactly how a new tier first
+appears. A tier's denominator counts only readings whose report CARRIES that
+tier, or `flagged_day_weighted` reads 2/21 for a tier that has never lost a
+member. And a bucket's denominator counts only readings where it was
+ELIGIBLE (present in `buckets`), because a bucket below n>=200 is absent from
+the data, not absent from the tier. A stable tier is still only a stable
+lead; pre-registration decides.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -243,6 +268,133 @@ def _observations_by_category_horizon(buckets: list[dict]) -> dict[str, int]:
     for b in buckets:
         key = f"{b['category']}|{b['horizon']}"
         out[key] = out.get(key, 0) + b["n"]
+    return out
+
+
+TIERS = (
+    "flagged",
+    "flagged_robust",
+    "flagged_day_robust",
+    "flagged_day_weighted",
+)
+
+
+def _key(b: dict) -> tuple[str, str, int]:
+    return (b["category"], b["horizon"], b["decile"])
+
+
+def _distinct_readings(out_dir: Path, exclude_fp: str | None = None) -> tuple[list[dict], int]:
+    """Prior reports collapsed to distinct DATA states, oldest first.
+
+    Two reports sharing a `data_fingerprint` are one measurement, not two:
+    the archive holds three such pairs (07-28, 07-29, 07-30), each a re-run
+    minutes after shipping a new tier. Counting report FILES makes every
+    such pair contribute a guaranteed-zero churn step — the same data must
+    give the same membership — and biases every stability estimate toward
+    stable. Same unit-of-counting class as `new_share_vs_all` and
+    `underlying_sign_p`.
+
+    Dedup keeps the LAST report per data state, because a re-run on
+    identical data is exactly how a new tier first appears: keeping the
+    first would discard the only reading that carries it.
+
+    `exclude_fp` drops the CURRENT run's own data state. That is not
+    hypothetical — re-running after shipping a tier is precisely what
+    produced the three duplicate pairs in the archive, and without it the
+    re-run compares against itself: churn reads 0 and every survivor gains
+    a free reading of persistence.
+    """
+    by_fp: dict[str, dict] = {}
+    n_files = 0
+    for path in sorted(out_dir.glob("*.json")):
+        try:
+            rep = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        n_files += 1
+        fp = json.dumps(rep.get("data_fingerprint"), sort_keys=True)
+        if exclude_fp is not None and fp == exclude_fp:
+            continue
+        by_fp[fp] = rep
+    return list(by_fp.values()), n_files
+
+
+def tier_stability(out_dir: Path, current: dict) -> dict:
+    """Is a tier's survivor count a finding, or is it churn?
+
+    A tier reported only as a COUNT cannot distinguish a stable set of
+    survivors from a set of equal size whose members swap every reading.
+    Measured over the archive (2026-08-01) the difference is real and it
+    changes a standing narrative: five buckets have left the day-robust
+    tier and returned, ALL of them Financials mid/high deciles, and the
+    07-31 reading of "both day-robust demotions are HIGH deciles" — read
+    then as the signature narrowing to fading longshots — was both of them
+    dropping out for one reading. `flagged_day_weighted` over the same
+    span has zero re-entries.
+
+    Per bucket, `persistence` is the share of readings it held the tier,
+    over the readings in which it was ELIGIBLE (present in `buckets` at
+    all). A bucket that has not accumulated 200 markets yet is absent from
+    the data, not absent from the tier, and scoring it as the latter makes
+    every genuinely new survivor read as churn.
+
+    Per tier, the denominator counts only readings whose report CARRIES
+    that tier — `flagged_day_weighted` shipped 20 runs into the archive,
+    so scoring it against every report would print 3/23 for a tier that
+    has never lost a member.
+
+    Never a verdict: a stable tier is a stable lead, and pre-registration
+    still decides.
+    """
+    priors, n_files = _distinct_readings(
+        out_dir, json.dumps(current.get("data_fingerprint"), sort_keys=True)
+    )
+    out: dict = {}
+    for tier in TIERS:
+        readings = [p for p in priors if tier in p]
+        cur_members = {_key(b) for b in current.get(tier, [])}
+        # membership + eligibility per reading, oldest first
+        seq = [({_key(b) for b in r[tier]}, {_key(b) for b in r.get("buckets", [])}) for r in readings]
+
+        buckets = []
+        for k in sorted(cur_members):
+            hist = [k in members for members, elig in seq if k in elig]
+            n_elig = len(hist)
+            # a re-entry needs in -> out -> in; the current reading is the
+            # final `in`, so a trailing gap in the priors is a re-entry too
+            full = hist + [True]
+            transitions = sum(1 for i in range(1, len(full)) if full[i] != full[i - 1])
+            buckets.append(
+                {
+                    "bucket": list(k),
+                    "eligible_readings": n_elig,
+                    "persistence": round(sum(hist) / n_elig, 4) if n_elig else None,
+                    "reentered": transitions >= 2,
+                }
+            )
+
+        prior_members = seq[-1][0] if seq else None
+        out[tier] = {
+            "reports_read": n_files,
+            "readings": len(seq),
+            "size": len(cur_members),
+            "prior_size": len(prior_members) if prior_members is not None else None,
+            "churn_vs_prior": (
+                len(cur_members ^ prior_members) if prior_members is not None else None
+            ),
+            "gained": (
+                [list(k) for k in sorted(cur_members - prior_members)]
+                if prior_members is not None
+                else None
+            ),
+            "lost": (
+                [list(k) for k in sorted(prior_members - cur_members)]
+                if prior_members is not None
+                else None
+            ),
+            "oscillators": [b["bucket"] for b in buckets if b["reentered"]],
+            "buckets": buckets,
+        }
     return out
 
 
@@ -463,6 +615,10 @@ def main() -> None:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # computed against the archived priors, so it must run before this
+    # report is written -- the current run is the comparison's subject,
+    # not one of its priors.
+    atlas["tier_stability"] = tier_stability(out_dir, atlas)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(atlas, indent=1) + "\n")
 
