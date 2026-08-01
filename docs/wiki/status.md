@@ -1,6 +1,88 @@
 # Status & next steps (living page)
 
-Updated: **2026-07-31 20:55 UTC (EVERY STANDING REPORT GATED, SO THE
+Updated: **2026-08-01 02:40 UTC (25TH WEATHER MAKER BRACKET, INDEPENDENT
+RUN #5 AND THE FIRST UNANIMOUS ONE — THEN THE NAMED "NEXT HARDENING
+CANDIDATE" TURNED OUT TO BE A PLAN DEFECT, NOT A VOLUME ONE: THE SEED'S
+NULL-GUARD DEFEATED THE SCAN'S RANGE PUSHDOWN. FIFTEENTH INSTANCE OF THE
+CLASS, ONE LEVEL UP AGAIN: BOUNDING THE RESULT SET IS NOT BOUNDING THE
+SCAN. Gate check first, hard rather than estimated (`systemctl
+list-timers`, `date -u` 02:16): atlas gated until the 08-01 11:10 kalshi
+sweep; econ needs >=336h (next ~08-10); QA next 08-01 07:00; the 26JUL31
+clear is 08-01 ~04:59, still ~2.7h out. The weather bracket WAS due — the
+prior ran 07-31 02:16:26 — so ladder rung 1. **THE RUN**: 277 virtual
+orders across 8 markets, crossing **170 vs queue [157 pess, 167 opt]** —
+3 orders ABOVE the optimistic ceiling. Report:
+`reports/maker_bracket/20260801T021633.json`, `new_share_vs_all: 1.0`
+(277/277 against 19 priors), so it certifies independent at the strictest
+tier. It is also the first weather run in the archive to ATTAIN its power
+ceiling: 4 underlyings, **all 4 net over**, so `underlying_sign_p` ==
+`underlying_min_sign_p` == **0.0625** — unanimity, and still not
+significant at alpha 0.05, which is the `min_sign_p` rule earning its keep
+on live data rather than in the abstract. **POOLED, which is the unit the
+07-31 pass established**: rehydrating `orders_detail` across all five
+certified-independent runs reproduces the prior 5 over / 7 under (k=12)
+exactly and now reads **9 over / 7 under, k=16, p=0.402**. k=16 is also
+the smallest pooled k at which alpha=0.05 is reachable at all, so the
+series has only just become able to say anything — and it says no
+direction. **THEN THE DEFERRED ITEM, THE ~9%-HEADROOM BOOT PEAK THE LAST
+PASS NAMED, AND THE DIAGNOSIS IN THE LOG WAS WRONG**: it was attributed to
+"the engine-side scan peak", i.e. to seed VOLUME. PROBED BEFORE BUILDING,
+against the live 170M-row stream archive, and the measurement falsifies
+that immediately — replaying the seed path at **1,033,470 rows peaks at
+699MB** and at **8,331 rows peaks at 684MB**. The cost is INVARIANT to the
+window, so no seed-window narrowing could ever have touched it. Isolated
+it further: opening the DB and running the same filtered ORDER BY with
+`.fetchall()` costs 104MB and 0.0s. The whole difference is the predicate.
+`recv_ts >= coalesce(?, recv_ts)` reads the COLUMN on its right side, so it
+is not a range predicate — DuckDB cannot push it into the scan as a
+min/max filter and evaluates it row-by-row over all 170M rows. Measured
+head-to-head on an identical 9,387-row result: **685MB / 0.8s with the
+coalesce against 157MB / 0.16s with a plain `>=`** — 4.4x the memory and
+5x the time for the same rows. HARDENING SHIPPED (66f2ef5): the NULL case
+moves out of SQL into Python — with a floor, a plain `recv_ts >= ?`; with
+none, no predicate at all. `recv_ts` is NOT NULL (schema, and 0 null rows
+on the live archive), so the two branches are EXACTLY equivalent to the
+coalesce, which is why this is a plan fix and not a semantics change. Two
+regression tests. The memory effect needs 170M rows and cannot be
+reproduced at fixture scale, so the load-bearing one asserts the MECHANISM
+(the seed SQL carries `recv_ts >= ?` and no `coalesce`) alongside the
+semantics (with a book gap 9 events in, M1 — whose snapshots are all
+pre-floor — must be UNSEEDED, so the floor is shown to be doing real
+work); the second is the discrimination control for the obvious WRONG fix,
+binding a NULL floor into a plain `>=`, which returns zero rows and leaves
+every book unseeded. Verified by mutation, two: reverting to the coalesce
+reddens exactly the two new tests, and the naive always-bind fix reddens
+the control plus three EXISTING seed tests. Suite 368->370, ruff clean,
+pushed and **PROMOTED** (same call as 494a2ac/d07d8e8/d4d1fac:
+`simulator.shadow` runs in the live `hyxlab-shadow` daemon). **THE
+PROMOTE IS THE LIVE TEST AND IT IS DECISIVE**: the outgoing pre-fix
+process logged `915M memory peak` over its 5h44m life — exactly the figure
+the last pass named — while the incoming one seeded from **1,038,257
+archived events**, the largest seed this log has recorded and **28x** the
+36,664 of the previous boot, and peaked at **416MB against the 1G cap**
+(steady state 196MB). A 28x larger seed at 45% of the memory: the cost was
+the predicate, not the window. Headroom goes from ~9% to ~61% and the
+OOM-at-boot class is closed rather than reduced. **STILL OPEN AND NOT
+CLAIMED AS DONE**: the confirmatory re-run of the real fav-long backtest
+under the settlement fix (7a89992) is running again (4,004,743
+candle-snapshots over 177,995 markets) and had not finished at the time of
+writing; note it reads a LARGER data window than the pre-reg run and is
+therefore a code validation only, NOT a re-registration and NOT a verdict
+— the FAIL stands on `settled_net_pnl` -3,718.34 either way. PRACTICAL
+RULE, joining `underlying_sign_p` / `flagged_day_weighted` /
+`new_share_vs_all` / `cross_bucket_overlap.groups` / `top_day_share` /
+connection-scoped-`seq` / own-(category,horizon) / paying-is-not-retiring:
+**a NULL-guard written into SQL is not free. `col >= coalesce(?, col)`
+silently converts a pushed-down range scan into a full row-by-row filter,
+and the cost is constant in the result size — so it hides from every
+volume-based diagnosis. Branch on NULL in Python instead.** NEXT PASS:
+08-01 ~04:59 UTC is the 26JUL31 clear, the first the `_mark` fix sees live
+and now the first under both a streamed and a range-scanned seed; the
+08-01 11:10 sweep re-opens the atlas gate for a second reading of the
+replicated longshot-fade narrowing; QA 07:00. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-07-31 20:55 UTC (EVERY STANDING REPORT GATED, SO THE
 DEFERRED SHADOW-LEDGER QUESTION GOT ANSWERED — AND IT IS A CLEAN
 NEGATIVE THAT THEN LED TO A METRIC WHICH DOUBLE-COUNTS EVERY SETTLED
 WINNER AND FLIPS THE SIGN OF THE ARCHIVE'S ONLY PRE-REG RUN.
