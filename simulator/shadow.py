@@ -214,11 +214,27 @@ class ShadowRunner:
                     # on a race, kernel-OOM-killed at boot, recovered only
                     # by the systemd restart 30s later. Same shape as the
                     # 2026-07-11/07-12 OOMs the DUCK_MEM note records.
+                    # And bounding the RESULT SET is not bounding the SCAN.
+                    # `recv_ts >= coalesce(?, recv_ts)` is not a range
+                    # predicate — its right side reads the column, so DuckDB
+                    # cannot push it into the scan as a min/max filter and
+                    # evaluates it row-by-row over all 170M archived rows.
+                    # Measured on the live archive, same 9,387-row result:
+                    # 685MB / 0.8s with the coalesce against 157MB / 0.16s
+                    # with a plain `>=`. That constant ~685MB — INVARIANT to
+                    # the window, so no seed-window narrowing touches it — is
+                    # the boot peak that left ~9% headroom under the 1G cap.
+                    # `recv_ts` is NOT NULL, so the no-floor branch (no
+                    # predicate at all) is exactly equivalent to the coalesce.
+                    where = "venue = 'kalshi'"
+                    params: list = []
+                    if floor is not None:
+                        where += " AND recv_ts >= ?"
+                        params.append(floor)
                     res = conn.execute(
                         "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side,"
-                        " price, qty FROM book_events WHERE venue = 'kalshi'"
-                        " AND recv_ts >= coalesce(?, recv_ts) ORDER BY recv_ts, seq",
-                        [floor],
+                        f" price, qty FROM book_events WHERE {where} ORDER BY recv_ts, seq",
+                        params,
                     )
                     n_rows = 0
 

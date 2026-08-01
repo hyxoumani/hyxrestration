@@ -337,7 +337,30 @@ class _NoFetchAll:
         return self._inner.__exit__(*exc)
 
 
-def _seed_runner(tmp_path, n_events, monkeypatch=None):
+class _SqlLog:
+    """Connection proxy recording every statement the seed executes.
+
+    The seed's memory cost is a property of the PREDICATE, not of the row
+    count, so it cannot be reproduced at fixture scale — assert the
+    mechanism (a plain range `>=`, which DuckDB pushes into the scan)
+    alongside the semantics."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.sql: list[str] = []
+
+    def execute(self, sql, *a, **k):
+        self.sql.append(sql)
+        return self._inner.execute(sql, *a, **k)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._inner.__exit__(*exc)
+
+
+def _seed_runner(tmp_path, n_events, monkeypatch=None, gap_after=None, sql_log=None):
     from hyxlab.store import Store
 
     stream_db = tmp_path / "stream.duckdb"
@@ -360,12 +383,22 @@ def _seed_runner(tmp_path, n_events, monkeypatch=None):
                 T0 + timedelta(seconds=i),
             )
         )
+    if gap_after is not None:
+        # A book gap `gap_after` events in: the seed floor is the gap's end,
+        # so only the events at or after it are replayed.
+        end = T0 + timedelta(seconds=gap_after)
+        sstore.append_gap("kalshi", "books", end - timedelta(seconds=1), end, "reconnect")
     sstore.flush()
     if monkeypatch is not None:
         import simulator.shadow as shadow_mod
 
         real = shadow_mod.stream_conn
-        monkeypatch.setattr(shadow_mod, "stream_conn", lambda p: _NoFetchAll(real(p)))
+        if sql_log is not None:
+            monkeypatch.setattr(
+                shadow_mod, "stream_conn", lambda p: sql_log.append(_SqlLog(real(p))) or sql_log[-1]
+            )
+        else:
+            monkeypatch.setattr(shadow_mod, "stream_conn", lambda p: _NoFetchAll(real(p)))
     return ShadowRunner(
         [BuyFirst()],
         latency=0.0,
@@ -404,3 +437,40 @@ def test_seed_is_identical_across_batch_boundaries(tmp_path, monkeypatch):
         m: whole.replayer.depth(m) for m in SEED_MARKETS
     }
     assert all(split.replayer.depth(m) is not None for m in SEED_MARKETS)  # non-vacuous
+
+
+def test_seed_floor_is_a_plain_range_predicate(tmp_path, monkeypatch):
+    """Load-bearing: bounding the RESULT SET is not bounding the SCAN.
+    `recv_ts >= coalesce(?, recv_ts)` reads the column on its right side,
+    so DuckDB cannot push it into the scan as a min/max filter and
+    evaluates it over every archived row. Measured on the live archive for
+    an identical 9,387-row result: 685MB / 0.8s with the coalesce against
+    157MB / 0.16s with a plain `>=` — a constant cost, invariant to the
+    window, and the boot peak that left ~9% headroom under the 1G cap.
+
+    Asserts the mechanism (the memory effect needs 170M rows) and the
+    semantics: with a book gap 9 events in, only the events at or after it
+    are replayed, so M1 — whose snapshots are all pre-floor — is unseeded.
+    """
+    log: list = []
+    runner = _seed_runner(tmp_path, 12, monkeypatch=monkeypatch, gap_after=9, sql_log=log)
+    assert runner.poll_once() == 0
+    seed_sql = [s for s in log[0].sql if "book_events" in s and "ORDER BY" in s]
+    assert seed_sql and "recv_ts >= ?" in seed_sql[0]
+    assert "coalesce" not in seed_sql[0].lower()
+    assert runner.replayer.depth("M1") is None  # pre-floor history NOT replayed
+    assert all(runner.replayer.depth(m) is not None for m in ("M2", "M3", "M4"))
+
+
+def test_seed_with_no_gap_row_reads_the_whole_archive(tmp_path, monkeypatch):
+    """Discrimination control: with no book gap the floor is NULL and the
+    seed must read EVERYTHING — `recv_ts` is NOT NULL, so dropping the
+    predicate is exactly equivalent to the coalesce it replaces. Binding a
+    NULL floor into a plain `recv_ts >= ?` instead returns zero rows and
+    leaves every book unseeded, which is what this test reddens on."""
+    log: list = []
+    runner = _seed_runner(tmp_path, 12, monkeypatch=monkeypatch, gap_after=None, sql_log=log)
+    assert runner.poll_once() == 0
+    seed_sql = [s for s in log[0].sql if "book_events" in s and "ORDER BY" in s]
+    assert seed_sql and "recv_ts" not in seed_sql[0].split("WHERE", 1)[1].split("ORDER BY")[0]
+    assert all(runner.replayer.depth(m) is not None for m in SEED_MARKETS)
