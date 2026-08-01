@@ -1,6 +1,101 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-01 14:35 UTC (THE ATLAS GATE OPENED AND THE STRICTEST
+Updated: **2026-08-01 20:25 UTC (EVERY STANDING REPORT GATED, SO THE
+DEFERRED SHADOW-CONTINUITY ITEM GOT PROBED — AND THE ASSUMPTION UNDER IT
+HOLDS WHILE THE MEASUREMENT BESIDE IT DOES NOT: THE "100% UNOBSERVED"
+HEADLINE COUNTED A RUN THAT WAS STILL RUNNING. EIGHTEENTH INSTANCE OF THE
+UNIT-OF-COUNTING CLASS, ONE LEVEL UP AGAIN: AN UNOBSERVED FILL IS NOT AN
+UNOBSERVABLE ONE. THE PASS ENDS WITH A HARD DATED CONSTRAINT ON MY OWN
+PROMOTE CADENCE.** Gate check first, hard rather than estimated
+(`systemctl list-timers`, `date -u` 20:16 — journald prints CDT): the
+kalshi sweep fired 11:10 UTC and atlas already ran 14:15 AND 14:22 after
+it, so **atlas is gated until 08-02 11:10**; weather bracket ran 08-01
+02:16 so #6 is 08-02 ~02:15; econ needs >=336h (next ~08-10); QA fired
+08-01 07:00 (next 08-02). Nothing standing was runnable, so ladder rung 2:
+verify an unverified design-note assumption. **THE ASSUMPTION**: the
+08:30 pass deferred position continuity across restart on the strength of
+"the ledger persists every fill, so net position and cost basis are
+exactly reconstructible". **It is TRUE as written — and insufficient, for
+a reason the ledger cannot show.** `shadow_fills` carries signed qty (+
+open / - close), price, fee per (strategy, venue, market, side), and on
+the live ledger 0 of 91,639 fills are closes, so position is monotone and
+trivially reconstructible. But `_settle` (sim.py:354) zeroes
+`ctx._positions` and credits cash while writing **nothing** to the
+ledger — settlement is not a fill. So summing `shadow_fills` RESURRECTS
+every already-settled position, and the prior run already banked its
+payout: the exact double-count class 7a89892 fixed one level up. **AND
+THE DATA CANNOT CATCH IT**: at 100% unobserved there are zero settled
+positions in the shadow archive, so the naive fill-sum reconstruction
+validates perfectly today and breaks the moment continuity starts
+working. The fix's own success is what would make it wrong. Recorded, not
+built — continuity still needs a settlement record in the ledger first.
+**THEN THE MEASUREMENT, AND IT CORRECTS THIS LOG'S OWN HEADLINE.**
+Probing the live ledger found the current run `20260801T022320` alive
+since 02:23 and **still filling at 17.9h** — 3x the ~6h cadence the last
+pass diagnosed — because the last two passes correctly did NOT promote.
+Yet `shadow_coverage` read it at **exactly 0.0, 3,428/3,428 unobserved**.
+That looked like an instrument defect and was chased as one; it is not.
+The earliest market close in the entire run is **08-02 04:59**, so the
+run needs a **26.6h** lifetime to observe its FIRST outcome and is at
+17.9h. Nothing was missed — nothing is due yet. **THE 08:20 HEADLINE IS
+THEREFORE WRONG**: its "4,802 of 4,802 pooled over the last five runs,
+100.0%" included this same run at life 5.95h with **1,059 fills (22% of
+the pool)**, still running, whose 0.0 was structurally guaranteed. A live
+run's zero is CENSORING, not failure. INSTRUMENT SHIPPED (ff30414): a
+dated fill partitions into observed / **pending** (run still live, market
+not closed yet) / **missed** (run dead, permanently unobservable);
+coverage is observed/(observed+missed) with pending excluded from BOTH
+sides, and a run with only pending fills reads **None, not 0.0**.
+Liveness keys on the last equity tick within `LIVE_GRACE_S`=300s, chosen
+against the measured tick cadence (max gap ~37s, p99 ~35s across every
+recent run — ~8x headroom). `unobserved_*` KEEPS its pre-partition
+meaning so archived reports stay comparable, but `coverage_*` is
+REPLACED rather than kept: per the QA-seq-headline precedent, for a live
+run the old value was an artifact, not a coarser valid bound. Also adds
+`hours_to_first_outcome`, the shortfall a run was killed by. Five
+regression tests; the load-bearing one runs an IDENTICAL ledger past the
+liveness boundary and asserts **1.0 live against 0.25 dead**, so counting
+censored fills as failures fails on arithmetic rather than a missing key.
+Verified by mutation, four: reverting the partition, always-live,
+latest-instead-of-earliest close, and pending back in the denominator
+each redden their own tests. One PRE-EXISTING test broke and that is
+diagnostic rather than collateral — `test_recent_window_isolates_the_
+current_regime` used fixture dates in the FUTURE, so its runs read live;
+its subject is the window, not liveness, so `now` was pinned explicitly
+instead of the assertion being relaxed. Suite 384->389, ruff clean,
+pushed. **NO PROMOTE, and this time for TWO independent reasons**: `grep`
+over `scripts/systemd/` shows no unit references `shadow_coverage` (same
+call as atlas and queuescore) — and promoting would restart
+`hyxlab-shadow` and kill the live run 8.6h before its first observation.
+**WHAT THE CORRECTED READING SAYS, AND THE ORIGINAL FINDING'S DIRECTION
+SURVIVES**: recent-5 pooled coverage is still **0.0**, now computed over
+**3,743 genuinely missed fills** rather than a pool diluted with censored
+ones. The sharpest new number is that `20260731T203829` was killed
+**2.6 hours short** of its first outcome. **HARD DATED CONSTRAINT, and it
+is the operational output of this pass: DO NOT PROMOTE BEFORE 2026-08-02
+04:59 UTC.** Run `20260801T022320` is 8.6h from the first outcome
+observation in the archive since 07-31 08:20, and it would be the first
+live exercise of BOTH the `_mark` carry fix (d07d8e8) and the settlement
+retirement (7a89892) — the two hardenings this log has recorded three
+times as having no live position to act on. A promote is the one act that
+destroys it. PRACTICAL RULE, joining read-`tier_stability`-before-any-
+atlas-count / shadow-coverage-before-shadow-equity / NULL-guard-is-not-a-
+range-predicate / paying-is-not-retiring / `underlying_sign_p` /
+`flagged_day_weighted` / `new_share_vs_all` / `top_day_share` /
+connection-scoped-`seq`: **an unobserved fill is not an unobservable one.
+Read `missed` and `pending` separately before reading any coverage
+number, and never pool a LIVE run's zero — it is censoring, and no data
+could have avoided it. Check `hours_to_first_outcome` before restarting
+the shadow daemon.** NEXT PASS: **08-02 04:59 UTC is the constraint above
+and the highest-value event on the board**; 08-02 ~02:15 is weather
+bracket #6 (pooled 9 over / 7 under, k=16, p=0.402); the 08-02 11:10
+sweep re-opens the atlas gate for the FOURTH day-weighted reading, which
+starts to power the zero-oscillation claim; QA 08-02 07:00. Still open
+and deliberately not rushed: shadow position continuity, now with a named
+prerequisite (a settlement record in the ledger) rather than only a
+design objection. Untracked `strategies/hylshi_fade.py` re-confirmed
+present, still correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-08-01 14:35 UTC (THE ATLAS GATE OPENED AND THE STRICTEST
 TIER HELD IDENTICAL FOR A THIRD READING — THEN THE COUNTER-SIGNATURE THAT
 APPEARED ONE TIER DOWN TURNED OUT TO BE MEMBERSHIP CHURN, AND THIS LOG
 HAS BEEN READING IT AS NARRATIVE. SEVENTEENTH INSTANCE OF THE
