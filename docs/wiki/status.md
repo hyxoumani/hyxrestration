@@ -1,6 +1,107 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-01 02:40 UTC (25TH WEATHER MAKER BRACKET, INDEPENDENT
+Updated: **2026-08-01 08:30 UTC (QA IS FULLY GREEN FOR THE FIRST TIME IN
+THIS LOG AND THE 26JUL31 CLEAR LANDED EXACTLY AS PREDICTED — THEN ASKING
+WHY THE MARK FIX *AGAIN* TOUCHED NOTHING FOUND THAT THE SHADOW TRACK HAS
+STOPPED OBSERVING OUTCOMES ENTIRELY, AND THAT MY OWN PROMOTE CADENCE IS
+THE CAUSE. SIXTEENTH INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: THE
+OBSERVATION DESTROYS THE THING OBSERVED. Gate check first, hard rather
+than estimated (`systemctl list-timers`, `date -u` 08:15 — note journald
+prints CDT, which cost a wrong "no entries" read before it was caught):
+atlas gated until the 08-01 11:10 kalshi sweep (~2h54m out); weather
+bracket ran 02:16 so #6 is 08-02; econ needs >=336h (next ~08-10). Two
+things WERE runnable. **QA, fired 07:00 UTC, and it is ALL-PASS** —
+16/16 including `book seq contiguous or gap-marked — 0 missing seq in 0
+hole events, 11 own-channel gap rows, 0 unexcused` and `void frames are
+known types — 54 void frames; all known`. The pre-restart residue that
+reddened the seq check for three days has rolled out of the 26h window,
+so the f91517b hole-scoping fix and the 22c9556 type-recording fix are
+both confirmed clean on a full window with zero legacy dilution.
+**THE 26JUL31 CLEAR REPRODUCED TO THE SECOND**: 30 void rows, all
+`orderbook_snapshot`, at 04:59:18 / 05:59:18 / 06:59:18, KXHIGHNY+MIA
+then CHI+AUS then DEN — the class-B pattern now holds on a second
+independent day. Shadow rode it with no restart, no OOM, peak 507MB
+against the 1G cap (steady 419MB), so the seed fix holds under a second
+live boot. **BUT THE POSITION AUDIT CAME BACK EMPTY A THIRD TIME**: the
+live run holds ZERO 26JUL31 positions — it holds 26AUG01 ladders. That
+is now three consecutive passes where the `_mark` carry fix (d07d8e8)
+and the settlement retirement (7a89992) had no live position to act on,
+and the last two passes each recorded that as a clean conditional
+negative. **IT IS NOT A COINCIDENCE, AND CHASING IT IS THE FINDING.**
+Run lifetime has collapsed monotonically — **126h, 42h, 24h, 11.9h,
+12.0h, 6.0h, 6.2h, 5.7h, 5.9h** — tracking the ~6h autonomous promote
+cadence exactly, because `promote.sh` restarts `hyxlab-shadow` and
+`shadow.py:22` documents "Restart = fresh sim state (positions reset)".
+The weather ladders that supply most fills expire ~24h after opening.
+**PROBED BEFORE BUILDING, against the live ledger joined to
+`markets.close_time`**, and the number is unambiguous: the share of
+fills whose market closes AFTER the run that opened them had already
+ended reads **32.8% -> 46.9% -> 71.3% -> 99.8% -> 96.9% and then 100.0%
+for every run since 07-31 08:20 — 4,802 of 4,802 pooled over the last
+five runs.** Re-measured with run-end taken from the last EQUITY tick
+rather than the last fill (the conservative choice, since a run keeps
+marking after it stops trading) it is unchanged. **TWO VALIDITY BOUNDS
+FOLLOW, and they bind on readings taken elsewhere in this log**: (1)
+`shadow_equity` is NOT a strategy's equity curve — it is a ~6h fragment
+that opens positions and is killed before any resolve, so it measures
+enter-and-hold-for-6h, and pooling equity or drawdown across runs does
+not recover the missing settlement leg, which for a weather ladder is
+where the PnL is; (2) the mark and settlement paths hardened on 07-31
+are UNREACHABLE in production at this cadence — at 100% unobserved,
+"no live position was touched" is arithmetic, not luck. INSTRUMENT
+SHIPPED (fa7efe5): `simulator/shadow_coverage.py` reports per-run and
+pooled coverage by fill COUNT and by NOTIONAL — both units, per the
+standing unit-of-counting lesson, because a count can read reassuring
+while every large position sits unobserved. Undated markets are counted
+and reported but never folded into either side of the ratio, and a run
+with no dated fills reads `None` rather than 0.0 or 1.0, since both
+defaults would print as findings the data does not support. Five
+regression tests; the load-bearing one asserts the NUMBERS on a fixture
+where the two units disagree (three tiny observed fills and one large
+unobserved one read **0.75 by count and 0.0625 by notional**), so a
+one-unit implementation fails on arithmetic rather than a missing key,
+plus the run-end discrimination control, the undated control, the
+None-not-zero control, and the recent-window test (a long historical
+run must not dilute the current regime: pooled 0.5, recent 0.0).
+Verified by mutation, four: last-fill-as-run-end, folding undated into
+observed, computing the notional ratio from counts, and defaulting empty
+coverage to 0.0 each redden exactly their own test. The first mutation
+attempt was DISCARDED as dishonest — it reddened all five, but via a
+fixture schema error rather than the semantics, and was re-run as
+min-instead-of-max on the equity tick. Suite 370->376 (5 mine plus one
+auto-parametrized boundary check the new module picks up), ruff clean,
+pushed. **NO PROMOTE, and verified rather than assumed**: `grep` over
+`scripts/systemd/` shows no timer runs any sim-side report — same call
+as atlas and queuescore. Validated in the real pipeline: the shipped
+module run against the live ledger reproduces the ad-hoc probe exactly
+(`reports/shadow_coverage/20260801T082037.json`). **AN HONEST
+LIMITATION**: on this archive `coverage_notional` tracks `coverage_fills`
+closely (0.42 vs 0.379, 0.675 vs 0.672), so the second unit did NOT
+change any reading here — it is measured because it CAN diverge and the
+test proves it is measured, not because it has yet mattered. **WHAT IS
+NOT DONE, AND IS DELIBERATELY NOT RUSHED**: this measures the truncation,
+it does not fix it. The remedy is position continuity across restart —
+the ledger persists every fill, so net position and cost basis are
+exactly reconstructible — but restart-resets-state is a DELIBERATE
+design call, and adopting a prior run's book would mix fill semantics
+across code versions and risks double-counting equity against the runs
+already recorded. That is a design decision to take deliberately, not a
+hardening to ship at the end of a pass. PRACTICAL RULE, joining
+NULL-guard-is-not-a-range-predicate / paying-is-not-retiring /
+`underlying_sign_p` / `flagged_day_weighted` / `new_share_vs_all` /
+`cross_bucket_overlap.groups` / `top_day_share` / connection-scoped-
+`seq`: **read `shadow_coverage` before reading any shadow equity,
+drawdown or PnL number. A shadow run only observes a position's outcome
+if it outlives the market's close, and since 07-31 08:20 not one fill in
+the ledger has met that bar — the promote that ships a fix is the same
+act that guarantees the fix has nothing to act on.** NEXT PASS: the
+08-01 11:10 sweep re-opens the atlas gate for the second reading of the
+replicated longshot-fade narrowing; 08-02 ~02:15 is weather bracket #6
+(pooled 9 over / 7 under, k=16, p=0.402); the 26AUG01 clear at 08-02
+~04:59 is the first that a run could survive IF continuity lands.
+Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-08-01 02:40 UTC (25TH WEATHER MAKER BRACKET, INDEPENDENT
 RUN #5 AND THE FIRST UNANIMOUS ONE — THEN THE NAMED "NEXT HARDENING
 CANDIDATE" TURNED OUT TO BE A PLAN DEFECT, NOT A VOLUME ONE: THE SEED'S
 NULL-GUARD DEFEATED THE SCAN'S RANGE PUSHDOWN. FIFTEENTH INSTANCE OF THE
