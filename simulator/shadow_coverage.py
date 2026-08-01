@@ -18,11 +18,23 @@ collapsed as the development cadence sped up — 126h, 42h, 24h, 12h,
 then five consecutive runs near 6h. Measured on the live ledger at the
 time of writing, the share of fills whose market closes after the run
 ended runs 32.8% -> 46.9% -> 71.3% -> 99.8% -> 96.9% and then
-**100.0% for every run since 2026-07-31 08:20** (4,799 of 4,799 pooled
-over the last five runs).
+**100.0% for every run since 2026-07-31 08:20**.
 
-So the shadow track has stopped observing outcomes altogether. Two
-things follow, and both are validity bounds on readings taken elsewhere:
+CORRECTION (2026-08-01 20:20), and it bounds the paragraph above. That
+first reading pooled 4,802 fills over five runs and called every one of
+them unobserved — but one of the five was STILL RUNNING when the report
+was taken, and contributed 1,059 fills (22%) whose markets had not yet
+closed. Those fills had not failed to be observed; they had not got
+there yet. A live run's zero is CENSORING, not failure, and folding it
+into the pool guarantees a 0.0 that no data could have avoided. Coverage
+is therefore computed over observed + MISSED only, with pending fills
+reported separately — see build_coverage.
+
+The corrected picture is still bad, and the direction of the original
+finding stands: every run that actually DIED short reads 0.0. But the
+live run is not evidence for it.
+
+Two things follow, and both are validity bounds on readings elsewhere:
 
   1. `shadow_equity` is not a strategy's equity curve. It is a ~6h
      fragment that opens positions and is killed before any of them
@@ -60,26 +72,57 @@ from hyxlab.store import connect_retry
 # the current regime rather than the historical average that dilutes it.
 RECENT_RUNS = 5
 
+# A run is LIVE if its last equity tick is this recent. The shadow daemon
+# writes one tick per poll; measured on the live ledger the gap between
+# consecutive ticks tops out at ~37s (p99 ~35s) across every recent run,
+# so 5 minutes is ~8x the worst observed gap — generous enough that a
+# slow poll or a lock wait never mislabels a live run as dead, and short
+# enough that a run killed minutes ago is not still credited as pending.
+LIVE_GRACE_S = 300
 
-def _ratio(observed: float, unobserved: float) -> float | None:
-    """Coverage = observed / (observed + unobserved), or None when the
-    run has no dated fills at all. None, not 0.0 or 1.0 — a run with
-    nothing to observe has no coverage, and defaulting either way would
-    read as a finding."""
-    total = observed + unobserved
+
+def _ratio(observed: float, missed: float) -> float | None:
+    """Coverage = observed / (observed + missed), or None when the run
+    has had no OPPORTUNITY to observe anything. None, not 0.0 or 1.0 — a
+    run with nothing to observe has no coverage, and defaulting either
+    way would read as a finding.
+
+    `missed` excludes PENDING fills (see build_coverage): a live run's
+    open position has not failed to be observed, it simply has not got
+    there yet, and putting it in the denominator manufactures a 0.0.
+    """
+    total = observed + missed
     if total <= 0:
         return None
     return round(observed / total, 4)
 
 
-def build_coverage(ledger, markets_conn, recent_runs: int = RECENT_RUNS) -> dict:
+def build_coverage(
+    ledger, markets_conn, recent_runs: int = RECENT_RUNS, now: datetime | None = None
+) -> dict:
     """Per-run and pooled outcome coverage.
 
     `ledger` is a connection to the shadow ledger; `markets_conn` a
     connection carrying a `markets` table with `market_id`/`close_time`.
     They are separate databases in production and separate arguments
     here so the report can be tested without an ATTACH.
+
+    A dated fill lands in exactly one of three buckets:
+
+      observed  its market closed at or before the run end — the run
+                saw the outcome, which is the thing being counted.
+      pending   its market closes after the run end and the run is still
+                LIVE. The outcome has not happened yet. This is
+                CENSORING, not failure, and it is excluded from both
+                sides of the ratio.
+      missed    its market closes after the run end and the run is DEAD.
+                Permanently unobservable — the run was killed first.
+
+    `now` is naive UTC (the ledger stores naive UTC via shadow._naive)
+    and is injectable so liveness is testable without freezing a clock.
     """
+    if now is None:
+        now = datetime.now(UTC).replace(tzinfo=None)
     closes = {
         mid: ct
         for mid, ct in markets_conn.execute(
@@ -110,24 +153,41 @@ def build_coverage(ledger, markets_conn, recent_runs: int = RECENT_RUNS) -> dict
         if not fills:
             continue
 
-        obs_n = unobs_n = undated_n = 0
-        obs_v = unobs_v = undated_v = 0.0
+        live = end is not None and (now - end).total_seconds() <= LIVE_GRACE_S
+
+        obs_n = missed_n = pending_n = undated_n = 0
+        obs_v = missed_v = pending_v = undated_v = 0.0
+        first_close = None
         for market_id, qty, price in fills:
             notional = abs(qty or 0.0) * (price or 0.0)
             close = closes.get(market_id)
             if close is None:
                 undated_n += 1
                 undated_v += notional
-            elif end is not None and close <= end:
+                continue
+            if first_close is None or close < first_close:
+                first_close = close
+            if end is not None and close <= end:
                 obs_n += 1
                 obs_v += notional
+            elif live:
+                pending_n += 1
+                pending_v += notional
             else:
-                unobs_n += 1
-                unobs_v += notional
+                missed_n += 1
+                missed_v += notional
 
         life_h = None
         if end is not None and started_at is not None:
             life_h = round((end - started_at).total_seconds() / 3600.0, 2)
+
+        # How much longer the run needed to live to observe its FIRST
+        # outcome. For a live run that is hours from now; for a dead one
+        # it is the shortfall it was killed by. None once something has
+        # already been observed — there is no first outcome still owed.
+        hours_to_first = None
+        if first_close is not None and end is not None and first_close > end:
+            hours_to_first = round((first_close - end).total_seconds() / 3600.0, 2)
 
         runs.append(
             {
@@ -135,33 +195,52 @@ def build_coverage(ledger, markets_conn, recent_runs: int = RECENT_RUNS) -> dict
                 "started_at": started_at.isoformat() if started_at else None,
                 "ended_at": end.isoformat() if end else None,
                 "life_hours": life_h,
+                "live": live,
+                "first_close": first_close.isoformat() if first_close else None,
+                "hours_to_first_outcome": hours_to_first,
                 "fills": len(fills),
                 "observed_fills": obs_n,
-                "unobserved_fills": unobs_n,
+                # Kept as missed + pending, i.e. the pre-partition meaning,
+                # so archived reports stay comparable. `coverage_*` IS
+                # replaced rather than kept: for a live run the old value
+                # was an artifact of counting censored fills as failures,
+                # and a coarser-but-valid bound it was not.
+                "unobserved_fills": missed_n + pending_n,
+                "missed_fills": missed_n,
+                "pending_fills": pending_n,
                 "undated_fills": undated_n,
-                "coverage_fills": _ratio(obs_n, unobs_n),
+                "coverage_fills": _ratio(obs_n, missed_n),
                 "observed_notional": round(obs_v, 2),
-                "unobserved_notional": round(unobs_v, 2),
+                "unobserved_notional": round(missed_v + pending_v, 2),
+                "missed_notional": round(missed_v, 2),
+                "pending_notional": round(pending_v, 2),
                 "undated_notional": round(undated_v, 2),
-                "coverage_notional": _ratio(obs_v, unobs_v),
+                "coverage_notional": _ratio(obs_v, missed_v),
             }
         )
 
     def _pool(subset: list[dict]) -> dict:
         obs_n = sum(r["observed_fills"] for r in subset)
-        unobs_n = sum(r["unobserved_fills"] for r in subset)
+        missed_n = sum(r["missed_fills"] for r in subset)
+        pending_n = sum(r["pending_fills"] for r in subset)
         obs_v = sum(r["observed_notional"] for r in subset)
-        unobs_v = sum(r["unobserved_notional"] for r in subset)
+        missed_v = sum(r["missed_notional"] for r in subset)
+        pending_v = sum(r["pending_notional"] for r in subset)
         return {
             "runs": len(subset),
+            "live_runs": sum(1 for r in subset if r["live"]),
             "fills": sum(r["fills"] for r in subset),
             "observed_fills": obs_n,
-            "unobserved_fills": unobs_n,
+            "unobserved_fills": missed_n + pending_n,
+            "missed_fills": missed_n,
+            "pending_fills": pending_n,
             "undated_fills": sum(r["undated_fills"] for r in subset),
-            "coverage_fills": _ratio(obs_n, unobs_n),
+            "coverage_fills": _ratio(obs_n, missed_n),
             "observed_notional": round(obs_v, 2),
-            "unobserved_notional": round(unobs_v, 2),
-            "coverage_notional": _ratio(obs_v, unobs_v),
+            "unobserved_notional": round(missed_v + pending_v, 2),
+            "missed_notional": round(missed_v, 2),
+            "pending_notional": round(pending_v, 2),
+            "coverage_notional": _ratio(obs_v, missed_v),
         }
 
     return {
@@ -198,16 +277,19 @@ def main() -> None:
     recent = report["recent"]
     print(
         f"[shadow_coverage] {len(report['runs'])} runs;"
-        f" recent {recent['runs']}: coverage_fills={recent['coverage_fills']}"
+        f" recent {recent['runs']} ({recent['live_runs']} live):"
+        f" coverage_fills={recent['coverage_fills']}"
         f" coverage_notional={recent['coverage_notional']}"
-        f" ({recent['unobserved_fills']}/{recent['fills']} fills unobserved)"
+        f" ({recent['missed_fills']} missed, {recent['pending_fills']} pending"
+        f" of {recent['fills']} fills)"
     )
-    print("| run | life_h | fills | unobserved | cov_fills | cov_notional |")
-    print("|---|---|---|---|---|---|")
+    print("| run | life_h | live | fills | missed | pending | h_to_1st | cov_fills | cov_notl |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for r in report["runs"][-12:]:
         print(
-            f"| {r['run_id']} | {r['life_hours']} | {r['fills']}"
-            f" | {r['unobserved_fills']} | {r['coverage_fills']}"
+            f"| {r['run_id']} | {r['life_hours']} | {'yes' if r['live'] else ''}"
+            f" | {r['fills']} | {r['missed_fills']} | {r['pending_fills']}"
+            f" | {r['hours_to_first_outcome']} | {r['coverage_fills']}"
             f" | {r['coverage_notional']} |"
         )
     print(f"[shadow_coverage] written to {out}")
