@@ -1,6 +1,106 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-02 02:50 UTC (WEATHER BRACKET #6 RUN AND THE POOLED
+Updated: **2026-08-02 08:35 UTC (QA WAS THE ONE RUNNABLE STANDING REPORT
+AND ITS "ALL CHECKS PASS" COVERED HALF THE CHECKS — THE ARCHIVE HALF HAS
+BEEN SKIPPED ON 10 OF THE LAST 14 RUNS, AND THE CAUSE IS A RACE MY OWN
+TIMERS LOSE BY ~1 SECOND, EVERY DAY, BY CONSTRUCTION. TWENTIETH INSTANCE
+OF THE CLASS, ONE LEVEL UP AGAIN: A SKIPPED CHECK IS NOT A PASSED ONE.**
+Gate check first, hard rather than estimated (`systemctl list-timers`,
+`date -u` 08:15 — journald prints CDT): the kalshi sweep is next 08-02
+11:10 so **atlas stays gated**; weather bracket #7 is 08-03 ~02:15; econ
+needs >=336h (next ~08-10). **QA fired 07:00 UTC and was the one runnable
+standing report**, so ladder rung 1. It printed `[qa] all checks pass` —
+and it ran **8 checks, not 16**. The 8th line reads `PASS  main archive
+reachable — skipped: live writer holds lock`, and `qa_archive` then
+RETURNS. **THE CAUSE, MEASURED NOT GUESSED, AND IT IS A ONE-SECOND
+RACE**: the lock holder was pid 318680 against QA's own pid 318679 —
+**consecutive**, so it started in the same instant, not hours earlier as
+the module's poly-sweep rationale assumes. `hyxlab-collect` is
+`OnCalendar=*:0/5` and `hyxlab-qa` is `07:00:00 UTC`, a 5-minute
+boundary, so the two fire in the SAME SECOND every day. The collector
+holds the archive write lock **02:00:00 -> 02:00:11 (~11.1s)** while QA's
+budget was 5 attempts x 2s **~= 10s** — it gave up at 02:00:10, **one
+second before the release.** Over Jul 20 – Aug 02 the archive half was
+skipped on **10 of 14 runs**, and **6 of those printed "all checks pass"
+and exited 0**. The green days are not luck in the lock: they are the
+days the STREAM half ran slow enough to push the archive connect past the
+release (08-01's stream half finished 02:00:12, and that run read 16/16 —
+which is why this log's 08-01 "QA is fully green for the first time"
+headline was TRUE, and true by accident). **WHAT WENT UNWATCHED IS
+EXACTLY THE SILENT-ROT HALF**: collector freshness, sweep-ran-in-36h, the
+kalshi mirror invariant, poly freshness, the poly universe-shrink
+tripwire built specifically to catch the 07-08 Gamma cap that halved the
+swept universe, econ/gdelt feed cadence, and tape coverage — the failure
+class the module's own docstring names as the main operational threat.
+They are not decorative: the 07-22 run caught `trade tape covers
+retention window — 1 traded markets unswept` on a day it did reach them.
+FIX SHIPPED (1105e8e), three coupled parts, and the retry is the LEAST
+load-bearing: (1) a lock-held section reports **SKIP**, never PASS, and
+`main()` will not print "all checks pass" when any section was skipped;
+(2) the skip is **BOUNDED** by a per-section completion record — past 36h
+without the section actually completing, that is a FAIL, because the
+watch is then genuinely off. The first SKIP starts the clock, so a
+section locked from the very first run can still go stale **without
+false-alarming a fresh deployment** — recording nothing leaves it green
+forever, failing immediately alarms every new box, and the mutation that
+drops `first_seen` proves the difference; (3) the lock-wait budget goes
+to **60s, ~5x the collector cycle**. It does NOT cover the poly sweep,
+measured at **13.7–15.8h wall clock over 8 runs** (the docs' "~7h" is
+stale by half), and no budget could — which is precisely why the bound in
+(2) carries the weight and the retry alone would have been a fix that
+looks complete and closes only the easy case. Six regression tests; the
+load-bearing one asserts a locked section emits SKIP **and that none of
+the archive's own checks ran**, so a PASS-shaped skip fails on the
+printed contract rather than on a missing key. Verified by mutation,
+five: reverting the skip to PASS, dropping the staleness escalation,
+never recording a completion, not starting the clock on first skip, and
+reverting the retry budget each redden their own tests with no
+collateral. Suite 398->404, ruff clean, pushed. **VALIDATED IN THE REAL
+PIPELINE, AND THE ANSWER TO "WHAT WAS ROTTING" IS: NOTHING.** The shipped
+module against the live archives reaches the archive half and reads
+**16/16 all-pass**. That is the honest result — the defect was in the
+watching, not in the data, and it is reported as such rather than dressed
+up as a catch. **ONE DRIFT WORTH NAMING, NOT ACTING ON**: `poly swept
+universe not shrinking` reads yesterday **5,428 distinct markets against
+a prior-week peak of 9,494** — ratio **0.572**, above the 0.5 threshold
+so it passes, but below the **0.66** this check's own comment records as
+the benign floor observed 07-11. Watch it; it is not a finding yet.
+**NO PROMOTE, and this is a real cost accepted rather than an
+absence**: unlike atlas / queuescore / shadow_coverage, `hyxlab-qa.service`
+DOES run `collector.qa` from the stable worktree, so this fix needs a
+promote to take effect — but `promote.sh` restarts `hyxlab-shadow`.
+Checked hard per the standing rule: `shadow_coverage` reads run
+`20260802T022756` live at 5.88h with **`h_to_1st` 20.64h** (first outcome
+08-03 ~05:00 UTC) and its 1,058 fills correctly `None`, not 0.0 — the
+ff30414 partition working live. Promoting now destroys the first run in
+this archive's history that could be observed end to end, 20.6h before
+its payoff, to save one day of a bounded reporting defect. **THE
+SEQUENCING, which is the operational output**: promote in the **08-03
+05:00–07:00 UTC** window — after the first outcome observation, before
+the next QA at 07:00 — so the run is preserved AND the fix is live before
+QA next runs. The cost of waiting is exactly one more silently-skipped
+archive half, and it is the cheap side of the trade. PRACTICAL RULE,
+joining an-untriggered-path-is-not-an-unreached-one /
+unobserved-is-not-unobservable / read-`tier_stability`-before-any-atlas-
+count / shadow-coverage-before-shadow-equity / NULL-guard-is-not-a-range-
+predicate / paying-is-not-retiring / `underlying_sign_p` /
+`flagged_day_weighted` / `new_share_vs_all` / `top_day_share` /
+connection-scoped-`seq`: **a skipped check is not a passed check, and a
+green summary line is not a green run — read how many checks RAN before
+reading whether they passed. A skip that is not bounded by a completion
+record is indistinguishable from a pass forever. And when two schedules
+can collide, assume they will: `*:0/5` and any :00 boundary are the same
+instant, so a retry budget tuned to the writer's hold time is a race, not
+a margin.** NEXT PASS: the **08-03 05:00–07:00 promote window** above is
+the operational item; the 08-02 11:10 sweep re-opens the atlas gate for
+the FOURTH day-weighted reading, which starts to power the
+zero-oscillation claim; weather bracket #7 is 08-03 ~02:15; the current
+run's first outcome at 08-03 ~05:00 is still the first observable end to
+end and `hours_to_first_outcome` binds before any restart. Still open:
+shadow position continuity across restart, prerequisite (`shadow_settlements`)
+SHIPPED. Untracked `strategies/hylshi_fade.py` re-confirmed present, still
+correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-08-02 02:50 UTC (WEATHER BRACKET #6 RUN AND THE POOLED
 SERIES IS NOW A DEAD COIN FLIP — THEN THE HARD DATED CONSTRAINT THIS LOG
 LAID LAST PASS WAS BROKEN BY A HOST REBOOT, AND CHASING WHY THE
 SETTLEMENT FIX STILL HAD NOTHING TO ACT ON FOUND THE PATH WAS NEVER
