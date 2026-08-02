@@ -523,6 +523,15 @@ def test_empty_books_clear_every_wilson_tier_and_fail_the_quoted_tier(tmp_path):
     assert wide["quoted_n"] == 0
     assert wide["wide_share"] == 1.0
     assert not wide["flagged_quoted"]
+    # and it reports None rather than 0.0. The two would print identically
+    # as "implied 0.0 on the quoted books", which is a finding the data
+    # cannot support -- there are no quoted books. Asserted HERE rather
+    # than on a bucket that happens to have quoted observations, because
+    # that path is never reached there.
+    assert wide["quoted_implied"] is None
+    assert wide["quoted_realized"] is None
+    assert wide["quoted_implied_day_weighted"] is None
+    assert wide["quoted_realized_day_weighted"] is None
 
     tight = _spread_atlas(tmp_path / "tight", _uniform(_QUOTED))
     # the discrimination control: same numbers, real books, tier survives.
