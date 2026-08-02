@@ -1,6 +1,137 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-01 20:25 UTC (EVERY STANDING REPORT GATED, SO THE
+Updated: **2026-08-02 02:50 UTC (WEATHER BRACKET #6 RUN AND THE POOLED
+SERIES IS NOW A DEAD COIN FLIP — THEN THE HARD DATED CONSTRAINT THIS LOG
+LAID LAST PASS WAS BROKEN BY A HOST REBOOT, AND CHASING WHY THE
+SETTLEMENT FIX STILL HAD NOTHING TO ACT ON FOUND THE PATH WAS NEVER
+WIRED. NINETEENTH INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: AN
+UNTRIGGERED PATH IS NOT AN UNREACHED ONE.** Gate check first, hard rather
+than estimated (`systemctl list-timers`, `date -u` 02:15 — journald prints
+CDT): QA next 08-02 07:00; the kalshi sweep next 08-02 11:10 so **atlas
+stays gated**; econ needs >=336h (next ~08-10). The weather bracket WAS
+due (prior 08-01 02:16:33), so ladder rung 1. **THE RUN**: 270 virtual
+orders across 8 markets, crossing **130 vs queue [126 pess, 144 opt]** —
+inside the bracket on both sides, unlike run #5's 3-above-ceiling.
+Report: `reports/maker_bracket/20260802T021627.json`, `new_share_vs_all:
+1.0` (270/270 against 20 priors), so it certifies independent at the
+strictest tier. It is also the first weather run in the archive to reach
+**5 underlyings**, giving `underlying_min_sign_p` **0.03125** — the first
+single weather run whose alpha=0.05 ceiling was reachable at all. It read
+2 over / 3 under, p=0.8125: not robust, not significant. **POOLED**:
+rehydrating `orders_detail` across all six certified-independent runs
+reproduces the prior 9 over / 7 under (k=16, p=0.402) exactly and now
+reads **11 over / 10 under, k=21, p=0.5000.** A dead coin flip — the
+series has been able to say something since k=16 and says nothing, more
+cleanly than before. **A COUNTING TRAP IN MY OWN PROBE, CAUGHT BY THE
+DISAGREEMENT**: the first rehydration read k=19 against the log's k=16,
+because I keyed the underlying with a hand-rolled `-B[\d.]+$` strip.
+Kalshi weather markets carry BOTH `-B<x>` and `-T<x>` strikes on one
+city-day, so `KXHIGHCHI-26JUL27-T90` split off from
+`KXHIGHCHI-26JUL27` and five city-days double-counted as ten
+underlyings — inflating the sample size and the apparent power. The
+SHIPPED `event_ticker` (queuescore.py:152) is correct, takes the first
+two dash-segments, and documents this exact hazard. Re-pooled through it,
+the log's k=16 reproduces to the unit. No code change: the defect was in
+the ad-hoc probe, and the lesson is to call the shipped key. **THEN THE
+CONSTRAINT, AND IT WAS BROKEN BY SOMETHING NO POLICY OF MINE
+CONTROLS.** The last pass ended with "DO NOT PROMOTE BEFORE 2026-08-02
+04:59 UTC" to protect run `20260801T022320`, 8.6h from the first outcome
+observation in the archive since 07-31. I honored it. **The run is dead
+anyway** — `shadow_coverage` reads it at 23.42h life, killed **3.18
+hours short** of its first outcome. Cause, measured not guessed: a HOST
+REBOOT at 08-02 01:49 UTC (`journalctl --list-boots` shows a boot-ID
+change; PID 3021854 -> 786; prior uptime 12 days). **THIS FALSIFIES THE
+REMEDY, NOT THE DIAGNOSIS**: abstaining from promoting bought 23.4h
+against the ~6h promote-cadence runs, so the 08-01 08:30 diagnosis was
+right — and it was still not enough, because run lifetime has an
+exogenous component. Observing a weather ladder needs an unbroken ~26.7h
+process life, and a 12-day-uptime box just showed it cannot be promised.
+So position continuity across restart is not an optimization; it is the
+only mechanism that makes outcome observation robust at all. **THE
+FINDING, FOUND BY ASKING WHY THE SETTLEMENT FIX STILL HAD NOTHING TO ACT
+ON, AND IT IS THE LOAD-BEARING HALF.** `_settle` is called ONLY from
+`finalize()`, which sits after the `while` loop in `shadow.py:main` — and
+the unit runs with no `--duration`, so that loop is `while True` and
+**finalize is unreachable in the daemon.** Settlement never ran in
+production at all: no payout ever credited, no contract ever retired, at
+any coverage. The 08:30 pass explained the three consecutive "no live
+position to act on" readings with 100%-unobserved coverage; that is TRUE
+and SUFFICIENT, which is exactly why it stopped the enquiry — but it is
+not prior. Even at full coverage the path could not have fired. The
+contrast that makes it precise: `_mark` (d07d8e8) runs from `_equity`
+every snapshot and WAS genuinely live, so the same pass's conditional
+negative was right for the mark fix and wrong for the settlement fix,
+and nothing separated them until the call sites were read. FIX SHIPPED
+(5f05302): settle every poll — idempotent via the existing `qty > 0`
+guard, so per-poll needs no bookkeeping — and give settlement its own
+`shadow_settlements` record. The record is the 20:25 pass's named
+prerequisite for continuity: the fill ledger holds opens and closes
+only, so summing signed fill qty resurrects every already-settled
+position, the 7a89892 double count one level out. A settlement has no
+price, fee or counterparty, so it is NOT a synthetic fill. Nine
+regression tests; the load-bearing one asserts cash and the retired book
+after a `poll_once` with `finalize()` NEVER called, so a
+settle-at-shutdown daemon fails on arithmetic rather than on a missing
+row. Verified by mutation, six: dropping the per-poll call, recording
+nothing, winners-only, dropping the `qty > 0` idempotence guard, wall
+clock instead of sim clock, and dropping the persist high-water mark
+each redden exactly their own tests with no collateral — and the
+winners-only mutation is the one 7a89892 originally SURVIVED. Suite
+389->398, ruff clean, pushed. **A PROCESS FAILURE OF MY OWN, RECORDED
+BECAUSE IT ALMOST COST THE WORK**: the mutation harness reverted with
+`git checkout -- simulator/sim.py simulator/shadow.py`, which wiped the
+uncommitted implementation along with the mutation. The tests survived
+(different files) and the code was re-applied from context, but the rule
+is now: **commit before mutating, then revert against the commit.**
+**PROMOTED, and the constraint is restated rather than waived**: its
+subject is dead, and the incoming run `20260802T014915` was 1.2h old
+with 26.7h to its first outcome — the cheapest restart moment available.
+More decisively, WITHOUT this fix that run could not have realized a
+settlement even had it survived; preserving it unfixed would have
+preserved a run structurally unable to produce the observation the
+constraint existed to protect. Daemon up 02:27:56 as run
+`20260802T022756`, `shadow_settlements` created on the live DB.
+**CORRECTED RULE, replacing the dated one: promote EARLY in a run's
+life, never late — the cheapest moment to restart is just after a
+restart. A deadline is the wrong shape, because the deadline is not the
+only thing that kills a run.** **VALIDATED IN THE REAL PIPELINE, AND IT
+PRODUCES THE FIRST REALIZED SETTLEMENT PnL**: replaying the shipped
+`_settle` over all 39 archived runs against real `markets.result`
+settles **1,585 positions across 30 runs**, winners and losers both
+retired, positions in unresolved markets correctly left open. Pooled on
+MATCHED scope, payout 44,386.97 against cost 51,599.89 and fees
+2,843.55: **realized -10,056.47, -19.5% of cost**, negative in 27 of 30.
+**READ THE SCOPE BEFORE THE NUMBER, TWICE OVER.** (1) Every shadow run
+in the archive is `TightSpreadProbe`, a taker probe that crosses the
+spread to measure fill realism — NOT a strategy under test, and no
+pre-registration exists, so this is **not a verdict** and kills nothing.
+It is the round-trip cost of crossing plus adverse selection, end to end
+through settlement, measured for the first time; fees alone are 5.5% of
+cost. (2) The naive version of this number is an ARTIFACT and was caught
+before it was reported: summing payout over the settled subset against
+cost over the WHOLE book reads -19,644 and is negative by construction
+whenever any position is left open. Matched scope or nothing. PRACTICAL
+RULE, joining unobserved-is-not-unobservable / read-`tier_stability`-
+before-any-atlas-count / shadow-coverage-before-shadow-equity /
+NULL-guard-is-not-a-range-predicate / paying-is-not-retiring /
+`underlying_sign_p` / `flagged_day_weighted` / `new_share_vs_all` /
+`top_day_share` / connection-scoped-`seq`: **an untriggered code path is
+not an unreached one. Before attributing a null result to the data, find
+the caller — a coverage instrument measures whether the data could have
+exercised a path and says nothing about whether anything calls it. And a
+sufficient explanation is the most dangerous kind, because it ends the
+search.** NEXT PASS: the current run's first outcome is **08-03 ~04:31
+UTC** and it is the first that could ever be OBSERVED end to end, so
+`hours_to_first_outcome` before any restart still binds; QA 08-02 07:00;
+the 08-02 11:10 sweep re-opens the atlas gate for the FOURTH
+day-weighted reading, which starts to power the zero-oscillation claim;
+weather bracket #7 is 08-03 ~02:15. Still open and now with its
+prerequisite SHIPPED rather than only named: shadow position continuity
+across restart — `shadow_settlements` gives a reconstruction the
+retirement record it was missing, and the reboot makes the case for
+building it. Untracked `strategies/hylshi_fade.py` re-confirmed present,
+still correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-08-01 20:25 UTC (EVERY STANDING REPORT GATED, SO THE
 DEFERRED SHADOW-CONTINUITY ITEM GOT PROBED — AND THE ASSUMPTION UNDER IT
 HOLDS WHILE THE MEASUREMENT BESIDE IT DOES NOT: THE "100% UNOBSERVED"
 HEADLINE COUNTED A RUN THAT WAS STILL RUNNING. EIGHTEENTH INSTANCE OF THE

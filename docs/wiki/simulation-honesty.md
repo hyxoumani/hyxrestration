@@ -117,6 +117,56 @@ run's sub-0.2% residual was start-of-run noise, and that taker
 haircut ≈ 0 is a property of the machinery, not one lucky window.
 Report: `reports/shadow_divergence/20260716T130721.json`.
 
+## The settlement leg (2026-08-02)
+
+Until 5f05302 the shadow daemon had **no settlement path at all**.
+`_settle` is reached only from `finalize()`, which sits after the
+`while` loop in `main()`, and the unit runs with no `--duration` — so
+the loop is `while True` and finalize never executes. However long a
+run lived, it never credited a payout, never retired a settled
+contract and produced no settlement record. This is a PRIOR cause to
+the 100%-unobserved outcome coverage recorded on 08-01: coverage says
+the data never exercised the path, this says nothing called it. See
+mistakes #17. `_mark` is unaffected — it runs from `_equity` on every
+snapshot, so the d07d8e8 carry fix was genuinely live.
+
+The daemon now settles every poll (idempotent via the `qty > 0` guard)
+and writes `shadow_settlements` (run_id, strategy, venue, market_id,
+side, qty, result, payout, ts). The record exists because the fill
+ledger holds opens and closes only: a consumer reconstructing a book
+by summing signed fill qty resurrects every already-settled position —
+the 7a89892 double count one level out, in the ledger instead of in
+`_equity`. This is the named prerequisite for position continuity
+across restart, which is not yet built.
+
+**First realized settlement PnL, and it is a PROBE cost, not a
+strategy result.** Replaying the shipped `_settle` over all 39
+archived shadow runs against real `markets.result` settles 1,585
+positions across 30 runs (winners and losers both retired; positions
+in unresolved markets correctly left open). Pooled on MATCHED scope —
+cost and fees restricted to the settled markets — payout 44,386.97
+against cost 51,599.89 and fees 2,843.55: **realized -10,056.47, or
+-19.5% of cost**, negative in 27 of 30 runs.
+
+Read that number with its scope. Every shadow run to date is
+`TightSpreadProbe`, a taker probe that crosses the spread to measure
+fill realism; it is not a strategy under test and there is no
+pre-registration, so this is **not a verdict** and nothing here kills
+or clears anything. What it does measure is the round-trip cost of
+crossing plus adverse selection, end to end through settlement, for
+the first time — fees alone are 5.5% of cost. The settled subset is
+also not a random sample of the book: it is the markets that have
+resolved, which skews short-horizon (weather).
+
+**A counting trap this measurement walked into first.** Summing
+`payout` over the settled subset against `cost` over the WHOLE book
+reads -19,644 and is an artifact — it is negative by construction
+whenever any position is left open, because the unsettled positions
+contribute cost with no possible payout. A payout summed over the
+settled subset is only comparable to a cost summed over the same
+subset. Same class as `flagged_day_weighted` / `new_share_vs_all` /
+`tier_stability`.
+
 ## Replay-equivalence guarantee (2026-07-08)
 
 Feeding the sim incrementally (simui's `ReplaySession.advance` in

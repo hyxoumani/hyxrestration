@@ -201,6 +201,38 @@ Format: what happened → root cause → error type → prevention tier
     check is not merely always-red, both verified by mutation) and to a
     reported check (`void frames are known types`).
 
+17. **2026-08-02 — a code path can be untriggered because it is
+    UNWIRED, not because the data never reached it; three passes
+    attributed the wrong cause.** The 07-31 settlement retirement
+    (7a89992) was recorded three separate times as having "no live
+    position to act on", and the 08-01 08:30 pass explained that with
+    the shadow track's 100%-unobserved outcome coverage — "at 100%
+    unobserved, 'no live position was touched' is arithmetic, not
+    luck." True, and not the reason. `_settle` is called only from
+    `finalize()`, which sits AFTER the `while` loop in
+    `simulator/shadow.py:main`, and the unit runs with no `--duration`
+    — so the loop is `while True` and finalize is unreachable in the
+    daemon. Settlement never ran in production at all: no payout was
+    ever credited, no settled contract ever retired, at any coverage.
+    The coverage explanation is sufficient but not prior, and because
+    it was sufficient it stopped the enquiry. Type: `wrong-assumption`
+    — the same class as #12/#16 (a claim about our own code's
+    behaviour left unverified), here about REACHABILITY rather than
+    about a guarantee. **Before attributing a null result to the data,
+    check that the path is wired: find the caller. A coverage
+    instrument measures whether the data could have exercised a path
+    and says nothing about whether anything calls it.** Note the
+    contrast that makes this precise: `_mark` (d07d8e8) runs from
+    `_equity` on every snapshot and WAS genuinely live — the same
+    pass's conditional negative was correct for the mark fix and wrong
+    for the settlement fix, and nothing distinguished them until the
+    call sites were read. Escalated to test (nine regressions; the
+    load-bearing one asserts cash and the retired book after a
+    `poll_once` with `finalize()` never called, so a settle-at-shutdown
+    daemon fails on arithmetic rather than on a missing row — verified
+    by mutation, six, including the winners-only record that 7a89992
+    originally survived).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
