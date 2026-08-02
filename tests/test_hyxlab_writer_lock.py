@@ -17,6 +17,8 @@ to any check that only reads the resulting data.
 
 import fcntl
 import json
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -178,19 +180,51 @@ def test_writer_burst_releases_the_lock_on_exception(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_collector_waits_for_a_held_lock_instead_of_dropping_the_cycle(tmp_path):
+def test_collector_waits_out_a_writer_instead_of_dropping_the_cycle(tmp_path):
+    """THE load-bearing collector test: the lock is held when the cycle
+    starts and released while it waits, so ONLY an implementation that
+    actually waits captures this cycle.
+
+    Asserting `None` on a held lock and success on a free one is NOT
+    enough — `flock -n` satisfies both, which is how the first version of
+    this test passed against the very behaviour it was written to kill
+    (caught by mutation, 2026-08-02).
+    """
+    lock_path = str(tmp_path / "writer.lock")
+    released = threading.Event()
+
+    def writer():
+        with open(lock_path, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            time.sleep(0.4)
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            released.set()
+
+    t = threading.Thread(target=writer)
+    t.start()
+    time.sleep(0.1)  # let the writer take it first
+    try:
+        got = collect.acquire_writer_lock(lock_path, wait_s=10.0)
+        assert got is not None, "cycle was dropped instead of waiting for the writer"
+        assert released.is_set(), "acquired before the writer released — fixture is wrong"
+        got.close()
+    finally:
+        t.join()
+
+
+def test_collector_gives_up_after_its_budget(tmp_path):
+    """The wait is bounded: an unbounded one would still be running when
+    the next 5-min firing arrives."""
     lock_path = str(tmp_path / "writer.lock")
     holder = open(lock_path, "a")  # noqa: SIM115 — must stay held across the wait
     fcntl.flock(holder, fcntl.LOCK_EX)
     try:
-        # Bounded wait, then give up — the old `flock -n` gave up instantly.
-        assert collect.acquire_writer_lock(lock_path, wait_s=0.2) is None
+        t0 = time.monotonic()
+        assert collect.acquire_writer_lock(lock_path, wait_s=0.3) is None
+        assert time.monotonic() - t0 >= 0.3, "returned before spending its budget"
     finally:
         fcntl.flock(holder, fcntl.LOCK_UN)
         holder.close()
-    got = collect.acquire_writer_lock(lock_path, wait_s=0.2)
-    assert got is not None, "lock must be acquirable once the writer releases"
-    got.close()
 
 
 def test_collector_lock_wait_is_bounded_below_the_timer_period():
