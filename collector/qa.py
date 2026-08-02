@@ -42,6 +42,15 @@ SKIP_MAX_AGE_H = 36.0  # matches the "sweep ran in last 36h" tolerance
 LOCK_WAIT_S = 60.0
 RETRY_SLEEP_S = 2.0
 
+# Skipped-collection journal (written by collector.collect when it cannot
+# get the writer lock within its budget). 288 cycles/day, so 3 tolerates
+# occasional contention and trips on a pattern — the measured starvation
+# was 12-38 skips/day. Deliberately NOT read from the archive: a cycle
+# skips precisely because the archive was unopenable, so this is the one
+# check that cannot be silenced by the failure it watches.
+COLLECT_SKIP_LOG = "data/collect_skips.jsonl"
+COLLECT_SKIP_MAX_24H = 3
+
 _failures: list[str] = []
 _skipped: list[str] = []
 _passes = 0
@@ -419,6 +428,41 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
     _record_ok("archive", now)
 
 
+def qa_collect_skips(hours: float = 24.0, path: str = COLLECT_SKIP_LOG) -> None:
+    """Fail when 5-min capture cycles are being dropped for the writer lock.
+
+    Each skipped cycle is an unrecoverable hole in the snapshot tape. Over
+    the 14 days to 2026-08-02 the collector's `flock -n` wrapper dropped
+    421 of 3,706 cycles (11.4%) while the daily sweep held the lock across
+    its whole multi-hour run, and NOTHING recorded it: the wrapper failed
+    before python started, so no archive-reading instrument could see it.
+    """
+    now = datetime.now(UTC)
+    p = Path(path)
+    if not p.exists():
+        # No journal is the healthy steady state, not a missing input.
+        check("collector cycles are not skipped for the lock", True, "no skips recorded")
+        return
+    recent = 0
+    malformed = 0
+    for line in p.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            at = datetime.fromisoformat(json.loads(line)["at"])
+        except (ValueError, KeyError, json.JSONDecodeError):
+            malformed += 1
+            continue
+        if (now - at).total_seconds() <= hours * 3600:
+            recent += 1
+    check(
+        "collector cycles are not skipped for the lock",
+        recent <= COLLECT_SKIP_MAX_24H,
+        f"{recent} skipped cycles in {hours:g}h (max {COLLECT_SKIP_MAX_24H})"
+        + (f", {malformed} malformed rows" if malformed else ""),
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab daily data-quality checks")
     ap.add_argument("--hours", type=float, default=26.0, help="recency window")
@@ -427,6 +471,7 @@ def main() -> None:
     print(f"[qa] {datetime.now(UTC):%Y-%m-%d %H:%M} window={args.hours}h", flush=True)
     qa_stream(args.hours)
     qa_archive(args.hours)
+    qa_collect_skips()  # sidecar journal; never gated by the archive lock
     if _failures:
         print(f"[qa] {len(_failures)} FAILURES: {_failures}", flush=True)
         sys.exit(1)

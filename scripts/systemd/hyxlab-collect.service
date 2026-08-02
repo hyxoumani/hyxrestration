@@ -4,4 +4,7 @@ Description=hyxlab 5-min collector (kalshi/poly books + NWS)
 Type=oneshot
 OOMScoreAdjust=500
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
-ExecStart=/usr/bin/flock -n /home/devs/workspace/hyxrestration/data/writer.lock /home/devs/workspace/hyxrestration-stable/.venv/bin/python -m collector.collect --once
+# No `flock -n` wrapper: it dropped the cycle before python started, so the
+# hole was invisible to every archive-reading instrument. collector.collect
+# waits up to 240s for data/writer.lock and journals a skip if it times out.
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -m collector.collect --once

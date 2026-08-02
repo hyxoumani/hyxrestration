@@ -16,8 +16,12 @@ Run:
 from __future__ import annotations
 
 import argparse
+import fcntl
+import json
+import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 import requests
 
@@ -25,7 +29,75 @@ from collector.venues import kalshi, nws, polymarket
 from hyxlab.store import Store, open_retry
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
-__all__ = ["DEFAULT_WATCHLIST", "collect_once", "load_watchlist", "main"]
+__all__ = [
+    "DEFAULT_WATCHLIST",
+    "LOCK_WAIT_S",
+    "SKIP_LOG",
+    "acquire_writer_lock",
+    "collect_once",
+    "load_watchlist",
+    "main",
+    "record_skip",
+]
+
+LOCK_FILE = "data/writer.lock"
+SKIP_LOG = "data/collect_skips.jsonl"
+# Bounded well under the 300s timer period: a cycle that waits longer than
+# this would still be running when the next one fires, so runs would stack.
+LOCK_WAIT_S = 240.0
+
+
+def acquire_writer_lock(lock_file: str | None = None, wait_s: float | None = None):
+    """Exclusive flock, waiting up to `wait_s`; None on timeout.
+
+    2026-08-02: this wait used to be `flock -n` in the unit file, so a
+    cycle that found the lock held was DROPPED — and dropped before
+    python started (3ms CPU), which is why nothing in the archive ever
+    recorded it. A dropped cycle is an unrecoverable hole in the 5-min
+    tape; the collector cannot backfill a snapshot it never took. Waiting
+    is almost always right here, because every other writer touches the
+    DB in short bursts (poly_sweep, trades_backfill, signals, and since
+    this change collector.sweep too).
+
+    `lock_file`/`wait_s` resolve at CALL time: a default argument binds
+    the module constant at definition and silently ignores a patched
+    value, which is how the first version of the test blocked on the
+    live production lock.
+    """
+    lock_file = lock_file or LOCK_FILE
+    wait_s = LOCK_WAIT_S if wait_s is None else wait_s
+    Path(lock_file).parent.mkdir(exist_ok=True)
+    f = open(lock_file, "a")  # noqa: SIM115 — handle must outlive this call
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if time.monotonic() >= deadline:
+                f.close()
+                return None
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+
+def record_skip(reason: str, waited_s: float, path: str | None = None) -> None:
+    """Append a skipped cycle to the sidecar journal.
+
+    A skip cannot be recorded in the archive — the archive is precisely
+    what could not be opened — so it goes to a file beside it. QA reads
+    this (`collector cycles are not being skipped`) and fails on a rate,
+    because the 07-20..08-02 outage was invisible for 14 days exactly
+    because a skip left no trace an archive-reading instrument could see.
+    """
+    path = path or SKIP_LOG
+    Path(path).parent.mkdir(exist_ok=True)
+    rec = {
+        "at": datetime.now(UTC).isoformat(),
+        "reason": reason,
+        "waited_s": round(waited_s, 1),
+    }
+    with open(path, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
 
 
 def collect_once(store: Store, watchlist: dict, session: requests.Session | None = None) -> dict:
@@ -82,11 +154,27 @@ def main() -> None:
     ap.add_argument("--watchlist", default=str(DEFAULT_WATCHLIST))
     ap.add_argument("--interval", type=int, default=300, help="seconds between cycles")
     ap.add_argument("--once", action="store_true", help="one cycle, then exit")
+    ap.add_argument(
+        "--lock-wait",
+        type=float,
+        default=LOCK_WAIT_S,
+        help="seconds to wait for the archive writer lock before skipping the cycle",
+    )
     args = ap.parse_args()
 
-    store = open_retry(args.db, retries=5)
+    t0 = time.monotonic()
+    lock = acquire_writer_lock(wait_s=args.lock_wait)
+    if lock is None:
+        waited = time.monotonic() - t0
+        record_skip("writer lock held", waited)
+        # Nonzero so systemd records it, AND a durable record so an
+        # instrument that never sees systemd can still count the hole.
+        print(f"[collect] skipped: writer lock held for {waited:.0f}s")
+        sys.exit(75)  # EX_TEMPFAIL
+
     watchlist = load_watchlist(args.watchlist)
     sess = requests.Session()
+    store = open_retry(args.db, retries=5)
     try:
         while True:
             counts = collect_once(store, watchlist, session=sess)
@@ -96,6 +184,8 @@ def main() -> None:
             time.sleep(args.interval)
     finally:
         store.close()
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
 
 
 if __name__ == "__main__":

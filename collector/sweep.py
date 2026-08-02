@@ -22,6 +22,7 @@ import fcntl
 import json
 import sys
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -29,7 +30,9 @@ import duckdb
 import requests
 
 from collector.venues import kalshi
-from hyxlab.store import Store
+from hyxlab.store import Store, open_retry
+
+LOCK_FILE = "data/writer.lock"
 
 DEFAULT_CATEGORIES = [
     "Economics",
@@ -56,9 +59,53 @@ MARKETS_PAUSE_S = 0.2  # empirical safe pacing (data_contracts.md)
 CANDLES_PAUSE_S = 0.35
 
 
-def refresh_series(store: Store, session: requests.Session) -> list[dict]:
-    """Pull the full series list, persist metadata, return allowlisted set."""
-    series = kalshi.get_series_list(session)
+@contextmanager
+def writer_burst(db: str, lock_file: str | None = None):
+    """Hold the writer lock + DB connection for ONE short write, then release.
+
+    2026-08-02: this sweep used to run under a unit-level
+    `flock data/writer.lock python -m collector.sweep`, holding both the
+    advisory lock and the DuckDB file lock for its ENTIRE multi-hour run
+    while interleaving REST fetches with inserts. `hyxlab-collect` runs
+    `flock -n`, so every 5-min capture cycle that landed in that window
+    was DROPPED, not delayed — 421 of 3,706 cycles over the 14 days to
+    08-02 (11.4%), clustered in the daily 06:10 sweep window. A dropped
+    cycle is an unrecoverable hole in the 5-min tape: unlike a sweep,
+    the collector cannot backfill a snapshot it never took.
+
+    This is fix direction (a) of H1 in docs/reviews/2026-07-11-deep-review.md
+    ("one rule for everybody: all writers touch the DB only in
+    open -> write -> close bursts"), which poly_sweep, trades_backfill and
+    signals already follow and this module never did. HTTP happens
+    OUTSIDE the lock; the DB is touched once per series for ~ms.
+
+    `lock_file` resolves at CALL time, not as a default argument: a
+    default binds the module constant at definition and silently ignores
+    a monkeypatched LOCK_FILE, which made the tests block on the live
+    production lock.
+    """
+    lock_file = lock_file or LOCK_FILE
+    with open(lock_file, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        store = open_retry(db)  # readers (QA/doctor/backtest) don't take the flock
+        try:
+            yield store
+        finally:
+            store.close()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def refresh_series(
+    store: Store, session: requests.Session, series: list[dict] | None = None
+) -> list[dict]:
+    """Persist series metadata, return the full set.
+
+    `series` lets the caller fetch OUTSIDE the writer burst; when omitted
+    the fetch happens here, which is the convenient shape for ad-hoc use
+    but holds the lock across a REST call.
+    """
+    if series is None:
+        series = kalshi.get_series_list(session)
     store.upsert_series(
         [
             (
@@ -77,12 +124,22 @@ def refresh_series(store: Store, session: requests.Session) -> list[dict]:
 
 
 def sweep_series(
-    store: Store, series_ticker: str, days: int, session: requests.Session
+    db: str, series_ticker: str, days: int, session: requests.Session
 ) -> tuple[int, int]:
-    """Capture settled markets + candles for one series since its watermark."""
+    """Capture settled markets + candles for one series since its watermark.
+
+    Every REST call happens with NO lock and NO open connection; all
+    writes for the series land in a single `writer_burst` at the end.
+    Buffering is what makes the burst short — the fetch loop below runs
+    for minutes on a large series, and holding the lock across it is the
+    exact defect this refactor removes. Crash-safety is unchanged and
+    slightly better: a crash mid-series now leaves the watermark
+    unmoved AND nothing half-written, so the re-run is exact.
+    """
     now = datetime.now(UTC)
     floor_ts = now - timedelta(days=days)
-    wm = store.watermark(series_ticker)
+    with writer_burst(db) as store:
+        wm = store.watermark(series_ticker)
     if wm is not None:
         floor_ts = max(floor_ts, wm.replace(tzinfo=UTC) + timedelta(seconds=1))
 
@@ -95,11 +152,14 @@ def sweep_series(
     )
     time.sleep(MARKETS_PAUSE_S)
     if not markets:
-        store.log_sweep(series_ticker, floor_ts, None, 0, 0, "ok", "no settled markets")
+        with writer_burst(db) as store:
+            store.log_sweep(series_ticker, floor_ts, None, 0, 0, "ok", "no settled markets")
         return 0, 0
 
-    store.upsert_markets([kalshi.to_market_info(m) for m in markets])
-    n_candles = 0
+    infos = [kalshi.to_market_info(m) for m in markets]
+    candle_rows: list[tuple] = []
+    trade_rows: list[tuple] = []
+    swept: list[tuple[str, int, str]] = []
     max_close = floor_ts
     for m in markets:
         open_ts = _ts(m.get("open_time"))
@@ -123,17 +183,15 @@ def sweep_series(
                 )
             else:
                 raise
-        n_candles += store.insert_candles(
-            [kalshi.candle_row(series_ticker, m, c, 3600) for c in candles]
-        )
+        candle_rows.extend(kalshi.candle_row(series_ticker, m, c, 3600) for c in candles)
         # Trade tape rides along (B3.5): prints purge on the same
         # retention clock as candles, so capture them at first sight.
         try:
             raw, truncated = kalshi.get_trades(m["ticker"], session=session)
             rows = [kalshi.trade_row(t) for t in raw]
-            store.insert_trades(rows)
+            trade_rows.extend(rows)
             status = "truncated" if truncated else ("ok" if rows else "empty")
-            store.mark_trades_swept(m["ticker"], len(rows), status)
+            swept.append((m["ticker"], len(rows), status))
         except requests.HTTPError as e:
             # Stays unmarked here (watermark advances past it regardless,
             # so a later sweep won't retry) — hyxlab-tradepass.timer's daily
@@ -144,8 +202,14 @@ def sweep_series(
         max_close = max(max_close, close_dt)
         time.sleep(CANDLES_PAUSE_S)
 
-    store.set_watermark(series_ticker, max_close)
-    store.log_sweep(series_ticker, floor_ts, max_close, len(markets), n_candles, "ok")
+    with writer_burst(db) as store:
+        store.upsert_markets(infos)
+        n_candles = store.insert_candles(candle_rows)
+        store.insert_trades(trade_rows)
+        for ticker, n_trades, status in swept:
+            store.mark_trades_swept(ticker, n_trades, status)
+        store.set_watermark(series_ticker, max_close)
+        store.log_sweep(series_ticker, floor_ts, max_close, len(markets), n_candles, "ok")
     return len(markets), n_candles
 
 
@@ -156,14 +220,16 @@ def _ts(v: str | None) -> int | None:
 
 
 def run_sweep(
-    store: Store,
+    db: str,
     days: int,
     categories: list[str],
     session: requests.Session | None = None,
     limit: int | None = None,
 ) -> dict:
     sess = session or requests.Session()
-    all_series = refresh_series(store, sess)
+    series = kalshi.get_series_list(sess)  # HTTP outside the lock
+    with writer_burst(db) as store:
+        all_series = refresh_series(store, sess, series=series)
     targets = [s["ticker"] for s in all_series if s.get("category") in categories]
     targets.sort()
     if limit:
@@ -172,12 +238,13 @@ def run_sweep(
     t0 = time.monotonic()
     for i, ticker in enumerate(targets):
         try:
-            n_m, n_c = sweep_series(store, ticker, days, sess)
+            n_m, n_c = sweep_series(db, ticker, days, sess)
             totals["markets"] += n_m
             totals["candles"] += n_c
         except requests.RequestException as e:
             totals["errors"] += 1
-            store.log_sweep(ticker, None, None, 0, 0, "error", str(e)[:200])
+            with writer_burst(db) as store:
+                store.log_sweep(ticker, None, None, 0, 0, "error", str(e)[:200])
         if (i + 1) % 100 == 0:
             rate = (i + 1) / (time.monotonic() - t0)
             eta_min = (len(targets) - i - 1) / rate / 60
@@ -245,33 +312,40 @@ def main() -> None:
     ap.add_argument("--doctor", action="store_true", help="print archive health and exit")
     args = ap.parse_args()
 
-    store = None
-    for attempt in range(5):
+    if args.doctor:
+        store = None
+        for attempt in range(5):
+            try:
+                store = Store(args.db, read_only=True)
+                break
+            except duckdb.Error:
+                # A writer (collector/tradepass flush) holds the file;
+                # those bursts last ~seconds.
+                if attempt == 4:
+                    # Nonzero so systemd records a failed run instead of a
+                    # silent no-op success only QA would notice 36h later.
+                    print("archive busy (writer active); try again in a few seconds")
+                    sys.exit(75)  # EX_TEMPFAIL
+                time.sleep(2)
         try:
-            store = Store(args.db, read_only=args.doctor)
-            break
-        except duckdb.Error:
-            # A writer (collector/tradepass flush) holds the file; those
-            # bursts last ~seconds.
-            if attempt == 4:
-                # Nonzero so systemd records a failed run instead of a
-                # silent no-op success only QA would notice 36h later.
-                print("archive busy (writer active); try again in a few seconds")
-                sys.exit(75)  # EX_TEMPFAIL
-            time.sleep(2)
-    try:
-        if args.doctor:
             doctor(store)
-            return
-        lock = acquire_sweep_lock(args.db + ".lock")
-        if lock is None:
-            print("[sweep] another sweep holds the lock; aborting")
-            sys.exit(75)
-        totals = run_sweep(store, args.days, args.categories, limit=args.limit)
+        finally:
+            store.close()
+        return
+
+    # The sweep itself never holds a connection between bursts, so there
+    # is nothing to open here — `writer_burst` opens and closes per write.
+    lock = acquire_sweep_lock(args.db + ".lock")
+    if lock is None:
+        print("[sweep] another sweep holds the lock; aborting")
+        sys.exit(75)
+    try:
+        totals = run_sweep(args.db, args.days, args.categories, limit=args.limit)
         print(f"[sweep] done: {totals}")
-        print(f"[sweep] db={store.counts()}")
+        with writer_burst(args.db) as store:
+            print(f"[sweep] db={store.counts()}")
     finally:
-        store.close()
+        lock.close()
 
 
 if __name__ == "__main__":
