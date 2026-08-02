@@ -29,11 +29,10 @@ from pathlib import Path
 from hyxlab.store import Store, connect_retry
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, replay_snapshots
+from simulator.registry import STRATEGIES
 from simulator.shadow import SHADOW_DB, STREAM_DB
 from simulator.sim import Simulator
-from strategies.probe import TightSpreadProbe
 
-STRATEGIES = {"probe": TightSpreadProbe}
 MATCH_TOLERANCE = timedelta(seconds=60)
 NEAREST_WINDOW = timedelta(seconds=2)
 _QTY_EPS = 1e-9

@@ -35,8 +35,8 @@ import duckdb
 from hyxlab.store import Store, connect_retry
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
+from simulator.registry import build as build_strategies
 from simulator.sim import Simulator
-from strategies.probe import TightSpreadProbe
 
 STREAM_DB = "data/hyxstream.duckdb"
 SHADOW_DB = "data/hyxshadow.duckdb"
@@ -362,16 +362,28 @@ class ShadowRunner:
         return n
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="hyxlab shadow harness (ledger-only live trading)")
     ap.add_argument("--latency", type=float, default=2.0)
     ap.add_argument("--poll", type=float, default=20.0)
     ap.add_argument("--duration", type=float, default=None, help="seconds; default forever")
-    args = ap.parse_args()
+    ap.add_argument(
+        "--strategy",
+        default="probe",
+        help="comma-separated simulator.registry names (default 'probe' — the"
+        " deployed unit passes no args and must behave exactly as before)",
+    )
+    return ap
 
-    runner = ShadowRunner([TightSpreadProbe()], latency=args.latency)
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    strategies = build_strategies(args.strategy.split(","))
+    runner = ShadowRunner(strategies, latency=args.latency)
     print(
-        f"[shadow] run {runner.run_id} latency={args.latency}s poll={args.poll}s "
+        f"[shadow] run {runner.run_id} strategies={args.strategy}"
+        f" latency={args.latency}s poll={args.poll}s "
         f"(ledger-only; anchored at stream head)",
         flush=True,
     )
