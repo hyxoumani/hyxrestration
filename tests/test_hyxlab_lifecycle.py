@@ -244,3 +244,88 @@ def test_retiring_positions_keeps_the_cash_ledger_intact():
     mk = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="yes")}
     sim, _ = run(_BUY10, _SNAPS, markets=mk)
     sim._check_invariants()  # raises SimAccountingError if the ledger drifted
+
+
+# -- settlement writes a RECORD, not just a payout -------------------------
+#
+# The fill ledger holds opens and closes only. A consumer reconstructing a
+# book by summing signed fill qty therefore resurrects every position that
+# settlement has already paid out and retired — the 7a89892 double count
+# one level out, in the ledger instead of in `_equity`. These assert the
+# record's NUMBERS and its idempotence, so an implementation that emits a
+# record per call (or only for winners) fails on arithmetic.
+
+
+def test_settlement_records_the_retirement_with_its_payout():
+    """Load-bearing: 10 yes @ 0.40 settling YES retires as one record
+    carrying qty 10 and payout 10.0 — the qty a reconstruction must
+    subtract and the cash it must not re-derive from fills."""
+    mk = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="yes")}
+    _, res = run(_BUY10, _SNAPS, markets=mk)
+    assert len(res.settlements) == 1
+    s = res.settlements[0]
+    assert (s.strategy, s.venue, s.market_id, s.side) == ("script", "kalshi", "M1", "yes")
+    assert s.qty == pytest.approx(10.0)
+    assert s.payout == pytest.approx(10.0)
+    assert s.result == "yes"
+    assert s.ts == T[1]  # sim clock (last snapshot), not wall clock
+
+
+def test_settled_loser_is_recorded_too():
+    """A loser pays 0.0, so any check that keys on payout or on cash
+    movement misses it — and a reconstruction that only subtracts winners
+    resurrects the loser as an open position forever. Same shape as the
+    winners-only mutation 7a89892 needed a book assertion to catch."""
+    mk = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="no")}
+    _, res = run(_BUY10, _SNAPS, markets=mk)
+    assert len(res.settlements) == 1
+    assert res.settlements[0].qty == pytest.approx(10.0)
+    assert res.settlements[0].payout == pytest.approx(0.0)
+    assert res.settlements[0].result == "no"
+
+
+def test_repeated_settlement_records_once_and_pays_once():
+    """Shadow settles every poll, so `_settle` runs thousands of times over
+    one settled position. The qty > 0 guard must make all but the first a
+    no-op — otherwise the daemon both re-pays the payout and writes a
+    duplicate record per poll."""
+    mk = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="yes")}
+    sim, res = run(_BUY10, _SNAPS, markets=mk)
+    cash_after_first = res.cash
+    for _ in range(5):
+        sim._settle()
+    assert len(res.settlements) == 1
+    assert res.cash == pytest.approx(cash_after_first)
+
+
+def test_unsettled_position_produces_no_record():
+    """Discrimination control: an open market has no result, so there is
+    nothing to retire and nothing to record. A record here would tell a
+    reconstruction to subtract a position that is still live."""
+    _, res = run(_BUY10, _SNAPS)  # default M1 has no result
+    assert res.settlements == []
+
+
+def test_fills_minus_settlements_reconstructs_a_flat_book():
+    """The reconstruction the record exists to enable, asserted end to end:
+    M1 settles, M2 stays open. Summing signed fill qty alone reads M1 at
+    10 — a resurrected position. Subtracting settlements reads M1 flat and
+    leaves M2's 10 untouched."""
+    mk = {
+        ("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1", result="yes"),
+        ("kalshi", "M2"): MarketInfo(venue="kalshi", market_id="M2"),
+    }
+    steps = {0: [Order("kalshi", "M1", "yes", 10)], 1: [Order("kalshi", "M2", "yes", 10)]}
+    snaps = [
+        snap("M1", T[0], 0.39, 0.40),
+        snap("M2", T[1], 0.39, 0.40),
+        snap("M2", T[2], 0.55, 0.56),
+    ]
+    _, res = run(steps, snaps, markets=mk)
+    book = {}
+    for f in res.fills:
+        book[f.market_id] = book.get(f.market_id, 0.0) + f.qty
+    assert book == {"M1": 10.0, "M2": 10.0}  # fills alone resurrect M1
+    for s in res.settlements:
+        book[s.market_id] -= s.qty
+    assert book == {"M1": 0.0, "M2": 10.0}

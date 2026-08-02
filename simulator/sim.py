@@ -49,8 +49,31 @@ class _Resting:
 
 
 @dataclass
+class Settlement:
+    """One position retired by settlement.
+
+    The fill ledger records only OPENS and CLOSES, so a consumer that
+    reconstructs a book by summing signed fill qty resurrects every
+    position that settlement has already paid out and retired — the same
+    double-count 7a89992 fixed inside `_equity`, one level out. A
+    settlement is not a fill (no price, no fee, no counterparty), so it
+    gets its own record rather than a synthetic closing fill.
+    """
+
+    strategy: str
+    venue: str
+    market_id: str
+    side: str
+    qty: float
+    result: str
+    payout: float
+    ts: datetime
+
+
+@dataclass
 class SimResult:
     fills: list[Fill] = field(default_factory=list)
+    settlements: list[Settlement] = field(default_factory=list)
     equity_curve: list[tuple[datetime, float]] = field(default_factory=list)
     cash: float = 0.0
     metrics: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -100,6 +123,10 @@ class Simulator:
         # Last two-sided mid seen per (venue, market), for marking a
         # position whose book has since been cleared. See _mark().
         self._last_mid: dict[tuple[str, str], float] = {}
+        # Sim clock: the last snapshot ts stepped. Settlement records are
+        # stamped from this, not wall clock, so they share a time base
+        # with fills (whose ts is also the snapshot's).
+        self._last_ts: datetime | None = None
 
     # -- fee & book helpers ----------------------------------------------
 
@@ -250,6 +277,7 @@ class Simulator:
         """Process one snapshot: due pending execs, maker checks, strategy
         callbacks. Online — the shadow harness feeds live snapshots here."""
         self.ctx._observe(snap)
+        self._last_ts = snap.ts
         if self.latency:
             self._exec_due(snap)
         self._maker_check_and_expire(snap)
@@ -379,6 +407,26 @@ class Simulator:
                 self._by_market.setdefault(
                     (strat, venue, market_id), {"cost": 0.0, "fees": 0.0, "payout": 0.0}
                 )["payout"] += payout
+                # Record the RETIREMENT, both sides regardless of sign: a
+                # settled loser pays 0.0 but its position is just as gone,
+                # and a reconstruction that only subtracts winners is the
+                # winners-only bug 7a89992 needed a book assertion to
+                # catch. Guarded by qty > 0 rather than by a separate
+                # seen-set, which is also what makes repeated calls
+                # idempotent — shadow settles every poll, and the second
+                # pass sees qty 0.0 and neither pays nor records.
+                self.result.settlements.append(
+                    Settlement(
+                        strategy=strat,
+                        venue=venue,
+                        market_id=market_id,
+                        side=side,
+                        qty=qty,
+                        result=info.result,
+                        payout=payout,
+                        ts=self._last_ts,
+                    )
+                )
             self.ctx._positions[(strat, venue, market_id, side)] = 0.0
         self._check_invariants()
 

@@ -474,3 +474,117 @@ def test_seed_with_no_gap_row_reads_the_whole_archive(tmp_path, monkeypatch):
     seed_sql = [s for s in log[0].sql if "book_events" in s and "ORDER BY" in s]
     assert seed_sql and "recv_ts" not in seed_sql[0].split("WHERE", 1)[1].split("ORDER BY")[0]
     assert all(runner.replayer.depth(m) is not None for m in SEED_MARKETS)
+
+
+# -- settlement is reachable in the daemon ---------------------------------
+#
+# `_settle` is called only from `finalize()`, which sits AFTER the `while`
+# loop in main(). The unit runs with no --duration, so that loop is
+# `while True` and finalize is unreachable in production: the live daemon
+# never credited a payout, never retired a settled contract and never
+# produced a settlement record, however long it lived. At 100% unobserved
+# outcome coverage that was invisible, but it is a separate and PRIOR
+# cause — the path was not merely untriggered by the data, it was unwired.
+
+
+def _settling_runner(tmp_path):
+    """Runner holding 5 YES in M1, which the archive has not yet settled."""
+    from hyxlab.store import Store
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+    shadow_db = tmp_path / "shadow.duckdb"
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.flush()
+
+    runner = ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ShadowLedger(shadow_db),
+    )
+    runner.poll_once()  # anchors the cursor
+    sstore.append_events(_snapshot_frame("M1", 2, 44, 55, T0 + timedelta(seconds=30)))
+    sstore.flush()
+    runner.poll_once()  # fills 5 yes
+    assert len(runner.sim.result.fills) == 1
+    return runner, archive_db, shadow_db
+
+
+def _land_the_result(runner, archive_db, result="yes"):
+    """The daily sweep writes `result` hours after the market closes; the
+    daemon picks it up on its hourly metadata refresh. Reproduce that
+    ordering rather than mutating sim.markets directly."""
+    from hyxlab.store import Store
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1", result=result)])
+    store.close()
+    runner._markets_loaded_at = float("-inf")  # force the hourly refresh
+
+
+def test_shadow_settles_without_finalize(tmp_path):
+    """Load-bearing: assert the NUMBERS after a poll — cash carries the
+    payout and the position is retired — with finalize() never called, so
+    a daemon that only settles at shutdown fails on arithmetic rather than
+    on a missing row."""
+    runner, archive_db, shadow_db = _settling_runner(tmp_path)
+    cash_before = runner.sim.result.cash
+    assert runner.sim.ctx._positions[("buy_first", "kalshi", "M1", "yes")] == 5.0
+
+    _land_the_result(runner, archive_db)
+    runner.poll_once()
+
+    assert runner.sim.result.cash == cash_before + 5.0  # 5 YES pay 1.00 each
+    assert runner.sim.ctx._positions[("buy_first", "kalshi", "M1", "yes")] == 0.0
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        rows = conn.execute(
+            "SELECT strategy, market_id, side, qty, result, payout FROM shadow_settlements"
+        ).fetchall()
+    assert rows == [("buy_first", "M1", "yes", 5.0, "yes", 5.0)]
+
+
+def test_shadow_settlement_persists_once_across_polls(tmp_path):
+    """The daemon settles every poll and polls every 20s forever. The row
+    must be written once — a per-poll duplicate would grow without bound
+    and inflate any payout summed from the ledger."""
+    runner, archive_db, shadow_db = _settling_runner(tmp_path)
+    _land_the_result(runner, archive_db)
+    for _ in range(4):
+        runner.poll_once()
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        assert conn.execute("SELECT count(*) FROM shadow_settlements").fetchone()[0] == 1
+
+
+def test_shadow_records_a_settled_loser(tmp_path):
+    """Discrimination control: a loser moves no cash, so a settlement path
+    keyed on a payout or on a cash delta records nothing here — and the
+    reconstruction then carries the loser as open forever."""
+    runner, archive_db, shadow_db = _settling_runner(tmp_path)
+    cash_before = runner.sim.result.cash
+    _land_the_result(runner, archive_db, result="no")
+    runner.poll_once()
+    assert runner.sim.result.cash == cash_before  # no payout
+    assert runner.sim.ctx._positions[("buy_first", "kalshi", "M1", "yes")] == 0.0
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        rows = conn.execute("SELECT qty, result, payout FROM shadow_settlements").fetchall()
+    assert rows == [(5.0, "no", 0.0)]
+
+
+def test_shadow_writes_no_settlement_while_the_market_is_open(tmp_path):
+    """Control: settling per poll must not retire UNSETTLED positions. The
+    archive has no result yet, which is the state the daemon spends almost
+    all of its time in."""
+    runner, _, shadow_db = _settling_runner(tmp_path)
+    for _ in range(3):
+        runner.poll_once()
+    assert runner.sim.ctx._positions[("buy_first", "kalshi", "M1", "yes")] == 5.0
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        assert conn.execute("SELECT count(*) FROM shadow_settlements").fetchone()[0] == 0

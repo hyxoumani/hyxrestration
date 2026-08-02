@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS shadow_fills (
     maker     BOOLEAN,
     ts        TIMESTAMP NOT NULL
 );
+CREATE TABLE IF NOT EXISTS shadow_settlements (
+    run_id    VARCHAR NOT NULL,
+    strategy  VARCHAR NOT NULL,
+    venue     VARCHAR NOT NULL,
+    market_id VARCHAR NOT NULL,
+    side      VARCHAR NOT NULL,
+    qty       DOUBLE NOT NULL,
+    result    VARCHAR NOT NULL,
+    payout    DOUBLE NOT NULL,
+    ts        TIMESTAMP NOT NULL
+);
 CREATE TABLE IF NOT EXISTS shadow_equity (
     run_id VARCHAR NOT NULL,
     ts     TIMESTAMP NOT NULL,
@@ -117,8 +128,14 @@ class ShadowLedger:
         with duckdb.connect(str(self.path)) as conn:
             conn.execute("UPDATE shadow_runs SET anchor=? WHERE run_id=?", [_naive(anchor), run_id])
 
-    def persist(self, run_id: str, fills: list, equity: tuple[datetime, float] | None) -> None:
-        if not fills and equity is None:
+    def persist(
+        self,
+        run_id: str,
+        fills: list,
+        equity: tuple[datetime, float] | None,
+        settlements: list | None = None,
+    ) -> None:
+        if not fills and equity is None and not settlements:
             return
         with duckdb.connect(str(self.path)) as conn:
             if fills:
@@ -138,6 +155,24 @@ class ShadowLedger:
                             _naive(f.ts),
                         )
                         for f in fills
+                    ],
+                )
+            if settlements:
+                conn.executemany(
+                    "INSERT INTO shadow_settlements VALUES (?,?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            run_id,
+                            s.strategy,
+                            s.venue,
+                            s.market_id,
+                            s.side,
+                            s.qty,
+                            s.result,
+                            s.payout,
+                            _naive(s.ts),
+                        )
+                        for s in settlements
                     ],
                 )
             if equity is not None:
@@ -169,6 +204,7 @@ class ShadowRunner:
         self.cursor: datetime | None = None  # start from NOW (first poll sets it)
         self.gap_cursor: datetime | None = None
         self._n_fills_persisted = 0
+        self._n_settlements_persisted = 0
         self._markets_loaded_at = time.monotonic() if markets else float("-inf")
         self.ledger.start_run(self.run_id, latency, [s.name for s in strategies])
         self.stats = {"snapshots": 0, "events": 0, "polls": 0}
@@ -296,11 +332,26 @@ class ShadowRunner:
         self.stats["snapshots"] += n
         self.stats["events"] += len(events)
         self.stats["polls"] += 1
-        # Persist newly produced fills + one equity point per poll.
+        # Settle every poll. `_settle` is otherwise reached ONLY from
+        # `finalize()`, which sits after the `while` in main() — and the
+        # unit runs with no --duration, so that loop is `while True` and
+        # finalize is unreachable in production. Without this call the
+        # daemon never credits a payout, never retires a settled contract
+        # and never produces a settlement record, no matter how long it
+        # lives: at 100% unobserved outcome coverage that was invisible,
+        # but it is a separate and PRIOR cause. Cheap (a scan of open
+        # positions) and idempotent by the qty > 0 guard in `_settle`, so
+        # per-poll needs no extra bookkeeping. Guarded on the sim clock
+        # because a settlement record is stamped from it.
+        if self.sim._last_ts is not None:
+            self.sim._settle()
+        # Persist newly produced fills + settlements + one equity point.
         new_fills = self.sim.result.fills[self._n_fills_persisted :]
+        new_settlements = self.sim.result.settlements[self._n_settlements_persisted :]
         equity = self.sim.result.equity_curve[-1] if self.sim.result.equity_curve else None
-        self.ledger.persist(self.run_id, new_fills, equity)
+        self.ledger.persist(self.run_id, new_fills, equity, new_settlements)
         self._n_fills_persisted = len(self.sim.result.fills)
+        self._n_settlements_persisted = len(self.sim.result.settlements)
         # The sim appends one equity point PER SNAPSHOT (~2.3M/day at
         # stream rates) and shadow runs forever: the curve grew to ~800MB
         # in 2.3 days and got the daemon kernel-OOM-killed mid-run at the
