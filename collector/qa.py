@@ -13,6 +13,7 @@ failure mode that has either happened or provably can.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 import time
@@ -24,43 +25,122 @@ import duckdb
 ARCHIVE = "data/hyxlab.duckdb"
 STREAM = "data/hyxstream.duckdb"
 
+# Per-section completion record, so a skip can be BOUNDED. Without it a
+# locked archive skips silently forever and the journal still reads green.
+STATE = Path("reports/qa/sections.json")
+SKIP_MAX_AGE_H = 36.0  # matches the "sweep ran in last 36h" tolerance
+
+# Lock-wait budget. Measured 2026-08-02: `hyxlab-collect` is OnCalendar
+# `*:0/5` and `hyxlab-qa` is `07:00:00 UTC` — a 5-minute boundary — so the
+# two start in the SAME SECOND every day, by construction. The collector
+# holds the archive write lock for ~11s per cycle (02:00:00 → 02:00:11 on
+# 08-02). The old budget was 5 attempts x 2s ≈ 10s, so QA gave up ~1s
+# before the release and skipped the whole archive half on 10 of the 14
+# runs Jul 20 – Aug 02. 60s clears the collector cycle ~5x over. It does
+# NOT clear the poly sweep (13.7–15.8h wall clock, measured over 8 runs) —
+# no budget could, which is why the skip must also be bounded by STATE.
+LOCK_WAIT_S = 60.0
+RETRY_SLEEP_S = 2.0
+
 _failures: list[str] = []
+_skipped: list[str] = []
+_passes = 0
 _lock_holder: str | None = None  # set by _connect_ro when a live writer holds the file
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
+    global _passes
     line = f"{'PASS' if ok else 'FAIL'}  {name}" + (f" — {detail}" if detail else "")
     print(line, flush=True)
-    if not ok:
+    if ok:
+        _passes += 1
+    else:
         _failures.append(name)
 
 
-def _connect_ro(path: str, retries: int = 5) -> duckdb.DuckDBPyConnection | None:
+def _load_state() -> dict:
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_state(state: dict) -> None:
+    try:
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
+    except OSError:
+        pass  # QA is read-only by contract; losing the record must not fail the run
+
+
+def _note_seen(section: str, now: datetime) -> None:
+    """Start a section's clock the first time QA ever observes it — on a
+    SKIP as much as on a success. Otherwise a section locked from the very
+    first run has no reference point and can never go stale."""
+    state = _load_state()
+    entry = state.setdefault(section, {})
+    entry.setdefault("first_seen", now.isoformat())
+    _save_state(state)
+
+
+def _record_ok(section: str, now: datetime) -> None:
+    state = _load_state()
+    entry = state.setdefault(section, {})
+    entry.setdefault("first_seen", now.isoformat())
+    entry["last_ok"] = now.isoformat()
+    _save_state(state)
+
+
+def _skip_age_h(section: str, now: datetime) -> float | None:
+    """Hours since this section last COMPLETED, falling back to when it was
+    first observed if it never has."""
+    entry = _load_state().get(section) or {}
+    ref = entry.get("last_ok") or entry.get("first_seen")
+    if not ref:
+        return None
+    try:
+        return (now - datetime.fromisoformat(ref)).total_seconds() / 3600.0
+    except ValueError:
+        return None
+
+
+def _connect_ro(path: str, wait_s: float = LOCK_WAIT_S) -> duckdb.DuckDBPyConnection | None:
     """read-only connect with retry. Distinguishes a live writer holding
     the lock (normal: poly sweep holds it for hours) from a genuinely
     unreachable file — alarm fatigue trains people to ignore QA."""
     global _lock_holder
     _lock_holder = None
-    for attempt in range(retries):
+    attempts = max(1, int(wait_s / RETRY_SLEEP_S))
+    for attempt in range(attempts):
         try:
             return duckdb.connect(path, read_only=True)
         except duckdb.Error as exc:
             m = re.search(r"Conflicting lock is held in (\S+) \(PID (\d+)\)", str(exc))
             if m and Path(f"/proc/{m.group(2)}").exists():
                 _lock_holder = f"{m.group(1)} pid {m.group(2)}"
-            if attempt == retries - 1:
+            if attempt == attempts - 1:
                 return None
-            time.sleep(2)  # writer burst (collector/tradepass flush)
+            time.sleep(RETRY_SLEEP_S)  # writer burst (collector/tradepass flush)
     return None
 
 
-def _reachable(conn, name: str) -> bool:
-    """Emit the reachability check; lock held by a live writer is a PASS
-    (checks skipped), anything else unreachable is a FAIL."""
+def _reachable(conn, name: str, section: str, now: datetime) -> bool:
+    """Emit the reachability line. A lock held by a live writer SKIPS the
+    section — it is not a data defect and must not alarm — but a skip is
+    NOT a pass: it is reported as SKIP, tracked separately, and bounded by
+    how long the section has gone without actually completing."""
     if conn is not None:
         return True
     if _lock_holder:
-        check(name, True, f"skipped: live writer holds lock ({_lock_holder})")
+        print(f"SKIP  {name} — live writer holds lock ({_lock_holder})", flush=True)
+        _skipped.append(section)
+        _note_seen(section, now)
+        age = _skip_age_h(section, now)
+        check(
+            f"{section} checks completed within {SKIP_MAX_AGE_H:.0f}h",
+            age is not None and age <= SKIP_MAX_AGE_H,
+            f"last completed {age:.1f}h ago" if age is not None else "no completion on record",
+        )
     else:
         check(name, False, "unreachable and no live writer holds the lock")
     return False
@@ -68,9 +148,9 @@ def _reachable(conn, name: str) -> bool:
 
 def qa_stream(hours: float, path: str = STREAM) -> None:
     conn = _connect_ro(path)
-    if not _reachable(conn, "stream archive reachable"):
-        return
     now = datetime.now(UTC).replace(tzinfo=None)
+    if not _reachable(conn, "stream archive reachable", "stream", now):
+        return
 
     age = conn.execute("SELECT epoch(? - max(recv_ts)) FROM stream_trades", [now]).fetchone()[0]
     check(
@@ -239,13 +319,14 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     size_gb = Path(path).stat().st_size / 1e9
     check("stream disk under 20 GB", size_gb < 20.0, f"{size_gb:.2f} GB")
     conn.close()
+    _record_ok("stream", now)
 
 
 def qa_archive(hours: float, path: str = ARCHIVE) -> None:
     conn = _connect_ro(path)
-    if not _reachable(conn, "main archive reachable"):
-        return
     now = datetime.now(UTC).replace(tzinfo=None)
+    if not _reachable(conn, "main archive reachable", "archive", now):
+        return
 
     age = conn.execute("SELECT epoch(? - max(ts)) FROM snapshots", [now]).fetchone()[0]
     check(
@@ -335,6 +416,7 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
         "trade tape covers retention window", uncovered == 0, f"{uncovered} traded markets unswept"
     )
     conn.close()
+    _record_ok("archive", now)
 
 
 def main() -> None:
@@ -348,6 +430,16 @@ def main() -> None:
     if _failures:
         print(f"[qa] {len(_failures)} FAILURES: {_failures}", flush=True)
         sys.exit(1)
+    # A skipped section is NOT a passed one. Saying "all checks pass" while
+    # half the checks never ran is how the archive half went unwatched on 10
+    # of 14 runs (Jul 20 – Aug 02 2026) with every journal line reading green.
+    if _skipped:
+        print(
+            f"[qa] {_passes} checks pass, {len(_skipped)} SECTION(S) SKIPPED "
+            f"({', '.join(_skipped)}) — NOT a full pass",
+            flush=True,
+        )
+        return
     print("[qa] all checks pass", flush=True)
 
 

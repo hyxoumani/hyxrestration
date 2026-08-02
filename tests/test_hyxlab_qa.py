@@ -1,7 +1,10 @@
 """Daily QA checks against synthetic archives: healthy DBs pass, each
 seeded defect trips its check."""
 
+import json
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 import collector.qa as qa
 from collector.venues.kalshi_ws import parse_message
@@ -9,6 +12,18 @@ from hyxlab.store import Store
 from hyxlab.streamstore import StreamStore
 
 NOW = datetime.now(UTC)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_state(tmp_path, monkeypatch):
+    """Every test gets its own section-completion record. Without this the
+    suite would read and WRITE the deployment's real reports/qa/sections.json,
+    which decides whether production QA alarms."""
+    monkeypatch.setattr(qa, "STATE", tmp_path / "sections.json")
+    qa._skipped.clear()
+    qa._passes = 0
+    yield
+    qa._skipped.clear()
 
 
 def _fresh_stream(path):
@@ -398,6 +413,165 @@ def test_archive_locked_by_live_writer_is_not_a_failure(tmp_path, monkeypatch):
     finally:
         holder.kill()
         holder.wait()
+
+
+def _lock(db):
+    """Hold the DB's write lock in a live subprocess, as the collector does."""
+    import subprocess
+    import sys
+
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            # bind the connection: an unbound one is GC'd and releases the lock
+            f"import duckdb,time; c=duckdb.connect({str(db)!r}); print('locked',flush=True); time.sleep(60)",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout.readline().strip() == "locked"
+    return holder
+
+
+def test_locked_section_reads_skip_not_pass_and_summary_is_not_all_pass(
+    tmp_path, monkeypatch, capsys
+):
+    """THE load-bearing one. A lock-held section printed `PASS  main archive
+    reachable — skipped:` and main() then printed `all checks pass` with exit
+    0 — so 8 of 16 checks never ran and every journal line read green (10 of
+    14 runs, Jul 20 – Aug 02 2026). Assert the NUMBERS: exactly one line for
+    the skipped section's reachability, it is SKIP not PASS, none of the
+    archive checks ran, and the summary names the skip."""
+    monkeypatch.setattr(qa.time, "sleep", lambda s: None)
+    db = tmp_path / "a.duckdb"
+    Store(db).close()
+    holder = _lock(db)
+    try:
+        qa._failures.clear()
+        qa.qa_archive(26.0, path=str(db))
+        out = capsys.readouterr().out
+    finally:
+        holder.kill()
+        holder.wait()
+
+    assert "SKIP  main archive reachable" in out
+    assert "PASS  main archive reachable" not in out
+    # not a failure — a lock is not a data defect
+    assert "main archive reachable" not in set(qa._failures)
+    # and none of the archive's own checks ran
+    for name in ("collector fresh", "kalshi mirror invariant", "trade tape covers"):
+        assert name not in out
+    assert qa._skipped == ["archive"]
+
+
+def test_stale_skip_escalates_to_a_failure(tmp_path, monkeypatch):
+    """A skip is tolerable once, not indefinitely. Past SKIP_MAX_AGE_H
+    without the section ever completing, the silent-rot watch is genuinely
+    off and that IS a failure."""
+    monkeypatch.setattr(qa.time, "sleep", lambda s: None)
+    db = tmp_path / "a.duckdb"
+    Store(db).close()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    stale = (now - timedelta(hours=40)).isoformat()
+    qa.STATE.parent.mkdir(parents=True, exist_ok=True)
+    qa.STATE.write_text(json.dumps({"archive": {"last_ok": stale, "first_seen": stale}}))
+
+    holder = _lock(db)
+    try:
+        qa._failures.clear()
+        qa.qa_archive(26.0, path=str(db))
+        failed = set(qa._failures)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert "archive checks completed within 36h" in failed
+
+
+def test_recent_completion_keeps_a_skip_quiet(tmp_path, monkeypatch):
+    """Discrimination control for the above: a section that completed hours
+    ago must stay silent, or the escalation is merely always-red and the
+    alarm fatigue this whole path exists to avoid comes straight back."""
+    monkeypatch.setattr(qa.time, "sleep", lambda s: None)
+    db = tmp_path / "a.duckdb"
+    Store(db).close()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    fresh = (now - timedelta(hours=5)).isoformat()
+    qa.STATE.parent.mkdir(parents=True, exist_ok=True)
+    qa.STATE.write_text(json.dumps({"archive": {"last_ok": fresh, "first_seen": fresh}}))
+
+    holder = _lock(db)
+    try:
+        qa._failures.clear()
+        qa.qa_archive(26.0, path=str(db))
+        failed = set(qa._failures)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert failed == set()
+
+
+def test_first_skip_starts_the_clock_so_a_never_run_section_can_go_stale(tmp_path, monkeypatch):
+    """A section locked from the very first QA run has no completion to
+    measure staleness against. Failing immediately would false-alarm every
+    fresh deployment; recording nothing would leave it green forever. The
+    first SKIP records `first_seen`, so the clock starts either way."""
+    monkeypatch.setattr(qa.time, "sleep", lambda s: None)
+    db = tmp_path / "a.duckdb"
+    Store(db).close()
+    holder = _lock(db)
+    try:
+        qa._failures.clear()
+        qa.qa_archive(26.0, path=str(db))
+        assert set(qa._failures) == set()  # fresh deployment must not alarm
+        state = json.loads(qa.STATE.read_text())
+        assert "first_seen" in state["archive"] and "last_ok" not in state["archive"]
+
+        # rewind the clock past the tolerance: the same never-completed
+        # section must now fail
+        old = (datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=40)).isoformat()
+        qa.STATE.write_text(json.dumps({"archive": {"first_seen": old}}))
+        qa._failures.clear()
+        qa.qa_archive(26.0, path=str(db))
+        assert "archive checks completed within 36h" in set(qa._failures)
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_completed_section_records_its_completion(tmp_path):
+    """The staleness bound is only as good as the record feeding it."""
+    db = tmp_path / "a.duckdb"
+    Store(db).close()
+    qa._failures.clear()
+    qa.qa_archive(26.0, path=str(db))
+    qa._failures.clear()
+    assert "last_ok" in json.loads(qa.STATE.read_text())["archive"]
+
+
+def test_retry_budget_outlasts_the_collector_lock_cycle(monkeypatch):
+    """The race, in isolation. `hyxlab-collect` (*:0/5) and `hyxlab-qa`
+    (07:00:00 UTC) start in the same second and the collector holds the write
+    lock ~11s; the old 5-attempt x 2s budget gave up ~1s early. Simulate a
+    holder that releases after 8 attempts — more than the old budget allowed
+    — and require the connect to succeed."""
+    import duckdb as _duckdb
+
+    calls = {"n": 0}
+    sentinel = object()
+
+    def fake_connect(path, read_only=False):
+        calls["n"] += 1
+        if calls["n"] <= 8:
+            raise _duckdb.Error("Conflicting lock is held in /usr/bin/python3.14 (PID 1)")
+        return sentinel
+
+    monkeypatch.setattr(qa.time, "sleep", lambda s: None)
+    monkeypatch.setattr(qa.duckdb, "connect", fake_connect)
+    assert qa._connect_ro("x.duckdb") is sentinel
+    # and the old budget provably would NOT have gotten there
+    calls["n"] = 0
+    assert qa._connect_ro("x.duckdb", wait_s=10.0) is None
 
 
 def test_healthy_archive_passes_and_unswept_tape_trips(tmp_path):
