@@ -7,7 +7,13 @@ import pytest
 
 from hyxlab.models import MarketInfo
 from hyxlab.store import Store
-from simulator.atlas import BUCKET_SQL, build_atlas, wilson
+from simulator.atlas import (
+    BUCKET_SQL,
+    MAX_QUOTED_SPREAD,
+    MIN_N,
+    build_atlas,
+    wilson,
+)
 
 CLOSE = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 
@@ -442,3 +448,177 @@ def test_fingerprint_horizon_counts_match_bucket_population(tmp_path):
         summed[k] = summed.get(k, 0) + b["n"]
     assert atlas["data_fingerprint"]["observations_by_category_horizon"] == summed
     store.close()
+
+
+# --- quoted-book tier (2026-08-02) -------------------------------------
+#
+# Every tier above bounds correlation; none bounds whether `implied` was a
+# price. A book quoted 0.05 / 0.95 contributes mid 0.50 and is
+# indistinguishable from a genuine coin flip, so an empty book manufactures
+# the largest implied-minus-realized gaps -- exactly what the tiers select
+# on. Measured on the live archive, spread > 0.5 covers 4.6% of the flagged
+# tier and 34.2% of the day-weighted tier: contamination RISES with
+# strictness, because an empty book is stably empty and more days of it
+# TIGHTEN the Wilson interval rather than widen it.
+
+def _spread_atlas(tmp_path, day_specs):
+    """1h / decile-5 bucket at mid 0.50, built from `day_specs` = one entry
+    per settlement day, each a list of (n_markets, n_yes, spread). Every
+    market gets its own series so the cluster tier never interferes."""
+    store = Store(tmp_path / "a.duckdb")
+    infos, candles, i = [], [], 0
+    for day, groups in enumerate(day_specs):
+        close = CLOSE - timedelta(days=day)
+        for n, n_yes, spread in groups:
+            for k in range(n):
+                mid_ = f"Q{i}"
+                infos.append(
+                    MarketInfo(
+                        venue="kalshi",
+                        market_id=mid_,
+                        series=f"T{i}",
+                        result="yes" if k < n_yes else "no",
+                        close_time=close,
+                    )
+                )
+                candles.append(
+                    _candle(
+                        0.50,
+                        mid_,
+                        (close - timedelta(hours=2)).replace(tzinfo=None),
+                        spread=spread,
+                    )
+                )
+                i += 1
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    atlas = build_atlas(store.conn)
+    store.close()
+    return [
+        b for b in atlas["buckets"] if b["horizon"] == "1h" and b["decile"] == 5
+    ][0]
+
+
+def _uniform(spread, n=10):
+    """42 all-yes days and 8 all-no days at implied 0.50 -- day-weighted
+    realized 0.84, a +0.34 gap that clears every Wilson tier."""
+    return [[(n, n, spread)]] * 42 + [[(n, 0, spread)]] * 8
+
+
+_EMPTY_BOOK = 0.90  # bid 0.05 / ask 0.95: passes the crossed and sentinel gates
+_QUOTED = 0.02
+
+
+def test_empty_books_clear_every_wilson_tier_and_fail_the_quoted_tier(tmp_path):
+    # THE load-bearing test. Identical outcomes, identical day balance,
+    # identical implied -- the ONLY difference is the width of the book the
+    # mid was taken from, and it is the one thing no correlation tier sees.
+    wide = _spread_atlas(tmp_path / "wide", _uniform(_EMPTY_BOOK))
+    assert wide["flagged_day_weighted"], "fixture must reach the strictest tier"
+    assert wide["realized_day_weighted"] - wide["implied_day_weighted"] == (
+        pytest.approx(0.34, abs=1e-3)
+    )
+    # ...and not one of its 500 observations was quoted, so the gap is
+    # carried entirely by books that were never two-sided
+    assert wide["quoted_n"] == 0
+    assert wide["wide_share"] == 1.0
+    assert not wide["flagged_quoted"]
+
+    tight = _spread_atlas(tmp_path / "tight", _uniform(_QUOTED))
+    # the discrimination control: same numbers, real books, tier survives.
+    # Without this the gate would be indistinguishable from one that simply
+    # rejects everything at the strictest tier.
+    assert tight["flagged_day_weighted"] and tight["flagged_quoted"]
+    assert tight["quoted_n"] == 500 and tight["wide_share"] == 0.0
+    assert tight["realized_day_weighted"] == pytest.approx(
+        wide["realized_day_weighted"], abs=1e-9
+    )
+
+
+def test_quoted_subsample_that_flips_sign_is_not_a_confirmation(tmp_path):
+    # 16 wide all-yes + 4 quoted all-no per day, 50 days. Pooled, realized
+    # runs ABOVE implied and every tier flags; on the quoted books alone it
+    # runs BELOW. Both exclusions are individually significant, so this must
+    # fail on DIRECTION rather than on lack of evidence.
+    b = _spread_atlas(
+        tmp_path, [[(16, 16, _EMPTY_BOOK), (4, 0, _QUOTED)]] * 50
+    )
+    assert b["flagged_day_weighted"]
+    assert b["realized_day_weighted"] > b["implied_day_weighted"]
+    # the quoted subsample cleared the evidence bar and the interval on its
+    # own -- it is rejected purely for pointing the other way
+    assert b["quoted_n"] == MIN_N
+    assert not (
+        b["wilson_quoted_lo"]
+        <= b["quoted_implied_day_weighted"]
+        <= b["wilson_quoted_hi"]
+    )
+    assert b["quoted_realized_day_weighted"] < b["quoted_implied_day_weighted"]
+    assert not b["flagged_quoted"]
+
+
+def test_too_few_quoted_observations_is_not_a_flag(tmp_path):
+    # same direction on the quoted books, but only 150 of them. Agreement
+    # under the evidence bar is not a confirmation; it is silence.
+    b = _spread_atlas(
+        tmp_path,
+        [[(17, 17, _EMPTY_BOOK), (3, 3, _QUOTED)]] * 42
+        + [[(17, 0, _EMPTY_BOOK), (3, 0, _QUOTED)]] * 8,
+    )
+    assert b["flagged_day_weighted"]
+    assert b["quoted_n"] == 150 < MIN_N
+    assert b["quoted_realized_day_weighted"] > b["quoted_implied_day_weighted"]
+    assert not b["flagged_quoted"]
+
+
+def test_spread_is_read_from_the_mid_s_own_candle(tmp_path):
+    # `mid` is arg_max over end_ts, so the width must be too: a bucket whose
+    # freshest candle is empty must not read as quoted because an older
+    # candle happened to be tight.
+    store = Store(tmp_path / "a.duckdb")
+    store.upsert_markets(
+        [MarketInfo(venue="kalshi", market_id="A", result="yes", close_time=CLOSE)]
+    )
+    old = (CLOSE - timedelta(hours=25)).replace(tzinfo=None)
+    new = (CLOSE - timedelta(hours=24)).replace(tzinfo=None)
+    store.insert_candles(
+        [
+            _candle(0.50, "A", old, spread=_QUOTED),  # tight, stale
+            _candle(0.50, "A", new, spread=_EMPTY_BOOK),  # empty, fresh
+        ]
+    )
+    b = [
+        x
+        for x in build_atlas(store.conn)["buckets"]
+        if x["horizon"] == "24h" and x["decile"] == 5
+    ][0]
+    store.close()
+    assert b["n"] == 1
+    assert b["median_spread"] == pytest.approx(_EMPTY_BOOK, abs=1e-6)
+    assert b["wide_share"] == 1.0 and b["quoted_n"] == 0
+
+
+def test_every_bucket_reports_spread_and_the_quoted_tier_nests(tmp_path):
+    # spread is reported unconditionally, so contamination stays readable in
+    # buckets no tier selected; and a quoted survivor must be a
+    # day-weighted survivor, or the report claims a flag a looser tier
+    # already rejected.
+    store = Store(tmp_path / "a.duckdb")
+    store.upsert_markets(
+        [MarketInfo(venue="kalshi", market_id="A", result="yes", close_time=CLOSE)]
+    )
+    store.insert_candles(
+        [_candle(0.50, "A", (CLOSE - timedelta(hours=2)).replace(tzinfo=None))]
+    )
+    atlas = build_atlas(store.conn)
+    store.close()
+    for b in atlas["buckets"]:
+        assert b["median_spread"] is not None and b["mean_spread"] is not None
+        assert 0.0 <= b["wide_share"] <= 1.0
+        assert b["flagged_day_weighted"] >= b["flagged_quoted"]
+        # a bucket with no quoted observations reports None, not 0.0: the
+        # two would print identically as a finding the data cannot support
+        if b["quoted_n"] == 0:
+            assert b["quoted_implied"] is None
+    assert "flagged_quoted" in atlas and "flag_rule_quoted" in atlas
+    assert MAX_QUOTED_SPREAD == 0.20

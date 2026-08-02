@@ -122,6 +122,32 @@ ELIGIBLE (present in `buckets`), because a bucket below n>=200 is absent from
 the data, not absent from the tier. A stable tier is still only a stable
 lead; pre-registration decides.
 
+Quoted books (2026-08-02): every tier above bounds CORRELATION, and none of
+them bounds whether `implied` was a price. `mid` is (bid + ask) / 2, so a
+book quoted 0.01 / 0.96 contributes mid = 0.485 — indistinguishable from a
+market the world genuinely thinks is a coin flip. The crossed-candle gate and
+the 0.995/0.005 sentinel were both meant to exclude empty books and both test
+a CORNER rather than a WIDTH, so that book passes them.
+
+The consequence is not hypothetical and it runs the wrong way: measured over
+the archive on 2026-08-02, the share of observations with spread > 0.5 RISES
+with tier strictness — 4.6% flagged, 5.3% cluster-robust, 18.1% day-robust,
+**34.2% day-weighted** (71.9% at spread > 0.2). The strictest tier is the
+most contaminated one, because the tiers select on gap SIZE and an empty
+book manufactures the largest gaps. Statistical strictness cannot fix this:
+the artifact is systematic, not noisy, so an empty book is stably empty and
+more days of it TIGHTEN the Wilson interval and make the bucket MORE
+robust. It is also why `tier_stability` reads zero oscillation there —
+stability is what an artifact looks like.
+
+`flagged_quoted` therefore re-runs the strictest test on the subsample whose
+books were actually two-sided (spread <= MAX_QUOTED_SPREAD), requiring the
+same MIN_N and the same sign. Buckets keep their original decile: the
+question is whether THIS bucket's flag is carried by quoted books, not what a
+re-binned population would say. Every bucket also reports `median_spread`,
+`mean_spread` and `wide_share` unconditionally, so the contamination is
+readable even where the tier is not.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -159,6 +185,26 @@ def wilson(successes: float, n: int, z: float = Z95) -> tuple[float, float]:
 # text for the same reason.
 _DECILE_EXPR = "CAST(least(floor(mid * 10), 9) AS INTEGER)"
 
+# A book wider than this makes `mid` uninformative about probability, so the
+# bucket's `implied` stops being a price at all.
+#
+# The crossed-candle gate and the 0.995/0.005 sentinel gate below were both
+# meant to keep empty books out, but each tests a CORNER, not a WIDTH: a book
+# quoted bid 0.01 / ask 0.96 passes both and contributes mid = 0.485. An empty
+# book therefore lands in the middle deciles carrying a manufactured
+# implied-of-0.5 against whatever the ladder's true base rate is, which is
+# exactly the shape of a large implied-minus-realized gap.
+#
+# 0.20 is the width at which the measurement error swamps the effect: a 0.20
+# spread puts +/-0.10 of ambiguity on `implied`, and every day-weighted gap
+# this report has ever flagged sits in 0.08-0.19. Wider than the thing being
+# measured is not a bound worth reporting through.
+MAX_QUOTED_SPREAD = 0.20
+
+# Minimum observations for a flag, shared by the full sample and the quoted
+# subsample so the quoted tier is held to the same bar the base tier is.
+MIN_N = 200
+
 _OBSERVATIONS_CTE = """
 WITH settled AS (
   SELECT m.market_id, m.close_time, m.result, m.series,
@@ -170,7 +216,10 @@ WITH settled AS (
 ), pts AS (
   SELECT st.market_id, st.category, st.result, h.h_label,
          st.series, st.close_time,
-         arg_max((c.yes_bid_close + c.yes_ask_close) / 2, c.end_ts) AS mid
+         arg_max((c.yes_bid_close + c.yes_ask_close) / 2, c.end_ts) AS mid,
+         -- from the SAME candle as `mid` (arg_max on the same key), so the
+         -- width always describes the book the midpoint was taken from
+         arg_max(c.yes_ask_close - c.yes_bid_close, c.end_ts) AS spread
   FROM settled st
   CROSS JOIN (VALUES ('1h',1),('6h',6),('24h',24),('72h',72),('7d',168))
        AS h(h_label, h_hours)
@@ -186,7 +235,7 @@ WITH settled AS (
 
 BUCKET_SQL = _OBSERVATIONS_CTE + f"""
 , keyed AS (
-  SELECT category, h_label, result, series, close_time, mid,
+  SELECT category, h_label, result, series, close_time, mid, spread,
          {_DECILE_EXPR} AS decile,
          CAST(close_time AS DATE) AS close_day
   FROM pts
@@ -222,11 +271,55 @@ BUCKET_SQL = _OBSERVATIONS_CTE + f"""
          avg(day_realized) AS realized_dw
   FROM per_day
   GROUP BY 1, 2, 3
+), spreads AS (
+  SELECT category, h_label, decile,
+         avg(spread) AS mean_spread,
+         median(spread) AS median_spread,
+         sum(CASE WHEN spread > {MAX_QUOTED_SPREAD} THEN 1 ELSE 0 END) AS wide_n
+  FROM keyed
+  GROUP BY 1, 2, 3
+-- The quoted subsample re-runs the WHOLE ladder of estimates over the same
+-- bucket, restricted to observations whose book was actually quoted. The
+-- decile assignment is deliberately NOT recomputed: the question is whether
+-- this bucket's flag survives on its quoted members, not what a differently
+-- binned population would say.
+), quoted_per_day AS (
+  SELECT category, h_label, decile, close_day,
+         CAST(sum(CAST(mid AS DECIMAL(18, 6))) AS DOUBLE) / count(*) AS qday_implied,
+         avg(CASE WHEN result = 'yes' THEN 1.0 ELSE 0.0 END) AS qday_realized
+  FROM keyed
+  WHERE spread <= {MAX_QUOTED_SPREAD}
+  GROUP BY 1, 2, 3, 4
+), quoted AS (
+  SELECT category, h_label, decile,
+         count(*) AS quoted_n,
+         count(DISTINCT close_day) AS quoted_days,
+         CAST(sum(CAST(mid AS DECIMAL(18, 6))) AS DOUBLE) / count(*) AS quoted_implied,
+         avg(CASE WHEN result = 'yes' THEN 1.0 ELSE 0.0 END) AS quoted_realized
+  FROM keyed
+  WHERE spread <= {MAX_QUOTED_SPREAD}
+  GROUP BY 1, 2, 3
+), quoted_dw AS (
+  SELECT category, h_label, decile,
+         avg(qday_implied) AS quoted_implied_dw,
+         avg(qday_realized) AS quoted_realized_dw
+  FROM quoted_per_day
+  GROUP BY 1, 2, 3
 )
 SELECT a.category, a.h_label, a.decile, a.n, a.implied, a.realized,
-       a.clusters, a.days, t.top_day_n, t.implied_dw, t.realized_dw
+       a.clusters, a.days, t.top_day_n, t.implied_dw, t.realized_dw,
+       s.mean_spread, s.median_spread, s.wide_n,
+       -- LEFT JOIN: a bucket can have zero quoted observations (the whole
+       -- Crypto|24h|d4 bucket does), and that is a reading, not a missing row
+       coalesce(q.quoted_n, 0) AS quoted_n,
+       coalesce(q.quoted_days, 0) AS quoted_days,
+       q.quoted_implied, q.quoted_realized,
+       d.quoted_implied_dw, d.quoted_realized_dw
 FROM agg a
 JOIN top_day t USING (category, h_label, decile)
+JOIN spreads s USING (category, h_label, decile)
+LEFT JOIN quoted q USING (category, h_label, decile)
+LEFT JOIN quoted_dw d USING (category, h_label, decile)
 ORDER BY 1, 2, 3
 """
 
@@ -276,6 +369,7 @@ TIERS = (
     "flagged_robust",
     "flagged_day_robust",
     "flagged_day_weighted",
+    "flagged_quoted",
 )
 
 
@@ -475,9 +569,12 @@ def build_atlas(conn) -> dict:
         (
             category, h_label, decile, n, implied, realized, clusters, days,
             top_day_n, implied_dw, realized_dw,
+            mean_spread, median_spread, wide_n,
+            quoted_n, quoted_days, quoted_implied, quoted_realized,
+            quoted_implied_dw, quoted_realized_dw,
         ) = row
         lo, hi = wilson(realized * n, n)
-        flagged = n >= 200 and not (lo <= implied <= hi)
+        flagged = n >= MIN_N and not (lo <= implied <= hi)
         # worst case: every market in a (series, close_time) ladder settles
         # on one shared outcome, so at most `clusters` independent draws
         rlo, rhi = wilson(realized * clusters, clusters)
@@ -492,6 +589,29 @@ def build_atlas(conn) -> dict:
         # while counting as a single draw. Re-weight implied and realized so
         # each day contributes once, then apply the same n = days Wilson.
         dwlo, dwhi = wilson(realized_dw * days, days)
+        flagged_day_weighted = (
+            flagged_day_robust and not (dwlo <= implied_dw <= dwhi)
+        )
+        # ...and the tier the four Wilson tiers above cannot reach, because
+        # the artifact they admit is SYSTEMATIC rather than noisy: an empty
+        # book is stably empty, so more days of it TIGHTEN the interval and
+        # make the bucket more robust, not less. Re-run the strictest test on
+        # the quoted subsample only. Surviving means the gap is carried by
+        # books that were actually two-sided, and the sign must agree — a
+        # quoted subsample that flips direction is not a confirmation.
+        qwlo, qwhi = (0.0, 1.0)
+        flagged_quoted = False
+        if quoted_n >= MIN_N and quoted_days and quoted_implied_dw is not None:
+            qwlo, qwhi = wilson(quoted_realized_dw * quoted_days, quoted_days)
+            flagged_quoted = (
+                flagged_day_weighted
+                and not (qwlo <= quoted_implied_dw <= qwhi)
+                and (
+                    (quoted_implied_dw - quoted_realized_dw)
+                    * (implied_dw - realized_dw)
+                    > 0
+                )
+            )
         buckets.append(
             {
                 "category": category,
@@ -516,9 +636,31 @@ def build_atlas(conn) -> dict:
                 "realized_day_weighted": round(realized_dw, 4),
                 "wilson_day_weighted_lo": round(dwlo, 4),
                 "wilson_day_weighted_hi": round(dwhi, 4),
-                "flagged_day_weighted": (
-                    flagged_day_robust and not (dwlo <= implied_dw <= dwhi)
+                "flagged_day_weighted": flagged_day_weighted,
+                "mean_spread": round(mean_spread, 4),
+                "median_spread": round(median_spread, 4),
+                "wide_share": round(wide_n / n, 4) if n else 0.0,
+                "quoted_n": quoted_n,
+                "quoted_days": quoted_days,
+                "quoted_implied": (
+                    round(quoted_implied, 4) if quoted_implied is not None else None
                 ),
+                "quoted_realized": (
+                    round(quoted_realized, 4) if quoted_realized is not None else None
+                ),
+                "quoted_implied_day_weighted": (
+                    round(quoted_implied_dw, 4)
+                    if quoted_implied_dw is not None
+                    else None
+                ),
+                "quoted_realized_day_weighted": (
+                    round(quoted_realized_dw, 4)
+                    if quoted_realized_dw is not None
+                    else None
+                ),
+                "wilson_quoted_lo": round(qwlo, 4),
+                "wilson_quoted_hi": round(qwhi, 4),
+                "flagged_quoted": flagged_quoted,
             }
         )
     fingerprint = {
@@ -563,12 +705,7 @@ def build_atlas(conn) -> dict:
             "threshold_share_of_smaller": OVERLAP_THRESHOLD,
             "tiers": {
                 tier: _cross_bucket_groups(buckets, overlaps, tier)
-                for tier in (
-                    "flagged",
-                    "flagged_robust",
-                    "flagged_day_robust",
-                    "flagged_day_weighted",
-                )
+                for tier in TIERS
             },
         },
         "flag_rule": "n >= 200 and implied outside Wilson 95% of realized",
@@ -587,11 +724,20 @@ def build_atlas(conn) -> dict:
             "unit on both sides, so unequal day sizes cannot let one large day "
             "set the mean while counting as one draw"
         ),
+        "flag_rule_quoted": (
+            f"flagged_day_weighted AND >= {MIN_N} observations whose book was "
+            f"quoted within {MAX_QUOTED_SPREAD} AND the day-weighted flag "
+            "survives on that subsample with the SAME sign — the Wilson tiers "
+            "above cannot reach this, because an empty book is stably empty "
+            "and more days of it tighten the interval rather than widen it"
+        ),
+        "quoted_rule": f"spread = ask - bid <= {MAX_QUOTED_SPREAD} on the mid's own candle",
         "buckets": buckets,
         "flagged": [b for b in buckets if b["flagged"]],
         "flagged_robust": [b for b in buckets if b["flagged_robust"]],
         "flagged_day_robust": [b for b in buckets if b["flagged_day_robust"]],
         "flagged_day_weighted": [b for b in buckets if b["flagged_day_weighted"]],
+        "flagged_quoted": [b for b in buckets if b["flagged_quoted"]],
     }
 
 
@@ -627,15 +773,29 @@ def main() -> None:
         f"[atlas] {len(atlas['buckets'])} buckets, {len(flags)} flagged"
         f" ({len(atlas['flagged_robust'])} cluster-robust)"
     )
+    # printed per TIER rather than only for the survivors: the whole point is
+    # that wide-book contamination RISES with tier strictness, and that is
+    # invisible from any single tier's rows.
+    print("| tier | buckets | n | wide share | quoted-tier survivors |")
+    print("|---|---|---|---|---|")
+    for tier in TIERS:
+        rows = atlas[tier]
+        tot = sum(b["n"] for b in rows)
+        wide = sum(b["wide_share"] * b["n"] for b in rows)
+        share = f"{wide / tot:.2%}" if tot else "-"
+        survivors = sum(1 for b in rows if b["flagged_quoted"])
+        print(f"| {tier} | {len(rows)} | {tot} | {share} | {survivors} |")
     if flags:
-        print("| category | horizon | decile | n | clusters | implied | realized | wilson | robust |")
-        print("|---|---|---|---|---|---|---|---|---|")
+        print("| category | horizon | decile | n | clusters | implied | realized | wilson | robust | med spr | quoted |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|")
         for b in sorted(flags, key=lambda b: -b["n"]):
             print(
                 f"| {b['category']} | {b['horizon']} | {b['decile']} | {b['n']}"
                 f" | {b['clusters']} | {b['implied']} | {b['realized']}"
                 f" | [{b['wilson_lo']}, {b['wilson_hi']}]"
-                f" | {'YES' if b['flagged_robust'] else 'no'} |"
+                f" | {'YES' if b['flagged_robust'] else 'no'}"
+                f" | {b['median_spread']}"
+                f" | {'YES' if b['flagged_quoted'] else 'no'} |"
             )
     print(f"[atlas] written to {out}")
 
