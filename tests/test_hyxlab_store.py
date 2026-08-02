@@ -259,3 +259,33 @@ def test_backup_rotation_and_consistency(tmp_path):
     with duckdb.connect(str(out), read_only=True) as conn:
         assert conn.execute("SELECT count(*) FROM sweep_log").fetchone()[0] == 1
     assert backup_one(tmp_path / "missing.duckdb", dest) is None
+
+
+def test_open_time_roundtrips_and_migrates(tmp_path):
+    """2026-08-02 lifecycle telemetry: open_time is stored, and a pre-change
+    DB (markets table without the column) gains it via the idempotent ALTER
+    on next open instead of crashing the positional upsert."""
+    from hyxlab.models import MarketInfo
+
+    store = Store(tmp_path / "t.duckdb")
+    store.upsert_markets([MarketInfo(
+        venue="kalshi", market_id="KXHIGHNY-26AUG02-B88.5", series="KXHIGHNY",
+        close_time=TS, open_time=datetime(2026, 6, 30, 14, tzinfo=UTC))])
+    row = store.conn.execute(
+        "SELECT open_time FROM markets WHERE market_id='KXHIGHNY-26AUG02-B88.5'"
+    ).fetchone()
+    assert row[0] == datetime(2026, 6, 30, 14)  # stored naive-UTC
+    store.conn.close()
+
+    # simulate a pre-change DB: drop the column, then reopen
+    import duckdb as _duckdb
+    conn = _duckdb.connect(str(tmp_path / "t.duckdb"))
+    conn.execute("ALTER TABLE markets DROP COLUMN open_time")
+    conn.close()
+    store2 = Store(tmp_path / "t.duckdb")
+    store2.upsert_markets([MarketInfo(
+        venue="kalshi", market_id="KXHIGHNY-26AUG03-B89.5", series="KXHIGHNY",
+        close_time=TS, open_time=TS)])
+    n = store2.conn.execute(
+        "SELECT count(*) FROM markets WHERE open_time IS NOT NULL").fetchone()[0]
+    assert n == 1  # migrated column, upsert works; pre-change row stays NULL

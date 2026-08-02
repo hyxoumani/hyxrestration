@@ -107,3 +107,45 @@ def test_kalshi_get_trades_reports_truncation():
 
     rows, truncated = kalshi.get_trades("M1", max_pages=2, session=_End())
     assert len(rows) == 1 and not truncated
+
+
+def test_to_market_info_carries_open_time():
+    m = {"ticker": "KXHIGHNY-26AUG02-B88.5", "event_ticker": "KXHIGHNY-26AUG02",
+         "close_time": "2026-08-03T00:00:00Z", "open_time": "2026-06-30T14:00:00Z"}
+    info = to_market_info(m)
+    assert info.open_time is not None and info.open_time.hour == 14
+
+
+def test_get_markets_page_loop_survives_a_429(monkeypatch):
+    """The KXNASDAQ100U hole (sweep audit 2026-08-02): a mid-pagination 429
+    must be retried after Retry-After, not escape to the caller."""
+    from collector.venues import kalshi as k
+
+    class _Resp:
+        def __init__(self, status, body=None, retry_after=None):
+            self.status_code = status
+            self._body = body or {}
+            self.headers = {"Retry-After": retry_after} if retry_after else {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                import requests
+                raise requests.HTTPError(response=self)
+
+        def json(self):
+            return self._body
+
+    responses = [
+        _Resp(429, retry_after="0"),
+        _Resp(200, {"markets": [{"ticker": "A"}], "cursor": ""}),
+    ]
+
+    class _Sess:
+        def get(self, url, params=None, timeout=None):
+            return responses.pop(0)
+
+    sleeps = []
+    monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
+    out = k.get_markets(series_ticker="KXNASDAQ100U", session=_Sess())
+    assert [m["ticker"] for m in out] == ["A"]
+    assert sleeps == [0.0]

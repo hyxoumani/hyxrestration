@@ -31,8 +31,13 @@ CREATE TABLE IF NOT EXISTS markets (
     result       VARCHAR,
     target_date  DATE,
     updated_at   TIMESTAMP,
+    -- open_time is LAST deliberately: pre-existing DBs gain it via the
+    -- idempotent ALTER below, and ALTER appends at the end — keeping the
+    -- positional column order identical for fresh and migrated DBs.
+    open_time    TIMESTAMP,
     PRIMARY KEY (venue, market_id)
 );
+ALTER TABLE markets ADD COLUMN IF NOT EXISTS open_time TIMESTAMP;
 CREATE TABLE IF NOT EXISTS snapshots (
     venue         VARCHAR NOT NULL,
     market_id     VARCHAR NOT NULL,
@@ -272,10 +277,11 @@ class Store:
                 i.result,
                 i.target_date,
                 now,
+                _naive_utc(i.open_time),
             )
             for i in infos
         ]
-        self.conn.executemany("INSERT OR REPLACE INTO markets VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+        self.conn.executemany("INSERT OR REPLACE INTO markets VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def insert_snapshots(self, snaps: list[Snapshot]) -> None:
         rows = [

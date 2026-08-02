@@ -39,6 +39,40 @@ _MONTHS = {
 from hyxlab.models import MarketInfo, Snapshot  # noqa: E402
 
 
+def _get_with_429_retry(
+    sess: requests.Session,
+    url: str,
+    params: dict[str, Any],
+    timeout: int = 30,
+    tries: int = 4,
+) -> requests.Response:
+    """GET honoring 429 Retry-After with capped exponential fallback.
+
+    Measured live defect (sweep audit 2026-08-02): a 429 inside the
+    get_markets page loop escaped to run_sweep's except, so the sweep of
+    KXNASDAQ100U failed 5 consecutive days without advancing its watermark —
+    4,947 closed markets unarchived while inside Kalshi's ~60-90d purge
+    window. The candles path had per-request 429 handling; the markets page
+    loop did not.
+    """
+    import time as _time
+
+    delay = 5.0
+    for attempt in range(tries):
+        resp = sess.get(url, params=params, timeout=timeout)
+        if resp.status_code != 429 or attempt == tries - 1:
+            resp.raise_for_status()
+            return resp
+        retry_after = resp.headers.get("Retry-After")
+        try:
+            wait = float(retry_after) if retry_after else delay
+        except ValueError:
+            wait = delay
+        _time.sleep(min(wait, 60.0))
+        delay *= 2
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def get_markets(
     series_ticker: str | None = None,
     status: str = "open",
@@ -56,8 +90,7 @@ def get_markets(
             params["series_ticker"] = series_ticker
         if cursor:
             params["cursor"] = cursor
-        resp = sess.get(f"{BASE}/markets", params=params, timeout=30)
-        resp.raise_for_status()
+        resp = _get_with_429_retry(sess, f"{BASE}/markets", params)
         body = resp.json()
         out.extend(body.get("markets", []))
         cursor = body.get("cursor") or ""
@@ -231,6 +264,7 @@ def to_market_info(m: dict[str, Any]) -> MarketInfo:
         cap_strike=m.get("cap_strike"),
         result=m.get("result", "") or "",
         target_date=parse_event_date(event) if event else None,
+        open_time=_parse_ts(m.get("open_time")),
     )
 
 

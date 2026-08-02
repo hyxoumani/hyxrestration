@@ -40,6 +40,16 @@ DEFAULT_CATEGORIES = [
     "Science and Technology",
     "Health",
     "World",
+    # Widened 2026-08-02 (breadth audit, owner infrastructure-first
+    # directive): Crypto alone is ~29% of exchange notional ($7.7M/wk, 77
+    # series) with ZERO archive coverage — uncalibratable forever without
+    # settlement+candle capture. Collection is measurement, not trading:
+    # CLAUDE.md still marks these families UNCALIBRATED = UNTRADEABLE for
+    # the live agent. Sports/Entertainment/Politics stay excluded — that
+    # is a standing USER-CONFIRMED decision (2026-07-08), not a default.
+    "Crypto",
+    "Exotics",
+    "Mentions",
 ]
 
 MARKETS_PAUSE_S = 0.2  # empirical safe pacing (data_contracts.md)

@@ -23,6 +23,9 @@ class MarketInfo:
     cap_strike: float | None = None
     result: str = ""  # "" until settled, else "yes" | "no"
     target_date: date | None = None  # weather markets: local date measured
+    open_time: datetime | None = None  # listing/open ts (lifecycle telemetry,
+    # 2026-08-02: previously parsed by sweep.py for the candle range and
+    # DISCARDED — without it no new-listing or time-structure study is possible)
 
 
 @dataclass(frozen=True)
