@@ -1,6 +1,150 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-02 08:35 UTC (QA WAS THE ONE RUNNABLE STANDING REPORT
+Updated: **2026-08-02 23:00 UTC (THE ATLAS GATE OPENED AND THE STRICTEST
+TIER HELD FOR A FOURTH READING — THEN THE NEW CATEGORY THAT ARRIVED
+TODAY FLAGGED AN IMPOSSIBLE GAP, AND CHASING IT FOUND THAT EVERY TIER IN
+THE REPORT BOUNDS CORRELATION AND NONE OF THEM BOUNDS WHETHER `implied`
+WAS A PRICE. TWENTY-FIRST INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: A
+WIDE BOOK IS NOT A PRICE — AND THE CONTAMINATION RISES WITH STRICTNESS,
+SO THE TIER THIS LOG TRUSTS MOST IS THE DIRTIEST ONE.** Gate check
+first, hard rather than estimated (`systemctl list-timers`, `date -u`
+22:47 — journald prints CDT): the kalshi sweep fired 08-02 11:10 UTC and
+the last atlas ran 08-01 14:22, so **the atlas gate had OPENED** and
+atlas was the one runnable standing report — ladder rung 1. Weather
+bracket #7 is 08-03 ~02:15; econ needs >=336h (next ~08-10); QA next
+08-03 07:00. **HOUSEKEEPING FIRST, AND IT WAS REAL**: six commits sat
+unpushed (28db2af..de3bc83) from passes that shipped code without
+updating this log — suite green at 431, ruff clean, pushed. **THE ATLAS
+RUN**: `reports/atlas/20260802T225939.json`. Tiers 98->101 flagged,
+64->66 robust, 19->19 day-robust, and the strictest tier **6 -> 6
+day-weighted with IDENTICAL MEMBERSHIP, churn 0, zero oscillators, for a
+FOURTH consecutive reading** (`tier_stability` reads `readings: 3` prior
+distinct data states, self excluded). **READ THE UNIVERSE BEFORE THE
+TIER COUNT, THOUGH**: today's category widening (d6cc21d) added **two
+categories that existed in no prior reading** — Crypto (25,903 settled)
+and Mentions (549) — and settled markets jumped 137,922 -> 165,814. Tier
+counts across that boundary are not like-for-like. Deciles are absolute
+price bins (`floor(mid*10)`), NOT population quantiles, so the new
+categories cannot have moved any existing bucket's boundary; that part
+is clean and was checked in the SQL rather than assumed. **THE FINDING,
+AND IT STARTED AS A LEAD I DID NOT BELIEVE**: `Crypto|24h|d4` entered the
+flagged AND cluster-robust tiers at implied **0.4812 against realized
+0.0446**. PROBED BEFORE REPORTING, and it is an artifact: **all 202 of
+its observations have spread > 0.5, median 0.95.** They are six BNB
+ladders of ~35 strikes with exactly one YES each, so realized 0.045 is
+the ladder base rate and implied 0.48 is the midpoint of an EMPTY BOOK —
+bid ~0.01, ask ~0.96. **THEN THE LOAD-BEARING HALF, FOUND BY ASKING
+WHETHER THIS WAS A NEW-CATEGORY PROBLEM. IT IS NOT, AND IT RUNS THE
+WRONG WAY.** The share of observations with spread > 0.5 measured across
+the whole archive: **4.6% flagged -> 5.3% cluster-robust -> 18.1%
+day-robust -> 34.2% day-weighted** (at spread > 0.2: 11.3% -> 13.0% ->
+58.6% -> **71.9%**). **The strictest tier is the most contaminated tier
+in the report.** The mechanism is not coincidence: `mid` is (bid+ask)/2,
+so an empty book manufactures an implied near 0.5 against whatever the
+ladder's true base rate is — which IS a large implied-minus-realized gap
+— and every tier selects on gap size. The crossed-candle gate and the
+0.995/0.005 sentinel were both built to exclude empty books and each
+tests a **CORNER, not a WIDTH**, so bid 0.05 / ask 0.95 sails through
+both. And statistical strictness cannot reach it, because the artifact
+is **systematic, not noisy**: an empty book is stably empty, so more days
+of it TIGHTEN the Wilson interval and make the bucket MORE robust.
+**WHICH REFRAMES THIS LOG'S OWN ZERO-OSCILLATION HEADLINE**: identical
+day-weighted membership across four readings is exactly what an artifact
+looks like. Stability was being read as evidence for the signature; it
+is equally evidence for an empty book. INSTRUMENT SHIPPED (6f26210):
+`flagged_quoted` re-runs the strictest test on the subsample whose books
+were two-sided (`spread <= 0.20`, chosen because a wider book puts more
+ambiguity on `implied` than the **0.08–0.19** of every gap this report
+has ever flagged — a bound wider than the effect is not a bound),
+requiring the same MIN_N and the **same SIGN**; buckets keep their
+original decile, since the question is whether THIS bucket's flag is
+carried by quoted books, not what a re-binned population would say.
+Every bucket now reports `median_spread`/`mean_spread`/`wide_share`
+unconditionally, so contamination is readable where no tier selected it,
+and the printed summary breaks wide-share out **per tier** — the rise
+with strictness is invisible from any single tier's rows. Six regression
+tests; the load-bearing one runs identical outcomes, day balance and
+implied through wide and tight books and asserts the wide one clears
+every Wilson tier while FAILING the quoted tier, so a width-blind
+implementation fails on the contrast rather than on a missing key.
+Verified by mutation, five: dropping the sign agreement, dropping the
+MIN_N bar, a width-blind filter, taking the spread from a different
+candle than the mid, and 0.0-instead-of-None. **ONE MUTATION SURVIVED
+AND THE TEST WAS WRONG, NOT THE CODE**: 0.0-instead-of-None passed
+because the assertion sat on a fixture that HAS quoted books, so
+`quoted_n == 0` was never reached — the untriggered-path lesson from
+08-02 02:50, in my own test. Moved onto the all-wide fixture, where the
+path is guaranteed; it now reddens exactly that test (59e5e32). Suite
+431->436, ruff clean, pushed. **NO PROMOTE, verified rather than
+assumed**: `grep` over `scripts/systemd/` shows no unit references atlas.
+**VALIDATED IN THE REAL PIPELINE, AND THE RESULT IS THE HEADLINE:
+`flagged_quoted` reads ZERO. Not one of the six day-weighted survivors
+survives on quoted books** — and the three ways of failing are different
+and must not be pooled: **REFUTED (1)** — `Financials|6h|d2`, 373 quoted
+observations, gap **flips sign** −0.1275 -> **+0.0179**; **NOT
+SIGNIFICANT (1)** — `Financials|1h|d2`, 458 quoted observations, ample
+evidence, gap collapses −0.1508 -> −0.0446 and stops excluding;
+**SILENT (4)** — Climate 1h d1, Economics 1h d2/d3/d4, all with
+quoted_n 83–146 against the 200 bar, which is silence, not a rejection.
+**THE PATTERN ACROSS ALL SIX IS THE ONE THE ARTIFACT PREDICTS AND IT IS
+NOT ITSELF A TEST**: every single gap shrinks toward zero once empty
+books are removed (−0.0786->−0.0424, −0.1271->−0.0838,
+−0.1434->−0.0153, −0.1900->−0.0776, −0.1508->−0.0446,
+−0.1275->+0.0179), some by 10x. **STATED AT THE STRENGTH THE DATA
+SUPPORTS**: this does NOT prove the longshot-fade signature is an
+artifact — four of six buckets have too few quoted observations to
+speak. It does mean the signature is **not currently supported by any
+bucket with quoted evidence**, and the two that had enough evidence both
+declined to confirm it. **AN HONEST LIMITATION, NAMED RATHER THAN
+TUNED**: MIN_N=200 on the quoted subsample leaves most buckets silent,
+and lowering it to reach a verdict would be fitting the threshold to the
+answer. This is now **data-gated**: it needs quoted observations to
+accumulate. Some buckets already have power (`Financials|6h|d6` 932
+quoted of 1,378; `Financials|6h|d1` 920 of 1,948; `Commodities|6h|d1`
+510 of 645), so the instrument is not toothless — it is the
+day-weighted six specifically that are thin. PRACTICAL RULE, joining
+a-skipped-check-is-not-a-passed-one /
+an-untriggered-path-is-not-an-unreached-one /
+unobserved-is-not-unobservable /
+read-`tier_stability`-before-any-atlas-count /
+shadow-coverage-before-shadow-equity / NULL-guard-is-not-a-range-
+predicate / paying-is-not-retiring / `underlying_sign_p` /
+`flagged_day_weighted` / `new_share_vs_all` / `top_day_share` /
+connection-scoped-`seq`: **a wide book is not a price — read
+`median_spread` and `wide_share` before reading any implied-minus-
+realized gap, because (bid+ask)/2 on an empty book manufactures exactly
+the gap the tiers select on. A gate that tests a CORNER (crossed,
+0.995/0.005) does not test a WIDTH. And statistical strictness cannot
+launder a systematic artifact: an empty book is stably empty, so more
+evidence makes it look MORE robust and zero tier oscillation is what an
+artifact looks like, not what a finding looks like.** **THE OPERATIONAL
+ITEM, AND IT IS THE HIGHEST-VALUE EVENT ON THE BOARD — DO NOT PROMOTE
+BEFORE 2026-08-03 05:00 UTC.** `shadow_coverage` reads the live run
+`20260802T204103` at 2.11h with `h_to_1st` **6.18h**: its first market
+close is **08-03 04:59:00 UTC**, and 642 fills sit correctly `pending`,
+not 0.0. **In 38 archived runs this archive has never once observed an
+outcome end to end** (recent-5 pooled coverage 0.0 over 3,015 genuinely
+missed fills), and at 6.18h this is by a wide margin the shortest
+shortfall ever recorded — every prior run needed 8–27h. The last
+promote (20:41 UTC, stable at 3bba15b) killed the previous holder of
+that title. **THE SEQUENCING**: promote in the **08-03 05:00–07:00 UTC**
+window — after the first outcome observation, before QA at 07:00 — which
+also lands ahead of the 05:00 poly sweep's 13.7–15.8h contention window,
+where the un-promoted capture-hole fix (6dcdcb7) pays the most. That fix
+plus de3bc83/16921c3 are pushed but NOT promoted; the QA fix (1105e8e)
+already is. Cost of waiting is ~6h of a bounded, measured collector-drop
+defect (69 dropped cycles in the last 24h, unchanged rate) against the
+first end-to-end observation in the archive's history. NEXT PASS: the
+**08-03 04:59 outcome then the 05:00–07:00 promote window** is the
+operational ladder; weather bracket #7 is 08-03 ~02:15 (pooled 11 over /
+10 under, k=21, p=0.5000); the 08-03 11:10 sweep re-opens the atlas gate
+for the FIFTH reading, now with `flagged_quoted` carried and one prior
+reading to compare against. Still open: shadow position continuity
+across restart (prerequisite `shadow_settlements` SHIPPED); the quoted
+tier is data-gated on quoted-observation accumulation. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-08-02 08:35 UTC (QA WAS THE ONE RUNNABLE STANDING REPORT
 AND ITS "ALL CHECKS PASS" COVERED HALF THE CHECKS — THE ARCHIVE HALF HAS
 BEEN SKIPPED ON 10 OF THE LAST 14 RUNS, AND THE CAUSE IS A RACE MY OWN
 TIMERS LOSE BY ~1 SECOND, EVERY DAY, BY CONSTRUCTION. TWENTIETH INSTANCE
