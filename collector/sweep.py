@@ -58,6 +58,17 @@ DEFAULT_CATEGORIES = [
 MARKETS_PAUSE_S = 0.2  # empirical safe pacing (data_contracts.md)
 CANDLES_PAUSE_S = 0.35
 
+# Per-burst open budget, deliberately far above open_retry's 60s default.
+# Releasing between series has a cost the old whole-run hold did not: a
+# READER can now get in, and DuckDB excludes a writer while any reader is
+# attached. A long atlas/backtest/simui read (minutes over a 4.5GB
+# archive) would otherwise kill the sweep at its next flush. 5 minutes
+# outlasts every standing report measured to date; past that the sweep
+# exits 75 and the next timer firing resumes from the watermark, so the
+# failure mode is a delayed sweep, never a lost one.
+BURST_OPEN_RETRIES = 150
+BURST_OPEN_DELAY_S = 2.0
+
 
 @contextmanager
 def writer_burst(db: str, lock_file: str | None = None):
@@ -87,7 +98,9 @@ def writer_burst(db: str, lock_file: str | None = None):
     lock_file = lock_file or LOCK_FILE
     with open(lock_file, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        store = open_retry(db)  # readers (QA/doctor/backtest) don't take the flock
+        # readers (QA/doctor/backtest) don't take the flock, so the open
+        # can still lose to one — hence the widened budget above.
+        store = open_retry(db, retries=BURST_OPEN_RETRIES, delay=BURST_OPEN_DELAY_S)
         try:
             yield store
         finally:

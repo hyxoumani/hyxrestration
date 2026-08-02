@@ -162,6 +162,30 @@ def test_sweep_series_with_no_markets_still_logs_under_a_burst(tmp_path, monkeyp
         store.close()
 
 
+def test_burst_open_budget_outlasts_a_long_reader(tmp_path, monkeypatch):
+    """Releasing between series lets a READER in, and DuckDB excludes a
+    writer while one is attached. The burst must wait out a multi-minute
+    report rather than dying at its next flush — a cost the old whole-run
+    hold did not have."""
+    assert sweep.BURST_OPEN_RETRIES * sweep.BURST_OPEN_DELAY_S >= 300
+
+    seen = {}
+
+    def fake_open_retry(db, *, read_only=False, retries=30, delay=2.0):
+        seen["retries"], seen["delay"] = retries, delay
+        from hyxlab.store import Store
+
+        return Store(db)
+
+    monkeypatch.setattr(sweep, "open_retry", fake_open_retry)
+    with sweep.writer_burst(str(tmp_path / "t.duckdb"), lock_file=str(tmp_path / "w.lock")):
+        pass
+    assert seen["retries"] * seen["delay"] >= 300, (
+        "writer_burst fell back to open_retry's 60s default; a long reader "
+        "would kill the sweep at its next flush"
+    )
+
+
 def test_writer_burst_releases_the_lock_on_exception(tmp_path):
     """A burst that raises must not leave the lock held — otherwise one bad
     series wedges the collector for the rest of the sweep."""
