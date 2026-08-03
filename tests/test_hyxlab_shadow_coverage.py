@@ -440,20 +440,25 @@ def test_live_run_pending_on_settlement_is_censoring_not_failure():
 
 
 def test_pooled_settlement_recomputes_from_counts_not_run_ratios():
-    """Unit of counting. One run with a single settled fill and one with
-    999 unsettled fills pool to ~0.001, not to the 0.5 an average of the
-    two per-run ratios would give."""
+    """Unit of counting. One run with THREE settled fills and one with 997
+    unsettled fills pool to 0.003, not to the 0.5 an average of the two
+    per-run ratios would give.
+
+    Three and not one: with a single settled fill the pooled sum and a
+    per-run `any settled` flag are numerically identical, so the fixture
+    could not tell summing from counting-runs — a mutation capping each
+    run's contribution at 1 survived the first version of this test."""
     runs = [("small", T0), ("big", T0)]
-    fills = [("small", "S", 10.0, 0.5)]
-    fills += [("big", f"B{i}", 10.0, 0.5) for i in range(999)]
+    fills = [("small", f"S{i}", 10.0, 0.5) for i in range(3)]
+    fills += [("big", f"B{i}", 10.0, 0.5) for i in range(997)]
     equity = [("small", T0 + timedelta(hours=6)), ("big", T0 + timedelta(hours=6))]
-    markets = [("S", T0 + timedelta(hours=1), "yes", T0 + timedelta(hours=2))]
-    markets += [(f"B{i}", T0 + timedelta(hours=1), "", T0 + timedelta(hours=1)) for i in range(999)]
+    markets = [(f"S{i}", T0 + timedelta(hours=1), "yes", T0 + timedelta(hours=2)) for i in range(3)]
+    markets += [(f"B{i}", T0 + timedelta(hours=1), "", T0 + timedelta(hours=1)) for i in range(997)]
 
     pooled = build_coverage(_ledger(runs, fills, equity), _markets(markets))["pooled"]
-    assert pooled["settle_observed_fills_floor"] == 1
-    assert pooled["settle_missed_fills_floor"] == 999
-    assert pooled["settle_coverage_fills_floor"] == 0.001
+    assert pooled["settle_observed_fills_floor"] == 3
+    assert pooled["settle_missed_fills_floor"] == 997
+    assert pooled["settle_coverage_fills_floor"] == 0.003
 
 
 def test_settlement_notional_tracks_size_not_count():
