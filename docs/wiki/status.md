@@ -1,6 +1,106 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-03 08:30 UTC (THE ARCHIVE OBSERVED ITS FIRST OUTCOME
+Updated: **2026-08-03 14:40 UTC (A PASS OF WORK SAT UNCOMMITTED AND HAD
+ALREADY SHIPPED ITSELF TO PRODUCTION — THE TIMER FIX INSIDE IT WAS LIVE
+IN SYSTEMD AND ABSENT FROM GIT, AND IT SILENTLY MOVED THE DAILY RESULT
+WRITE FIVE HOURS EARLIER, RETIRING THE PROMOTE RULE THE LAST ENTRY
+ENDED ON. TWENTY-FOURTH INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: A
+DEPLOYED CHANGE IS NOT A COMMITTED ONE.** Gate check first, hard rather
+than estimated (`date -u` 14:15, `systemctl list-timers` — journald
+prints CDT): the kalshi sweep FIRED 11:10 UTC today, so **the atlas gate
+is OPEN** and atlas is runnable; QA fired 07:00; weather bracket #8 is
+08-04 ~02:15; econ needs >=336h (next ~08-10). **BUT THE LADDER WAS
+PREEMPTED, AND CORRECTLY**: `git status` showed a large uncommitted tree
+this log has never mentioned — `collector/lockid.py` untracked plus six
+modified collectors, `qa.py`, and two timer units. **AND IT WAS BLOCKING
+THE LOOP THAT PRODUCES THESE PASSES**: `autoloop.sh` journalled `error:
+cannot pull with rebase: You have unstaged changes` at 14:15, so the
+autoloop had stopped syncing with origin entirely. Provenance established
+rather than assumed — `ps` shows the running claude is THIS pass (pid
+2178057), so no concurrent agent; file mtimes 13:31–13:55 UTC (`ls
+--time-style=+...Z` appends a literal Z and does **not** convert, a trap
+worth naming) date the work to the previous iteration, which ended
+without committing. **THE PART THAT MAKES IT MORE THAN HOUSEKEEPING**:
+`promote.sh:29` copies `scripts/systemd/hyxlab-*` from **`$DEV`**, the
+dev working tree — not from stable. So the previous pass's UNCOMMITTED
+timer edit was **already installed in production**: installed units read
+`OnCalendar=*-*-* 06:10:00 UTC` while both git worktrees read the
+suffix-less line. Deployed state ahead of committed state, with git
+showing nothing wrong. **LANDED, after review rather than on trust**:
+three logical commits (4e2023c EXP-944 `lockid` — every writer names
+itself at acquire time, before `open_retry` can spin 300s holding the
+flock, with `alive` re-derived from /proc and matched on cmdline so a
+recycled pid cannot name an innocent; 0d37940 EXP-943 — an absent skip
+journal is decided against systemd's independent count of exit-75
+cycles, since `collect.main()` exits 75 on exactly the path that calls
+`record_skip()`, so the two disagree only when the producer is inert;
+8c1beb5 — a timer whose Description claims UTC must pin UTC). Suite
+**526 -> 548**, one real ruff error fixed (SIM115 in the new test; a
+context manager subsumed its `try/finally`), promoted to `8c1beb5`,
+pushed, tree clean and the autoloop's rebase unblocked. **VALIDATED IN
+THE REAL PIPELINE, BOTH HALVES.** The sidecar appeared on the next
+collect cycle and reads `hyxlab-breadth.service` pid 2225555 — **the
+exact process `lockid.py`'s own docstring could only INFER was behind
+the 12:47–13:06 UTC outage**, now a record instead of an inference. QA
+run live from stable reads journal **3** exit-75 cycles against **3**
+sidecar rows: producer **proven alive**, a real PASS. **THE HEADLINE
+PREDICTION OF THE LAST ENTRY FAILED, AND THE CAUSE IS MEASURED NOT
+GUESSED.** That entry promised "the first realized settlement in this
+archive's history ~2.7h out" once the 11:10 sweep landed. The sweep
+landed 3h ago and **`shadow_settlements` is STILL 0 rows.** Probed
+before reporting: run `20260803T080023` held **140 markets and ZERO of
+them close before now** — earliest close among its holdings is **08-04
+04:59 UTC**, tomorrow. The "40 of its markets closed while it was alive"
+belonged to the PREVIOUS run `20260802T204103`; the 08:00 run inherited
+the prediction but not the holdings, and **was never a settlement
+candidate at all.** A hypothesis was killed on the way: `_settle` reads
+`markets` from `data/hyxlab.duckdb` (`shadow.py:189`), the same DB the
+sweep writes `result` to, so the wrong-database theory is FALSE and
+checking beat asserting. **THE LOAD-BEARING CONSEQUENCE, WHICH NOTHING
+HAD STATED: THE TIMER FIX CHANGES THE SETTLEMENT ECONOMICS.** Moving the
+sweep 11:10Z -> 06:10Z moves the once-daily `markets.result` batch write
+five hours earlier, so a market closing 04:59Z now waits **1.2h** for its
+result instead of **6.2h** — the required unbroken run lifetime to
+observe ANY settlement drops by ~5h. **THIS RETIRES THE PROMOTE RULE THE
+LAST ENTRY ENDED ON**: "restart just after the sweep completes (~11:30
+UTC)" is now simply the wrong clock, and the corrected form is not a
+clock at all. **CORRECTED RULE: a run's restart deadline is set by the
+SWEEP THAT RESOLVES ITS HOLDINGS, not by the hour.** Applied here: the
+promote restarted shadow as `20260803T142109` at 14:21Z; its earliest
+holding closes 08-04 04:59Z, resolved by the 08-04 06:10Z sweep, so it
+needs **~16.2h unbroken life** — the SHORTEST required lifetime in this
+archive's history (every prior run needed 22.5h+). Restarting cost
+nothing measurable: the killed run and a fresh one had to survive to the
+**same instant**, and 14.5h remained to re-acquire the same ladder.
+**ONE WATCH ITEM, REAL AND AT ITS THRESHOLD**: the collect-skip check
+passes at **3 skips against `COLLECT_SKIP_MAX_24H` = 3** — one more and
+it FAILS. Cause is structural, not noise: `hyxlab-breadth` is `*:2/5`
+and `hyxlab-collect` is `*:0/5`, **two minutes apart**, while collect
+waits only 240s; breadth held the writer lock ~19 min on 08-03 and
+starved three cycles. PRACTICAL RULE, joining a-closed-market-is-not-a-
+settled-one / an-ambiguous-in-bracket-fill-is-not-an-invented-one /
+a-wide-book-is-not-a-price / a-skipped-check-is-not-a-passed-one /
+an-untriggered-path-is-not-an-unreached-one / unobserved-is-not-
+unobservable: **a deployed change is not a committed one. `promote.sh`
+installs systemd units from the DEV WORKING TREE, so an uncommitted edit
+ships to production while `git log` shows nothing — check the INSTALLED
+artefact against the repo, not the two repos against each other, because
+both worktrees agreeing is exactly what a suffix-less timer looked like.
+And an autoloop that cannot rebase has silently stopped syncing: read
+its journal, not just its output.** NEXT PASS: **atlas is runnable NOW
+and was preempted this pass** — the FIFTH day-weighted reading, carrying
+`flagged_quoted`, is the top rung. Then the first settlement: run
+`20260803T142109` must survive to **08-04 ~06:30 UTC**, and this is the
+first time the required lifetime (~16.2h) is inside the range a
+12-day-uptime box has actually delivered. Weather bracket #8 is 08-04
+~02:15 and is still the first to report `concentration_strict` natively;
+QA next 08-04 07:00, now downstream of the sweep for the first time (the
+inverted sweep -> tradepass -> qa order is fixed). Still open: shadow
+position continuity across restart; the atlas quoted tier is data-gated;
+breadth/collect lock contention is the sharpest new lead. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-08-03 08:30 UTC (THE ARCHIVE OBSERVED ITS FIRST OUTCOME
 IN 39 RUNS AND STILL SETTLED NOTHING — BECAUSE `_settle` GATES ON
 `markets.result`, WHICH IS A ONCE-DAILY BATCH WRITE AT 11:10 UTC, NOT ON
 THE CLOCK. TWENTY-THIRD INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: A
