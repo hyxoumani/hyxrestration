@@ -215,7 +215,37 @@ def _direction_tier(nets: dict[str, int], agg: int) -> dict:
     }
 
 
-def concentration_by_market(orders: list[VirtualOrder]) -> dict:
+def over_award(o: VirtualOrder, bound: str) -> bool:
+    """Does the crossing rule award a fill the queue evidence does not support?
+
+    The queue evidence is a BRACKET, not a point, so "unsupported" has two
+    readings and they are not the same claim:
+
+    - `bound="pess"` — the crossing rule fills where the PESSIMISTIC floor does
+      not. This is an UPPER bound on over-award: it charges the sim for every
+      order the floor misses, including those the optimistic ceiling fills,
+      which lie INSIDE the bracket and are exactly the cases the bracket was
+      built to call unknown.
+    - `bound="opt"` — the crossing rule fills where even the OPTIMISTIC ceiling
+      does not. This is a LOWER bound: no queue model supports these, so they
+      are unambiguously invented.
+
+    Because `filled_pess <= filled_opt` always (verified: 0 violations in
+    21,168 archived orders), the pess reading is a superset of the opt reading
+    for every order. The difference is therefore ONE-SIDED — the loose test can
+    only ever read MORE over, never less — so a direction test run against the
+    floor alone is biased toward "the sim over-awards" by construction, not by
+    the data. Read both.
+
+    The UNDER side needs no such split: an order the sim declines while even
+    the floor fills it is a forgone real fill under either bound.
+    """
+    if o.crossed_at is None:
+        return False
+    return o.tracker.filled_opt == 0 if bound == "opt" else o.tracker.filled_pess == 0
+
+
+def concentration_by_market(orders: list[VirtualOrder], bound: str = "pess") -> dict:
     """Is the crossing-vs-queue disagreement a fill-model bias, or one market?
 
     The headline bracket compares `crossing_filled` against the queue bounds
@@ -251,12 +281,19 @@ def concentration_by_market(orders: list[VirtualOrder]) -> dict:
     `direction_*_significant` — a majority is not a measurement, and at the
     handful of independent units a bracket actually has, a bare majority is
     usually a coin flip. See `_direction_tier`.
+
+    `bound` selects which end of the queue bracket decides an over-award (see
+    `over_award`). The default "pess" is kept so archived reports stay
+    comparable; the report also carries the "opt" reading under
+    `concentration_strict`, and the two are a bracket on the DIRECTION exactly
+    as pess/opt are a bracket on the fill count. A direction that holds only at
+    the loose end is a property of the floor, not of the fill models.
     """
     per: dict[str, list[int]] = {}
     for o in orders:
         e = per.setdefault(o.market_id, [0, 0, 0])
         e[0] += 1
-        if o.crossed_at is not None and o.tracker.filled_pess == 0:
+        if over_award(o, bound):
             e[1] += 1
         elif o.crossed_at is None and o.tracker.filled_pess > 0:
             e[2] += 1
@@ -317,9 +354,7 @@ def series_composition(orders: list[VirtualOrder]) -> dict[str, int]:
     return dict(sorted(comp.items(), key=lambda kv: -kv[1]))
 
 
-def select_markets(
-    conn, since: datetime, top_n: int, series: list[str] | None = None
-) -> list[str]:
+def select_markets(conn, since: datetime, top_n: int, series: list[str] | None = None) -> list[str]:
     """Top-N Kalshi markets by stream-print count in the window that also
     carry L2 deltas (a bracket needs both tape and book). When `series` is
     given, restrict to markets whose series prefix (before the first '-')
@@ -445,7 +480,9 @@ def main() -> None:
     crossed = [o for o in all_orders if o.crossed_at]
     pess = [o for o in all_orders if o.tracker.filled_pess > 0]
     opt = [o for o in all_orders if o.tracker.filled_opt > 0]
-    cross_only = [o for o in all_orders if o.crossed_at and o.tracker.filled_pess == 0]
+    cross_only = [o for o in all_orders if over_award(o, "pess")]
+    unsupported = [o for o in all_orders if over_award(o, "opt")]
+    inside = [o for o in cross_only if o.tracker.filled_opt > 0]
     pess_only = [o for o in all_orders if not o.crossed_at and o.tracker.filled_pess > 0]
     composition = series_composition(all_orders)
     out_dir = Path(args.out)
@@ -457,15 +494,31 @@ def main() -> None:
         "queue_pess_filled": len(pess),
         "queue_opt_filled": len(opt),
         "crossing_but_not_pess": len(cross_only),
+        "crossing_but_not_opt": len(unsupported),
+        "inside_bracket": len(inside),
         "pess_but_not_crossing": len(pess_only),
         "market_composition": composition,
         "concentration": concentration_by_market(all_orders),
+        "concentration_strict": concentration_by_market(all_orders, bound="opt"),
         "independence": independence_vs_prior(out_dir, all_orders, composition),
         "note": (
             "crossing rule = what backtests award today; queue bounds ="
             " what L2+tape evidence supports (pess is the floor)."
             " crossing_but_not_pess counts fills the sim may be inventing;"
             " pess_but_not_crossing counts real fills the sim forgoes."
+            " 'may be' is load-bearing: the queue evidence is a BRACKET, so an"
+            " order the floor misses but the ceiling fills lies INSIDE it and is"
+            " ambiguous, not invented. Read the three-way split —"
+            " crossing_but_not_opt (no queue model fills it: unambiguously"
+            " invented), inside_bracket (ambiguous), pess_but_not_crossing"
+            " (unambiguously forgone). Since filled_pess <= filled_opt always,"
+            " crossing_but_not_pess is an UPPER bound on over-award and"
+            " crossing_but_not_opt is the LOWER bound, so any direction test run"
+            " against the floor alone leans over BY CONSTRUCTION. concentration"
+            " uses the floor (unchanged, for cross-report comparability);"
+            " concentration_strict re-runs every tier against the ceiling. A"
+            " direction significant in one and not the other is a property of"
+            " which end of the bracket was charged, not of the fill models."
             " independence.new_share is the fraction of orders not scored by"
             " the prior comparable run — a low share means this reading is"
             " mostly the prior one re-measured, not a confirmation of it."

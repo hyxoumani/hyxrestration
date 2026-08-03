@@ -13,6 +13,7 @@ from simulator.queuescore import (
     concentration_by_market,
     event_ticker,
     independence_vs_prior,
+    over_award,
     score_market,
     select_markets,
     series_composition,
@@ -131,10 +132,14 @@ def test_series_composition_groups_by_prefix_high_to_low():
 
 
 class _Tracker:
-    """Minimal stand-in carrying only the field concentration reads."""
+    """Minimal stand-in carrying only the fields concentration reads.
 
-    def __init__(self, filled_pess):
+    `filled_opt` defaults to `filled_pess` — a tracker with no ambiguous zone,
+    which is what every pre-bracket-split test assumes."""
+
+    def __init__(self, filled_pess, filled_opt=None):
         self.filled_pess = filled_pess
+        self.filled_opt = filled_pess if filled_opt is None else filled_opt
 
 
 def _disagreeing(mid, kind, i):
@@ -504,3 +509,125 @@ def test_independence_vs_all_unions_only_comparable_priors(tmp_path):
     # only the one econ prior is comparable, and it does not carry this order
     assert res["priors_compared"] == 1
     assert res["new_share"] == 1.0 and res["new_share_vs_all"] == 1.0
+
+
+def _bracketed(mid, kind, i):
+    """A virtual order in one of the three over/under states the bracket has.
+
+    `unsupported` = crossed, no queue model fills it (invented under either
+    bound); `inside` = crossed, the floor misses it but the ceiling fills it
+    (ambiguous — the bracket's whole point); `forgone` = not crossed but even
+    the floor fills it (a real fill the sim declines, under either bound).
+    """
+    fills = {"unsupported": (0.0, 0.0), "inside": (0.0, 5.0), "forgone": (5.0, 5.0)}
+    pess, opt = fills[kind]
+    return VirtualOrder(
+        mid,
+        "yes",
+        0.4,
+        5.0,
+        T0 + timedelta(minutes=i),
+        tracker=_Tracker(pess, opt),
+        crossed_at=T0 + timedelta(minutes=i) if kind != "forgone" else None,
+    )
+
+
+def test_an_ambiguous_in_bracket_fill_is_not_an_invented_one():
+    """LOAD-BEARING. Identical orders, identical outcomes, identical day
+    balance — only the END OF THE BRACKET charged for an over-award differs,
+    and the direction verdict REVERSES.
+
+    Five city-days, each with 3 orders the pessimistic floor misses but the
+    optimistic ceiling fills, plus 2 the sim declines while even the floor
+    fills them. Charged against the floor every underlying nets +1 and the run
+    reads a significant OVER; charged against the ceiling those 3 are ambiguous
+    rather than invented, every underlying nets -2, and the run reads a
+    significant UNDER. A bound-blind implementation returns the same dict twice
+    and fails on the contrast, not on a missing key.
+    """
+    orders = []
+    for u, city in enumerate(("NY", "MIA", "CHI", "AUS", "DEN")):
+        mid = f"KXHIGH{city}-26JUL27-B80.5"
+        orders += [_bracketed(mid, "inside", u * 100 + i) for i in range(3)]
+        orders += [_bracketed(mid, "forgone", u * 100 + 50 + j) for j in range(2)]
+
+    loose = concentration_by_market(orders)
+    strict = concentration_by_market(orders, bound="opt")
+
+    assert loose["net_disagreement"] == +5  # 5 x (+3 - 2)
+    assert loose["underlyings_net_over"] == 5 and loose["underlyings_net_under"] == 0
+    assert loose["underlying_sign_p"] == 0.03125
+    assert loose["direction_underlying_significant"] is True
+
+    assert strict["net_disagreement"] == -10  # 5 x (0 - 2)
+    assert strict["underlyings_net_over"] == 0 and strict["underlyings_net_under"] == 5
+    assert strict["underlying_sign_p"] == 0.03125
+    assert strict["direction_underlying_significant"] is True
+
+    # ...and they point in OPPOSITE directions off the same orders.
+    assert loose["net_disagreement"] > 0 > strict["net_disagreement"]
+
+
+def test_an_order_no_queue_model_fills_is_an_over_award_under_both_bounds():
+    """The discrimination control for the test above: tighten the bound and a
+    genuinely invented fill must NOT disappear. Otherwise a strict tier that
+    simply reads fewer over-awards everywhere would pass the contrast test."""
+    orders = [_bracketed("KXHIGHNY-26JUL27-B80.5", "unsupported", i) for i in range(4)]
+
+    assert concentration_by_market(orders)["net_disagreement"] == 4
+    assert concentration_by_market(orders, bound="opt")["net_disagreement"] == 4
+
+
+def test_the_forgone_side_is_identical_under_both_bounds():
+    """An order the sim declines while even the pessimistic floor fills it is a
+    real forgone fill under either reading — only the OVER side splits."""
+    orders = [_bracketed("KXHIGHMIA-26JUL27-B90.5", "forgone", i) for i in range(6)]
+
+    assert concentration_by_market(orders)["net_disagreement"] == -6
+    assert concentration_by_market(orders, bound="opt")["net_disagreement"] == -6
+
+
+def test_over_award_is_one_sided_so_strict_can_never_exceed_loose():
+    """`filled_pess <= filled_opt` holds by construction, so the strict
+    over-award set is a SUBSET of the loose one for every order. That is what
+    makes a floor-only direction test biased toward over rather than merely
+    noisy — the asymmetry is structural, so assert it as such."""
+    orders = [
+        _bracketed("KXHIGHNY-26JUL27-B80.5", kind, i)
+        for i, kind in enumerate(("unsupported", "inside", "forgone") * 4)
+    ]
+
+    loose = {id(o) for o in orders if over_award(o, "pess")}
+    strict = {id(o) for o in orders if over_award(o, "opt")}
+
+    assert strict < loose  # proper subset: the ambiguous orders are the gap
+    assert len(loose - strict) == 4  # exactly the four `inside` orders
+
+
+def test_default_bound_reproduces_the_archived_field_semantics():
+    """Reports written before the split must stay comparable: the unparameterised
+    call is the floor reading, byte-for-byte."""
+    orders = [
+        _bracketed("KXHIGHCHI-26JUL27-B75.5", kind, i)
+        for i, kind in enumerate(("unsupported", "inside", "forgone", "inside"))
+    ]
+
+    assert concentration_by_market(orders) == concentration_by_market(orders, bound="pess")
+    assert concentration_by_market(orders) != concentration_by_market(orders, bound="opt")
+
+
+def test_the_three_way_split_partitions_the_loose_over_award_exactly():
+    """crossing_but_not_pess = crossing_but_not_opt + inside_bracket, with no
+    order counted twice and none dropped — the arithmetic the report's new
+    fields rest on."""
+    orders = [
+        _bracketed("KXHIGHAUS-26JUL27-B99.5", kind, i)
+        for i, kind in enumerate(("unsupported", "inside", "inside", "forgone", "unsupported"))
+    ]
+
+    cross_only = [o for o in orders if over_award(o, "pess")]
+    unsupported = [o for o in orders if over_award(o, "opt")]
+    inside = [o for o in cross_only if o.tracker.filled_opt > 0]
+
+    assert len(cross_only) == len(unsupported) + len(inside)
+    assert (len(unsupported), len(inside)) == (2, 2)
