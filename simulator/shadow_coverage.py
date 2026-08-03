@@ -57,6 +57,48 @@ rather than one being chosen for you.
 reported separately, never folded into either side of the ratio — an
 unknown expiry is not evidence of coverage.
 
+CORRECTION (2026-08-03 08:20), and it bounds this report's own headline
+number. On 08-03 run `20260802T204103` became the first run in 39 to
+read a non-zero `coverage_fills` (0.1098, 343 fills) — 40 of its markets
+closed while it was alive. `shadow_settlements` was nonetheless EMPTY,
+and item 2 above is the reason it matters: coverage exists to say
+whether the settlement path could fire, and it answered a DIFFERENT
+question.
+
+`_settle` does not gate on the clock. It gates on `markets.result`, and
+`result` is not written when a market closes. The collector's 5-minute
+upsert only carries markets that are still live, so a settled result
+reaches the archive solely through the daily kalshi sweep at 11:10 UTC.
+Measured on the live archive at 08:20: every kalshi market that closed
+on 08-03 is unresolved (124 markets over 03:00–08:00 UTC), while
+everything through 08-02 21:00 is resolved. The write is a once-daily
+batch, so a market closing at 04:59 UTC waits 6.2h for its result and
+one closing at 11:30 UTC waits 23.7h — ON TOP of the close itself.
+
+So `hours_to_first_outcome` understates the lifetime a run needs before
+it can settle anything, by between 6 and 24 hours. Run
+`20260802T204103` needed to survive to 11:10 UTC (14.5h); it was
+restarted at 08:00, and its 2.62h `h_to_1st` said it had cleared the
+bar 5.4h earlier. It had cleared the CLOSE bar. Nothing settled.
+
+`settle_coverage_*` therefore partitions the same fills against the
+predicate `_settle` actually uses — was this market's result available
+before the run ended — using the identical observed/pending/missed
+three-way split. `coverage_*` keeps its close-time meaning UNCHANGED so
+archived reports stay comparable, per the `concentration` /
+`unobserved_*` precedent; the two are a bracket on WHAT WAS OBSERVED,
+and a run can pass one and fail the other.
+
+The resolution instant is not recorded, so it is BRACKETED rather than
+guessed. `markets.updated_at` is the row's LAST write, and for a settled
+market the sweep that wrote `result` is normally the last writer, so it
+is a close estimate — but it is an estimate, so the report carries both
+ends: the floor requires `updated_at <= run_end` (conservative: a row
+re-touched later reads as unsettled), the ceiling requires only that the
+market closed before run end and has a result NOW (optimistic: it
+assumes the result was there the whole time). Read them together. Where
+they disagree the answer is unknown, which is the point of a bracket.
+
 This is a bound on OTHER readings, not a verdict on any strategy.
 """
 
@@ -97,6 +139,78 @@ def _ratio(observed: float, missed: float) -> float | None:
     return round(observed / total, 4)
 
 
+#: `markets.result` values that mean the market actually resolved. An
+#: empty string is the archive's "closed but not yet swept" state and is
+#: emphatically NOT a resolution — `_settle` (sim.py) tests membership in
+#: exactly this set, so the report must too or it measures a different
+#: gate than the code it exists to watch.
+RESOLVED = ("yes", "no")
+
+
+def settled_before(end, close, result, updated_at, bound: str = "floor") -> bool:
+    """Was this market's result available to `_settle` before `end`?
+
+    The resolution instant is not recorded anywhere, so the two bounds
+    bracket it (see module docstring):
+
+      floor    `updated_at <= end`. The row's last write is at or after
+               the result write, so this can only UNDER-count: a row
+               re-touched after the run ended reads as unsettled even if
+               its result landed long before.
+      ceiling  `close <= end` and a result exists now. Assumes the
+               result was available the instant the market closed, which
+               is exactly the assumption this report was built to
+               refute — kept so the two ends can be read together.
+
+    An unresolved market is False under BOTH bounds: no bound can settle
+    a contract the archive has no result for.
+    """
+    if end is None or result not in RESOLVED:
+        return False
+    if bound == "ceiling":
+        return close is not None and close <= end
+    if updated_at is None:
+        return False
+    return updated_at <= end
+
+
+def _pool_settle(subset: list[dict], bound: str):
+    """Pool one settlement bound across runs.
+
+    Ratios are recomputed from the pooled counts, never averaged from
+    the per-run ratios — a run with three fills would otherwise weigh as
+    much as one with three thousand.
+    """
+    obs = sum(r[f"settle_observed_fills_{bound}"] for r in subset)
+    missed = sum(r[f"settle_missed_fills_{bound}"] for r in subset)
+    pending = sum(r[f"settle_pending_fills_{bound}"] for r in subset)
+    obs_v = sum(r[f"settle_observed_notional_{bound}"] for r in subset)
+    missed_v = sum(r[f"settle_missed_notional_{bound}"] for r in subset)
+    return (
+        ("observed_fills", obs),
+        ("missed_fills", missed),
+        ("pending_fills", pending),
+        ("coverage_fills", _ratio(obs, missed)),
+        ("observed_notional", round(obs_v, 2)),
+        ("missed_notional", round(missed_v, 2)),
+        ("coverage_notional", _ratio(obs_v, missed_v)),
+    )
+
+
+def _bucket(condition: bool, live: bool) -> str:
+    """The standing three-way split, shared by both partitions.
+
+    `condition` is the thing having happened by run end. If it did, the
+    run observed it. If it did not, a LIVE run has simply not got there
+    yet (censoring) and a DEAD one never will (failure). Extracted so
+    tests exercise the shipped path rather than re-deriving it — the
+    08-03 lesson from `over_award_split`.
+    """
+    if condition:
+        return "observed"
+    return "pending" if live else "missed"
+
+
 def build_coverage(
     ledger, markets_conn, recent_runs: int = RECENT_RUNS, now: datetime | None = None
 ) -> dict:
@@ -123,10 +237,13 @@ def build_coverage(
     """
     if now is None:
         now = datetime.now(UTC).replace(tzinfo=None)
-    closes = {
-        mid: ct
-        for mid, ct in markets_conn.execute(
-            "SELECT market_id, close_time FROM markets"
+    # `result`/`updated_at` come along for the settlement partition: a
+    # close is not a resolution, and the report must read the same field
+    # `_settle` reads.
+    meta = {
+        mid: (ct, res, upd)
+        for mid, ct, res, upd in markets_conn.execute(
+            "SELECT market_id, close_time, result, updated_at FROM markets"
         ).fetchall()
     }
 
@@ -134,9 +251,7 @@ def build_coverage(
     # marking after it stops trading, and using the last fill would
     # shorten the observation window and overstate the problem.
     ends = dict(
-        ledger.execute(
-            "SELECT run_id, max(ts) FROM shadow_equity GROUP BY run_id"
-        ).fetchall()
+        ledger.execute("SELECT run_id, max(ts) FROM shadow_equity GROUP BY run_id").fetchall()
     )
 
     rows = ledger.execute(
@@ -157,25 +272,38 @@ def build_coverage(
 
         obs_n = missed_n = pending_n = undated_n = 0
         obs_v = missed_v = pending_v = undated_v = 0.0
+        # Settlement partition, one counter set per bound. Same buckets,
+        # different predicate — see settled_before.
+        set_n = {b: dict(observed=0, pending=0, missed=0) for b in ("floor", "ceiling")}
+        set_v = {b: dict(observed=0.0, pending=0.0, missed=0.0) for b in ("floor", "ceiling")}
         first_close = None
+        first_resolved = None
         for market_id, qty, price in fills:
             notional = abs(qty or 0.0) * (price or 0.0)
-            close = closes.get(market_id)
+            close, result, updated_at = meta.get(market_id, (None, None, None))
             if close is None:
                 undated_n += 1
                 undated_v += notional
                 continue
             if first_close is None or close < first_close:
                 first_close = close
-            if end is not None and close <= end:
+            resolved_at = updated_at if result in RESOLVED else None
+            if resolved_at is not None and (first_resolved is None or resolved_at < first_resolved):
+                first_resolved = resolved_at
+            bucket = _bucket(end is not None and close <= end, live)
+            if bucket == "observed":
                 obs_n += 1
                 obs_v += notional
-            elif live:
+            elif bucket == "pending":
                 pending_n += 1
                 pending_v += notional
             else:
                 missed_n += 1
                 missed_v += notional
+            for bound in ("floor", "ceiling"):
+                b = _bucket(settled_before(end, close, result, updated_at, bound), live)
+                set_n[bound][b] += 1
+                set_v[bound][b] += notional
 
         life_h = None
         if end is not None and started_at is not None:
@@ -188,6 +316,21 @@ def build_coverage(
         hours_to_first = None
         if first_close is not None and end is not None and first_close > end:
             hours_to_first = round((first_close - end).total_seconds() / 3600.0, 2)
+
+        # The shortfall that actually gates settlement. None when no
+        # fill's market has a recorded resolution AT ALL — that is not a
+        # zero shortfall, it is an unknown one, and the companion
+        # `unresolved_fills` says how much of the book is in that state.
+        # Reporting 0.0 here would read as "nothing more was needed" for
+        # precisely the runs that needed the most.
+        hours_to_first_settle = None
+        if first_resolved is not None and end is not None and first_resolved > end:
+            hours_to_first_settle = round((first_resolved - end).total_seconds() / 3600.0, 2)
+        unresolved_n = sum(
+            1
+            for market_id, _q, _p in fills
+            if meta.get(market_id, (None, None, None))[1] not in RESOLVED
+        )
 
         runs.append(
             {
@@ -216,6 +359,27 @@ def build_coverage(
                 "pending_notional": round(pending_v, 2),
                 "undated_notional": round(undated_v, 2),
                 "coverage_notional": _ratio(obs_v, missed_v),
+                "hours_to_first_settleable": hours_to_first_settle,
+                "unresolved_fills": unresolved_n,
+                **{
+                    f"settle_{k}_{bound}": v
+                    for bound in ("floor", "ceiling")
+                    for k, v in (
+                        ("observed_fills", set_n[bound]["observed"]),
+                        ("missed_fills", set_n[bound]["missed"]),
+                        ("pending_fills", set_n[bound]["pending"]),
+                        (
+                            "coverage_fills",
+                            _ratio(set_n[bound]["observed"], set_n[bound]["missed"]),
+                        ),
+                        ("observed_notional", round(set_v[bound]["observed"], 2)),
+                        ("missed_notional", round(set_v[bound]["missed"], 2)),
+                        (
+                            "coverage_notional",
+                            _ratio(set_v[bound]["observed"], set_v[bound]["missed"]),
+                        ),
+                    )
+                },
             }
         )
 
@@ -241,6 +405,12 @@ def build_coverage(
             "missed_notional": round(missed_v, 2),
             "pending_notional": round(pending_v, 2),
             "coverage_notional": _ratio(obs_v, missed_v),
+            "unresolved_fills": sum(r["unresolved_fills"] for r in subset),
+            **{
+                f"settle_{k}_{bound}": v
+                for bound in ("floor", "ceiling")
+                for k, v in _pool_settle(subset, bound)
+            },
         }
 
     return {
@@ -283,14 +453,28 @@ def main() -> None:
         f" ({recent['missed_fills']} missed, {recent['pending_fills']} pending"
         f" of {recent['fills']} fills)"
     )
-    print("| run | life_h | live | fills | missed | pending | h_to_1st | cov_fills | cov_notl |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    # The settlement line is printed BESIDE the close line, never
+    # instead of it: a run can clear the close bar and settle nothing,
+    # and that gap is the whole reason this pair exists.
+    print(
+        f"[shadow_coverage] settle floor={recent['settle_coverage_fills_floor']}"
+        f" ceiling={recent['settle_coverage_fills_ceiling']}"
+        f" ({recent['unresolved_fills']} of {recent['fills']} fills in markets"
+        f" the archive has no result for)"
+    )
+    print(
+        "| run | life_h | live | fills | missed | pending | h_to_1st | cov_fills"
+        " | cov_notl | settle_lo | settle_hi | h_to_1st_settle |"
+    )
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in report["runs"][-12:]:
         print(
             f"| {r['run_id']} | {r['life_hours']} | {'yes' if r['live'] else ''}"
             f" | {r['fills']} | {r['missed_fills']} | {r['pending_fills']}"
             f" | {r['hours_to_first_outcome']} | {r['coverage_fills']}"
-            f" | {r['coverage_notional']} |"
+            f" | {r['coverage_notional']} | {r['settle_coverage_fills_floor']}"
+            f" | {r['settle_coverage_fills_ceiling']}"
+            f" | {r['hours_to_first_settleable']} |"
         )
     print(f"[shadow_coverage] written to {out}")
 

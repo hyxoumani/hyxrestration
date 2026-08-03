@@ -16,8 +16,7 @@ def _ledger(runs, fills, equity):
     conn = duckdb.connect(":memory:")
     conn.execute("CREATE TABLE shadow_runs (run_id VARCHAR, started_at TIMESTAMP)")
     conn.execute(
-        "CREATE TABLE shadow_fills (run_id VARCHAR, market_id VARCHAR,"
-        " qty DOUBLE, price DOUBLE)"
+        "CREATE TABLE shadow_fills (run_id VARCHAR, market_id VARCHAR, qty DOUBLE, price DOUBLE)"
     )
     conn.execute("CREATE TABLE shadow_equity (run_id VARCHAR, ts TIMESTAMP)")
     conn.executemany("INSERT INTO shadow_runs VALUES (?,?)", runs)
@@ -27,10 +26,19 @@ def _ledger(runs, fills, equity):
 
 
 def _markets(rows):
+    """rows: (market_id, close_time) or (market_id, close_time, result,
+    updated_at). The short form defaults to `resolved at the instant of
+    close`, which is the pre-2026-08-03 assumption this module now
+    refutes — it keeps the close-time tests reading exactly as before
+    while the settlement tests state their timing explicitly."""
     conn = duckdb.connect(":memory:")
-    conn.execute("CREATE TABLE markets (market_id VARCHAR, close_time TIMESTAMP)")
-    if rows:
-        conn.executemany("INSERT INTO markets VALUES (?,?)", rows)
+    conn.execute(
+        "CREATE TABLE markets (market_id VARCHAR, close_time TIMESTAMP,"
+        " result VARCHAR, updated_at TIMESTAMP)"
+    )
+    full = [r if len(r) == 4 else (r[0], r[1], "yes", r[1]) for r in rows]
+    if full:
+        conn.executemany("INSERT INTO markets VALUES (?,?,?,?)", full)
     return conn
 
 
@@ -103,9 +111,7 @@ def test_undated_market_is_neither_observed_nor_unobserved():
         ],
         equity=[("r1", T0 + timedelta(hours=6))],
     )
-    markets = _markets(
-        [("EARLY", T0 + timedelta(hours=1)), ("LATE", T0 + timedelta(hours=24))]
-    )
+    markets = _markets([("EARLY", T0 + timedelta(hours=1)), ("LATE", T0 + timedelta(hours=24))])
 
     r = _run(build_coverage(ledger, markets), "r1")
     assert r["fills"] == 3
@@ -318,3 +324,156 @@ def test_live_run_does_not_drag_pooled_coverage_down():
     assert report["pooled"]["pending_fills"] == 3
     assert report["pooled"]["missed_fills"] == 0
     assert report["pooled"]["coverage_fills"] == 1.0
+
+
+# --- settlement partition (2026-08-03) ---------------------------------
+#
+# A close is not a resolution. `_settle` gates on `markets.result`, which
+# the daily kalshi sweep writes hours after the market closes, so a run
+# can observe every close it holds and settle nothing.
+
+
+def test_closed_but_unresolved_reads_covered_and_unsettleable():
+    """LOAD-BEARING. The 08-03 finding, at fixture scale. An IDENTICAL
+    ledger and IDENTICAL run lifetime: every market closes well inside the
+    run's life, so `coverage_fills` reads a perfect 1.0 — and none of them
+    has a result, so BOTH settlement bounds read 0.0. An implementation
+    that reuses the close-time predicate for settlement fails on the
+    contrast between the two numbers, not on a missing key."""
+    ledger = _ledger(
+        runs=[("r1", T0)],
+        fills=[("r1", "A", 10.0, 0.5), ("r1", "B", 10.0, 0.5)],
+        equity=[("r1", T0 + timedelta(hours=6))],
+    )
+    # Closed at +1h/+2h, run died at +6h, still unresolved at report time.
+    markets = _markets(
+        [
+            ("A", T0 + timedelta(hours=1), "", T0 + timedelta(hours=1)),
+            ("B", T0 + timedelta(hours=2), "", T0 + timedelta(hours=2)),
+        ]
+    )
+
+    r = _run(build_coverage(ledger, markets), "r1")
+    assert r["coverage_fills"] == 1.0, "both markets closed inside the run"
+    assert r["settle_coverage_fills_floor"] == 0.0
+    assert r["settle_coverage_fills_ceiling"] == 0.0
+    assert r["settle_missed_fills_floor"] == 2
+    assert r["unresolved_fills"] == 2
+
+
+def test_result_written_after_run_end_is_missed_not_observed():
+    """The real mechanism: the market closes in-life but the sweep writes
+    `result` after the run is dead. The close bar is cleared, the
+    settlement bar is not, and the shortfall is the sweep lag."""
+    ledger = _ledger(
+        runs=[("r1", T0)],
+        fills=[("r1", "A", 10.0, 0.5)],
+        equity=[("r1", T0 + timedelta(hours=6))],
+    )
+    # Closes at +1h, run dies at +6h, sweep writes the result at +11h.
+    markets = _markets([("A", T0 + timedelta(hours=1), "yes", T0 + timedelta(hours=11))])
+
+    r = _run(build_coverage(ledger, markets), "r1")
+    assert r["coverage_fills"] == 1.0
+    assert r["settle_coverage_fills_floor"] == 0.0
+    assert r["hours_to_first_outcome"] is None, "the close was already observed"
+    assert r["hours_to_first_settleable"] == 5.0, "5h short of the sweep"
+
+
+def test_the_two_bounds_bracket_the_unrecorded_write_instant():
+    """The bounds must actually differ where the write instant is unknown.
+    Same market, same run: the ceiling assumes the result was there at
+    close and counts it observed; the floor sees a row last written after
+    the run died and counts it missed. A single-bound implementation
+    cannot produce both."""
+    ledger = _ledger(
+        runs=[("r1", T0)],
+        fills=[("r1", "A", 10.0, 0.5)],
+        equity=[("r1", T0 + timedelta(hours=6))],
+    )
+    markets = _markets([("A", T0 + timedelta(hours=1), "yes", T0 + timedelta(hours=11))])
+
+    r = _run(build_coverage(ledger, markets), "r1")
+    assert r["settle_coverage_fills_ceiling"] == 1.0
+    assert r["settle_coverage_fills_floor"] == 0.0
+
+
+def test_resolved_before_run_end_settles_under_both_bounds():
+    """DISCRIMINATION CONTROL. A genuinely settleable fill must not read as
+    unsettleable just because the partition got stricter — without this the
+    whole feature passes by always returning 0."""
+    ledger = _ledger(
+        runs=[("r1", T0)],
+        fills=[("r1", "A", 10.0, 0.5)],
+        equity=[("r1", T0 + timedelta(hours=6))],
+    )
+    # Closes +1h, result written +2h, run lives to +6h.
+    markets = _markets([("A", T0 + timedelta(hours=1), "yes", T0 + timedelta(hours=2))])
+
+    r = _run(build_coverage(ledger, markets), "r1")
+    assert r["settle_coverage_fills_floor"] == 1.0
+    assert r["settle_coverage_fills_ceiling"] == 1.0
+    assert r["hours_to_first_settleable"] is None
+    assert r["unresolved_fills"] == 0
+
+
+def test_live_run_pending_on_settlement_is_censoring_not_failure():
+    """The 08-01 lesson carried onto the new partition. A LIVE run holding
+    an unresolved position has not failed to settle it — the sweep has not
+    run yet. It must read None, never 0.0, or every live run manufactures
+    a collapse."""
+    ledger = _ledger(
+        runs=[("r1", T0)],
+        fills=[("r1", "A", 10.0, 0.5)],
+        equity=[("r1", T0 + timedelta(hours=6))],
+    )
+    markets = _markets([("A", T0 + timedelta(hours=1), "", T0 + timedelta(hours=1))])
+
+    r = _run(
+        build_coverage(ledger, markets, now=T0 + timedelta(hours=6, seconds=LIVE_GRACE_S - 10)),
+        "r1",
+    )
+    assert r["live"] is True
+    assert r["settle_pending_fills_floor"] == 1
+    assert r["settle_missed_fills_floor"] == 0
+    assert r["settle_coverage_fills_floor"] is None
+
+
+def test_pooled_settlement_recomputes_from_counts_not_run_ratios():
+    """Unit of counting. One run with a single settled fill and one with
+    999 unsettled fills pool to ~0.001, not to the 0.5 an average of the
+    two per-run ratios would give."""
+    runs = [("small", T0), ("big", T0)]
+    fills = [("small", "S", 10.0, 0.5)]
+    fills += [("big", f"B{i}", 10.0, 0.5) for i in range(999)]
+    equity = [("small", T0 + timedelta(hours=6)), ("big", T0 + timedelta(hours=6))]
+    markets = [("S", T0 + timedelta(hours=1), "yes", T0 + timedelta(hours=2))]
+    markets += [(f"B{i}", T0 + timedelta(hours=1), "", T0 + timedelta(hours=1)) for i in range(999)]
+
+    pooled = build_coverage(_ledger(runs, fills, equity), _markets(markets))["pooled"]
+    assert pooled["settle_observed_fills_floor"] == 1
+    assert pooled["settle_missed_fills_floor"] == 999
+    assert pooled["settle_coverage_fills_floor"] == 0.001
+
+
+def test_settlement_notional_tracks_size_not_count():
+    """Same split, second unit. One large settled fill against three tiny
+    unsettled ones reads 0.25 by count and 0.9375 by notional."""
+    ledger = _ledger(
+        runs=[("r1", T0)],
+        fills=[
+            ("r1", "BIG", 100.0, 0.45),  # 45.0 notional, settled
+            ("r1", "T1", 5.0, 0.20),  # 1.0, unresolved
+            ("r1", "T2", 5.0, 0.20),
+            ("r1", "T3", 5.0, 0.20),
+        ],
+        equity=[("r1", T0 + timedelta(hours=6))],
+    )
+    markets = _markets(
+        [("BIG", T0 + timedelta(hours=1), "yes", T0 + timedelta(hours=2))]
+        + [(f"T{i}", T0 + timedelta(hours=1), "", T0 + timedelta(hours=1)) for i in (1, 2, 3)]
+    )
+
+    r = _run(build_coverage(ledger, markets), "r1")
+    assert r["settle_coverage_fills_floor"] == 0.25
+    assert r["settle_coverage_notional_floor"] == 0.9375
