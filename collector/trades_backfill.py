@@ -21,6 +21,7 @@ from pathlib import Path
 
 import requests
 
+from collector.lockid import note_holder
 from collector.venues import kalshi
 from hyxlab.store import Store
 
@@ -33,6 +34,7 @@ def _flush(db: str, batch: list[tuple[str, list[tuple], str]]) -> int:
     inserted = 0
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(LOCK_FILE)
         store = Store(db)
         try:
             for market_id, rows, status in batch:
@@ -72,6 +74,7 @@ def main() -> None:
     # the read-only pending query (read-only connects skip schema DDL).
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(LOCK_FILE)
         Store(args.db).close()
         fcntl.flock(lock, fcntl.LOCK_UN)
     targets = pending_markets(args.db)

@@ -29,6 +29,7 @@ from pathlib import Path
 import duckdb
 import requests
 
+from collector.lockid import note_holder
 from collector.venues import kalshi
 from hyxlab.store import Store, open_retry
 
@@ -111,6 +112,7 @@ def writer_burst(db: str, lock_file: str | None = None):
     lock_file = lock_file or LOCK_FILE
     with open(lock_file, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(lock_file)  # name the holder BEFORE open_retry can spin for 300s
         # readers (QA/doctor/backtest) don't take the flock, so the open
         # can still lose to one — hence the widened budget above.
         store = open_retry(db, retries=BURST_OPEN_RETRIES, delay=BURST_OPEN_DELAY_S)

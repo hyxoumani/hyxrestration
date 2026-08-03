@@ -25,6 +25,7 @@ from pathlib import Path
 
 import requests
 
+from collector.lockid import note_holder, read_holder
 from collector.venues import kalshi, nws, polymarket
 from hyxlab.store import Store, open_retry
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
@@ -72,6 +73,7 @@ def acquire_writer_lock(lock_file: str | None = None, wait_s: float | None = Non
     while True:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            note_holder(lock_file)
             return f
         except OSError:
             if time.monotonic() >= deadline:
@@ -80,7 +82,9 @@ def acquire_writer_lock(lock_file: str | None = None, wait_s: float | None = Non
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
 
-def record_skip(reason: str, waited_s: float, path: str | None = None) -> None:
+def record_skip(
+    reason: str, waited_s: float, path: str | None = None, holder: dict | None = None
+) -> None:
     """Append a skipped cycle to the sidecar journal.
 
     A skip cannot be recorded in the archive — the archive is precisely
@@ -88,6 +92,14 @@ def record_skip(reason: str, waited_s: float, path: str | None = None) -> None:
     this (`collector cycles are not being skipped`) and fails on a rate,
     because the 07-20..08-02 outage was invisible for 14 days exactly
     because a skip left no trace an archive-reading instrument could see.
+
+    EXP-944: `holder` names the blocker (see `collector.lockid`). The
+    2026-08-03 12:54/12:59/13:04Z skips recorded the WAIT but not the
+    WAITED-ON, so a 15-minute tape hole was attributable only by
+    inference. A count of holes tells you the tape is damaged; only the
+    holder tells you what to fix. `None` is written through rather than
+    omitted — "nobody recorded a holder" is itself a finding, and a
+    missing key would read as an older-format row instead.
     """
     path = path or SKIP_LOG
     Path(path).parent.mkdir(exist_ok=True)
@@ -95,6 +107,7 @@ def record_skip(reason: str, waited_s: float, path: str | None = None) -> None:
         "at": datetime.now(UTC).isoformat(),
         "reason": reason,
         "waited_s": round(waited_s, 1),
+        "holder": holder,
     }
     with open(path, "a") as fh:
         fh.write(json.dumps(rec) + "\n")
@@ -166,10 +179,17 @@ def main() -> None:
     lock = acquire_writer_lock(wait_s=args.lock_wait)
     if lock is None:
         waited = time.monotonic() - t0
-        record_skip("writer lock held", waited)
+        holder = read_holder(LOCK_FILE)
+        record_skip("writer lock held", waited, holder=holder)
         # Nonzero so systemd records it, AND a durable record so an
         # instrument that never sees systemd can still count the hole.
-        print(f"[collect] skipped: writer lock held for {waited:.0f}s")
+        who = (
+            f"{holder.get('unit') or 'no unit'} pid={holder['pid']}"
+            f" since {holder.get('at')}{'' if holder.get('alive') else ' (DEAD/stale record)'}"
+            if holder
+            else "holder unrecorded"
+        )
+        print(f"[collect] skipped: writer lock held for {waited:.0f}s by {who}")
         sys.exit(75)  # EX_TEMPFAIL
 
     watchlist = load_watchlist(args.watchlist)

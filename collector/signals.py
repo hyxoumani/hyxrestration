@@ -28,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 import duckdb
 import requests
 
+from collector.lockid import note_holder
 from collector.venues import alfred, gdelt
 from hyxlab.models import EconVintage, NewsItem
 from hyxlab.store import Store, open_retry
@@ -131,6 +132,7 @@ def main() -> None:
 
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(LOCK_FILE)
         store = open_retry(args.db)
         try:
             new_vintages = diff_vintages(store, fetched)

@@ -29,6 +29,7 @@ from pathlib import Path
 
 import requests
 
+from collector.lockid import note_holder
 from collector.venues import polymarket as poly
 from hyxlab.store import open_retry
 
@@ -40,6 +41,7 @@ REQUEST_PAUSE_S = 0.25  # CLOB/data-api pacing
 def _flush(db: str, batch: dict) -> None:
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(LOCK_FILE)
         store = open_retry(db)  # readers (QA/doctor/backtest) don't take the flock
         try:
             if batch["infos"]:
@@ -78,6 +80,7 @@ def sweep(
 
     with open(LOCK_FILE, "a") as lock:  # ensure schema + read watermarks
         fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(LOCK_FILE)
         store = open_retry(db)
         watermarks = store.poly_price_watermarks()
         store.close()
