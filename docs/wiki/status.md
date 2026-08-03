@@ -77,7 +77,51 @@ passes at **3 skips against `COLLECT_SKIP_MAX_24H` = 3** — one more and
 it FAILS. Cause is structural, not noise: `hyxlab-breadth` is `*:2/5`
 and `hyxlab-collect` is `*:0/5`, **two minutes apart**, while collect
 waits only 240s; breadth held the writer lock ~19 min on 08-03 and
-starved three cycles. PRACTICAL RULE, joining a-closed-market-is-not-a-
+starved three cycles. **THEN THE PREEMPTED LADDER RUNG WAS RUN AFTER ALL, AND THE 08-02
+PREDICTION CAME TRUE VERBATIM.** Atlas fired once the archive freed:
+`reports/atlas/20260803T143000.json`, the FIFTH day-weighted reading and
+the first carrying `flagged_quoted` natively. Tiers 101->108 flagged,
+66->69 robust, 19->22 day-robust — and **the strictest Wilson tier broke
+its streak, 6 -> 9**, ending four consecutive readings of identical
+membership. **PROBED BEFORE REPORTING, AND THE THREE ENTRANTS ARE THE
+ARTIFACT ITSELF**: all three are **Crypto d4** (1h, 6h, 24h) with
+`median_spread` **0.99**, `wide_share` **0.98**, and `quoted_n` of
+**7/7/12** against the MIN_N 200 bar — carrying the three largest gaps in
+the whole report (+0.3649, +0.4019, +0.4123). These are the BNB ladders
+the 08-02 pass diagnosed at `Crypto|24h|d4`, which then sat in the
+FLAGGED tier. **THAT PASS PREDICTED THIS IN WORDS AND THE DATA HAS NOW
+CONFIRMED IT**: "an empty book is stably empty, so more days of it
+TIGHTEN the Wilson interval and make the bucket MORE robust." One
+reading later the artifact has climbed from flagged to the strictest
+Wilson tier on nothing but accumulated days of empty book. **This is the
+sharpest vindication `flagged_quoted` could get** — it is the only tier
+that holds them out, and it does so at quoted_n 7-12. **THE SIX
+ORIGINALS ALL HELD (KEPT 6, LOST 0)**, so the zero-oscillation
+observation survives for the original membership and the growth is
+entirely contamination. **`flagged_quoted` reads ZERO for a SECOND
+consecutive reading**: still not one bucket in the archive whose
+longshot-fade flag survives on two-sided books, and even the six
+originals are wide-contaminated (`wide_share` 0.48–0.80). Still
+data-gated, still not tuned. **AND QA RAN GREEN LIVE**: moving the timer
+fired a `Persistent=true` catch-up at 14:28Z which reached **17/17
+all-pass** in 39.6s, including the new `producer proven alive against 3
+journalled exit-75 cycle(s)`. Two watch items closed in passing — the
+07:00Z run's `trade tape covers retention window` FAIL **cleared** (1
+unswept -> 0, the 11:10Z sweep landed it, so it was correctly not chased
+as a finding), and the poly universe ratio ticked **0.572 -> 0.582**
+(5,555 against a 9,551 peak), still above the 0.5 threshold and still
+below the 0.66 benign floor. **ONE CLAIM OF MY OWN CORRECTED WITHIN THE
+PASS, BECAUSE THE EVIDENCE ARRIVED AFTER THE COMMIT MESSAGE**: 5e06eb1
+says the tradepass "holds a read-write DuckDB connection for its whole
+run". **That is too strong.** Both QA and atlas connected read-only at
+~15:05Z and ~15:10Z while pid 1950816 was *still alive* at 3h+, so it
+holds the exclusive connection in **BURSTS**, not continuously. The
+timer fix stands and the reasoning is unchanged in direction — QA's
+budget is 60s against a job whose bursts span 5m–3h of wall clock — but
+the collision would have been **INTERMITTENT, not daily**, which is the
+worse failure and the exact shape the 08-02 pass named: QA's green days
+were green by RACE LUCK. The fix removes the race rather than re-tuning
+a budget against it. PRACTICAL RULE, joining a-closed-market-is-not-a-
 settled-one / an-ambiguous-in-bracket-fill-is-not-an-invented-one /
 a-wide-book-is-not-a-price / a-skipped-check-is-not-a-passed-one /
 an-untriggered-path-is-not-an-unreached-one / unobserved-is-not-
@@ -87,16 +131,21 @@ ships to production while `git log` shows nothing — check the INSTALLED
 artefact against the repo, not the two repos against each other, because
 both worktrees agreeing is exactly what a suffix-less timer looked like.
 And an autoloop that cannot rebase has silently stopped syncing: read
-its journal, not just its output.** NEXT PASS: **atlas is runnable NOW
-and was preempted this pass** — the FIFTH day-weighted reading, carrying
-`flagged_quoted`, is the top rung. Then the first settlement: run
-`20260803T142109` must survive to **08-04 ~06:30 UTC**, and this is the
-first time the required lifetime (~16.2h) is inside the range a
-12-day-uptime box has actually delivered. Weather bracket #8 is 08-04
-~02:15 and is still the first to report `concentration_strict` natively;
-QA next 08-04 07:00, now downstream of the sweep for the first time (the
-inverted sweep -> tradepass -> qa order is fixed). Still open: shadow
-position continuity across restart; the atlas quoted tier is data-gated;
+its journal, not just its output. And a systemd timer moved with
+`Persistent=true` fires a CATCH-UP immediately if the new hour has
+already passed today — QA ran the moment it was promoted.** NEXT PASS:
+**the first settlement is the top rung** — the live run is
+`20260803T142853` (the second promote restarted shadow again; the
+14:21 run lasted 7 min), and it must survive to **08-04 ~06:30 UTC**.
+At **~15.7h** this is the first time the required lifetime is inside
+the range a 12-day-uptime box has actually delivered, and
+`shadow_settlements` is still **0 rows** archive-wide. Weather bracket
+#8 is 08-04 ~02:15 and is still the first to report
+`concentration_strict` natively; **QA next 08-04 10:00 UTC**, now
+downstream of BOTH the sweep and the tradepass for the first time.
+Still open: shadow position continuity across restart — and note the
+two promotes this pass cost two runs, which is the continuity argument
+making itself again; the atlas quoted tier is data-gated;
 breadth/collect lock contention is the sharpest new lead. Untracked
 `strategies/hylshi_fade.py` re-confirmed present, still correctly left
 alone per the 07-18 provenance resolution.)**
