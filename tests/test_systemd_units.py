@@ -122,3 +122,63 @@ def test_timers_pin_the_timezone_their_prose_claims():
         "unit fires at a different instant than its own Description "
         "advertises:\n  " + "\n  ".join(offenders)
     )
+
+
+#: The daily archive pipeline, in the order each stage's output feeds the
+#: next: the sweep writes `markets.result` and the trade tape, the tradepass
+#: retro-fills the gaps the sweep left, and QA audits both.
+DAILY_ORDER = ["hyxlab-sweep.timer", "hyxlab-tradepass.timer", "hyxlab-qa.timer"]
+
+#: Clearance QA needs after the tradepass STARTS. The tradepass holds a
+#: read-write DuckDB connection for its whole run, which blocks even
+#: read-only connects, so QA's archive half cannot run while it is alive.
+#: Observed wall clock: 5m31s / 33m / 46m / 1h01m over Jul 27 - Aug 02, and
+#: 2h51m+ on Aug 03. Three hours covers the observed worst case; the
+#: bounded-SKIP escalation in `qa_collect_skips`/`qa_archive` is the
+#: backstop if a future run exceeds even that, which is what it is for.
+QA_CLEARANCE_H = 3.0
+
+
+def _utc_hour(spec):
+    """Fractional UTC hour of a `HH:MM:SS UTC` OnCalendar, else None."""
+    m = re.search(r"(?<![\d/*])(\d{1,2}):(\d{2})(?::\d{2})?\s+UTC$", spec.strip())
+    return int(m.group(1)) + int(m.group(2)) / 60 if m else None
+
+
+def test_the_daily_archive_pipeline_runs_in_dependency_order():
+    """QA must audit the archive AFTER the writers that fill it, with clearance.
+
+    Two failures this encodes, both of which shipped green. (1) Until
+    2026-08-03 the sweep fired 11:10Z and QA 07:00Z, so QA audited the trade
+    tape 4h10m BEFORE the sweep that fills it — every run still exited 0.
+    (2) Pinning the sweep to real UTC fixed that ordering and immediately
+    created the opposite collision: QA at 07:00Z landed 25 minutes into a
+    06:35Z tradepass that runs 5m-3h, so QA's archive half would have found
+    the DB locked and skipped every day.
+
+    Ordering alone is NOT enough and is deliberately not what is asserted:
+    a stage that merely starts later still collides with a long-running
+    predecessor. The gap is the assertion.
+    """
+    timers = _timers()
+    hours = {}
+    for name in DAILY_ORDER:
+        assert name in timers, f"{name} missing from {UNIT_DIR}"
+        specs = _field(timers[name], "OnCalendar")
+        assert len(specs) == 1, f"{name}: expected one OnCalendar, got {specs}"
+        h = _utc_hour(specs[0])
+        assert h is not None, f"{name}: OnCalendar {specs[0]!r} is not UTC-pinned"
+        hours[name] = h
+
+    sweep, tradepass, qa = (hours[n] for n in DAILY_ORDER)
+    assert sweep < tradepass, (
+        f"the tradepass retro-fills the sweep's gaps, so it must run after it: "
+        f"sweep {sweep:.2f}h, tradepass {tradepass:.2f}h UTC"
+    )
+    assert qa - tradepass >= QA_CLEARANCE_H, (
+        f"QA must clear the tradepass by >= {QA_CLEARANCE_H:g}h — it holds a "
+        f"read-write DuckDB connection for its whole run (observed up to "
+        f"2h51m), which blocks QA's read-only archive connect and silently "
+        f"skips the archive half. tradepass {tradepass:.2f}h, QA {qa:.2f}h UTC "
+        f"= {qa - tradepass:.2f}h clearance"
+    )
