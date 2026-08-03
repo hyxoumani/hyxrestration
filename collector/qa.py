@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -50,6 +51,15 @@ RETRY_SLEEP_S = 2.0
 # check that cannot be silenced by the failure it watches.
 COLLECT_SKIP_LOG = "data/collect_skips.jsonl"
 COLLECT_SKIP_MAX_24H = 3
+
+# EXP-943 — the INDEPENDENT witness that makes an absent sidecar decidable.
+# `collector.collect.main()` exits 75/EX_TEMPFAIL on exactly the path that
+# calls `record_skip()`, and systemd journals that exit whether or not python
+# ever got far enough to write the file. So the two disagree in precisely one
+# case: the producer is not running. Verified live 2026-08-03 — three exit-75
+# events at 12:54/12:59/13:04Z and three matching sidecar rows.
+COLLECT_UNIT = "hyxlab-collect.service"
+COLLECT_SKIP_EXIT = 75
 
 _failures: list[str] = []
 _skipped: list[str] = []
@@ -428,7 +438,43 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
     _record_ok("archive", now)
 
 
-def qa_collect_skips(hours: float = 24.0, path: str = COLLECT_SKIP_LOG) -> None:
+def journal_skip_exits(hours: float = 24.0, unit: str = COLLECT_UNIT) -> int | None:
+    """How many cycles systemd saw exit 75 in the window; None if unreadable.
+
+    None and 0 are DIFFERENT answers and the caller must keep them apart: an
+    unreadable journal cannot testify that nothing skipped.
+    """
+    try:
+        p = subprocess.run(
+            [
+                "journalctl", "--user", "-u", unit,
+                "--since", f"{hours:g} hours ago",
+                "--grep", r"Main process exited",
+                "-o", "cat", "--output-fields=MESSAGE",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # journalctl exits 1 with empty output when the filter matched nothing;
+    # that is a real zero. Any other nonzero is an unreadable journal.
+    if p.returncode not in (0, 1) or (p.returncode == 1 and p.stdout.strip()):
+        return None
+    return len(re.findall(rf"status={COLLECT_SKIP_EXIT}\b", p.stdout))
+
+
+#: Sentinel: `journal_skips=None` must be able to MEAN "the journal was
+#: unreadable", so it cannot double as "not supplied".
+_QUERY_JOURNAL = object()
+
+
+def qa_collect_skips(
+    hours: float = 24.0,
+    path: str = COLLECT_SKIP_LOG,
+    journal_skips: int | None | object = _QUERY_JOURNAL,
+) -> None:
     """Fail when 5-min capture cycles are being dropped for the writer lock.
 
     Each skipped cycle is an unrecoverable hole in the snapshot tape. Over
@@ -436,31 +482,97 @@ def qa_collect_skips(hours: float = 24.0, path: str = COLLECT_SKIP_LOG) -> None:
     421 of 3,706 cycles (11.4%) while the daily sweep held the lock across
     its whole multi-hour run, and NOTHING recorded it: the wrapper failed
     before python started, so no archive-reading instrument could see it.
+
+    EXP-943 — AND THAT IS ALSO WHY THIS CHECK COULD NOT FIRE. The version
+    written on 2026-08-02 treated an absent sidecar as a PASS ("no skips
+    recorded"), which is the same rendering a genuinely quiet day gets. Those
+    are not the same fact: for 14 days the file was absent because
+    `record_skip()` never ran, and on 2026-08-03 it was absent because no
+    cycle had needed to wait. An alarm whose producer is dead is strictly
+    WORSE than no alarm, because the green line is then read as health.
+
+    So absence is now DECIDED against an independent witness — systemd's own
+    count of exit-75 cycles, which is journalled whether or not python ever
+    reached `record_skip()`:
+
+      journal says N>0 skipped, sidecar has fewer  -> FAIL: producer inert
+      journal says 0, sidecar empty/absent         -> UNVERIFIED (a SKIP, not
+                                                      a pass: neither witness
+                                                      saw anything, so nothing
+                                                      was measured)
+      journal unreadable, sidecar empty/absent     -> UNVERIFIED
+      sidecar has rows                             -> the RATE check, as before
+
+    Pass `journal_skips` to inject the witness (tests); the default queries
+    journalctl, and `None` means "could not read it", never "zero".
     """
     now = datetime.now(UTC)
+    name = "collector cycles are not skipped for the lock"
     p = Path(path)
-    if not p.exists():
-        # No journal is the healthy steady state, not a missing input.
-        check("collector cycles are not skipped for the lock", True, "no skips recorded")
-        return
     recent = 0
     malformed = 0
-    for line in p.read_text().splitlines():
-        if not line.strip():
-            continue
-        try:
-            at = datetime.fromisoformat(json.loads(line)["at"])
-        except (ValueError, KeyError, json.JSONDecodeError):
-            malformed += 1
-            continue
-        if (now - at).total_seconds() <= hours * 3600:
-            recent += 1
+    if p.exists():
+        for line in p.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                at = datetime.fromisoformat(json.loads(line)["at"])
+            except (ValueError, KeyError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            if (now - at).total_seconds() <= hours * 3600:
+                recent += 1
+    tail = f", {malformed} malformed rows" if malformed else ""
+
+    witness = (
+        journal_skip_exits(hours)
+        if journal_skips is _QUERY_JOURNAL
+        else journal_skips
+    )
+    if witness is not None and witness > recent:
+        check(
+            name,
+            False,
+            f"PRODUCER INERT: systemd journalled {witness} exit-{COLLECT_SKIP_EXIT} "
+            f"(skipped) cycle(s) of {COLLECT_UNIT} in {hours:g}h but {path} holds "
+            f"{recent}" + ("" if p.exists() else " and does not exist")
+            + f". record_skip() is not running, so this check reads a file nothing "
+            f"writes{tail}",
+        )
+        return
+    if recent == 0:
+        # Nothing was measured. Reporting that as a pass is the defect above.
+        detail = (
+            f"UNVERIFIED: no skip recorded in {path}"
+            + ("" if p.exists() else " (file absent)")
+            + (
+                f" and the {COLLECT_UNIT} journal is unreadable, so the sidecar's "
+                "producer is neither proven alive nor proven dead"
+                if witness is None
+                else f" and systemd journalled 0 exit-{COLLECT_SKIP_EXIT} cycles — "
+                "consistent, but no cycle needed to wait out the lock, so "
+                "production is untested"
+            )
+            + tail
+        )
+        # Deliberately NOT bounded by `_skip_age_h`: a system with no lock
+        # contention for weeks is healthy, so ageing this SKIP into a failure
+        # would manufacture the alarm fatigue the check exists to avoid. The
+        # journal witness above is what catches a dead producer, and it does so
+        # on the first cycle that actually skips.
+        _skipped.append("collect-skips")
+        print(f"SKIP  {name} — {detail}", flush=True)
+        return
     check(
-        "collector cycles are not skipped for the lock",
+        name,
         recent <= COLLECT_SKIP_MAX_24H,
         f"{recent} skipped cycles in {hours:g}h (max {COLLECT_SKIP_MAX_24H})"
-        + (f", {malformed} malformed rows" if malformed else ""),
+        + (f", producer proven alive against {witness} journalled exit-"
+           f"{COLLECT_SKIP_EXIT} cycle(s)" if witness is not None else "")
+        + tail,
     )
+    if recent <= COLLECT_SKIP_MAX_24H:
+        _record_ok("collect-skips", now)
 
 
 def main() -> None:

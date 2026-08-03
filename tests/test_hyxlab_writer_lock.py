@@ -301,7 +301,9 @@ def _write_skips(path, n, age_h=1.0):
 
 
 def test_qa_passes_when_no_skip_journal_exists(tmp_path):
-    qa.qa_collect_skips(path=str(tmp_path / "absent.jsonl"))
+    """No file AND no journalled skip: no FAILURE — but see the EXP-943 tests
+    below, it is not a PASS either."""
+    qa.qa_collect_skips(path=str(tmp_path / "absent.jsonl"), journal_skips=0)
     assert not qa._failures
 
 
@@ -309,14 +311,14 @@ def test_qa_fails_on_the_measured_starvation_rate(tmp_path):
     """12-38 skips/day was the observed rate; it must trip the check."""
     path = str(tmp_path / "skips.jsonl")
     _write_skips(path, 12)
-    qa.qa_collect_skips(path=path)
+    qa.qa_collect_skips(path=path, journal_skips=12)
     assert qa._failures == ["collector cycles are not skipped for the lock"]
 
 
 def test_qa_tolerates_occasional_contention(tmp_path):
     path = str(tmp_path / "skips.jsonl")
     _write_skips(path, qa.COLLECT_SKIP_MAX_24H)
-    qa.qa_collect_skips(path=path)
+    qa.qa_collect_skips(path=path, journal_skips=qa.COLLECT_SKIP_MAX_24H)
     assert not qa._failures
 
 
@@ -325,7 +327,7 @@ def test_qa_skip_check_is_windowed(tmp_path):
     incident and gets ignored — the failure mode it exists to prevent."""
     path = str(tmp_path / "skips.jsonl")
     _write_skips(path, 50, age_h=48.0)
-    qa.qa_collect_skips(path=path)
+    qa.qa_collect_skips(path=path, journal_skips=0)
     assert not qa._failures
 
 
@@ -333,8 +335,77 @@ def test_qa_skip_check_survives_a_malformed_row(tmp_path):
     path = str(tmp_path / "skips.jsonl")
     Path(path).write_text("not json\n")
     _write_skips(path, 12)
-    qa.qa_collect_skips(path=path)
+    qa.qa_collect_skips(path=path, journal_skips=12)
     assert qa._failures, "a truncated row must not silence the count"
+
+
+# --------------------------------------------------------------------------
+# 3b. EXP-943 — DETECTOR LIVENESS. The check above is correct and, for 14
+# days, could not physically fire: its sidecar had never been created, and
+# "absent" rendered exactly like "clean". These assert that the two are now
+# told apart, using systemd's independent record of exit-75 cycles.
+# --------------------------------------------------------------------------
+
+
+def test_absent_sidecar_with_journalled_skips_is_a_dead_producer(tmp_path):
+    """The 2026-07-20..08-02 shape: flock killed the process before python ran."""
+    qa.qa_collect_skips(path=str(tmp_path / "absent.jsonl"), journal_skips=8)
+    assert qa._failures == ["collector cycles are not skipped for the lock"]
+
+
+def test_stale_sidecar_with_journalled_skips_is_also_a_dead_producer(tmp_path):
+    """"Present and clean" must not read OK either."""
+    path = str(tmp_path / "skips.jsonl")
+    _write_skips(path, 5, age_h=200.0)  # rows, but all outside the window
+    qa.qa_collect_skips(path=path, journal_skips=4)
+    assert qa._failures
+
+
+def test_absent_sidecar_with_no_journalled_skips_is_unverified_not_a_pass(tmp_path):
+    """2026-08-03's state: same bytes on disk, opposite meaning."""
+    before = qa._passes
+    qa.qa_collect_skips(path=str(tmp_path / "absent.jsonl"), journal_skips=0)
+    assert not qa._failures
+    assert qa._skipped == ["collect-skips"], "must not count as a pass"
+    assert qa._passes == before
+
+
+def test_unreadable_journal_leaves_the_sidecar_unverified(tmp_path):
+    """None is not zero: an unreadable journal cannot testify to anything."""
+    qa.qa_collect_skips(path=str(tmp_path / "absent.jsonl"), journal_skips=None)
+    assert not qa._failures and qa._skipped == ["collect-skips"]
+
+
+def test_a_produced_sidecar_within_budget_is_a_real_pass(tmp_path):
+    path = str(tmp_path / "skips.jsonl")
+    _write_skips(path, 2)
+    before = qa._passes
+    qa.qa_collect_skips(path=path, journal_skips=2)
+    assert not qa._failures and not qa._skipped
+    assert qa._passes == before + 1
+
+
+def test_journal_witness_query_is_read_only(monkeypatch):
+    """The witness must never start, stop or reload anything."""
+    seen = {}
+
+    class _P:
+        returncode, stdout = 0, "status=75\nstatus=75\nstatus=1\n"
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return _P()
+
+    monkeypatch.setattr(qa.subprocess, "run", fake_run)
+    assert qa.journal_skip_exits() == 2
+    assert seen["cmd"][0] == "journalctl"
+    assert not ({"restart", "start", "stop", "daemon-reload"} & set(seen["cmd"]))
+
+
+def test_journal_witness_returns_none_when_journalctl_is_unusable(monkeypatch):
+    monkeypatch.setattr(qa.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+    assert qa.journal_skip_exits() is None
 
 
 # --------------------------------------------------------------------------
