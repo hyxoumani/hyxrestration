@@ -1,6 +1,117 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-03 02:30 UTC (WEATHER BRACKET #7 RAN AND READ AS THE
+Updated: **2026-08-03 08:30 UTC (THE ARCHIVE OBSERVED ITS FIRST OUTCOME
+IN 39 RUNS AND STILL SETTLED NOTHING — BECAUSE `_settle` GATES ON
+`markets.result`, WHICH IS A ONCE-DAILY BATCH WRITE AT 11:10 UTC, NOT ON
+THE CLOCK. TWENTY-THIRD INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: A
+CLOSED MARKET IS NOT A SETTLED ONE.** Gate check first, hard rather than
+estimated (`systemctl list-timers`, `date -u` 08:15 — journald prints
+CDT): the kalshi sweep is next 08-03 11:10 UTC so **atlas stays gated**;
+weather bracket #8 is 08-04 ~02:15; econ needs >=336h (next ~08-10). QA
+fired 07:00 UTC and the **05:00–07:00 promote window this log staked out
+had already been executed at 08:00** — stable reads `30f33c3`, so the
+capture-hole fix (6dcdcb7) and the collection hardening are LIVE.
+**HOUSEKEEPING**: two commits sat unpushed (fef7861, 30f33c3); suite
+green at 519, pushed. **THE HEADLINE EVENT DID HAPPEN**: `shadow_coverage`
+reads run `20260802T204103` at **`coverage_fills` 0.1098 — 343 observed
+fills, the first non-zero reading in 39 runs.** 40 of its markets closed
+while it was alive. **AND `shadow_settlements` IS EMPTY.** Zero rows, on
+a table created live on 08-02. **PROBED BEFORE REPORTING, AND THE GATE IS
+THE WRONG ONE.** `_settle` does not test the clock; it tests
+`markets.result in ('yes','no')`. `result` is not written when a market
+closes: the collector's 5-minute `upsert_markets` only carries markets
+that are still LIVE, so a settled result reaches the archive **solely
+through the daily kalshi sweep at 11:10 UTC**. Measured on the live
+archive rather than inferred: **every kalshi market that closed on 08-03
+is unresolved — 124 markets across 03:00–08:00 UTC — while everything
+through 08-02 21:00 is resolved.** All 40 of the run's closed markets
+read `result = ''`, and still did 3h after close. **SO THE SHORTFALL THIS
+LOG HAS BEEN TRACKING IS THE WRONG NUMBER**: `hours_to_first_outcome`
+measures time-to-close, but settlement needs time-to-close PLUS the batch
+lag — **6.2h for a market closing 04:59 UTC, 23.7h for one closing 11:30
+UTC**. Run `20260802T204103` needed to live to **11:10 UTC (14.5h)**; its
+`h_to_1st` of 2.62h said it had cleared the bar 5.4h earlier. It had
+cleared the CLOSE bar. **THIS ALSO RETIRES THE PROMOTE PLAN THREE
+ENTRIES OF THIS LOG WERE BUILT ON**: the 05:00–07:00 window was chosen to
+land after the 04:59 outcome, and **even executed perfectly it would not
+have produced a settlement**, because the run still had to survive to
+11:10. The window was optimised against the wrong gate. INSTRUMENT
+SHIPPED (5fdac67, 9218756): `settle_coverage_*` partitions the same fills
+over the identical observed/pending/missed split against the predicate
+`_settle` actually uses, plus `hours_to_first_settleable` and
+`unresolved_fills`. `coverage_*` keeps its close-time meaning
+**unchanged** so archived reports stay comparable, per the
+`concentration`/`unobserved_*` precedent — the two are a bracket on WHAT
+WAS OBSERVED, and a run can pass one and fail the other. **The
+resolution instant is not recorded anywhere, so it is BRACKETED rather
+than guessed**: the floor requires `updated_at <= run_end` (conservative
+— a row re-touched later reads unsettled), the ceiling only that the
+market closed in-life and has a result now. A live run's unresolved fill
+reads **pending, never 0.0** — the 08-01 censoring lesson carried onto
+the new partition. Seven regression tests; the load-bearing one runs an
+**identical ledger and identical lifetime** through both gates and
+asserts `coverage_fills` 1.0 against both settle bounds 0.0, so a
+close-blind implementation fails on the contrast rather than on a
+missing key, with a discrimination control asserting a genuinely
+settleable fill still reads 1.0 under both bounds. Verified by mutation,
+seven: result-blind settlement, empty-string-counts-as-resolved, floor
+collapsed onto ceiling, pending folded into missed, per-run capping,
+mean-of-per-run-ratios, and 0.0-instead-of-None. **ONE MUTATION SURVIVED
+AND THE TEST WAS WRONG, NOT THE CODE — THE SAME CLASS AS 08-02 AND 08-03,
+IN MY OWN TEST AGAIN**: per-run capping passed because the pooled fixture
+gave the settled run exactly ONE fill, so `sum` and `any` are numerically
+identical on it. Three settled fills reddens it, and still reddens the
+ratio-averaging mutation the test was written for. Suite 519->526, ruff
+clean, pushed. **NO PROMOTE, verified rather than assumed**: `grep` over
+`scripts/systemd/` shows no unit references `shadow_coverage`, and stable
+is otherwise current at `30f33c3`. **VALIDATED IN THE REAL PIPELINE AND
+THE POOLED READ IS THE VERDICT**: the shipped module reproduces the
+ad-hoc probe exactly — `20260802T204103` reads `cov_fills` 0.1098 with
+**settle floor AND ceiling both 0.0**, and recent-5 pooled reads settle
+**0.0 / 0.0 with 4,753 of 4,753 fills in markets the archive has no
+result for.** The bracket is degenerate here, which is the cleanest
+possible answer: no bound can settle a contract with no recorded result.
+**STATED AT THE STRENGTH THE DATA SUPPORTS**: this does not show
+`_settle` is broken — the 08-02 replay settled 1,585 archived positions
+correctly. It shows the live daemon has **never once reached** it, and
+that the coverage instrument built to detect exactly that answered a
+different question for two days. **THE OPERATIONAL ITEM, AND IT IS DATED
+FROM THE RIGHT GATE THIS TIME: DO NOT RESTART `hyxlab-shadow` BEFORE
+~11:30 UTC TODAY.** Run `20260803T080023` is live from 08:00; the 11:10
+sweep will write results for everything that closed 08-03 up to that
+point, and if the run holds any of those it produces **the first realized
+settlement in this archive's history** ~2.7h out. **CORRECTED PROMOTE
+RULE, replacing the 05:00–07:00 window**: the cheapest restart moment is
+**just after the daily sweep completes (~11:30 UTC)**, because that is
+when a fresh run has maximum runway to the NEXT result write — settling
+anything needs ~24h of unbroken process life spanning one 11:10 sweep,
+and a 12-day-uptime box has already shown that cannot be promised.
+**ONE QA FAILURE, REAL AND NOT CHASED**: the 07:00 run reached all 16
+checks (the 1105e8e fix confirmed live) and reads **FAIL `trade tape
+covers retention window — 1 traded markets unswept`**; same check that
+fired 07-22. One market, and the 11:10 sweep may clear it — watch it next
+pass, it is not a finding yet. PRACTICAL RULE, joining
+an-ambiguous-in-bracket-fill-is-not-an-invented-one /
+a-wide-book-is-not-a-price / a-skipped-check-is-not-a-passed-one /
+an-untriggered-path-is-not-an-unreached-one /
+unobserved-is-not-unobservable / shadow-coverage-before-shadow-equity:
+**a closed market is not a settled one. Read the field the CODE gates on,
+not the one that sounds equivalent — `_settle` tests `markets.result`,
+and a result is a once-daily batch write, not an event at close. A
+coverage instrument must partition on the downstream code's actual
+predicate or it certifies the wrong thing; ours read 0.1098 for a run
+that settled nothing. And when a deadline is derived from the wrong
+gate, executing it perfectly still fails.** NEXT PASS: the **11:10 sweep
+then the ~11:30 restart window** is the operational ladder, and the first
+settlement is the thing to check; the same sweep re-opens the atlas gate
+for the FIFTH reading, now carrying `flagged_quoted`; the QA tape-
+coverage FAIL wants a second reading; weather bracket #8 is 08-04 ~02:15
+and is the first to report `concentration_strict` natively. Still open:
+shadow position continuity across restart — now with a sharper case, since
+the required unbroken lifetime is ~24h and not ~6h; the atlas quoted tier
+is data-gated. Untracked `strategies/hylshi_fade.py` re-confirmed present,
+still correctly left alone per the 07-18 provenance resolution.)**
+(prior 2026-08-03 02:30 UTC (WEATHER BRACKET #7 RAN AND READ AS THE
 SECOND UNANIMOUS RUN — THEN ASKING WHY CROSSING BEAT THE OPTIMISTIC
 CEILING FOUND THAT THE DIRECTION TEST CHARGES THE SIM FOR AMBIGUITY,
 AND THE POOLED WEATHER SIGNIFICANCE DOES NOT SURVIVE THE FIX.
