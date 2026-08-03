@@ -18,7 +18,8 @@ import re
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -60,6 +61,22 @@ COLLECT_SKIP_MAX_24H = 3
 # events at 12:54/12:59/13:04Z and three matching sidecar rows.
 COLLECT_UNIT = "hyxlab-collect.service"
 COLLECT_SKIP_EXIT = 75
+
+# EXP-960 — the fade window, in UTC hours. Live trading reads the snapshot
+# tape 23:00-04:00Z (research/lowt-window-structure: KXLOWT candidates appear
+# almost exclusively then), so a capture hole inside it is worth strictly more
+# than the same hole at noon. `qa_collect_skips` above is DAY-WIDE and blind to
+# that: its budget of 3 skips/24h passes cleanly on a night that loses three
+# consecutive fade-window cycles.
+FADE_WINDOW_START_H = 23
+FADE_WINDOW_END_H = 4
+# One lost cycle in a 60-cycle window is a transient; the measured harm event
+# (2026-07-29) was 4. Every other measured night 07-27..08-02 lost ZERO, so the
+# budget sits one above the observed-clean floor rather than being fitted to
+# the breach.
+FADE_WINDOW_MAX_HOLES = 1
+FADE_WINDOW_NIGHTS = 7
+SWEEP_UNIT = "hyxlab-poly-sweep.service"
 
 _failures: list[str] = []
 _skipped: list[str] = []
@@ -575,6 +592,188 @@ def qa_collect_skips(
         _record_ok("collect-skips", now)
 
 
+@dataclass
+class NightCapture:
+    """One 23:00-04:00Z fade window's capture record.
+
+    `starts`/`completions` are None when the journal could not testify about
+    that night at all. None is NOT zero: a night nobody watched must not be
+    rendered as a clean night, which is the same defect EXP-943 closed for the
+    skip sidecar.
+    """
+
+    date: str  # date of the 23:00Z edge, UTC
+    starts: int | None
+    completions: int | None
+    sweep_in_window: bool | None = None  # was the poly sweep still running?
+
+    @property
+    def measured(self) -> bool:
+        return self.starts is not None and self.completions is not None and self.starts > 0
+
+    @property
+    def holes(self) -> int:
+        if not self.measured:
+            return 0
+        return max(0, int(self.starts) - int(self.completions))
+
+
+def _journal(unit: str, since: datetime, until: datetime) -> str | None:
+    """Raw journal text for `unit` in [since, until), or None if unreadable."""
+    try:
+        p = subprocess.run(
+            [
+                "journalctl", "--user", "-u", unit,
+                "--since", since.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "--until", until.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "-o", "short-iso", "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode not in (0, 1):
+        return None
+    return p.stdout
+
+
+def read_fade_windows(nights: int = FADE_WINDOW_NIGHTS, now: datetime | None = None) -> list:
+    """Measure the last `nights` fade windows from systemd's journal.
+
+    Counted from the journal rather than the archive on purpose: a cycle that
+    loses the writer lock writes NOTHING, so the archive cannot report its own
+    holes, and the archive is exactly what the sweep has locked.
+
+    A cycle counts as CAPTURED only when its python emitted the `[collect]
+    <iso> {...}` payload line. That marker predates and survives the `flock -n`
+    wrapper removal, so a window is comparable across both eras; counting exit
+    codes instead would silently stop working when the failure mode changes.
+    """
+    now = now or datetime.now(UTC)
+    out = []
+    for i in range(nights, 0, -1):
+        start = (now - timedelta(days=i)).replace(
+            hour=FADE_WINDOW_START_H, minute=0, second=0, microsecond=0
+        )
+        end = (start + timedelta(days=1)).replace(hour=FADE_WINDOW_END_H)
+        if end > now:
+            continue
+        text = _journal(COLLECT_UNIT, start, end)
+        if text is None:
+            out.append(NightCapture(f"{start:%Y-%m-%d}", None, None, None))
+            continue
+        starts = len(re.findall(r"Starting hyxlab 5-min collector", text))
+        done = len(re.findall(r"\[collect\] \d{4}-\d\d-\d\dT", text))
+        sweep = _journal(SWEEP_UNIT, start, end)
+        out.append(
+            NightCapture(
+                f"{start:%Y-%m-%d}",
+                starts,
+                done,
+                None if sweep is None else bool(sweep.strip()),
+            )
+        )
+    return out
+
+
+def qa_fade_window_capture(
+    nights: int = FADE_WINDOW_NIGHTS,
+    records: list | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Fail when the 23:00-04:00Z snapshot tape loses cycles.
+
+    EXP-960. `hyxlab-poly-sweep` is a ~14h oneshot on a 24h cadence: over the
+    14 runs journalled 07-20..08-02 the eleven clean ones took 13.685-15.771h
+    (median 14.44h, sd 0.64h) from 05:00Z, ending 18:42-20:47Z — 2.2 to 4.3h
+    clear of the fade window. But the right tail is FAT, not drifting (OLS over
+    the eleven: -0.055 h/run, r=-0.27 — if anything shortening): on 2026-07-29
+    a run of Polymarket API stalls (measured gaps between progress lines of
+    9,314s / 6,440s / 6,062s with the price counter frozen) stretched it to
+    24h21m, ending 05:22Z — straight through the whole window.
+
+    MEASURED CONSEQUENCE, and it is why the alarm is here and not on the
+    duration: the sweep does NOT hold the lock while it runs. Sampled from
+    /proc/locks (no flock taken, so the sampler cannot starve what it
+    measures), `hyxlab-poly-sweep` takes the writer lock in 6.75-11.72s bursts
+    at ~11% duty. So an overrun does not stop capture; it makes capture
+    LOSE A DIE ROLL more often. On the 07-29 breach 4 of 60 cycles were lost
+    (23:10, 23:45, 02:05, 02:10Z); on the six other nights 07-27..08-02, 0 of
+    60 each. A duration alarm would therefore be the wrong instrument twice
+    over — it fires on runs that cost nothing, and it cannot fire on a hole
+    caused by anything other than the sweep.
+
+    So: alarm on the HOLES, over a multi-night window, and report the overrun
+    only as attribution. Three renderings, kept distinct:
+
+      no night measurable                -> UNVERIFIED (a SKIP, never a pass)
+      holes > budget on a NEW night      -> FAIL
+      holes > budget, already reported   -> WATCH, non-failing
+
+    The last of those is deliberate. A capture hole is unrecoverable — it
+    cannot be fixed, only noticed — so a permanent FAIL for a night already
+    on the record is pure noise, and noise is what trains an operator to stop
+    reading QA. Escalation is on CHANGE: a night not previously reported.
+    """
+    now = now or datetime.now(UTC)
+    name = f"fade window ({FADE_WINDOW_START_H:02d}:00-{FADE_WINDOW_END_H:02d}:00Z) capture"
+    recs = read_fade_windows(nights, now) if records is None else records
+    measured = [r for r in recs if r.measured]
+
+    if not measured:
+        _skipped.append("fade-window")
+        print(
+            f"SKIP  {name} — UNVERIFIED: none of the last {nights} fade windows could be "
+            f"counted from the {COLLECT_UNIT} journal ({len(recs)} window(s) examined), so "
+            "capture in the window is neither proven whole nor proven holed",
+            flush=True,
+        )
+        return
+
+    holed = [r for r in measured if r.holes > FADE_WINDOW_MAX_HOLES]
+    state = _load_state()
+    entry = state.setdefault("fade-window", {})
+    reported = set(entry.get("reported") or [])
+    fresh = [r for r in holed if r.date not in reported]
+    entry["reported"] = sorted({r.date for r in holed} | (reported & {r.date for r in measured}))
+    entry.setdefault("first_seen", now.isoformat())
+    _save_state(state)
+
+    detail = (
+        f"{sum(r.holes for r in measured)} lost cycle(s) over {len(measured)} measured "
+        f"window(s) of {len(recs)} (budget {FADE_WINDOW_MAX_HOLES}/window)"
+    )
+    if holed:
+        detail += "; " + ", ".join(
+            f"{r.date} lost {r.holes}/{r.starts}"
+            + (" while the poly sweep was still running" if r.sweep_in_window else "")
+            for r in holed
+        )
+    if len(measured) < len(recs):
+        detail += f"; {len(recs) - len(measured)} window(s) UNMEASURED"
+
+    if fresh:
+        check(name, False, detail)
+        return
+    if holed:
+        # Known and already journalled once. Still say it out loud, but do not
+        # keep failing the run for a hole nobody can now repair.
+        print(f"WATCH {name} — {detail} (already reported)", flush=True)
+        return
+    overrun = [r for r in measured if r.sweep_in_window]
+    if overrun:
+        print(
+            f"WATCH {name} — {SWEEP_UNIT} was still running inside "
+            f"{len(overrun)} window(s) ({', '.join(r.date for r in overrun)}) but cost no "
+            "cycles; leading indicator only",
+            flush=True,
+        )
+    check(name, True, detail)
+    _record_ok("fade-window", now)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab daily data-quality checks")
     ap.add_argument("--hours", type=float, default=26.0, help="recency window")
@@ -584,6 +783,7 @@ def main() -> None:
     qa_stream(args.hours)
     qa_archive(args.hours)
     qa_collect_skips()  # sidecar journal; never gated by the archive lock
+    qa_fade_window_capture()  # journal-only, for the same reason
     if _failures:
         print(f"[qa] {len(_failures)} FAILURES: {_failures}", flush=True)
         sys.exit(1)
