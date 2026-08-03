@@ -182,3 +182,104 @@ def test_the_daily_archive_pipeline_runs_in_dependency_order():
         f"skips the archive half. tradepass {tradepass:.2f}h, QA {qa:.2f}h UTC "
         f"= {qa - tradepass:.2f}h clearance"
     )
+
+
+#: Start of the live agent's fade window (hylshi CLAUDE.md playbook item 5:
+#: KXLOWT candidates appear almost exclusively 23:00-04:00Z). The Kalshi REST
+#: budget is RIVAL between this lab's batch archival and that agent's live
+#: perception/order path (EXP-958), so a Kalshi-facing batch unit that is
+#: still running at 23:00Z competes for quota during the only hours that
+#: touch P&L. Expressed as a UTC hour on the SAME day the unit starts.
+FADE_WINDOW_START_H = 23.0
+
+#: Worst COMPLETED wall clock measured from the systemd journal, per unit.
+#: These are measured intervals (Starting -> Consumed ... over N), never a
+#: duration inferred from a running process's age.
+#:
+#:   hyxlab-sweep      41m51s / 1h12m / 1h10m / 57m48s / 1h26m / 54m55s /
+#:                     25m15s over 2026-07-27..08-02. The 2026-08-03 run --
+#:                     the first full pass after Crypto entered
+#:                     sweep.DEFAULT_CATEGORIES on 08-02 -- was still running
+#:                     at 3h52m when this was written, with a self-reported
+#:                     ETA of ~6.5h more; 8.0h below is a deliberate
+#:                     over-allowance for that first-pass backlog.
+#:   hyxlab-tradepass  up to 2h51m (see QA_CLEARANCE_H above); 4.0h allowed.
+#:
+#: DELIBERATELY ABSENT: hyxlab-poly-sweep. It is measured at 13h41m-17h11m
+#: wall clock, and 2026-07-29 ran 1d 0h21m -- fully spanning that night's
+#: fade window. It is exempt because it talks to POLYMARKET, so it spends no
+#: Kalshi quota; its rivalry with the collector is `data/writer.lock` only,
+#: and collector/poly_sweep.py already touches the DB in short bursts. It is
+#: also unfixable by scheduling: a 14-24h job on a 24h cadence has a 57-100%
+#: duty cycle, so no start time clears a 5h window. Its lever is wall clock,
+#: not OnCalendar. Do NOT "fix" this by adding it here and moving its timer.
+BATCH_RUN_BUDGET_H = {
+    "hyxlab-sweep.timer": 8.0,
+    "hyxlab-tradepass.timer": 4.0,
+}
+
+
+def _fade_window_overrun(spec, budget_h, window_start_h=FADE_WINDOW_START_H):
+    """Hours by which `spec` + `budget_h` runs past the fade window, or None.
+
+    None means "no hour-pinned UTC start to judge" — that case is the
+    existing test_timers_pin_the_timezone_their_prose_claims's job, not
+    this one. A positive return is an overrun; <= 0 is fine.
+    """
+    start = _utc_hour(spec)
+    if start is None:
+        return None
+    return (start + budget_h) - window_start_h
+
+
+def test_kalshi_batch_units_finish_before_the_live_fade_window():
+    """Kalshi-facing batch archival must be done by 23:00Z.
+
+    Encodes the EXP-959 finding. The premise handed to that experiment was
+    that the crypto legs of `hyxlab-sweep` run into 23:00-04:00Z; measured,
+    they do not, but only because EXP-950 pinned this timer to real UTC
+    hours earlier. Before that commit the sweep fired at 11:10Z (06:10
+    LOCAL), and the 2026-08-03 first-full-crypto-pass run from that start
+    projected to ~21:00-22:00Z — under an hour of margin, with the crypto
+    backlog still growing. Pinned to 06:10Z the same run lands ~16:20Z.
+
+    That headroom is currently an accident of an unrelated timezone fix and
+    nothing asserts it. This does: it is the invariant EXP-959 was dispatched
+    to protect, and it is NOT covered by the pin test (a unit could pin
+    `20:00:00 UTC` and pass that one) nor by the dependency-order test
+    (which only compares stages against each other, so sliding the whole
+    pipeline late keeps it green).
+    """
+    timers = _timers()
+    offenders = []
+    for name, budget in sorted(BATCH_RUN_BUDGET_H.items()):
+        assert name in timers, f"{name} missing from {UNIT_DIR}"
+        for spec in _field(timers[name], "OnCalendar"):
+            over = _fade_window_overrun(spec, budget)
+            if over is not None and over > 0:
+                offenders.append(
+                    f"{name}: starts {_utc_hour(spec):.2f}h UTC + {budget:g}h "
+                    f"measured worst-case run = {_utc_hour(spec) + budget:.2f}h, "
+                    f"which is {over:.2f}h into the {FADE_WINDOW_START_H:g}:00Z "
+                    f"fade window"
+                )
+    assert not offenders, (
+        "a Kalshi-facing batch unit can still be spending REST quota inside "
+        f"the live agent's {FADE_WINDOW_START_H:g}:00-04:00Z fade window; the "
+        "Kalshi budget is rival with the live trader (EXP-958), so this is "
+        "P&L-affecting, not merely untidy:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_fade_window_overrun_catches_a_late_but_correctly_pinned_start():
+    """The helper must flag a unit that IS UTC-pinned and simply starts late.
+
+    Without this, the whole check would be satisfiable by the existing
+    timezone pin — and the 2026-08-03 incident already showed that a unit
+    can be green on every structural check while firing at the wrong hour.
+    """
+    assert _fade_window_overrun("*-*-* 20:00:00 UTC", 8.0) == 5.0
+    assert _fade_window_overrun("*-*-* 06:10:00 UTC", 8.0) < 0
+    # Not hour-pinned / not UTC: out of scope here, handled elsewhere.
+    assert _fade_window_overrun("*:0/5", 8.0) is None
+    assert _fade_window_overrun("*-*-* 06:10:00", 8.0) is None
