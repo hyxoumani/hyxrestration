@@ -8,6 +8,9 @@ Each cycle:
 - NWS: pull the 7-day forecast per station; every pull is stored with
   fetched_at for no-lookahead replay.
 
+A cycle is FETCH -> acquire writer lock -> WRITE -> release (EXP-957).
+The HTTP half never runs under the lock; see `fetch_cycle`.
+
 Run:
     python -m collector.collect --once
     python -m collector.collect --interval 300
@@ -20,6 +23,7 @@ import fcntl
 import json
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +31,7 @@ import requests
 
 from collector.lockid import note_holder, read_holder
 from collector.venues import kalshi, nws, polymarket
+from hyxlab.models import Forecast, MarketInfo, Snapshot
 from hyxlab.store import Store, open_retry
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
@@ -34,17 +39,23 @@ __all__ = [
     "DEFAULT_WATCHLIST",
     "LOCK_WAIT_S",
     "SKIP_LOG",
+    "Cycle",
     "acquire_writer_lock",
     "collect_once",
+    "fetch_cycle",
     "load_watchlist",
     "main",
     "record_skip",
+    "write_cycle",
 ]
 
 LOCK_FILE = "data/writer.lock"
 SKIP_LOG = "data/collect_skips.jsonl"
 # Bounded well under the 300s timer period: a cycle that waits longer than
 # this would still be running when the next one fires, so runs would stack.
+# Since EXP-957 the fetch runs BEFORE the wait, so `main` spends this as a
+# whole-cycle budget (fetch elapsed is subtracted from the wait) rather
+# than as a wait that starts from zero after ~29s of HTTP.
 LOCK_WAIT_S = 240.0
 
 
@@ -113,10 +124,44 @@ def record_skip(
         fh.write(json.dumps(rec) + "\n")
 
 
-def collect_once(store: Store, watchlist: dict, session: requests.Session | None = None) -> dict:
+@dataclass
+class Cycle:
+    """One cycle's worth of fetched rows, buffered for a single write burst.
+
+    Held in memory between `fetch_cycle` and `write_cycle`. MEASURED
+    (EXP-957): a full production cycle (5,913 market infos + 670
+    snapshots + 35 forecasts) buffers to **1.8 MB** — 0.7% of the
+    collector's 240.8M peak RSS, because the raw API dicts are converted
+    to models per series and dropped, so only the models survive the
+    fetch. The buffer is not the cost; the lock was.
+    """
+
+    ts: datetime
+    infos: list[MarketInfo] = field(default_factory=list)
+    kalshi_snaps: list[Snapshot] = field(default_factory=list)
+    poly_snaps: list[Snapshot] = field(default_factory=list)
+    forecasts: list[Forecast] = field(default_factory=list)
+    errors: int = 0
+
+
+def fetch_cycle(watchlist: dict, session: requests.Session | None = None) -> Cycle:
+    """All HTTP for one cycle. **Must run with the writer lock FREE.**
+
+    EXP-957: `collect` used to take `data/writer.lock` in `main()` and
+    hold it across every fetch of the cycle — the lock is needed for the
+    WRITE, never for the FETCH. Measured on 2026-08-03 against the live
+    31-series/5-station watchlist: the fetch half costs **28.9 s** (28.6 s
+    Kalshi over 62 paginated calls, 0.25 s NWS, 0.01 s model conversion)
+    of a cycle whose whole hold was ~52 s. Those seconds are rival with
+    every other archive writer, and during 23:00-04:00Z they are rival
+    with the weather collection that feeds live trading.
+
+    Per-source isolation is unchanged and stays HERE: a bad series or a
+    Gamma error object costs its own rows, not the cycle. What moved is
+    only WHEN the rows are written.
+    """
     sess = session or requests.Session()
-    counts = {"kalshi_snaps": 0, "kalshi_markets": 0, "poly_snaps": 0, "forecasts": 0, "errors": 0}
-    ts = datetime.now(UTC)
+    cyc = Cycle(ts=datetime.now(UTC))
 
     for series in watchlist.get("kalshi_series", []):
         try:
@@ -124,14 +169,10 @@ def collect_once(store: Store, watchlist: dict, session: requests.Session | None
             settled = kalshi.get_markets(
                 series_ticker=series, status="settled", max_pages=1, session=sess
             )
-            infos = [kalshi.to_market_info(m) for m in open_markets + settled]
-            snaps = [kalshi.to_snapshot(m, ts) for m in open_markets]
-            store.upsert_markets(infos)
-            store.insert_snapshots(snaps)
-            counts["kalshi_markets"] += len(infos)
-            counts["kalshi_snaps"] += len(snaps)
+            cyc.infos.extend(kalshi.to_market_info(m) for m in open_markets + settled)
+            cyc.kalshi_snaps.extend(kalshi.to_snapshot(m, cyc.ts) for m in open_markets)
         except Exception as e:  # isolation: one bad source must not kill the cycle
-            counts["errors"] += 1
+            cyc.errors += 1
             print(f"[collect] kalshi {series}: {type(e).__name__}: {e}")
 
     pairs = watchlist.get("polymarket_pairs", [])
@@ -139,26 +180,75 @@ def collect_once(store: Store, watchlist: dict, session: requests.Session | None
         try:
             tokens = [t for _, yes_t, no_t in pairs for t in (yes_t, no_t)]
             books = polymarket.get_books(tokens, session=sess)
-            snaps = [
-                polymarket.pair_snapshot(mid, books.get(yes_t), books.get(no_t), ts)
+            cyc.poly_snaps.extend(
+                polymarket.pair_snapshot(mid, books.get(yes_t), books.get(no_t), cyc.ts)
                 for mid, yes_t, no_t in pairs
-            ]
-            store.insert_snapshots(snaps)
-            counts["poly_snaps"] += len(snaps)
+            )
         except Exception as e:  # Gamma serves error objects with HTTP 200
-            counts["errors"] += 1
+            cyc.errors += 1
             print(f"[collect] polymarket books: {type(e).__name__}: {e}")
 
     for station in watchlist.get("nws_stations", []):
         try:
-            fcs = nws.get_daily_highs(station, session=sess)
-            store.insert_forecasts(fcs)
-            counts["forecasts"] += len(fcs)
+            cyc.forecasts.extend(nws.get_daily_highs(station, session=sess))
         except Exception as e:
-            counts["errors"] += 1
+            cyc.errors += 1
             print(f"[collect] nws {station}: {type(e).__name__}: {e}")
 
+    return cyc
+
+
+def write_cycle(store: Store, cyc: Cycle) -> dict:
+    """Persist a fetched cycle in ONE transaction. Lock-held section.
+
+    Atomic on purpose: buffering the whole cycle turns 31+ independently
+    committed statements into one burst, and a crash between two of them
+    would leave a cycle half in the archive — a hole that reads like data.
+    Losing a whole cycle is acceptable (the tape already tolerates a
+    skip, and `record_skip` counts it); corrupting one is not. On any
+    failure the transaction is rolled back and the cycle is reported as
+    an error rather than half-written.
+
+    MEASURED (EXP-957, production-scale scratch DB: 2.85M snapshots,
+    324k markets, 260k forecasts): this half costs **15.8 s** — 15.3 s of
+    it `upsert_markets` (5,913 INSERT OR REPLACE against the markets PK).
+    That is the irreducible hold; the other 28.9 s used to be lock time
+    for no reason.
+    """
+    counts = {
+        "kalshi_snaps": 0,
+        "kalshi_markets": 0,
+        "poly_snaps": 0,
+        "forecasts": 0,
+        "errors": cyc.errors,
+    }
+    store.conn.execute("BEGIN TRANSACTION")
+    try:
+        store.upsert_markets(cyc.infos)
+        store.insert_snapshots(cyc.kalshi_snaps)
+        store.insert_snapshots(cyc.poly_snaps)
+        store.insert_forecasts(cyc.forecasts)
+        store.conn.execute("COMMIT")
+    except Exception as e:
+        store.conn.execute("ROLLBACK")
+        counts["errors"] += 1
+        print(f"[collect] write rolled back: {type(e).__name__}: {e}")
+        return counts
+    counts["kalshi_markets"] = len(cyc.infos)
+    counts["kalshi_snaps"] = len(cyc.kalshi_snaps)
+    counts["poly_snaps"] = len(cyc.poly_snaps)
+    counts["forecasts"] = len(cyc.forecasts)
     return counts
+
+
+def collect_once(store: Store, watchlist: dict, session: requests.Session | None = None) -> dict:
+    """Fetch then write, against an ALREADY-OPEN store.
+
+    Kept for callers that manage their own store. `main()` deliberately
+    does NOT use it: holding an open `Store` spans the DuckDB file lock
+    across the fetch, which is the same starvation in a different lock.
+    """
+    return write_cycle(store, fetch_cycle(watchlist, session=session))
 
 
 def main() -> None:
@@ -175,37 +265,45 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    t0 = time.monotonic()
-    lock = acquire_writer_lock(wait_s=args.lock_wait)
-    if lock is None:
-        waited = time.monotonic() - t0
-        holder = read_holder(LOCK_FILE)
-        record_skip("writer lock held", waited, holder=holder)
-        # Nonzero so systemd records it, AND a durable record so an
-        # instrument that never sees systemd can still count the hole.
-        who = (
-            f"{holder.get('unit') or 'no unit'} pid={holder['pid']}"
-            f" since {holder.get('at')}{'' if holder.get('alive') else ' (DEAD/stale record)'}"
-            if holder
-            else "holder unrecorded"
-        )
-        print(f"[collect] skipped: writer lock held for {waited:.0f}s by {who}")
-        sys.exit(75)  # EX_TEMPFAIL
-
     watchlist = load_watchlist(args.watchlist)
     sess = requests.Session()
-    store = open_retry(args.db, retries=5)
-    try:
-        while True:
-            counts = collect_once(store, watchlist, session=sess)
-            print(f"[collect] {datetime.now(UTC).isoformat()} {counts} db={store.counts()}")
+    while True:
+        t0 = time.monotonic()
+        cyc = fetch_cycle(watchlist, session=sess)  # NO lock held here (EXP-957)
+        # The lock budget is a budget for the CYCLE, not for the wait: the
+        # fetch now runs first, and a wait of the full LOCK_WAIT_S on top
+        # of it could still be running when the next 5-min firing arrives.
+        wait_s = max(0.0, args.lock_wait - (time.monotonic() - t0))
+        lock = acquire_writer_lock(wait_s=wait_s)
+        if lock is None:
+            waited = time.monotonic() - t0
+            holder = read_holder(LOCK_FILE)
+            record_skip("writer lock held", waited, holder=holder)
+            # Nonzero so systemd records it, AND a durable record so an
+            # instrument that never sees systemd can still count the hole.
+            who = (
+                f"{holder.get('unit') or 'no unit'} pid={holder['pid']}"
+                f" since {holder.get('at')}{'' if holder.get('alive') else ' (DEAD/stale record)'}"
+                if holder
+                else "holder unrecorded"
+            )
+            print(f"[collect] skipped: writer lock held for {waited:.0f}s by {who}")
             if args.once:
-                break
+                sys.exit(75)  # EX_TEMPFAIL
             time.sleep(args.interval)
-    finally:
-        store.close()
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        lock.close()
+            continue
+
+        store = open_retry(args.db, retries=5)
+        try:
+            counts = write_cycle(store, cyc)
+            print(f"[collect] {datetime.now(UTC).isoformat()} {counts} db={store.counts()}")
+        finally:
+            store.close()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+        if args.once:
+            break
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":

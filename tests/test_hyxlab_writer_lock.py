@@ -206,6 +206,185 @@ def test_writer_burst_releases_the_lock_on_exception(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# 1b. EXP-957 — the COLLECTOR must not hold the lock across its own fetch.
+#
+# `collector.collect` took the lock in main() and released it at exit, so a
+# cycle's 62 paginated Kalshi calls + 5 NWS calls all ran under it. MEASURED
+# 2026-08-03 against the live watchlist: the fetch half is 28.9s of a ~52s
+# hold, and the write half (production-scale scratch DB) is 15.8s. Same
+# defect the sweep had above, one module over.
+# --------------------------------------------------------------------------
+
+
+class _LockProbe:
+    """Records whether the writer lock was held at each HTTP call."""
+
+    def __init__(self, lock_path):
+        self.lock_path = lock_path
+        self.held_during_http = []
+
+    def observe(self):
+        with open(self.lock_path, "a") as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(probe, fcntl.LOCK_UN)
+                self.held_during_http.append(False)
+            except OSError:
+                self.held_during_http.append(True)
+
+
+def _collect_market(ticker="KXLOWTNYC-26AUG03-B80.5"):
+    return {
+        "ticker": ticker,
+        "event_ticker": "KXLOWTNYC-26AUG03",
+        "title": "t",
+        "open_time": "2026-08-03T00:00:00Z",
+        "close_time": "2026-08-03T09:00:00Z",
+        "yes_bid_dollars": "0.30",
+        "yes_ask_dollars": "0.32",
+    }
+
+
+def _forecast(station="KNYC"):
+    from hyxlab.models import Forecast
+
+    return Forecast(
+        station=station,
+        fetched_at=datetime.now(UTC),
+        target_date=datetime.now(UTC).date(),
+        high_f=80,
+        short="Sunny",
+    )
+
+
+def _run_collect(tmp_path, monkeypatch, probe, *, lock_wait=10.0, fetch_delay=0.0, stations=1):
+    """Run one `collect.main()` cycle against fakes, tmp lock and tmp db."""
+    wl = tmp_path / "watchlist.json"
+    wl.write_text(
+        json.dumps(
+            {
+                "kalshi_series": ["KXLOWTNYC"],
+                "polymarket_pairs": [],
+                "nws_stations": ["KNYC"][:stations],
+            }
+        )
+    )
+    monkeypatch.setattr(collect, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    monkeypatch.setattr(collect, "SKIP_LOG", str(tmp_path / "skips.jsonl"))
+
+    def get_markets(**kw):
+        probe.observe()
+        if fetch_delay:
+            time.sleep(fetch_delay)
+        return [_collect_market()] if kw.get("status") == "open" else []
+
+    def get_daily_highs(station, session=None):
+        probe.observe()
+        return [_forecast(station)]
+
+    monkeypatch.setattr(collect.kalshi, "get_markets", get_markets)
+    monkeypatch.setattr(collect.nws, "get_daily_highs", get_daily_highs)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "collect",
+            "--once",
+            "--db",
+            str(tmp_path / "t.duckdb"),
+            "--watchlist",
+            str(wl),
+            "--lock-wait",
+            str(lock_wait),
+        ],
+    )
+    collect.main()
+
+
+def test_collector_fetches_with_the_writer_lock_free(tmp_path, monkeypatch):
+    """THE load-bearing test: every HTTP call of a cycle must happen with
+    the lock free. Pre-EXP-957 main() acquired it before the first fetch."""
+    probe = _LockProbe(str(tmp_path / "writer.lock"))
+    _run_collect(tmp_path, monkeypatch, probe)
+
+    assert probe.held_during_http, "fixture made no HTTP calls"
+    assert not any(probe.held_during_http), (
+        "the writer lock was held across a REST call — 28.9s of a ~52s hold "
+        "spent on HTTP that never needed the lock"
+    )
+
+
+def test_collector_still_persists_everything_it_buffered(tmp_path, monkeypatch):
+    """Discrimination control: a 'fix' that stopped writing would pass the
+    test above. The buffered cycle must land in full."""
+    probe = _LockProbe(str(tmp_path / "writer.lock"))
+    _run_collect(tmp_path, monkeypatch, probe)
+
+    from hyxlab.store import Store
+
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        assert store.counts()["markets"] == 1
+        assert store.counts()["snapshots"] == 1
+        assert store.counts()["nws_forecasts"] == 1
+    finally:
+        store.close()
+
+
+def test_a_failed_write_leaves_no_half_cycle(tmp_path, monkeypatch):
+    """Buffering the cycle turns 31 independent commits into one burst, so
+    the burst must be all-or-nothing: a crash between two of its statements
+    would leave a cycle half in the archive, and a partial cycle reads like
+    data. Losing a cycle is acceptable; corrupting one is not."""
+    probe = _LockProbe(str(tmp_path / "writer.lock"))
+    from hyxlab.store import Store
+
+    def boom(self, fcs):
+        raise RuntimeError("disk full mid-cycle")
+
+    monkeypatch.setattr(Store, "insert_forecasts", boom)
+    _run_collect(tmp_path, monkeypatch, probe)  # must not raise: cycle lost, not fatal
+
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        c = store.counts()
+        assert c["markets"] == 0 and c["snapshots"] == 0 and c["nws_forecasts"] == 0, (
+            f"a failed write left a partial cycle in the archive: {c}"
+        )
+    finally:
+        store.close()
+
+
+def test_lock_budget_is_spent_on_the_whole_cycle_not_just_the_wait(tmp_path, monkeypatch):
+    """Fetching first must not push the cycle past the 300s timer period.
+
+    The fetch's elapsed time comes OUT of --lock-wait, so a contended
+    cycle still ends within its budget instead of budget+fetch. And the
+    fetch must actually have happened: pre-EXP-957 a contended cycle made
+    zero HTTP calls because it blocked on the lock first."""
+    lock_path = str(tmp_path / "writer.lock")
+    probe = _LockProbe(lock_path)
+    holder = open(lock_path, "a")  # noqa: SIM115 — held across the whole cycle
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(SystemExit) as exc:
+            _run_collect(tmp_path, monkeypatch, probe, lock_wait=1.0, fetch_delay=0.3)
+        elapsed = time.monotonic() - t0
+    finally:
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        holder.close()
+
+    assert exc.value.code == 75
+    assert probe.held_during_http, "contended cycle never fetched — the old lock-first order"
+    assert elapsed < 1.0 + 0.25, (
+        f"cycle ran {elapsed:.2f}s on a 1.0s budget: the wait restarted from "
+        "zero after the fetch, so runs can stack past the 5-min period"
+    )
+    rows = Path(str(tmp_path / "skips.jsonl")).read_text().splitlines()
+    assert len(rows) == 1 and json.loads(rows[0])["reason"] == "writer lock held"
+
+
+# --------------------------------------------------------------------------
 # 2. A contended collector cycle waits; a timed-out one leaves a record.
 # --------------------------------------------------------------------------
 
