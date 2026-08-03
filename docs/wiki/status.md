@@ -1,6 +1,122 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-02 23:00 UTC (THE ATLAS GATE OPENED AND THE STRICTEST
+Updated: **2026-08-03 02:30 UTC (WEATHER BRACKET #7 RAN AND READ AS THE
+SECOND UNANIMOUS RUN — THEN ASKING WHY CROSSING BEAT THE OPTIMISTIC
+CEILING FOUND THAT THE DIRECTION TEST CHARGES THE SIM FOR AMBIGUITY,
+AND THE POOLED WEATHER SIGNIFICANCE DOES NOT SURVIVE THE FIX.
+TWENTY-SECOND INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: AN AMBIGUOUS
+IN-BRACKET FILL IS NOT AN INVENTED ONE.** Gate check first, hard rather
+than estimated (`systemctl list-timers`, `date -u` 02:15 — journald
+prints CDT): the kalshi sweep is next 08-03 11:10 UTC so **atlas stays
+gated**; QA next 07:00; econ needs >=336h (next ~08-10). The weather
+bracket WAS due (prior 08-02 02:16:27), so ladder rung 1. **THE RUN**:
+`reports/maker_bracket/20260803T021550.json`, 292 virtual orders across
+8 markets, `new_share_vs_all: 1.0` (292/292 against 21 priors), so it
+certifies independent at the strictest tier. It reads 4 underlyings
+**all net over**, `underlying_sign_p` 0.0625 — the second unanimous
+weather run, and the market tier reads **p=0.003906, SIGNIFICANT**.
+**BUT THE HEADLINE NUMBER IS OUT OF ITS OWN BRACKET**: crossing 177
+against queue [154 pess, **166 opt**] — **11 above the optimistic
+ceiling**, the largest positive excursion in the 37-run archive (prior
+max +5, and most readings are NEGATIVE). **PROBED BEFORE REPORTING, and
+the count is not the set**: 40 orders cross-but-not-opt and 29
+opt-but-not-cross, so the sets differ by **69 orders while the totals
+differ by 11** — the headline understates the disagreement 3.6x through
+cancellation. **THEN THE LOAD-BEARING HALF, FOUND BY ASKING WHAT
+`crossing_but_not_pess` ACTUALLY COUNTS.** The direction test scored an
+over-award whenever the **PESSIMISTIC FLOOR** missed a fill the crossing
+rule awarded. But the queue evidence is a **BRACKET**, and an order the
+floor misses while the **ceiling fills it** lies INSIDE that bracket —
+that is the bracket saying *unknown*, which is the whole reason it is a
+bracket, not the sim inventing a fill. The report's own note said "fills
+the sim **may be** inventing" and every tier then dropped the "may be".
+**THE BIAS IS STRUCTURAL, NOT NOISY**: `filled_pess <= filled_opt`
+always (**verified: 0 violations in 21,168 archived orders**), so the
+loose over-award set is a **superset** of the strict one for every
+order. The difference is therefore ONE-SIDED — a floor-only direction
+test can only ever read MORE over, never less. Over dominating the
+archive is partly the test's construction, not the fill models.
+**REPLAYED ACROSS ALL 37 ARCHIVED REPORTS AND IT MOVES REAL VERDICTS**:
+**22 of 37 runs change**, **seven flip sign** (07-14 +3->-1, 07-23
++1->-6 and +2->-8, 07-26 +5->-2, 07-27 +1->-1, 07-30 +6->-1) — and
+**both runs this log has celebrated as unanimous lose it**: 08-01's
+"first unanimous run" 4/0 p=0.0625 -> 3/0 p=0.125, and today's #7 4/0
+p=0.0625 -> **3/1 p=0.3125**. **THE POOLED READ IS THE VERDICT AND IT
+DOES NOT SURVIVE.** Deduped by `order_key` across every weather report
+(4,323 distinct orders, 56 underlyings): loose **41 over / 15 under,
+p=0.000343, SIGNIFICANT**; strict **30 over / 23 under, p=0.205, NOT
+significant**, aggregate +107 -> +30. On all categories pooled (12,832
+orders) the direction survives but weakens by three orders of magnitude
+(p=1.1e-05 -> 0.038, agg +175 -> +64). **STATED AT THE STRENGTH THE
+DATA SUPPORTS**: this does NOT show the crossing rule is unbiased — the
+strict reading still leans over on both pools. It does mean the
+**significance of the weather over-award was carried by ambiguous
+in-bracket fills**, and no maker registration should have rested on it.
+INSTRUMENT SHIPPED (93be12a, 9dd64b8): reports carry the three-way split
+`crossing_but_not_opt` (no queue model fills it — unambiguously
+invented) / `inside_bracket` (ambiguous) / `pess_but_not_crossing`
+(unambiguously forgone), plus `concentration_strict`, which re-runs
+every tier against the ceiling. `concentration` keeps the floor reading
+**unchanged** so archived reports stay comparable, per the
+divergence-matcher / atlas-day-tier precedent — the two are a bracket on
+the DIRECTION exactly as pess/opt are a bracket on the fill count. **The
+UNDER side deliberately does not split**: an order the sim declines
+while even the floor fills it is forgone under either bound, so only the
+over side was ever loose. Seven regression tests; the load-bearing one
+runs **identical orders, identical outcomes, identical day balance**
+through both bounds and asserts the verdict **REVERSES** — significant
+OVER at the floor (p=0.03125), significant UNDER at the ceiling — so a
+bound-blind implementation fails on the contrast rather than on a
+missing key, with a discrimination control asserting a genuinely
+invented fill does NOT disappear when the bound tightens. Verified by
+mutation, five: bound-blind `over_award`, strict-marks-everything,
+tightening the forgone side too, defaulting to the ceiling, and
+counting `inside_bracket` over all orders. **ONE MUTATION SURVIVED AND
+THE TEST WAS WRONG, NOT THE CODE — AND IT IS THE SAME CLASS AS 08-02,
+IN MY OWN TEST AGAIN**: `inside_bracket` over all orders passed because
+the test **re-derived the partition at the call site** instead of
+calling the shipped path, so `main()`'s assembly was never exercised.
+Extracted to `over_award_split()` and the test now calls it; it reddens
+exactly that mutation, plus a second test asserting a forgone fill is
+never counted as inside the bracket (it has `filled_opt > 0` too, so the
+naive read double-counts the forgone side onto BOTH sides). Suite
+436->443, ruff clean, pushed. **NO PROMOTE, verified rather than
+assumed**: `grep` over `scripts/systemd/` shows no unit references
+queuescore. Validated in the real pipeline — the shipped module
+re-run reproduces the ad-hoc probe exactly (40 / 7 / 24) and the market
+tier flips **p=0.003906 significant -> p=0.109 not significant** on run
+#7 alone; the re-run correctly self-certifies as `new_share_vs_all: 0.0`,
+i.e. not new evidence. **THE OPERATIONAL ITEM IS UNCHANGED AND STILL THE
+HIGHEST-VALUE EVENT ON THE BOARD**: `shadow_coverage` reads the live run
+`20260802T204103` at **5.68h with `h_to_1st` 2.62h** — first outcome
+**~04:59 UTC**, 1,631 fills correctly `pending`. In 38 archived runs
+this archive has **never once observed an outcome end to end**. Promote
+in the **08-03 05:00–07:00 UTC** window: after the first outcome
+observation, before QA at 07:00, and ahead of the 05:00 poly sweep's
+contention window where the un-promoted capture-hole fix (6dcdcb7) pays
+most. PRACTICAL RULE, joining a-wide-book-is-not-a-price /
+a-skipped-check-is-not-a-passed-one /
+an-untriggered-path-is-not-an-unreached-one /
+unobserved-is-not-unobservable / read-`tier_stability`-before-any-atlas-
+count / shadow-coverage-before-shadow-equity / `underlying_sign_p` /
+`new_share_vs_all` / connection-scoped-`seq`: **an ambiguous in-bracket
+fill is not an invented one. When the evidence is a BRACKET, a
+direction test must name which END it charges — and since the floor's
+disagreement set contains the ceiling's for every order, charging the
+floor leans one way BY CONSTRUCTION. Read `concentration_strict` beside
+`concentration`; a direction significant in one and not the other is a
+property of the bound, not of the models. And a count above a ceiling is
+not a set above it — 11 net hid 69 disagreeing orders.** NEXT PASS: the
+**04:59 outcome then the 05:00–07:00 promote window** is the operational
+ladder; the 11:10 sweep re-opens the atlas gate for the FIFTH reading,
+now carrying `flagged_quoted`; QA 07:00; weather bracket #8 is 08-04
+~02:15, and it is the first that will report `concentration_strict`
+natively. Still open: shadow position continuity across restart
+(prerequisite `shadow_settlements` SHIPPED); the atlas quoted tier is
+data-gated on quoted-observation accumulation. Untracked
+`strategies/hylshi_fade.py` re-confirmed present, still correctly left
+alone per the 07-18 provenance resolution.)**
+(prior 2026-08-02 23:00 UTC (THE ATLAS GATE OPENED AND THE STRICTEST
 TIER HELD FOR A FOURTH READING — THEN THE NEW CATEGORY THAT ARRIVED
 TODAY FLAGGED AN IMPOSSIBLE GAP, AND CHASING IT FOUND THAT EVERY TIER IN
 THE REPORT BOUNDS CORRELATION AND NONE OF THEM BOUNDS WHETHER `implied`
