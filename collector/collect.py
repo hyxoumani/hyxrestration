@@ -274,9 +274,14 @@ def main() -> None:
         # fetch now runs first, and a wait of the full LOCK_WAIT_S on top
         # of it could still be running when the next 5-min firing arrives.
         wait_s = max(0.0, args.lock_wait - (time.monotonic() - t0))
+        t_lock = time.monotonic()
         lock = acquire_writer_lock(wait_s=wait_s)
         if lock is None:
-            waited = time.monotonic() - t0
+            # Time spent WAITING ON THE LOCK, not whole-cycle elapsed. Since
+            # EXP-957 the fetch runs first, so measuring from t0 would bill
+            # the lock for ~29 s of HTTP — and this field is read by exactly
+            # the operator diagnosing lock contention.
+            waited = time.monotonic() - t_lock
             holder = read_holder(LOCK_FILE)
             record_skip("writer lock held", waited, holder=holder)
             # Nonzero so systemd records it, AND a durable record so an

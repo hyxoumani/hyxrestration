@@ -384,6 +384,39 @@ def test_lock_budget_is_spent_on_the_whole_cycle_not_just_the_wait(tmp_path, mon
     assert len(rows) == 1 and json.loads(rows[0])["reason"] == "writer lock held"
 
 
+def test_a_skip_bills_the_lock_wait_not_the_fetch(tmp_path, monkeypatch):
+    """The durable skip record must measure time spent WAITING ON THE LOCK.
+
+    Since EXP-957 the fetch runs before the wait, so timing the skip from
+    the top of the cycle bills the lock for HTTP it never held — and this
+    field is read by exactly the operator diagnosing lock contention, who
+    would conclude the holder was ~29s slower than it was.
+
+    The fixture spends 0.6s fetching (0.3s x 2 get_markets calls) of a 1.0s
+    budget, so a whole-cycle measurement reads ~1.0s and a lock-only one
+    reads ~0.4s. The bound sits between them.
+    """
+    lock_path = str(tmp_path / "writer.lock")
+    probe = _LockProbe(lock_path)
+    holder = open(lock_path, "a")  # noqa: SIM115 — held across the whole cycle
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(SystemExit):
+            _run_collect(tmp_path, monkeypatch, probe, lock_wait=1.0, fetch_delay=0.3)
+    finally:
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        holder.close()
+
+    waited = json.loads(Path(str(tmp_path / "skips.jsonl")).read_text().splitlines()[0])[
+        "waited_s"
+    ]
+    assert waited < 0.6, (
+        f"skip record billed {waited:.2f}s to the lock on a cycle that spent "
+        "0.6s of its 1.0s budget fetching — the fetch is being charged as "
+        "lock contention"
+    )
+
+
 # --------------------------------------------------------------------------
 # 2. A contended collector cycle waits; a timed-out one leaves a record.
 # --------------------------------------------------------------------------
