@@ -78,6 +78,16 @@
             "statusMessage": "Autodev keep-running guard"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/uncommitted-gate.sh",
+            "timeout": 15,
+            "statusMessage": "Uncommitted work gate"
+          }
+        ]
       }
     ]
   },
