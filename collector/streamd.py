@@ -30,6 +30,7 @@ import asyncio
 import contextlib
 import json
 import os
+import time as _time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -44,6 +45,8 @@ TICKER_REFRESH_SECS = 3600.0
 POLY_PING_SECS = 10.0
 POLY_TOP_MARKETS = 50  # busiest books streamed even without verified pairs
 BACKOFF_MAX = 60.0
+# Space the per-series ticker-refresh calls apart (see open_tickers).
+SERIES_PAUSE_S = float(os.environ.get("HYXLAB_SERIES_PAUSE_S", "0.35"))
 # Retry waits when a book task's subscription set comes back EMPTY (venue
 # REST down at boot); the last rung repeats until the set is non-empty.
 # Subscribing empty captures nothing — and the hourly in-loop refresh may
@@ -84,11 +87,23 @@ async def _fetch_until_nonempty(fetch, channel: str, what: str):
     return items
 
 
-def open_tickers(series_list: list[str]) -> set[str]:
-    """Open market tickers for the watchlist series (REST, paced fine:
-    one call per series per hour)."""
+def open_tickers(series_list: list[str], pause_s: float = SERIES_PAUSE_S) -> set[str]:
+    """Open market tickers for the watchlist series (REST, one call per
+    series per hour).
+
+    `pause_s` spaces the calls APART. get_markets' own `pause_s` paces
+    between PAGES within one series, which does nothing for a burst of
+    N single-page series calls — and the watchlist is now 31 series, so
+    the burst is what matters. Measured 2026-08-02 at 23 series: the
+    refresh drew 429s from /markets (KXPAYROLLS, KXU3) even though each
+    series is cheap on its own. kalshi._get_with_429_retry now recovers
+    from those, but recovering from a burst we chose to send is worse
+    than not sending it: retries land in the same window and the whole
+    refresh stretches out anyway."""
     out: set[str] = set()
-    for s in series_list:
+    for i, s in enumerate(series_list):
+        if i and pause_s:
+            _time.sleep(pause_s)
         try:
             out.update(m["ticker"] for m in kalshi.get_markets(series_ticker=s, status="open"))
         except Exception as exc:  # one bad series must not sink the refresh

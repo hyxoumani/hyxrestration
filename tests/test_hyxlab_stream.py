@@ -920,3 +920,61 @@ def test_flusher_logs_sidecar_holes(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "CRITICAL sidecar drain skipped 1 unreadable row(s)" in out
+
+
+def test_open_tickers_paces_between_series(monkeypatch):
+    """EXP-936 follow-on: the hourly ticker refresh makes ONE /markets call
+    per series with no spacing. get_markets' own `pause_s` paces between
+    PAGES, which does nothing for a burst of N single-page series calls.
+    Measured 2026-08-02 at 23 series: that burst drew 429s (KXPAYROLLS,
+    KXU3). The watchlist is now 31 series, so pin that the calls are spaced.
+    """
+    from collector import streamd
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(streamd._time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(
+        streamd.kalshi, "get_markets", lambda **kw: [{"ticker": kw["series_ticker"] + "-X"}]
+    )
+
+    out = streamd.open_tickers(["A", "B", "C"], pause_s=0.25)
+
+    assert out == {"A-X", "B-X", "C-X"}
+    # N series => N-1 gaps: paced BETWEEN calls, never before the first.
+    assert sleeps == [0.25, 0.25]
+
+
+def test_open_tickers_pause_zero_disables_spacing(monkeypatch):
+    """pause_s=0 must not sleep at all — keeps existing tests/callers fast."""
+    from collector import streamd
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(streamd._time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(
+        streamd.kalshi, "get_markets", lambda **kw: [{"ticker": kw["series_ticker"] + "-X"}]
+    )
+
+    streamd.open_tickers(["A", "B"], pause_s=0)
+
+    assert sleeps == []
+
+
+def test_open_tickers_still_paces_when_a_series_raises(monkeypatch):
+    """A failing series must not skip the pacing for the ones after it —
+    otherwise a run of failures reproduces the very burst this prevents."""
+    from collector import streamd
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(streamd._time, "sleep", lambda s: sleeps.append(s))
+
+    def boom(**kw):
+        if kw["series_ticker"] == "B":
+            raise RuntimeError("429")
+        return [{"ticker": kw["series_ticker"] + "-X"}]
+
+    monkeypatch.setattr(streamd.kalshi, "get_markets", boom)
+
+    out = streamd.open_tickers(["A", "B", "C"], pause_s=0.1)
+
+    assert out == {"A-X", "C-X"}
+    assert sleeps == [0.1, 0.1]
