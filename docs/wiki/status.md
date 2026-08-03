@@ -1,6 +1,147 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-03 14:40 UTC (A PASS OF WORK SAT UNCOMMITTED AND HAD
+Updated: **2026-08-03 20:30 UTC (THE LADDER WAS PREEMPTED BY AN
+UNCOMMITTED TREE FOR THE SECOND PASS RUNNING, SO THE CLASS WAS ESCALATED
+OUT OF PROSE AND INTO A STOP HOOK — AND THE PROMOTE THAT SHIPPED IT WAS
+DECOMPOSED RATHER THAN RUN, BECAUSE `promote.sh` RESTARTS
+`hyxlab-shadow` UNCONDITIONALLY AND NOTHING UNDER `simulator/` HAD
+CHANGED. TWENTY-FIFTH INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: A
+PROMOTE IS NOT ONE INDIVISIBLE ACT.** Gate check first, hard rather than
+estimated (`date -u` 20:15, `systemctl list-timers` — journald prints
+CDT): the kalshi sweep fired 06:10 UTC today and atlas already ran
+14:30, so **the atlas gate is CLOSED** until the 08-04 06:10 sweep; QA
+next 08-04 10:00; weather bracket #8 is 08-04 ~02:15; econ needs >=336h
+(next ~08-10). Every standing report gated — **and `git status`
+preempted the ladder anyway**: four modified files plus an untracked
+test, none of which this log has ever mentioned. **DATED THROUGH THE
+TRAP THE LAST ENTRY NAMED, NOT AROUND IT**: `ls --time-style=+...Z`
+appends a literal Z without converting, so it was re-read with `TZ=UTC
+--time-style=full-iso` — the work is **14:52–15:19 UTC**, i.e. AFTER the
+last entry's 14:40 "tree clean, pushed", so a pass wrote 626 lines and
+ended without committing them, ~5h ago. Provenance established rather
+than assumed: the two other live `claude` processes have cwd `gpud` and
+`hylshi`, so no concurrent agent on this repo. **THE 08-03 DEFECT DID
+NOT RECUR IN ITS WORST FORM, AND THAT WAS CHECKED THE RIGHT WAY** —
+installed units diffed against the repo (not the two worktrees against
+each other): `hyxlab-collect.service`, `hyxlab-collect.timer` and
+`hyxlab-breadth.timer` all **IDENTICAL**, so nothing had shipped ahead
+of git this time. **LANDED, after review rather than on trust**: four
+commits — 030af02 **EXP-957**, the load-bearing one (the writer lock is
+needed for the WRITE, never for the FETCH: `collect` held
+`data/writer.lock` across every HTTP call, and the cycle is restructured
+to FETCH -> acquire -> WRITE -> release, buffered through a `Cycle`
+dataclass and written in ONE transaction so a crash cannot leave a cycle
+half in the archive — a partial cycle reads like data, and losing one is
+tolerable where corrupting one is not); 6f92ed7 **EXP-959** (assert the
+Kalshi batch units clear the 23:00-04:00Z fade window, an invariant that
+was previously an unasserted side effect of EXP-950's timezone pin, and
+which neither the pin test nor the dependency-order test covers);
+b86cf70 **EXP-960** (a day-wide skip budget of 3/24h is blind to the
+hours that carry the P&L — a night losing three consecutive fade-window
+cycles passed cleanly, so capture holes are now counted per-night from
+the journal, with FAIL on a NEW holed night and non-failing WATCH on one
+already reported, because an unrecoverable hole that FAILs forever is
+noise and noise trains an operator to stop reading QA). Suite **548 ->
+572**, ruff clean. **ONE DEFECT FOUND BY REVIEWING THE INHERITED WORK,
+AND IT IS THE FOURTH COMMIT** (2585633): moving the fetch ahead of the
+acquire left the skip timer running from the top of the CYCLE, so
+`waited_s` billed the lock for ~29s of HTTP it never held. No consumer
+breaks — `qa_collect_skips` counts rows and never reads the magnitude —
+so it is a reporting defect, not a logic one, and it is still worth
+fixing because the field's only reader is the operator diagnosing lock
+contention, on the very instrument EXP-944 added to stop that question
+being answered by inference. Verified by mutation: reverting to `t0`
+reddens the new test and nothing else. **THE PROMOTE WAS DECOMPOSED,
+AND THIS IS THE PASS'S OPERATIONAL FINDING.** `promote.sh:33` restarts
+`hyxlab-stream` and `hyxlab-shadow` unconditionally, and shadow run
+`20260803T142853` was 5.8h into the **~15.7h** it must survive to
+produce the first realized settlement in this archive's history.
+Measured rather than assumed: `git diff --name-only 5e06eb1..HEAD`
+touches only `collector/`, `tests/` and `docs/` — **nothing under
+`simulator/` at all** — and both changed modules
+(`collector.collect`, `collector.qa`) are timer-driven `ExecStart`s from
+the stable worktree, which the script's own line-32 comment says "pick
+up new code on next run". So the restart would have destroyed the
+archive's first settlement shot for **exactly zero** benefit. Every
+promote step was run except that one line; stable is at **2585633**,
+imports smoke-tested in the stable venv, units reinstalled, and shadow
+pid 2254781 verified still alive at its original 14:28:52 start.
+**VALIDATED IN THE REAL PIPELINE, AND IT IS DECISIVE TO THE TENTH OF A
+SECOND.** The `lockid` sidecar records the acquire instant, so the claim
+is measured, not inferred: cycle 20:20:00Z acquired the lock at
+**20:20:39.09Z**, cycle 20:25:00Z at **20:25:39.36Z** — **39.1s and
+39.4s of HTTP with the lock FREE**, where the old code held it from
+second zero. **Lock hold fell 36.6s -> 20.7s (-43%)**, reproducible
+across both cycles, against the two immediately-prior old-code cycles
+(20:10 37.8s, 20:15 35.4s) under the same contention (`collector.sweep
+--days 2` at 9h12m and `trades_backfill` at 8h47m were both live
+throughout). **THE COST IS REAL, REPRODUCIBLE, AND REPORTED RATHER THAN
+BURIED**: total wall clock rose **36.6s -> 59.9s (+64%)**, from 12% to
+20% of the 300s timer period — inside budget, but not free. **AND THE
+DESIGN NOTE'S OWN ARITHMETIC DOES NOT RECONCILE WITH PRODUCTION, WHICH
+IS THE NEXT LEAD**: EXP-957's docstrings claim fetch 28.9s + write 15.8s
+of a "~52s hold", yet the measured OLD cycle was **36.6s end to end** —
+less than the note's two halves summed — and the new fetch alone is
+39.2s. The direction and the mechanism are confirmed exactly as claimed;
+the absolute figures were taken under conditions that no longer
+reproduce, so they must not be quoted as current. **THE NEW QA CHECK RAN
+LIVE FROM STABLE AND PASSED**: `0 lost cycle(s) over 2 measured
+window(s) of 7 (budget 1/window); 5 window(s) UNMEASURED`, plus a
+correct non-failing `WATCH` that `hyxlab-poly-sweep` was still running
+inside the 08-01 and 08-02 windows **but cost no cycles** — the leading
+indicator firing without a false alarm, which is the whole design.
+**AN HONEST LIMITATION, MEASURED NOT GUESSED**: journald holds only
+**16M, reaching back to 08-02 01:50Z (~2 days)**, so a 7-night lookback
+can never be fully populated and **the 07-29 breach night the check was
+built from is already unmeasurable**. The instrument does the right
+thing — it reports UNMEASURED rather than clean, because None is not
+zero — but its effective reach is ~2 nights, and that is a property of
+retention, not of the code. **ONE WATCH ITEM AT ITS THRESHOLD, AND THE
+RULE THAT GOVERNS IT WAS FOLLOWED RATHER THAN OVERRIDDEN**:
+`hyxlab-sweep` has been running **9h12m** and is still going, exceeding
+the **8.0h** over-allowance documented in the constant EXP-959 just
+shipped. It does NOT breach the assertion (06:10 + 9.2h = 15.4h UTC,
+still 7.6h clear of 23:00Z), and the constant's own comment requires
+worst **COMPLETED** wall clock, never a duration inferred from a running
+process's age — so it stays until the run finishes. Update it next pass
+with the real number. **HARDENED, BECAUSE THE CLASS RECURRED** (6ac1775):
+the uncommitted-tree failure is now a **Stop hook**, per the mistakes-log
+doctrine that anything recurring jumps straight to rule/test/hook. It
+**escalates on CHANGE** — fingerprints `git status --porcelain` and
+blocks once per distinct dirty state — so a deliberate leftover cannot
+loop the agent without bound, the same FAIL-then-WATCH shape EXP-960
+adopted for capture holes. Eight scenarios against real throwaway repos,
+including the discrimination control (committing clears it) that fails
+both an always-allow and an always-block implementation. **A STANDING
+LINE IN THIS LOG WAS STALE AND IS RETIRED HERE**: `strategies/
+hylshi_fade.py` has been described as "untracked, correctly left alone"
+for many consecutive entries. It is **TRACKED**, committed in 62ad5b4.
+`git ls-files` says so; the line was being copied forward, not checked.
+PRACTICAL RULE, joining a-deployed-change-is-not-a-committed-one /
+a-closed-market-is-not-a-settled-one / an-ambiguous-in-bracket-fill-is-
+not-an-invented-one / a-wide-book-is-not-a-price / a-skipped-check-is-
+not-a-passed-one / an-untriggered-path-is-not-an-unreached-one /
+unobserved-is-not-unobservable: **a promote is not one indivisible act.
+Read what actually changed before running a script that restarts
+daemons — `promote.sh` restarts `hyxlab-shadow` unconditionally, and
+when nothing under `simulator/` moved, that restart is pure cost paid
+against the archive's scarcest asset, an unbroken run. And a fix that
+moves work out of a lock moves the CLOCK too: check every duration the
+old order was measuring, because `waited_s` kept timing from the top of
+the cycle and silently started billing the lock for the fetch.** NEXT
+PASS: **the first settlement is still the top rung** — run
+`20260803T142853` is alive and must reach **08-04 ~06:30 UTC** (~10h
+out at time of writing), and `shadow_settlements` is still **0 rows**
+archive-wide; weather bracket #8 is 08-04 ~02:15 and is the first to
+report `concentration_strict` natively; **QA 08-04 10:00 UTC** is the
+first run carrying the fade-window check; the atlas gate reopens after
+the 08-04 06:10 sweep. Still open: the EXP-957 wall-clock rise wants its
+decomposition chased (batched `upsert_markets` vs 31 per-series calls is
+the leading hypothesis, unverified); the `hyxlab-sweep` budget constant
+wants the completed number; shadow position continuity across restart —
+which this pass's decomposed promote is a workaround for, not a fix;
+the atlas quoted tier is data-gated.**
+(prior 2026-08-03 14:40 UTC (A PASS OF WORK SAT UNCOMMITTED AND HAD
 ALREADY SHIPPED ITSELF TO PRODUCTION — THE TIMER FIX INSIDE IT WAS LIVE
 IN SYSTEMD AND ABSENT FROM GIT, AND IT SILENTLY MOVED THE DAILY RESULT
 WRITE FIVE HOURS EARLIER, RETIRING THE PROMOTE RULE THE LAST ENTRY
