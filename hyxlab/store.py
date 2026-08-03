@@ -49,6 +49,26 @@ CREATE TABLE IF NOT EXISTS snapshots (
     volume        DOUBLE,
     open_interest DOUBLE
 );
+-- Exchange-wide top-N breadth tape (collector/breadth.py, EXP-928).
+-- Separate table from `snapshots` ON PURPOSE: `snapshots` is the
+-- watchlist FOCUS tape that the simulator, QA and every coverage
+-- instrument read as "the series we study", and folding ~288k rows/day
+-- of unstudied families into it would silently redefine every one of
+-- those readings. Same columns plus the ranking basis, so a breadth row
+-- can be projected onto a Snapshot by dropping the last two.
+CREATE TABLE IF NOT EXISTS breadth_snapshots (
+    venue         VARCHAR NOT NULL,
+    market_id     VARCHAR NOT NULL,
+    ts            TIMESTAMP NOT NULL,
+    yes_bid       DOUBLE, yes_ask DOUBLE, no_bid DOUBLE, no_ask DOUBLE,
+    yes_bid_size  DOUBLE, yes_ask_size DOUBLE,
+    no_bid_size   DOUBLE, no_ask_size DOUBLE,
+    last_price    DOUBLE,
+    volume        DOUBLE,
+    open_interest DOUBLE,
+    volume_24h    DOUBLE,
+    rank          INTEGER
+);
 CREATE TABLE IF NOT EXISTS nws_forecasts (
     station     VARCHAR NOT NULL,
     fetched_at  TIMESTAMP NOT NULL,
@@ -304,6 +324,17 @@ class Store:
             for s in snaps
         ]
         self.insert_new("snapshots", rows, ["venue", "market_id", "ts"])
+
+    def insert_breadth_snapshots(self, rows: list[tuple]) -> int:
+        """Rows in breadth_snapshots column order (see _SCHEMA).
+
+        `ts` is normalised here rather than by the caller: every new
+        writer that passed tz-aware datetimes straight to DuckDB has
+        landed box-local rows (mistakes log #1, recurring as #10), so the
+        conversion belongs inside the writer, not next to it.
+        """
+        rows = [(r[0], r[1], _naive_utc(r[2]), *r[3:]) for r in rows]
+        return self.insert_new("breadth_snapshots", rows, ["venue", "market_id", "ts"])
 
     def upsert_series(self, rows: list[tuple]) -> None:
         """(venue, ticker, title, category, fee_type, fee_multiplier, frequency)."""

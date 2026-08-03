@@ -62,6 +62,10 @@ def _patch_kalshi(monkeypatch, session, markets):
         session.observe()
         return markets
 
+    def get_markets_ascending(*args, **kwargs):
+        session.observe()
+        return markets, False
+
     def get_candlesticks(*args, **kwargs):
         session.observe()
         return []
@@ -71,6 +75,7 @@ def _patch_kalshi(monkeypatch, session, markets):
         return [], False
 
     monkeypatch.setattr(sweep.kalshi, "get_markets", get_markets)
+    monkeypatch.setattr(sweep.kalshi, "get_markets_ascending", get_markets_ascending)
     monkeypatch.setattr(sweep.kalshi, "get_candlesticks", get_candlesticks)
     monkeypatch.setattr(sweep.kalshi, "get_trades", get_trades)
     monkeypatch.setattr(sweep.kalshi, "to_market_info", lambda m: _info(m))
@@ -127,7 +132,8 @@ def test_sweep_still_persists_everything_it_buffered(tmp_path, monkeypatch):
     session = _FakeSession(lock_path, markets)
     _patch_kalshi(monkeypatch, session, markets)
 
-    n_markets, _ = sweep.sweep_series(db, "KXA", days=60, session=session)
+    n_markets, _, truncated = sweep.sweep_series(db, "KXA", days=60, session=session)
+    assert truncated is False
 
     assert n_markets == 2
     from hyxlab.store import Store
@@ -151,7 +157,7 @@ def test_sweep_series_with_no_markets_still_logs_under_a_burst(tmp_path, monkeyp
     session = _FakeSession(lock_path, [])
     _patch_kalshi(monkeypatch, session, [])
 
-    assert sweep.sweep_series(db, "KXA", days=60, session=session) == (0, 0)
+    assert sweep.sweep_series(db, "KXA", days=60, session=session) == (0, 0, False)
 
     from hyxlab.store import Store
 
@@ -347,3 +353,46 @@ def test_no_unit_wraps_an_archive_writer_in_flock():
                 f"{path.name}: ExecStart wraps the writer lock around the whole "
                 "process; take it per-burst in python instead"
             )
+
+
+def test_a_truncated_sweep_is_logged_non_ok(tmp_path, monkeypatch):
+    """EXP-931: truncation used to be a print and a sweep_log status of 'ok'.
+    That is how "our crypto archive is BNB-only" reached an experiment's
+    premises as a finding rather than a defect. It must be queryable."""
+    lock_path = str(tmp_path / "writer.lock")
+    db = str(tmp_path / "t.duckdb")
+    monkeypatch.setattr(sweep, "LOCK_FILE", lock_path)
+    markets = [_market("KXA-1", 10), _market("KXA-2", 11)]
+    session = _FakeSession(lock_path, markets)
+    _patch_kalshi(monkeypatch, session, markets)
+    monkeypatch.setattr(
+        sweep.kalshi, "get_markets_ascending", lambda *a, **k: (markets, True)
+    )
+
+    n_markets, _, truncated = sweep.sweep_series(db, "KXA", days=60, session=session)
+    assert (n_markets, truncated) == (2, True)
+
+    from hyxlab.store import Store
+
+    store = Store(db)
+    try:
+        status, note = store.conn.execute(
+            "SELECT status, note FROM sweep_log WHERE series = 'KXA'"
+        ).fetchone()
+        assert status == "truncated", "a truncated sweep must not read as ok"
+        assert "resume" in note
+        # ...and the data it DID capture is still persisted: the point is to
+        # mark the hole, not to throw away a partial capture.
+        assert store.conn.execute("SELECT count(*) FROM markets").fetchone()[0] == 2
+    finally:
+        store.close()
+
+
+def test_per_series_budget_is_bounded_and_wired_by_default():
+    """A series with no budget can hold the whole run (three BNB series ate
+    a 3.5h sweep and starved every KXBTC*/KXETH*/KXSOL* series behind them)."""
+    import inspect
+
+    assert 0 < sweep.MAX_MARKETS_PER_SERIES <= 10_000
+    sig = inspect.signature(sweep.sweep_series)
+    assert sig.parameters["max_markets"].default == sweep.MAX_MARKETS_PER_SERIES

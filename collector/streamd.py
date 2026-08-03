@@ -104,6 +104,7 @@ class Daemon:
         pem_path = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")
         self.pem = Path(pem_path).read_bytes() if pem_path and Path(pem_path).exists() else b""
         self.stats: dict[str, int] = {}
+        self._spill_corrupt_seen = 0
 
     def _count(self, key: str, n: int) -> None:
         self.stats[key] = self.stats.get(key, 0) + n
@@ -296,6 +297,16 @@ class Daemon:
                     f" {n_pending} rows held for retry{spill}"
                 )
                 continue
+            # A drain that skipped sidecar records is a real archive hole
+            # (torn append from a host crash). The store no longer stalls on
+            # it, so the journal is the only place it can surface (EXP-936).
+            if self.store.spill_corrupt != self._spill_corrupt_seen:
+                lost = self.store.spill_corrupt - self._spill_corrupt_seen
+                self._spill_corrupt_seen = self.store.spill_corrupt
+                _log(
+                    f"CRITICAL sidecar drain skipped {lost} unreadable row(s)"
+                    f" — archive hole (total {self.store.spill_corrupt})"
+                )
             now = asyncio.get_event_loop().time()
             if now - last_stats >= STATS_SECS:
                 _log(f"stats {self.stats} (flushed {n} this round)")

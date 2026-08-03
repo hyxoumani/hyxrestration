@@ -1,9 +1,14 @@
 """Stream capture (B7), no network: WS message parsing for both venues,
 Kalshi auth signing, seq-gap detection, and StreamStore persistence."""
 
+import contextlib
 import json
+import os
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
@@ -680,3 +685,238 @@ def test_flusher_log_shows_spilled_rows_during_wedge(tmp_path, monkeypatch, caps
     assert "flush FAILED" in out
     assert "10 rows held for retry" in out
     assert "15 spilled to sidecar" in out  # growth visible past the plateau
+
+
+# -- spill under a REAL writer-lock wedge (EXP-936) ----------------------------
+#
+# Everything above wedges by monkeypatching duckdb.connect to raise. That
+# proves the bookkeeping but not that the mechanism survives the actual
+# production failure — a concurrent read_only connection holding the DuckDB
+# file lock, which is what all 68 observed `flush FAILED` events were. These
+# hold a genuine lock from a SECOND PROCESS instead.
+
+_READER = (
+    "import duckdb,sys;"
+    "c=duckdb.connect(sys.argv[1],read_only=True);"
+    "c.execute('SELECT count(*) FROM book_events').fetchone();"
+    "print('LOCKED',flush=True);sys.stdin.readline()"
+)
+
+
+@contextlib.contextmanager
+def _real_reader_lock(db):
+    """Hold a real DuckDB read lock on `db` from another process."""
+    import subprocess
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _READER, str(db)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout.readline().strip() == "LOCKED"
+        yield
+    finally:
+        proc.stdin.write("\n")
+        proc.stdin.flush()
+        proc.wait(timeout=30)
+
+
+def test_real_reader_lock_wedge_spills_and_reconciles_every_row(tmp_path, monkeypatch):
+    """A REAL concurrent reader (not a patched connect) must wedge the
+    writer, drive the overflow to the sidecar, and lose nothing on drain."""
+    import duckdb
+
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 40)
+
+    injected = 0
+    with _real_reader_lock(db):
+        with pytest.raises(duckdb.IOException):  # the lock is genuinely held
+            duckdb.connect(str(db)).close()
+        for batch in range(5):  # five wedged flush rounds, like the 15 s flusher
+            store.append_trades([_seq_trade(injected + i) for i in range(20)])
+            injected += 20
+            with contextlib.suppress(Exception):
+                store.flush()
+
+    assert store.pending == 40 == StreamStore.SPILL_CAP  # memory bounded
+    spilled = sum(1 for _ in store._spill_path.open())
+    assert store.pending + spilled == injected  # nothing lost mid-wedge
+
+    store.append_trades([_seq_trade(injected)])  # ingest continues post-wedge
+    injected += 1
+    assert store.flush() == injected
+    with duckdb.connect(str(db), read_only=True) as conn:
+        seqs = [r[0] for r in conn.execute("SELECT seq FROM stream_trades").fetchall()]
+    assert seqs == list(range(injected))  # sidecar first, recv order, zero holes
+    assert not store._spill_path.exists()
+
+
+@pytest.mark.skipif(
+    os.environ.get("EXP936_FULL_CAP") != "1",
+    reason="~95 s: drives the real 400k SPILL_CAP; set EXP936_FULL_CAP=1",
+)
+def test_real_wedge_past_the_unpatched_spill_cap(tmp_path):
+    """The same run at the SHIPPED SPILL_CAP, no monkeypatching: 600k rows
+    injected under a real lock must come back as exactly 600k rows."""
+    import duckdb
+
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    injected = 0
+    with _real_reader_lock(db):
+        for batch in range(24):
+            store.append_trades([_seq_trade(injected + i) for i in range(25_000)])
+            injected += 25_000
+            with contextlib.suppress(Exception):
+                store.flush()
+    assert injected == 600_000
+    assert store.pending == StreamStore.SPILL_CAP == 400_000
+    assert store.flush() == injected
+    with duckdb.connect(str(db), read_only=True) as conn:
+        n, distinct = conn.execute(
+            "SELECT count(*), count(DISTINCT seq) FROM stream_trades"
+        ).fetchone()
+    assert n == distinct == injected  # zero duplicates, zero holes
+
+
+def test_torn_sidecar_record_does_not_stall_archiving(tmp_path, monkeypatch):
+    """Regression (EXP-936, measured): a truncated trailing record — host
+    crash or ENOSPC mid-append — used to raise JSONDecodeError inside every
+    subsequent flush, permanently stopping ALL archiving and funnelling live
+    ingest into the same poisoned file. The drain must skip the torn record,
+    count it, and keep writing."""
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 0)
+    store.append_trades([_seq_trade(i) for i in range(10)])
+    _wedge(monkeypatch)
+    with contextlib.suppress(Exception):
+        store.flush()
+    monkeypatch.undo()
+
+    raw = store._spill_path.read_bytes()
+    store._spill_path.write_bytes(raw[:-30])  # tear the last record
+
+    store.append_trades([_seq_trade(99)])
+    assert store.flush() == 10  # 9 readable spill rows + the live one
+    assert store.spill_corrupt == 1  # the hole is counted, not silent
+    assert not store._spill_path.exists()
+    assert store.counts()["stream_trades"] == 10
+    assert store.flush() == 0  # and the poisoned-file loop is gone
+    store.append_trades([_seq_trade(100)])
+    assert store.flush() == 1  # archiving continues normally
+
+
+def test_failed_sidecar_append_rewinds_and_keeps_rows_in_memory(tmp_path, monkeypatch):
+    """A part-written sidecar append (ENOSPC) must rewind to the last record
+    boundary and leave every row in the buffer — a torn record is a hole and
+    a half-written one must not be paid for twice."""
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 5)
+    store.append_trades([_seq_trade(i) for i in range(10)])
+    _wedge(monkeypatch)
+    with contextlib.suppress(Exception):
+        store.flush()
+    monkeypatch.undo()  # undo() is wholesale — re-arm the cap below
+    good = store._spill_path.stat().st_size
+    assert good > 0 and store.pending == 5
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 5)
+
+    class _HalfWriter:
+        """Writes 40 bytes of the batch, then the disk fills up."""
+
+        def __init__(self, f):
+            self._f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._f.close()
+            return False
+
+        def writelines(self, lines):
+            self._f.write("".join(lines)[:40])
+            self._f.flush()
+            raise OSError(28, "No space left on device")
+
+    real_open = Path.open
+
+    def flaky_open(self, *a, **kw):
+        f = real_open(self, *a, **kw)
+        mode = a[0] if a else kw.get("mode", "r")
+        return _HalfWriter(f) if "a" in mode else f
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+    store.append_trades([_seq_trade(i) for i in range(10, 20)])
+    _wedge(monkeypatch)
+    with pytest.raises(OSError):
+        store.flush()
+    monkeypatch.undo()
+
+    assert store._spill_path.stat().st_size == good  # rewound to the boundary
+    assert store.pending == 15  # all 15 rows still buffered, none dropped
+    assert store.flush() == 20
+    assert store.spill_corrupt == 0  # nothing torn, so nothing lost
+
+
+def test_crash_between_commit_and_unlink_redrains_duplicates_not_holes(tmp_path, monkeypatch):
+    """The sidecar is unlinked only AFTER the transaction commits. A crash in
+    that window must replay it — duplicates are the stated design intent,
+    holes are not."""
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 0)
+    store.append_trades([_seq_trade(i) for i in range(4)])
+    _wedge(monkeypatch)
+    with contextlib.suppress(Exception):
+        store.flush()
+    monkeypatch.undo()
+
+    survived = store._spill_path.read_bytes()  # what a crash would leave behind
+    assert store.flush() == 4
+    assert store.counts()["stream_trades"] == 4
+    store._spill_path.write_bytes(survived)  # ...died before the unlink
+
+    fresh = StreamStore(db)
+    assert fresh.flush() == 4  # re-drained
+    assert fresh.counts()["stream_trades"] == 8  # duplicated, not lost
+    assert fresh.spill_corrupt == 0
+    assert not fresh._spill_path.exists()
+
+
+def test_flusher_logs_sidecar_holes(tmp_path, monkeypatch, capsys):
+    """A skipped sidecar record is a real archive hole; the store no longer
+    stalls on it, so the journal is the only place it can surface."""
+    import asyncio
+
+    from collector import streamd
+
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    monkeypatch.setattr(StreamStore, "SPILL_CAP", 0)
+    store.append_trades([_seq_trade(i) for i in range(3)])
+    _wedge(monkeypatch)
+    with contextlib.suppress(Exception):
+        store.flush()
+    monkeypatch.undo()
+    raw = store._spill_path.read_bytes()
+    store._spill_path.write_bytes(raw[:-30])
+
+    async def fake_sleep(secs):
+        if getattr(fake_sleep, "done", False):
+            raise asyncio.CancelledError
+        fake_sleep.done = True
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", fake_sleep)
+    d = streamd.Daemon(store, watchlist={})
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(d.flusher())
+
+    out = capsys.readouterr().out
+    assert "CRITICAL sidecar drain skipped 1 unreadable row(s)" in out

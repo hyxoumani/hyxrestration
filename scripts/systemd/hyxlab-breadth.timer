@@ -1,0 +1,12 @@
+[Unit]
+Description=hyxlab breadth snapshots every 5 min (offset from the collector)
+[Timer]
+# :02,:07,... — deliberately offset from hyxlab-collect's :00,:05,... so
+# the two writers do not contend for data/writer.lock on the same minute.
+OnCalendar=*:2/5
+# Persistent=false on purpose: a missed breadth cycle is a missed
+# top-of-book instant, not a batch of work. Replaying it at boot would
+# stamp a stale quote with a fresh ts, which is worse than the hole.
+Persistent=false
+[Install]
+WantedBy=timers.target

@@ -58,6 +58,19 @@ DEFAULT_CATEGORIES = [
 MARKETS_PAUSE_S = 0.2  # empirical safe pacing (data_contracts.md)
 CANDLES_PAUSE_S = 0.35
 
+# Per-series, per-run market budget. NOT a coverage cap: get_markets_ascending
+# returns a contiguous oldest-first prefix, so stopping here advances the
+# watermark honestly and the next run resumes exactly where this one stopped.
+# What it bounds is TIME. Measured (EXP-931, 2026-08-02): sweep_series costs
+# ~0.5s per market (candles + trade tape + CANDLES_PAUSE_S), and the widened
+# category list put three sub-hourly BNB series near the front of the
+# alphabetical target order. Each burned ~1.5h, so a 3.5h run reached
+# KXBNB15M and died there — every KXBTC*/KXETH*/KXSOL* series and all ten
+# Exotics series were never requested at all, and the resulting archive
+# ("crypto == BNB only") looked like a finding rather than a starved run.
+# 2,000 caps one series at ~17min so no single series can eat the run.
+MAX_MARKETS_PER_SERIES = 2000
+
 # Per-burst open budget, deliberately far above open_retry's 60s default.
 # Releasing between series has a cost the old whole-run hold did not: a
 # READER can now get in, and DuckDB excludes a writer while any reader is
@@ -137,8 +150,12 @@ def refresh_series(
 
 
 def sweep_series(
-    db: str, series_ticker: str, days: int, session: requests.Session
-) -> tuple[int, int]:
+    db: str,
+    series_ticker: str,
+    days: int,
+    session: requests.Session,
+    max_markets: int | None = MAX_MARKETS_PER_SERIES,
+) -> tuple[int, int, bool]:
     """Capture settled markets + candles for one series since its watermark.
 
     Every REST call happens with NO lock and NO open connection; all
@@ -156,18 +173,20 @@ def sweep_series(
     if wm is not None:
         floor_ts = max(floor_ts, wm.replace(tzinfo=UTC) + timedelta(seconds=1))
 
-    markets = kalshi.get_markets(
+    markets, markets_truncated = kalshi.get_markets_ascending(
         series_ticker=series_ticker,
         status="settled",
-        max_pages=50,
-        session=session,
         min_close_ts=int(floor_ts.timestamp()),
+        max_close_ts=int(now.timestamp()),
+        max_markets=max_markets,
+        session=session,
+        pause_s=MARKETS_PAUSE_S,
     )
     time.sleep(MARKETS_PAUSE_S)
     if not markets:
         with writer_burst(db) as store:
             store.log_sweep(series_ticker, floor_ts, None, 0, 0, "ok", "no settled markets")
-        return 0, 0
+        return 0, 0, False
 
     infos = [kalshi.to_market_info(m) for m in markets]
     candle_rows: list[tuple] = []
@@ -222,8 +241,22 @@ def sweep_series(
         for ticker, n_trades, status in swept:
             store.mark_trades_swept(ticker, n_trades, status)
         store.set_watermark(series_ticker, max_close)
-        store.log_sweep(series_ticker, floor_ts, max_close, len(markets), n_candles, "ok")
-    return len(markets), n_candles
+        # A truncated sweep is NOT 'ok'. It used to be — the only trace was a
+        # print, which is how "crypto == BNB only" survived into an
+        # experiment's premises (EXP-931). status='truncated' puts it in
+        # sweep_log where doctor(), QA and any later analyst must trip over it.
+        store.log_sweep(
+            series_ticker,
+            floor_ts,
+            max_close,
+            len(markets),
+            n_candles,
+            "truncated" if markets_truncated else "ok",
+            f"budget {max_markets} markets reached; resume from {max_close:%Y-%m-%dT%H:%M}Z"
+            if markets_truncated
+            else "",
+        )
+    return len(markets), n_candles, markets_truncated
 
 
 def _ts(v: str | None) -> int | None:
@@ -238,22 +271,43 @@ def run_sweep(
     categories: list[str],
     session: requests.Session | None = None,
     limit: int | None = None,
+    only_series: list[str] | None = None,
+    max_markets: int | None = MAX_MARKETS_PER_SERIES,
 ) -> dict:
     sess = session or requests.Session()
     series = kalshi.get_series_list(sess)  # HTTP outside the lock
     with writer_burst(db) as store:
         all_series = refresh_series(store, sess, series=series)
     targets = [s["ticker"] for s in all_series if s.get("category") in categories]
+    if only_series:
+        # Targeted repair pass: the alphabetical whole-category order is what
+        # starved KXBTC*/KXETH*/KXSOL* (EXP-931), so recovering a specific
+        # family must not have to wait its turn behind 200 unrelated series.
+        wanted = set(only_series)
+        targets = [t for t in targets if t in wanted]
     targets.sort()
     if limit:
         targets = targets[:limit]
-    totals = {"series": len(targets), "markets": 0, "candles": 0, "errors": 0}
+    totals = {
+        "series": len(targets),
+        "markets": 0,
+        "candles": 0,
+        "errors": 0,
+        "truncated": 0,
+    }
     t0 = time.monotonic()
     for i, ticker in enumerate(targets):
         try:
-            n_m, n_c = sweep_series(db, ticker, days, sess)
+            n_m, n_c, truncated = sweep_series(db, ticker, days, sess, max_markets)
             totals["markets"] += n_m
             totals["candles"] += n_c
+            totals["truncated"] += int(truncated)
+            if truncated:
+                print(
+                    f"[sweep] {ticker} TRUNCATED at {n_m} markets"
+                    f" (per-series budget); logged non-ok, resumes next run",
+                    flush=True,
+                )
         except requests.RequestException as e:
             totals["errors"] += 1
             with writer_burst(db) as store:
@@ -264,7 +318,8 @@ def run_sweep(
             print(
                 f"[sweep] {i + 1}/{len(targets)} series | "
                 f"{totals['markets']} markets, {totals['candles']} candles, "
-                f"{totals['errors']} errors | ~{eta_min:.0f} min left"
+                f"{totals['errors']} errors, {totals['truncated']} truncated"
+                f" | ~{eta_min:.0f} min left"
             )
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     return totals
@@ -322,6 +377,15 @@ def main() -> None:
     ap.add_argument("--days", type=int, default=2)
     ap.add_argument("--categories", nargs="*", default=DEFAULT_CATEGORIES)
     ap.add_argument("--limit", type=int, default=None, help="max series (smoke tests)")
+    ap.add_argument(
+        "--series", nargs="*", default=None, help="only these series tickers (repair pass)"
+    )
+    ap.add_argument(
+        "--max-markets",
+        type=int,
+        default=MAX_MARKETS_PER_SERIES,
+        help="per-series, per-run market budget (0 = unbounded)",
+    )
     ap.add_argument("--doctor", action="store_true", help="print archive health and exit")
     args = ap.parse_args()
 
@@ -353,7 +417,14 @@ def main() -> None:
         print("[sweep] another sweep holds the lock; aborting")
         sys.exit(75)
     try:
-        totals = run_sweep(args.db, args.days, args.categories, limit=args.limit)
+        totals = run_sweep(
+            args.db,
+            args.days,
+            args.categories,
+            limit=args.limit,
+            only_series=args.series,
+            max_markets=args.max_markets or None,
+        )
         print(f"[sweep] done: {totals}")
         with writer_burst(args.db) as store:
             print(f"[sweep] db={store.counts()}")

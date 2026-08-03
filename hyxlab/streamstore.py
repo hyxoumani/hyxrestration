@@ -26,6 +26,7 @@ over convenience — replay logic interprets):
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -160,6 +161,11 @@ class StreamStore:
         # crashed daemon left a sidecar on disk (the file itself survives
         # and is drained on the first good flush regardless).
         self.spilled = 0
+        # Sidecar records that could not be decoded on drain — i.e. actual
+        # archive holes. Cumulative for the daemon's lifetime and NOT reset
+        # with `spilled`: a lost row does not become un-lost once the file
+        # drains, and the operator needs to see it after the fact.
+        self.spill_corrupt = 0
         # Create schema up front so readers see the tables immediately.
         with duckdb.connect(str(self.path)) as conn:
             conn.execute(_SCHEMA)
@@ -262,47 +268,77 @@ class StreamStore:
             lines.extend(enc(row) for row in buf[:take])
             takes.append((buf, take))
             over -= take
-        with self._spill_path.open("a", encoding="utf-8") as f:
-            f.writelines(lines)
+        # Append all-or-nothing. A partial append (ENOSPC part-way through a
+        # multi-hour wedge — the sidecar runs ~165 B/row, so a 7 h poly-sweep
+        # wedge is ~430 MB and disk-full is a live possibility) would leave a
+        # torn record mid-file that the drain can only skip: a hole. Rewinding
+        # to the last record boundary keeps that loss at zero, since the
+        # buffers below are trimmed only once the bytes are down (EXP-936).
+        before = self._spill_path.stat().st_size if self._spill_path.exists() else 0
+        try:
+            with self._spill_path.open("a", encoding="utf-8") as f:
+                f.writelines(lines)
+                f.flush()
+                os.fsync(f.fileno())
+        except BaseException:
+            try:
+                with self._spill_path.open("r+b") as f:
+                    f.truncate(before)
+            except OSError:
+                pass
+            raise
         for buf, take in takes:
             del buf[:take]
         self.spilled += len(lines)
 
     def _read_spill(self) -> tuple[list[BookEvent], list[StreamTrade], list[tuple]]:
+        """Decode the sidecar, skipping records it cannot parse.
+
+        Skipping loses that row — the one thing this module otherwise refuses
+        to do — but the alternative measured in EXP-936 is far worse: raising
+        here aborts every future flush, so ONE torn trailing record (host
+        crash mid-append, or a pre-fix ENOSPC) permanently stops ALL
+        archiving and funnels live ingest into the same poisoned file. Bounded
+        hole beats unbounded stall; `spill_corrupt` counts it so the hole is
+        never silent."""
         events: list[BookEvent] = []
         trades: list[StreamTrade] = []
         gaps: list[tuple] = []
         if not self._spill_path.exists():
             return events, trades, gaps
-        with self._spill_path.open(encoding="utf-8") as f:
+        with self._spill_path.open(encoding="utf-8", errors="replace") as f:
             for line in f:
                 if not line.strip():
                     continue
-                rec = json.loads(line)
-                r = rec["r"]
-                if rec["t"] == "e":
-                    events.append(
-                        BookEvent(
-                            r[0],
-                            r[1],
-                            _from_iso(r[2]),
-                            _from_iso(r[3]),
-                            r[4],
-                            r[5],
-                            r[6],
-                            r[7],
-                            r[8],
-                            r[9],
+                try:
+                    rec = json.loads(line)
+                    r = rec["r"]
+                    if rec["t"] == "e":
+                        events.append(
+                            BookEvent(
+                                r[0],
+                                r[1],
+                                _from_iso(r[2]),
+                                _from_iso(r[3]),
+                                r[4],
+                                r[5],
+                                r[6],
+                                r[7],
+                                r[8],
+                                r[9],
+                            )
                         )
-                    )
-                elif rec["t"] == "t":
-                    trades.append(
-                        StreamTrade(
-                            r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4], r[5], r[6], r[7]
+                    elif rec["t"] == "t":
+                        trades.append(
+                            StreamTrade(
+                                r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4], r[5], r[6], r[7]
+                            )
                         )
-                    )
-                else:
-                    gaps.append((r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4]))
+                    else:
+                        gaps.append((r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4]))
+                except (ValueError, KeyError, TypeError, IndexError):
+                    self.spill_corrupt += 1
+                    continue
         return events, trades, gaps
 
     def _insert(

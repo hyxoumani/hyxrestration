@@ -149,3 +149,181 @@ def test_get_markets_page_loop_survives_a_429(monkeypatch):
     out = k.get_markets(series_ticker="KXNASDAQ100U", session=_Sess())
     assert [m["ticker"] for m in out] == ["A"]
     assert sleeps == [0.0]
+
+
+# ---------------------------------------------------------------------------
+# get_markets_ascending — EXP-931 (silent newest-only truncation)
+# ---------------------------------------------------------------------------
+
+
+class _WindowSess:
+    """Serves settled markets DESCENDING within a close-time window, the
+    way Kalshi actually does (probed live 2026-08-02) — which is precisely
+    why a page-budget truncation kept only the newest rows."""
+
+    def __init__(self, close_tss, page=3):
+        self.universe = sorted(close_tss)
+        self.page = page
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append(dict(params))
+        lo, hi = params["min_close_ts"], params["max_close_ts"]
+        rows = [t for t in self.universe if lo <= t <= hi]
+        rows.sort(reverse=True)
+        start = int(params.get("cursor") or 0)
+        chunk = rows[start : start + self.page]
+        nxt = start + self.page
+        body = {
+            "markets": [{"ticker": f"M-{t}", "close_ts": t} for t in chunk],
+            "cursor": str(nxt) if nxt < len(rows) else "",
+        }
+
+        class _R:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return body
+
+        return _R()
+
+
+def test_get_markets_ascending_covers_the_whole_range():
+    from collector.venues import kalshi as k
+
+    tss = [1000 + 100 * i for i in range(20)]
+    sess = _WindowSess(tss)
+    out, truncated = k.get_markets_ascending(
+        "KXX", min_close_ts=1000, max_close_ts=2900, window_s=500, session=sess
+    )
+    assert truncated is False
+    assert sorted(m["close_ts"] for m in out) == tss
+
+
+def test_windows_are_inclusive_and_never_overlap():
+    """Both bounds are inclusive on Kalshi, so a window must end at hi-1 and
+    the next must start at hi — otherwise every boundary market is fetched
+    twice and its candles paid for twice."""
+    from collector.venues import kalshi as k
+
+    sess = _WindowSess([1000 + 100 * i for i in range(20)])
+    out, _ = k.get_markets_ascending(
+        "KXX", min_close_ts=1000, max_close_ts=2900, window_s=500, session=sess
+    )
+    assert len(out) == len({m["ticker"] for m in out}), "boundary double-fetch"
+    starts = [c["min_close_ts"] for c in sess.calls]
+    ends = [c["max_close_ts"] for c in sess.calls]
+    for lo, hi in zip(starts, ends, strict=True):
+        assert lo <= hi
+    for prev_hi, nxt_lo in zip(sorted(set(ends))[:-1], sorted(set(starts))[1:], strict=True):
+        assert nxt_lo == prev_hi + 1
+
+
+def test_budget_truncation_keeps_the_OLDEST_prefix_not_the_newest():
+    """THE regression. The old path (`get_markets(max_pages=50)`) exhausted
+    its budget against a DESCENDING feed, so it kept the newest 10,000 rows
+    and dropped every older one — while the caller still advanced its
+    watermark to the newest close. Anything stopped early here must instead
+    be a contiguous prefix from min_close_ts, so max(close) stays honest."""
+    from collector.venues import kalshi as k
+
+    tss = [1000 + 100 * i for i in range(20)]
+    sess = _WindowSess(tss)
+    out, truncated = k.get_markets_ascending(
+        "KXX",
+        min_close_ts=1000,
+        max_close_ts=2900,
+        window_s=500,
+        max_markets=6,
+        session=sess,
+    )
+    assert truncated is True
+    got = sorted(m["close_ts"] for m in out)
+    assert got == tss[: len(got)], "kept a non-prefix slice — watermark would lie"
+    assert max(got) < max(tss)
+
+
+def test_budget_reached_exactly_at_the_end_is_not_truncated():
+    """Discrimination control: `truncated` must mean 'coverage is
+    incomplete', not merely 'the budget number was touched'."""
+    from collector.venues import kalshi as k
+
+    tss = [1000 + 100 * i for i in range(20)]
+    out, truncated = k.get_markets_ascending(
+        "KXX",
+        min_close_ts=1000,
+        max_close_ts=2900,
+        window_s=500,
+        max_markets=20,
+        session=_WindowSess(tss),
+    )
+    assert len(out) == 20
+    assert truncated is False
+
+
+def test_a_dense_window_narrows_instead_of_truncating():
+    """Density on this exchange spans 0/day to ~6,900/day. A window too dense
+    to drain must halve and be RE-fetched whole — never half-accepted, or the
+    contiguous-prefix guarantee (and the watermark that rests on it) breaks."""
+    from collector.venues import kalshi as k
+
+    tss = list(range(1000, 1000 + 400))  # 400 markets packed into 400s
+    sess = _WindowSess(tss, page=50)  # 5 pages x 50 = 250 < 400
+    out, truncated = k.get_markets_ascending(
+        "KXX", min_close_ts=1000, max_close_ts=1399, window_s=400, session=sess
+    )
+    assert truncated is False
+    assert sorted(m["close_ts"] for m in out) == tss, "narrowing lost or duped rows"
+    widths = {c["max_close_ts"] - c["min_close_ts"] + 1 for c in sess.calls}
+    assert min(widths) < 400, "never narrowed — it would have had to truncate"
+
+
+def test_a_sparse_series_costs_one_request_for_the_whole_range():
+    """The fixed-step alternative cost 240 requests per DORMANT series (231 of
+    281 crypto/exotics series are dormant); this client shares Kalshi's rate
+    budget with a live trading loop, so that price is not payable."""
+    from collector.venues import kalshi as k
+
+    sess = _WindowSess([], page=1000)
+    out, truncated = k.get_markets_ascending(
+        "KXX", min_close_ts=0, max_close_ts=60 * 86400, session=sess
+    )
+    assert (out, truncated) == ([], False)
+    assert len(sess.calls) <= 9, f"{len(sess.calls)} requests to clear a dormant series"
+
+
+def test_candlesticks_retries_a_429_instead_of_losing_the_series(monkeypatch):
+    """Measured 2026-08-03: a candlesticks 429 escaped sweep_series' single
+    inline retry and aborted KXSHIBA entirely — logged status='error',
+    0 markets kept, watermark unmoved. This endpoint must back off like the
+    others rather than cost a whole series."""
+    from collector.venues import kalshi as k
+
+    class _Resp:
+        def __init__(self, status, body=None):
+            self.status_code = status
+            self._body = body or {}
+            self.headers = {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                import requests
+
+                raise requests.HTTPError(response=self)
+
+        def json(self):
+            return self._body
+
+    responses = [_Resp(429), _Resp(200, {"candlesticks": [{"end_period_ts": 1}]})]
+
+    class _Sess:
+        def get(self, url, params=None, timeout=None):
+            assert "candlesticks" in url
+            return responses.pop(0)
+
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    out = k.get_candlesticks("KXSHIBA", "KXSHIBA-1", 0, 1, session=_Sess())
+    assert out == [{"end_period_ts": 1}]

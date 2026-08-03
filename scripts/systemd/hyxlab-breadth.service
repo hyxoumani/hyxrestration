@@ -1,0 +1,18 @@
+[Unit]
+Description=hyxlab exchange-wide top-N breadth snapshots (EXP-928)
+[Service]
+Type=oneshot
+OOMScoreAdjust=500
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+# collector.breadth is OFF unless switched on. Installing + enabling this
+# timer IS the deliberate act; the env var below is what the unit
+# contributes, so the code default stays disabled for every ad-hoc run.
+Environment=HYXLAB_BREADTH_ENABLED=1
+Environment=HYXLAB_BREADTH_TOP_N=1000
+# 24h close window => ~9 requests / ~6s per cycle (measured 2026-08-03).
+# Widening this is a request-rate decision, not a taste one: unwindowed
+# is >200 requests/cycle against a budget shared with the live trader.
+Environment=HYXLAB_BREADTH_CLOSE_WINDOW_H=24
+# No `flock` wrapper: the writer lock is taken per-burst inside python
+# (collector.sweep.writer_burst), so HTTP never runs under it.
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.breadth --once
