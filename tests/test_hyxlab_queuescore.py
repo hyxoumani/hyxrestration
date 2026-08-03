@@ -14,6 +14,7 @@ from simulator.queuescore import (
     event_ticker,
     independence_vs_prior,
     over_award,
+    over_award_split,
     score_market,
     select_markets,
     series_composition,
@@ -625,9 +626,23 @@ def test_the_three_way_split_partitions_the_loose_over_award_exactly():
         for i, kind in enumerate(("unsupported", "inside", "inside", "forgone", "unsupported"))
     ]
 
-    cross_only = [o for o in orders if over_award(o, "pess")]
-    unsupported = [o for o in orders if over_award(o, "opt")]
-    inside = [o for o in cross_only if o.tracker.filled_opt > 0]
+    s = over_award_split(orders)
 
-    assert len(cross_only) == len(unsupported) + len(inside)
-    assert (len(unsupported), len(inside)) == (2, 2)
+    # the shipped partition, not a re-derivation of it at the call site
+    assert s["crossing_but_not_pess"] == s["crossing_but_not_opt"] + s["inside_bracket"]
+    assert (s["crossing_but_not_opt"], s["inside_bracket"]) == (2, 2)
+    assert s["pess_but_not_crossing"] == 1
+
+
+def test_a_forgone_fill_is_never_counted_as_inside_the_bracket():
+    """A declined-but-floor-filled order has `filled_opt > 0` too, so a split
+    that reads `inside_bracket` off every order rather than off the crossed
+    ones counts the forgone side twice — on BOTH sides of the disagreement.
+    The partition identity is what catches it."""
+    orders = [_bracketed("KXHIGHDEN-26JUL27-B95.5", "forgone", i) for i in range(5)]
+
+    s = over_award_split(orders)
+
+    assert s["pess_but_not_crossing"] == 5
+    assert s["inside_bracket"] == 0
+    assert s["crossing_but_not_pess"] == s["crossing_but_not_opt"] + s["inside_bracket"] == 0

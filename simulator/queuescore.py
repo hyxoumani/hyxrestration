@@ -245,6 +245,35 @@ def over_award(o: VirtualOrder, bound: str) -> bool:
     return o.tracker.filled_opt == 0 if bound == "opt" else o.tracker.filled_pess == 0
 
 
+def over_award_split(orders: list[VirtualOrder]) -> dict[str, int]:
+    """Partition the crossing-vs-queue disagreement into its three real states.
+
+    `crossing_but_not_pess` is the historical field and is NOT a fourth state —
+    it is the union of the first two, kept because archived reports carry it:
+
+    - `crossing_but_not_opt` — crossed, no queue model fills it. Unambiguously
+      invented; the LOWER bound on over-award.
+    - `inside_bracket` — crossed, the floor misses it, the ceiling fills it.
+      Ambiguous. Charging these to the sim is what makes the floor-only reading
+      an UPPER bound rather than a measurement.
+    - `pess_but_not_crossing` — declined by the sim, filled by even the floor.
+      Unambiguously forgone, under either bound.
+
+    The first two partition the third-from-last exactly, which is the arithmetic
+    the report's fields rest on and the reason this lives in one function rather
+    than as three comprehensions at the call site.
+    """
+    cross_only = [o for o in orders if over_award(o, "pess")]
+    return {
+        "crossing_but_not_pess": len(cross_only),
+        "crossing_but_not_opt": sum(1 for o in orders if over_award(o, "opt")),
+        "inside_bracket": sum(1 for o in cross_only if o.tracker.filled_opt > 0),
+        "pess_but_not_crossing": sum(
+            1 for o in orders if o.crossed_at is None and o.tracker.filled_pess > 0
+        ),
+    }
+
+
 def concentration_by_market(orders: list[VirtualOrder], bound: str = "pess") -> dict:
     """Is the crossing-vs-queue disagreement a fill-model bias, or one market?
 
@@ -480,10 +509,7 @@ def main() -> None:
     crossed = [o for o in all_orders if o.crossed_at]
     pess = [o for o in all_orders if o.tracker.filled_pess > 0]
     opt = [o for o in all_orders if o.tracker.filled_opt > 0]
-    cross_only = [o for o in all_orders if over_award(o, "pess")]
-    unsupported = [o for o in all_orders if over_award(o, "opt")]
-    inside = [o for o in cross_only if o.tracker.filled_opt > 0]
-    pess_only = [o for o in all_orders if not o.crossed_at and o.tracker.filled_pess > 0]
+    split = over_award_split(all_orders)
     composition = series_composition(all_orders)
     out_dir = Path(args.out)
     report = {
@@ -493,10 +519,7 @@ def main() -> None:
         "crossing_filled": len(crossed),
         "queue_pess_filled": len(pess),
         "queue_opt_filled": len(opt),
-        "crossing_but_not_pess": len(cross_only),
-        "crossing_but_not_opt": len(unsupported),
-        "inside_bracket": len(inside),
-        "pess_but_not_crossing": len(pess_only),
+        **split,
         "market_composition": composition,
         "concentration": concentration_by_market(all_orders),
         "concentration_strict": concentration_by_market(all_orders, bound="opt"),
