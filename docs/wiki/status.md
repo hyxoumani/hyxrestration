@@ -1,6 +1,85 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-03 20:30 UTC (THE LADDER WAS PREEMPTED BY AN
+Updated: **2026-08-04 02:45 UTC (THE FADE-WINDOW ASSERTION WAS AN
+INVARIANT OVER TWO CONSTANTS, SO IT WAS GREEN THROUGH A 2.1h BREACH OF
+ITSELF — AND THE LAST ENTRY'S OWN MARGIN ARITHMETIC WAS OFF BY 5h
+BECAUSE IT JUDGED A COMPLETED RUN BY A SCHEDULE THAT RUN NEVER RAN
+UNDER. TWENTY-SIXTH INSTANCE OF THE CLASS, ONE LEVEL UP AGAIN: A
+SCHEDULE DESCRIBES FUTURE RUNS; ONLY THE JOURNAL DESCRIBES THE ONES
+THAT HAPPENED.** Gate check first, hard rather than estimated (`date -u`
+02:15, `systemctl list-timers`): kalshi sweep last fired 08-03, next
+08-04 06:10Z, so **the atlas gate is CLOSED**; QA next 08-04 10:00Z;
+weather bracket #8 ~02:15; econ needs >=336h. Tree **clean** and the new
+Stop hook quiet — the first pass in three to start on the ladder rather
+than on someone else's uncommitted work. **THE RUNG TAKEN WAS THE ONE
+THE LAST ENTRY DEFERRED**, and it was bigger than the errand it looked
+like. The deferred task was "give `hyxlab-sweep`'s budget constant the
+completed number". The number arrived — **11:10:00Z -> 21:16:38Z,
+10h06m38s** — and it is **2.1h ABOVE the 8.0h that was written down**,
+which means `test_kalshi_batch_units_finish_before_the_live_fade_window`
+had been passing all day on a budget reality had already broken. **THE
+DEFECT IS STRUCTURAL, NOT ARITHMETIC**: that test compares
+`OnCalendar + BATCH_RUN_BUDGET_H` against 23:00Z — two CONSTANTS — so it
+is green for exactly as long as they agree with each other, whatever the
+units are really doing. No check in the repo could see this; only the
+journal can. **AND THE SAME BLIND SPOT PRODUCED A WRONG NUMBER IN THIS
+LOG**: the last entry scored that run "7.6h clear of 23:00Z" by adding
+its age to the timer's CURRENT 06:10Z spec. The run started **11:10Z**,
+under the pre-EXP-950 local-time schedule it was actually launched from,
+and finished with **1h43m** of margin — a near miss reported as a
+comfortable one. **LANDED (e39c0f2, EXP-961)**: budget corrected 8.0 ->
+10.5 and MOVED into `collector.qa`, so the test and the new check cannot
+hold divergent copies; `qa_batch_run_budget` measures COMPLETED runs
+from the journal, and the two failure modes are deliberately shaped
+differently — a **budget breach FAILs and keeps failing** (repairable:
+re-measure, or make the unit faster), a **fade-window overlap FAILs on a
+new date then decays to WATCH** (a past overlap cannot be un-spent, and
+a permanent FAIL is the noise that trains an operator to stop reading
+QA — the EXP-960 shape). Overlap is computed from each run's own
+measured interval, never from spec + budget, which is the whole lesson
+encoded. **VALIDATED LIVE FROM STABLE**: `PASS batch units within
+measured run budget — 3 completed run(s) over 7d; worst
+hyxlab-sweep.timer 10.11h/10.5h, hyxlab-tradepass.timer 0.09h/4h`.
+Mutation-checked: parsing the CPU half of `Consumed ... over ...`
+(1h12m, which clears even the OLD budget) and same-day-only overlap
+arithmetic each redden a test. **THE SECOND COMMIT IS THE PROMOTE CLASS
+ESCALATING OUT OF PROSE** (5e3b133): the last entry's rule — read what
+changed before running a script that restarts daemons — had to be
+applied BY HAND for a second consecutive pass, so per the mistakes-log
+doctrine it is now in the script. `promote.sh` takes the diff BEFORE the
+fast-forward (while stable still points at the deployed commit) and
+restarts a daemon only when the packages its own ExecStart runs actually
+moved; `--restart-all` forces the old behaviour. **IT PAID OFF ON ITS
+FIRST RUN**: this promote restarted `hyxlab-stream` (collector/ moved)
+and left `hyxlab-shadow` alone — **still up since 14:28:53Z**, 12.3h
+into the ~16h it needs. Under the old script that run would have died
+with **~4h to go**. The guard is package-granular and therefore
+conservative in the cheap direction: stream took a restart it did not
+strictly need (a WS reconnect and a gap row, self-healing), which is the
+right asymmetry against a settlement run that cannot be re-acquired.
+Suite **572 -> 591**, ruff clean, pushed. **ONE LIVE QA FAIL, PROBED
+BEFORE REPORTING, AND IT IS NOT ROT**: `trade tape covers retention
+window — 3 traded markets unswept`. `collector.trades_backfill` (pid
+1950816) is **live and draining** — 1.4k-9.3k markets/hour every hour
+for the last 6h, and the count fell **3 -> 2 while this pass watched**
+(the two left are KXSOLD-26AUG0122-T72.9999 and
+KXFOXNEWSMENTION-26AUG01-CUBA, both closed 08-02). The check has no
+notion of "a backfill is currently running", so it reports a draining
+tail exactly as it would report rot — a false-alarm CLASS, not a false
+alarm about the data, and the next hardening candidate. NEXT PASS:
+**the first settlement is still the top rung** — run `20260803T142853`
+is alive and must reach **08-04 ~06:30 UTC**, and `shadow_settlements`
+is still **0 rows** archive-wide; the 06:10Z sweep is what resolves its
+holdings, so nothing may restart shadow before then. Then: the **08-04
+sweep is the discriminator** on whether 10.11h was the one-time crypto
+backlog or the new steady state — `qa_batch_run_budget` will say so out
+loud either way; QA 10:00Z is the first run carrying it; the atlas gate
+reopens after 06:10Z. Still open: the EXP-957 wall-clock rise wants its
+decomposition (batched `upsert_markets` vs 31 per-series calls, still
+unverified); the trade-tape check wants backfill-awareness; shadow
+position continuity across restart is still a workaround, not a fix; the
+atlas quoted tier is data-gated.**
+(prior 2026-08-03 20:30 UTC (THE LADDER WAS PREEMPTED BY AN
 UNCOMMITTED TREE FOR THE SECOND PASS RUNNING, SO THE CLASS WAS ESCALATED
 OUT OF PROSE AND INTO A STOP HOOK — AND THE PROMOTE THAT SHIPPED IT WAS
 DECOMPOSED RATHER THAN RUN, BECAUSE `promote.sh` RESTARTS
