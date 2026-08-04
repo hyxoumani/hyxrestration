@@ -23,10 +23,18 @@ import requests
 
 from collector.lockid import note_holder
 from collector.venues import kalshi
-from hyxlab.store import Store
+from hyxlab.store import Store, open_retry
 
 FLUSH_MARKETS = 50
 LOCK_FILE = "data/writer.lock"
+#: Wall-clock deadline (minutes). The worklist is unbounded — a sweep that
+#: opens a new asset class can queue tens of thousands of tapes overnight
+#: (2026-08-03: the first crypto pass turned a 5-minute run into 15h06m,
+#: 3.69h of it inside the 23:00Z fade window). The pass is resumable per
+#: market via trades_swept and ordered oldest-close-first, so stopping at
+#: the deadline costs nothing but calendar days; QA's BATCH_RUN_BUDGET_H
+#: (4.0h) stays true by construction. 0 disables (manual full drains).
+DEADLINE_MIN = 210.0
 
 
 def _flush(db: str, batch: list[tuple[str, list[tuple], str]]) -> int:
@@ -35,7 +43,11 @@ def _flush(db: str, batch: list[tuple[str, list[tuple], str]]) -> int:
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
-        store = Store(db)
+        # open_retry, not Store: the flock excludes other WRITERS, but DuckDB
+        # also refuses a read-write open while any read-only holder (QA,
+        # doctor, simui — none of which flock) is attached. A bare open here
+        # killed the 2026-08-04 run at 26,000/42,978 markets.
+        store = open_retry(db)
         try:
             for market_id, rows, status in batch:
                 inserted += store.insert_trades(rows)
@@ -67,6 +79,12 @@ def main() -> None:
     ap.add_argument("--db", default="data/hyxlab.duckdb")
     ap.add_argument("--rps", type=float, default=2.0, help="request pacing")
     ap.add_argument("--limit", type=int, default=None, help="max markets (smoke tests)")
+    ap.add_argument(
+        "--deadline-min",
+        type=float,
+        default=DEADLINE_MIN,
+        help="stop cleanly after this many minutes; 0 disables",
+    )
     args = ap.parse_args()
 
     Path(LOCK_FILE).parent.mkdir(exist_ok=True)
@@ -75,7 +93,7 @@ def main() -> None:
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
-        Store(args.db).close()
+        open_retry(args.db).close()
         fcntl.flock(lock, fcntl.LOCK_UN)
     targets = pending_markets(args.db)
     if args.limit:
@@ -89,6 +107,15 @@ def main() -> None:
     min_interval = 1.0 / args.rps
 
     for i, ticker in enumerate(targets):
+        if args.deadline_min and time.monotonic() - t0 > args.deadline_min * 60:
+            totals["remaining"] = len(targets) - i
+            print(
+                f"[tradepass] deadline {args.deadline_min:g}min reached at {i}/"
+                f"{len(targets)}; {totals['remaining']} markets stay pending for "
+                f"the next run",
+                flush=True,
+            )
+            break
         t_req = time.monotonic()
         try:
             raw, truncated = kalshi.get_trades(ticker, session=sess)
