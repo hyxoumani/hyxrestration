@@ -1,6 +1,51 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-04 02:45 UTC (THE FADE-WINDOW ASSERTION WAS AN
+Updated: **2026-08-04 08:45 UTC (THE FALSE-ALARM CLASS THE LAST ENTRY
+NAMED WAS CLOSED HOURS BEFORE ITS FIRST SCHEDULED FIRING: THE
+TAPE-COVERAGE CHECK WOULD HAVE FAILED TODAY'S 10:00Z QA ON A BACKFILL
+THAT WAS HEALTHY AND DRAINING, BECAUSE THE 06:10Z SWEEP IS STILL MID-RUN
+AT QA TIME EVERY DAY THE SWEEP RUNS LONG.** Gate check first, hard
+(`date -u` 08:15, `systemctl list-timers`): the 06:10Z kalshi sweep
+fired on schedule and is **still running** (2h in — this is the
+discriminator run for the 10.5h budget question; `qa_batch_run_budget`
+will read it once it completes, ~16:20Z if 10h is the new steady state);
+QA next 10:00Z; **atlas gate stays CLOSED until the sweep completes**,
+not merely until it starts — its outputs are what atlas reads. **THE TOP
+RUNG SURVIVED BUT HAS NOT YET PAID**: `hyxlab-shadow` is alive since
+08-03 14:28:53Z (~18h, past the ~06:30Z target, 6553 fills, memory
+731M/1G), and `shadow_settlements` is **still 0 rows** — the sweep that
+resolves its holdings is mid-run, so the first-settlement rung stays
+data-gated until it lands. Nothing may restart shadow meanwhile; the
+promote guard enforced that unprompted (see below). **LANDED (06c2c30,
+EXP-962)**: the trade-tape check is backfill-aware. The 08-03 pass
+watched it report a live, draining `trades_backfill` (count fell 3 -> 2
+during the read) identically to rot. The discriminator is per-market
+PERSISTENCE judged from the archive — what LANDED, never what is
+presumed running, the same doctrine as EXP-961: tradepass is daily, so a
+genuinely queued market clears within one cycle. Three renderings, kept
+distinct: nothing unswept -> PASS; unswept with sweeps landing and all
+inside a 30h first-OBSERVED grace -> **WATCH (draining tail, not rot)**,
+non-failing; no sweep landed for 26h (sweeper dead), or a market past
+its grace despite sweeps landing (stuck, not draining) -> **FAIL, and it
+keeps failing** — both are repairable, unlike a capture hole, so the
+EXP-960 decay-to-WATCH shape is deliberately NOT used. First-seen ages
+run from QA's own observation (close_time would start the clock while a
+market legitimately queues behind older work) and are pruned on
+coverage so a re-appearance gets a fresh clock. **VALIDATED LIVE BEFORE
+COMMIT**: today's mid-sweep archive reads `WATCH — 7 unswept but sweeps
+landed 0.0h ago` where the old check read FAIL — i.e. the fix's first
+save is the very QA run two hours from now. Suite **591 -> 595**, ruff
+clean, promoted (guard restarted `hyxlab-stream` only — collector/
+moved; shadow untouched), pushed. NEXT PASS, in order: (1) after the
+sweep completes (~16-17Z), check `shadow_settlements` — the first
+settlement is the whole point of the 18h run; (2) read
+`qa_batch_run_budget`'s verdict on whether 10.11h was the one-time
+crypto backlog or the steady state; (3) the atlas gate reopens then too.
+Still open: EXP-957 wall-clock decomposition (batched `upsert_markets`
+vs 31 per-series calls, unverified); shadow position continuity across
+restart is a workaround, not a fix; atlas quoted tier data-gated; econ
+needs >=336h (~08-10).**
+(prior 2026-08-04 02:45 UTC (THE FADE-WINDOW ASSERTION WAS AN
 INVARIANT OVER TWO CONSTANTS, SO IT WAS GREEN THROUGH A 2.1h BREACH OF
 ITSELF — AND THE LAST ENTRY'S OWN MARGIN ARITHMETIC WAS OFF BY 5h
 BECAUSE IT JUDGED A COMPLETED RUN BY A SCHEDULE THAT RUN NEVER RAN
