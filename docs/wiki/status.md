@@ -1,6 +1,53 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-04 14:40 UTC (THE HYPOTHESIS THIS PAGE CARRIED FOR
+Updated: **2026-08-04 20:55 UTC (THE FIRST SETTLEMENTS LANDED AND THE
+LEDGER'S FIRST VERDICT IS: THE PROBE'S GROSS EDGE IS REAL AND TAKER
+FEES EAT ALL OF IT — AND THE SAME GATE-CHECK FOUND THE TRADEPASS DEAD
+AT 60%, KILLED BY THE EXACT UNGUARDED OPEN open_retry's DOCSTRING
+WARNS ABOUT.** Gate check first (`date -u` 20:15): the 06:10Z sweep
+finished 15:06Z at **8.93h** (0 errors, 8 truncated series) — under
+the 10.5h budget, so 08-03's 10.11h reads as partly one-time backlog;
+every gated rung reopened. **(1) SETTLEMENTS: 78 rows at 16:45Z**
+(run 20260803T142853, all 08-03 weather cohort): cost $1,004.01 ->
+payout $1,048.44 (**+4.4% gross**, 12/78 markets won) minus **$55.80
+fees = -$11.37 net**, 0 maker fills of 1,423 — the probe's edge is
+real and taker fees flip its sign, which is the maker-bracket thesis
+showing up in live paper. The settlement machinery is verified
+end-to-end; the ~30h run paid. **(2) BATCH BUDGET VERDICT**: sweep
+PASS; **tradepass FAIL, and worse than the budget question** — 08-03
+ran 15.10h vs 4.0h (3.69h INSIDE the 23:00Z fade window, first crypto
+tape backlog ~43k markets), and 08-04 **crashed at 26,000/42,978**:
+`_flush` opened `Store(db)` bare under the flock, and DuckDB refuses a
+RW open while any read-only holder (QA/doctor/simui — none flock) is
+attached. Full-pass pace said ~14.5h; the worklist is unbounded by
+construction. **LANDED (EXP-964, f63a4e6)**: wall-clock deadline
+(default 210min; 0 disables) — the pass was already per-market
+resumable via trades_swept and oldest-close-first, so stopping costs
+calendar days, not data, and QA's 4.0h constant becomes true by
+construction — plus `_flush` and the schema-DDL open now go through
+`open_retry`. Suite 597->603 (both load-bearing tests
+mutation-verified post-commit, mistakes #18 honored), ruff clean,
+promoted (stream restarted; timers pick up code at next firing),
+pushed. **Manual deadline-boxed drain launched 20:42Z from stable
+(--deadline-min 120, ends ~22:42Z, clear of the fade window)** — cuts
+the ~17k backlog and live-validates the deadline today. **EXPECT
+tomorrow's 07:00Z QA to FAIL batch-run-budget on the 08-03/08-04
+journal rows until they age out (~2d journald)** — truthful, no
+action; new runs should read <4h. **(5) SHADOW RESTART DELIBERATELY
+DEFERRED even though the settlement gate opened**: shadow only READS
+through the kernel, gains nothing from the upsert or tradepass
+changes, and a restart mid-cohort risks stranding the open 08-04
+positions (11,069 fills, 386 markets, equity -$377 unsettled);
+restart at a natural break only. (4) fetch_s post-sweep: steady
+20-31s vs 35.5s under sweep contention — mild, most of fetch is the
+watchlist's own pagination, not contention. NEXT PASS: (1) drain
+result + tomorrow's 06:35Z tradepass wall (<4h expected); (2) second
+settlement wave ~16:45Z tomorrow -> is -1.1% net stable? feed the
+fee-sign finding into the Tier-2 maker fav-long design; (3) atlas +
+divergence standing reports on the reopened gate; (4) backlog fully
+drained ETA ~2 days at 3.5h/day. Still open: shadow continuity
+workaround; atlas quoted tier data-gated; econ needs >=336h (~08-10).**
+(prior **2026-08-04 14:40 UTC (THE HYPOTHESIS THIS PAGE CARRIED FOR
 THREE ENTRIES WAS REFUTED BY MEASUREMENT, AND THE MEASUREMENT PAID
 TWICE: BATCHING THE 31 PER-SERIES `upsert_markets` CALLS INTO ONE DID
 NOT CAUSE THE EXP-957 WALL-CLOCK RISE — ONE executemany CALL COSTS
