@@ -289,3 +289,29 @@ def test_open_time_roundtrips_and_migrates(tmp_path):
     n = store2.conn.execute(
         "SELECT count(*) FROM markets WHERE open_time IS NOT NULL").fetchone()[0]
     assert n == 1  # migrated column, upsert works; pre-change row stays NULL
+
+
+def test_upsert_markets_last_wins_on_duplicate_keys_in_one_batch(tmp_path):
+    """EXP-963 rewrote upsert_markets set-based (staging + one OR REPLACE:
+    5,913 rows fell 11.0s -> 1.0s at production scale, and that was most
+    of the collect cycle's lock hold). OR REPLACE over a SELECT keeps an
+    ARBITRARY source row on duplicate keys, where the old executemany kept
+    the LAST — a cycle can carry the same market twice (open + settled
+    page overlap), and which row survives must not be luck."""
+    from hyxlab.models import MarketInfo
+
+    store = Store(tmp_path / "t.duckdb")
+    store.upsert_markets([])  # empty cycle must be a no-op, not an error
+    dups = [
+        MarketInfo(venue="kalshi", market_id="M1", title=f"v{i}", series="S", close_time=TS)
+        for i in range(40)
+    ]
+    store.upsert_markets(dups)
+    title, updated_at = store.conn.execute(
+        "SELECT title, updated_at FROM markets WHERE market_id='M1'"
+    ).fetchone()
+    assert title == "v39", f"duplicate-key upsert kept {title!r}, not the last row"
+    assert store.counts()["markets"] == 1
+    # mistakes #10: every store writer asserts its stored timestamp
+    assert updated_at is not None and updated_at.tzinfo is None  # naive-UTC
+    store.close()

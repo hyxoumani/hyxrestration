@@ -283,6 +283,21 @@ class Store:
     # -- writes ---------------------------------------------------------
 
     def upsert_markets(self, infos: list[MarketInfo]) -> None:
+        """Set-based staged upsert, not executemany (EXP-963).
+
+        `executemany` of INSERT OR REPLACE runs one statement per row
+        against the PK index — measured 11.0s for a production-scale
+        cycle (5,913 rows into 324k markets), which was most of the
+        collect cycle's lock hold. Staging + one set-based OR REPLACE
+        does the same work in ~1.0s. `seq` preserves executemany's
+        last-wins semantics on duplicate keys within a batch, which
+        OR REPLACE over a SELECT does not guarantee (DuckDB keeps an
+        arbitrary source row). The empty-batch guard is also load-bearing:
+        executemany raises on an empty parameter list, so a cycle whose
+        every fetch failed would have rolled back its whole write.
+        """
+        if not infos:
+            return
         now = datetime.now(UTC).replace(tzinfo=None)
         rows = [
             (
@@ -298,10 +313,21 @@ class Store:
                 i.target_date,
                 now,
                 _naive_utc(i.open_time),
+                seq,
             )
-            for i in infos
+            for seq, i in enumerate(infos)
         ]
-        self.conn.executemany("INSERT OR REPLACE INTO markets VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        self.conn.execute(
+            "CREATE OR REPLACE TEMP TABLE _mkstage AS"
+            " SELECT *, 0::BIGINT AS seq FROM markets LIMIT 0"
+        )
+        self.conn.executemany("INSERT INTO _mkstage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO markets"
+            " SELECT * EXCLUDE (seq) FROM _mkstage"
+            " QUALIFY row_number() OVER (PARTITION BY venue, market_id ORDER BY seq DESC) = 1"
+        )
+        self.conn.execute("DROP TABLE _mkstage")
 
     def insert_snapshots(self, snaps: list[Snapshot]) -> None:
         rows = [
