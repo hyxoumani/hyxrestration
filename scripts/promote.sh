@@ -23,7 +23,22 @@ DEV=/home/devs/workspace/hyxrestration
 STABLE=/home/devs/workspace/hyxrestration-stable
 
 FORCE_RESTART=0
-[[ "${1:-}" == "--restart-all" ]] && FORCE_RESTART=1
+DEFER=""
+for arg in "$@"; do
+    case "$arg" in
+        --restart-all) FORCE_RESTART=1 ;;
+        # --defer=UNIT[,UNIT]: promote everything but leave the named
+        # daemon(s) running old code until their next natural break.
+        # For when the guard is RIGHT that code the daemon runs moved,
+        # but the daemon only reads through it and what it has
+        # accumulated is worth more than the new code (2026-08-04: a
+        # store-kernel speedup fired the shadow restart rule while
+        # shadow was ~24h into the first run ever positioned to observe
+        # a settlement — the third pass forced to decompose by hand, so
+        # the exception is now stated to the script, not run around it).
+        --defer=*) DEFER="${arg#--defer=}" ;;
+    esac
+done
 
 echo "== tests (dev tree) =="
 cd "$DEV"
@@ -59,6 +74,19 @@ echo "== restart daemons whose code moved (timers pick up new code on next run) 
 RESTART=()
 needs_restart '^(collector|hyxlab)/' && RESTART+=(hyxlab-stream.service)
 needs_restart '^(simulator|strategies|hyxlab)/' && RESTART+=(hyxlab-shadow.service)
+if [[ -n "$DEFER" ]]; then
+    KEPT=()
+    for u in "${RESTART[@]}"; do
+        if [[ ",$DEFER," == *",$u,"* ]]; then
+            echo "   DEFERRED: $u — its code moved but its restart is deferred;"
+            echo "             it runs OLD code until its next restart. Record this."
+        else
+            KEPT+=("$u")
+        fi
+    done
+    RESTART=()
+    ((${#KEPT[@]})) && RESTART=("${KEPT[@]}")
+fi
 if ((${#RESTART[@]})); then
     echo "   restarting: ${RESTART[*]}"
     systemctl --user restart "${RESTART[@]}"
