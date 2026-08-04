@@ -617,6 +617,99 @@ def test_healthy_archive_passes_and_unswept_tape_trips(tmp_path):
     assert "trade tape covers retention window" not in failed
 
 
+def _tape_archive(db):
+    """One settled+traded kalshi market, M1, unswept and inside retention."""
+    from hyxlab.models import MarketInfo, Snapshot
+
+    store = Store(db)
+    store.insert_snapshots(
+        [
+            Snapshot(
+                venue="kalshi",
+                market_id="M1",
+                ts=NOW,
+                yes_bid=0.44,
+                yes_ask=0.46,
+                no_bid=0.54,
+                no_ask=0.56,
+                yes_bid_size=1,
+                yes_ask_size=1,
+                no_bid_size=1,
+                no_ask_size=1,
+            )
+        ]
+    )
+    store.log_sweep("KXTEST", NOW, NOW, 1, 1, "ok")
+    close = NOW - timedelta(days=10)
+    store.upsert_markets(
+        [MarketInfo(venue="kalshi", market_id="M1", result="yes", close_time=close)]
+    )
+    store.insert_candles(
+        [("kalshi", "M1", close, 3600, None, None, None, 0.5, 0.49, 0.51, None, None, 10.0, 5.0)]
+    )
+    return store
+
+
+def test_tape_draining_tail_is_watch_not_fail(tmp_path, capsys):
+    """EXP-962: a fresh unswept market while sweeps are actively landing is a
+    draining backfill, not rot — WATCH, non-failing."""
+    db = tmp_path / "a.duckdb"
+    store = _tape_archive(db)
+    store.mark_trades_swept("OTHER", 5, "ok")  # sweeper landed rows just now
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "trade tape covers retention window" not in failed
+    out = capsys.readouterr().out
+    assert "WATCH trade tape covers retention window" in out
+    assert "draining tail, not rot" in out
+
+
+def test_tape_stuck_market_fails_despite_active_sweeper(tmp_path):
+    """A market unswept past the drain grace while sweeps keep landing is
+    stuck, not draining — the drain story expired."""
+    db = tmp_path / "a.duckdb"
+    store = _tape_archive(db)
+    store.mark_trades_swept("OTHER", 5, "ok")
+    store.close()
+    first_seen = (NOW - timedelta(hours=qa.TAPE_DRAIN_GRACE_H + 10)).isoformat()
+    qa.STATE.parent.mkdir(parents=True, exist_ok=True)
+    qa.STATE.write_text(json.dumps({"tape-coverage": {"first_seen": {"M1": first_seen}}}))
+    failed = _run(None, tmp_path, archive=db)
+    assert "trade tape covers retention window" in failed
+
+
+def test_tape_dead_sweeper_fails_even_inside_grace(tmp_path, capsys):
+    """If nothing has landed in trades_swept for > TAPE_SWEEP_STALL_H, there
+    is no evidence anything is draining — FAIL even on a young tail."""
+    db = tmp_path / "a.duckdb"
+    store = _tape_archive(db)
+    stale = (NOW - timedelta(hours=qa.TAPE_SWEEP_STALL_H + 5)).replace(tzinfo=None)
+    store.conn.execute(
+        "INSERT INTO trades_swept VALUES (?,?,?,?)", ["OTHER", stale, 5, "ok"]
+    )
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "trade tape covers retention window" in failed
+    assert "not draining anything" in capsys.readouterr().out
+
+
+def test_tape_first_seen_ledger_prunes_covered_markets(tmp_path):
+    """Once a market is swept its first-seen entry must go, or a later
+    re-appearance would inherit a stale clock and skip its grace."""
+    db = tmp_path / "a.duckdb"
+    store = _tape_archive(db)
+    store.mark_trades_swept("OTHER", 5, "ok")
+    store.close()
+    _run(None, tmp_path, archive=db)
+    assert "M1" in json.loads(qa.STATE.read_text())["tape-coverage"]["first_seen"]
+    store = Store(db)
+    store.mark_trades_swept("M1", 3, "ok")
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "trade tape covers retention window" not in failed
+    assert json.loads(qa.STATE.read_text())["tape-coverage"]["first_seen"] == {}
+
+
 def test_stale_gdelt_news_trips_freshness(tmp_path):
     from hyxlab.models import NewsItem
 

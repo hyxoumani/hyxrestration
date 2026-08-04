@@ -117,6 +117,22 @@ BATCH_RUN_BUDGET_H = {
 #: lookback, not a promise of one. Unreachable days read UNMEASURED.
 BATCH_RUN_LOOKBACK_DAYS = 7
 
+# EXP-962 — a draining backfill is not rot. 2026-08-04: the tape-coverage
+# check reported "3 traded markets unswept" while collector.trades_backfill
+# was live and landing 1.4k-9.3k markets/hour; the count fell 3 -> 2 during
+# the very QA pass that read it. The check had no notion of "a sweeper is
+# currently draining this", so it rendered a healthy tail exactly as it
+# renders rot. The discriminator is per-market PERSISTENCE, judged from the
+# archive (what LANDED, never what is presumed to be running): tradepass is
+# daily, so a genuinely queued market clears within one cycle. Grace is that
+# cycle plus slack, measured from when QA first OBSERVED the market unswept.
+TAPE_DRAIN_GRACE_H = 30.0
+# If NOTHING has landed in trades_swept for this long, the draining story has
+# no evidence at all — the sweeper itself is dead, and that is rot regardless
+# of how young the uncovered set is. 26h clears the daily tradepass with the
+# same tolerance the freshness checks use.
+TAPE_SWEEP_STALL_H = 26.0
+
 _failures: list[str] = []
 _skipped: list[str] = []
 _passes = 0
@@ -475,23 +491,90 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
         ).fetchone()[0]
         check("gdelt news fresh (< 30h)", age_h < 30, f"age {age_h:.1f}h")
 
-    # Tape coverage: settled+traded markets inside the retention window
-    # (~64d, use 55 to stay ahead of the boundary) must have a tape sweep.
-    uncovered = conn.execute(
-        """
-        SELECT count(*) FROM markets m
-        WHERE m.venue='kalshi' AND m.result != ''
-          AND m.close_time > ? - INTERVAL 55 DAY AND m.close_time < ? - INTERVAL 1 DAY
-          AND EXISTS (SELECT 1 FROM candles c WHERE c.market_id = m.market_id AND c.volume > 0)
-          AND NOT EXISTS (SELECT 1 FROM trades_swept s WHERE s.market_id = m.market_id)
-        """,
-        [now, now],
-    ).fetchone()[0]
-    check(
-        "trade tape covers retention window", uncovered == 0, f"{uncovered} traded markets unswept"
-    )
+    qa_tape_coverage(conn, now)
     conn.close()
     _record_ok("archive", now)
+
+
+def qa_tape_coverage(conn, now: datetime) -> None:
+    """Settled+traded markets inside the retention window (~64d, use 55 to
+    stay ahead of the boundary) must have a tape sweep — but a tail the
+    sweeper is actively draining is WATCH, not FAIL (EXP-962). Three
+    renderings, kept distinct:
+
+      nothing unswept                             -> PASS
+      unswept, sweeps landing, all inside grace   -> WATCH (draining tail)
+      no sweep landed for > 26h, or any market
+      unswept past its 30h grace                  -> FAIL (rot / stuck)
+
+    Both FAILs are repairable (run the backfill; unstick the market), so
+    unlike a capture hole they keep failing until repaired.
+    """
+    name = "trade tape covers retention window"
+    uncovered = sorted(
+        r[0]
+        for r in conn.execute(
+            """
+            SELECT m.market_id FROM markets m
+            WHERE m.venue='kalshi' AND m.result != ''
+              AND m.close_time > ? - INTERVAL 55 DAY AND m.close_time < ? - INTERVAL 1 DAY
+              AND EXISTS (SELECT 1 FROM candles c WHERE c.market_id = m.market_id AND c.volume > 0)
+              AND NOT EXISTS (SELECT 1 FROM trades_swept s WHERE s.market_id = m.market_id)
+            """,
+            [now, now],
+        ).fetchall()
+    )
+
+    # First-seen ledger. Age runs from when QA first OBSERVED the market
+    # unswept, not from close_time — close_time would start the clock while
+    # the market was still legitimately queued behind older work.
+    state = _load_state()
+    entry = state.setdefault("tape-coverage", {})
+    seen = {m: t for m, t in (entry.get("first_seen") or {}).items() if m in set(uncovered)}
+    for m in uncovered:
+        seen.setdefault(m, now.isoformat())
+    entry["first_seen"] = seen
+    _save_state(state)
+
+    if not uncovered:
+        check(name, True, "0 traded markets unswept")
+        return
+
+    landed_age_h = conn.execute(
+        "SELECT epoch(? - max(swept_at)) / 3600 FROM trades_swept", [now]
+    ).fetchone()[0]
+
+    def age_h(m: str) -> float:
+        t = datetime.fromisoformat(seen[m])
+        if t.tzinfo is not None:  # qa_archive's clock is naive UTC
+            t = t.astimezone(UTC).replace(tzinfo=None)
+        return (now - t).total_seconds() / 3600
+
+    stuck = [m for m in uncovered if age_h(m) >= TAPE_DRAIN_GRACE_H]
+    if landed_age_h is None or landed_age_h > TAPE_SWEEP_STALL_H:
+        since = "never" if landed_age_h is None else f"{landed_age_h:.1f}h ago"
+        check(
+            name,
+            False,
+            f"{len(uncovered)} traded market(s) unswept and the last tape sweep landed "
+            f"{since} (> {TAPE_SWEEP_STALL_H:g}h): the sweeper is not draining anything",
+        )
+    elif stuck:
+        check(
+            name,
+            False,
+            f"{len(stuck)} of {len(uncovered)} unswept market(s) sat past the "
+            f"{TAPE_DRAIN_GRACE_H:g}h drain grace despite sweeps landing "
+            f"{landed_age_h:.1f}h ago — stuck, not draining: " + ", ".join(stuck[:5]),
+        )
+    else:
+        oldest = max(age_h(m) for m in uncovered)
+        print(
+            f"WATCH {name} — {len(uncovered)} unswept but sweeps landed "
+            f"{landed_age_h:.1f}h ago and the oldest has waited {oldest:.1f}h "
+            f"(grace {TAPE_DRAIN_GRACE_H:g}h); draining tail, not rot",
+            flush=True,
+        )
 
 
 def journal_skip_exits(hours: float = 24.0, unit: str = COLLECT_UNIT) -> int | None:
