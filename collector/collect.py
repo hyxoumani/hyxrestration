@@ -210,10 +210,13 @@ def write_cycle(store: Store, cyc: Cycle) -> dict:
     an error rather than half-written.
 
     MEASURED (EXP-957, production-scale scratch DB: 2.85M snapshots,
-    324k markets, 260k forecasts): this half costs **15.8 s** — 15.3 s of
-    it `upsert_markets` (5,913 INSERT OR REPLACE against the markets PK).
-    That is the irreducible hold; the other 28.9 s used to be lock time
-    for no reason.
+    324k markets, 260k forecasts): this half cost **15.8 s** — 15.3 s of
+    it `upsert_markets` (5,913 row-at-a-time INSERT OR REPLACE against
+    the markets PK). EXP-963 refuted the idea that batching caused it
+    (one call 11.0s vs 31 chunked calls 12.4s on the same table — the
+    per-statement PK maintenance is the cost either way) and rewrote
+    `upsert_markets` set-based: same rows in ~1.0 s. The per-cycle
+    `timings=` print in `main` carries the live figure.
     """
     counts = {
         "kalshi_snaps": 0,
@@ -270,6 +273,7 @@ def main() -> None:
     while True:
         t0 = time.monotonic()
         cyc = fetch_cycle(watchlist, session=sess)  # NO lock held here (EXP-957)
+        fetch_s = time.monotonic() - t0
         # The lock budget is a budget for the CYCLE, not for the wait: the
         # fetch now runs first, and a wait of the full LOCK_WAIT_S on top
         # of it could still be running when the next 5-min firing arrives.
@@ -298,14 +302,35 @@ def main() -> None:
             time.sleep(args.interval)
             continue
 
+        # Per-phase decomposition, printed every cycle (EXP-963): the 08-03
+        # scratch figures (fetch 28.9s + write 15.8s) stopped reconciling
+        # with production within a day — a live 39.2s fetch and a 59.9s
+        # cycle. A budget nobody measures is a constant agreeing with
+        # itself, so the cycle now reports where its seconds went and
+        # journald keeps the series.
+        lock_wait_s = time.monotonic() - t_lock
+        t_open = time.monotonic()
         store = open_retry(args.db, retries=5)
+        open_s = time.monotonic() - t_open
         try:
+            t_write = time.monotonic()
             counts = write_cycle(store, cyc)
-            print(f"[collect] {datetime.now(UTC).isoformat()} {counts} db={store.counts()}")
+            write_s = time.monotonic() - t_write
+            db_counts = store.counts()
         finally:
+            t_close = time.monotonic()
             store.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
             lock.close()
+        timings = {
+            "fetch_s": round(fetch_s, 1),
+            "wait_s": round(lock_wait_s, 1),
+            "open_s": round(open_s, 1),
+            "write_s": round(write_s, 1),
+            "close_s": round(time.monotonic() - t_close, 1),
+            "total_s": round(time.monotonic() - t0, 1),
+        }
+        print(f"[collect] {datetime.now(UTC).isoformat()} {counts} db={db_counts} timings={timings}")
         if args.once:
             break
         time.sleep(args.interval)

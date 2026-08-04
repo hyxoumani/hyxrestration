@@ -679,3 +679,25 @@ def test_per_series_budget_is_bounded_and_wired_by_default():
     assert 0 < sweep.MAX_MARKETS_PER_SERIES <= 10_000
     sig = inspect.signature(sweep.sweep_series)
     assert sig.parameters["max_markets"].default == sweep.MAX_MARKETS_PER_SERIES
+
+
+def test_cycle_print_carries_the_phase_decomposition(tmp_path, monkeypatch, capsys):
+    """EXP-963: the scratch-DB figures in the docstrings (fetch 28.9s,
+    write 15.8s) stopped reconciling with production within a day, so the
+    cycle prints where its seconds went (fetch/wait/open/write/close/total)
+    and journald keeps the series. The fetch must be billed to fetch_s —
+    not to the lock wait or the write."""
+    import ast
+    import re
+
+    probe = _LockProbe(str(tmp_path / "writer.lock"))
+    _run_collect(tmp_path, monkeypatch, probe, fetch_delay=0.3)
+
+    out = capsys.readouterr().out
+    m = re.search(r"timings=(\{.*\})", out)
+    assert m, f"cycle print carries no timings: {out!r}"
+    t = ast.literal_eval(m.group(1))
+    assert set(t) == {"fetch_s", "wait_s", "open_s", "write_s", "close_s", "total_s"}
+    assert t["fetch_s"] >= 0.6, t  # 0.3s x 2 get_markets calls land in fetch_s
+    assert t["wait_s"] + t["write_s"] < 0.6, t  # ...and nowhere else
+    assert t["total_s"] >= t["fetch_s"]
