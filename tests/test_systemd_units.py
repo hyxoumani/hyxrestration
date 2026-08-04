@@ -35,6 +35,8 @@ reach the installed units.
 import re
 from pathlib import Path
 
+import collector.qa as qa
+
 UNIT_DIR = Path(__file__).resolve().parent.parent / "scripts" / "systemd"
 
 # A timezone MENTION in prose: "06:10 UTC", "23:00-08:00Z".
@@ -190,33 +192,14 @@ def test_the_daily_archive_pipeline_runs_in_dependency_order():
 #: perception/order path (EXP-958), so a Kalshi-facing batch unit that is
 #: still running at 23:00Z competes for quota during the only hours that
 #: touch P&L. Expressed as a UTC hour on the SAME day the unit starts.
-FADE_WINDOW_START_H = 23.0
-
-#: Worst COMPLETED wall clock measured from the systemd journal, per unit.
-#: These are measured intervals (Starting -> Consumed ... over N), never a
-#: duration inferred from a running process's age.
 #:
-#:   hyxlab-sweep      41m51s / 1h12m / 1h10m / 57m48s / 1h26m / 54m55s /
-#:                     25m15s over 2026-07-27..08-02. The 2026-08-03 run --
-#:                     the first full pass after Crypto entered
-#:                     sweep.DEFAULT_CATEGORIES on 08-02 -- was still running
-#:                     at 3h52m when this was written, with a self-reported
-#:                     ETA of ~6.5h more; 8.0h below is a deliberate
-#:                     over-allowance for that first-pass backlog.
-#:   hyxlab-tradepass  up to 2h51m (see QA_CLEARANCE_H above); 4.0h allowed.
-#:
-#: DELIBERATELY ABSENT: hyxlab-poly-sweep. It is measured at 13h41m-17h11m
-#: wall clock, and 2026-07-29 ran 1d 0h21m -- fully spanning that night's
-#: fade window. It is exempt because it talks to POLYMARKET, so it spends no
-#: Kalshi quota; its rivalry with the collector is `data/writer.lock` only,
-#: and collector/poly_sweep.py already touches the DB in short bursts. It is
-#: also unfixable by scheduling: a 14-24h job on a 24h cadence has a 57-100%
-#: duty cycle, so no start time clears a 5h window. Its lever is wall clock,
-#: not OnCalendar. Do NOT "fix" this by adding it here and moving its timer.
-BATCH_RUN_BUDGET_H = {
-    "hyxlab-sweep.timer": 8.0,
-    "hyxlab-tradepass.timer": 4.0,
-}
+#: Both constants live in `collector.qa` (EXP-961) rather than here. The
+#: budget is now read TWICE — by this file against the timers' OnCalendar,
+#: and by `qa.qa_batch_run_budget` against the journal's completed runs — and
+#: a budget that could differ between the two would let the check that reads
+#: the smaller copy pass while reality breached the larger.
+FADE_WINDOW_START_H = float(qa.FADE_WINDOW_START_H)
+BATCH_RUN_BUDGET_H = qa.BATCH_RUN_BUDGET_H
 
 
 def _fade_window_overrun(spec, budget_h, window_start_h=FADE_WINDOW_START_H):
@@ -242,6 +225,12 @@ def test_kalshi_batch_units_finish_before_the_live_fade_window():
     LOCAL), and the 2026-08-03 first-full-crypto-pass run from that start
     projected to ~21:00-22:00Z — under an hour of margin, with the crypto
     backlog still growing. Pinned to 06:10Z the same run lands ~16:20Z.
+
+    That projection is now MEASURED, and it was the near-miss it looked like:
+    the run completed 21:16:38Z, 1h43m clear of the window — not the "7.6h
+    clear" arrived at by adding the budget to the timer's CURRENT 06:10Z spec,
+    which the run never ran under. This test can only ever judge the spec.
+    `qa.qa_batch_run_budget` judges what happened; both are needed.
 
     That headroom is currently an accident of an unrelated timezone fix and
     nothing asserts it. This does: it is the invariant EXP-959 was dispatched
@@ -283,3 +272,53 @@ def test_fade_window_overrun_catches_a_late_but_correctly_pinned_start():
     # Not hour-pinned / not UTC: out of scope here, handled elsewhere.
     assert _fade_window_overrun("*:0/5", 8.0) is None
     assert _fade_window_overrun("*-*-* 06:10:00", 8.0) is None
+
+
+PROMOTE = UNIT_DIR.parent / "promote.sh"
+
+#: `needs_restart '<paths regex>' && RESTART+=(<unit>)` in promote.sh.
+_RESTART_GUARD_RE = re.compile(
+    r"needs_restart\s+'([^']+)'\s*&&\s*RESTART\+=\(([\w.-]+)\)"
+)
+
+
+def test_promote_restarts_a_daemon_only_when_its_own_code_moved():
+    """EXP-961. The restart must be conditional, and conditioned correctly.
+
+    `hyxlab-shadow` needs ~16h unbroken to observe its first settlement, so an
+    unconditional restart in `promote.sh` charged that against every promote,
+    including the two consecutive ones that touched no simulator code at all.
+    Both had to be decomposed by hand. This pins the encoded form: each
+    daemon is gated on a path regex that actually covers the package its own
+    ExecStart runs, so re-pointing an ExecStart cannot silently leave a daemon
+    running stale code after a promote.
+    """
+    text = PROMOTE.read_text()
+    guards = dict(
+        (unit, paths) for paths, unit in _RESTART_GUARD_RE.findall(text)
+    )
+    assert guards, "promote.sh no longer guards its daemon restarts"
+
+    services = _services()
+    daemons = {n for n, t in services.items() if "Type=oneshot" not in t}
+    # simui is user-facing paper state, deliberately never promote-restarted.
+    daemons -= {"hyxlab-simui.service"}
+    assert set(guards) == daemons, (
+        f"promote.sh guards {sorted(guards)} but the capture daemons are "
+        f"{sorted(daemons)}; a daemon with no guard never picks up new code"
+    )
+
+    for unit, paths in guards.items():
+        mods = re.findall(r"-m\s+([\w.]+)", "\n".join(_field(services[unit], "ExecStart")))
+        assert mods, f"{unit}: no `-m module` in ExecStart to check the guard against"
+        for mod in mods:
+            pkg = mod.split(".")[0]
+            assert re.match(paths, f"{pkg}/x.py"), (
+                f"promote.sh gates {unit} on `{paths}`, which does not match "
+                f"`{pkg}/` — the package its ExecStart actually runs. A "
+                f"promote touching only {pkg}/ would leave it on stale code."
+            )
+        assert re.match(paths, "hyxlab/store.py"), (
+            f"promote.sh gates {unit} on `{paths}`, which misses the shared "
+            "kernel every daemon imports"
+        )

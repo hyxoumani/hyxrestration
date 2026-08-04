@@ -78,6 +78,45 @@ FADE_WINDOW_MAX_HOLES = 1
 FADE_WINDOW_NIGHTS = 7
 SWEEP_UNIT = "hyxlab-poly-sweep.service"
 
+#: Worst COMPLETED wall clock measured from the systemd journal, per Kalshi-
+#: facing batch unit. Keyed by TIMER because its first consumer is
+#: `tests/test_systemd_units.py`, which reads the timer's OnCalendar and
+#: asserts start + budget lands clear of FADE_WINDOW_START_H (EXP-959); the
+#: second consumer is `qa_batch_run_budget` below, which measures the same
+#: units against the same numbers in production. The test alone was not
+#: enough — see EXP-961 in that function's docstring.
+#:
+#: These are measured intervals (Starting -> `Consumed ... over N`), never a
+#: duration inferred from a running process's age.
+#:
+#:   hyxlab-sweep      41m51s / 1h12m / 1h10m / 57m48s / 1h26m / 54m55s /
+#:                     25m15s over 2026-07-27..08-02, then 2026-08-03:
+#:                     11:10:00Z -> 21:16:38Z, **10h06m38s** — the first full
+#:                     pass after Crypto entered sweep.DEFAULT_CATEGORIES on
+#:                     08-02, a 24x step over the day before. 10.5 is that
+#:                     measurement plus ~0.4h. Whether it is the one-time
+#:                     crypto backlog or the new steady state is UNKNOWN until
+#:                     a second full pass completes; `qa_batch_run_budget` is
+#:                     what will say so out loud.
+#:   hyxlab-tradepass  up to 2h51m (see QA_CLEARANCE_H in the unit tests);
+#:                     4.0h allowed.
+#:
+#: DELIBERATELY ABSENT: hyxlab-poly-sweep. It is measured at 13h41m-17h11m
+#: wall clock, and 2026-07-29 ran 1d 0h21m -- fully spanning that night's
+#: fade window. It is exempt because it talks to POLYMARKET, so it spends no
+#: Kalshi quota; its rivalry with the collector is `data/writer.lock` only,
+#: and collector/poly_sweep.py already touches the DB in short bursts. It is
+#: also unfixable by scheduling: a 14-24h job on a 24h cadence has a 57-100%
+#: duty cycle, so no start time clears a 5h window. Its lever is wall clock,
+#: not OnCalendar. Do NOT "fix" this by adding it here and moving its timer.
+BATCH_RUN_BUDGET_H = {
+    "hyxlab-sweep.timer": 10.5,
+    "hyxlab-tradepass.timer": 4.0,
+}
+#: Journald on this box holds ~16M / ~2 days, so this is a ceiling on the
+#: lookback, not a promise of one. Unreachable days read UNMEASURED.
+BATCH_RUN_LOOKBACK_DAYS = 7
+
 _failures: list[str] = []
 _skipped: list[str] = []
 _passes = 0
@@ -774,6 +813,203 @@ def qa_fade_window_capture(
     _record_ok("fade-window", now)
 
 
+#: systemd renders durations as "1d 0h21min", "10h 6min 38.768s", "25min
+#: 14.784s", "1.5s", "704ms". Tokenised rather than pattern-matched whole, so
+#: an unseen combination degrades to a partial sum instead of a None.
+_DUR_TOKEN_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(d|h|min|ms|us|s)\b")
+_DUR_UNIT_S = {"d": 86400.0, "h": 3600.0, "min": 60.0, "s": 1.0, "ms": 1e-3, "us": 1e-6}
+
+#: The line systemd writes when a oneshot's cgroup is released. Anchored on
+#: " over " because the SAME line carries CPU time first, and CPU time is the
+#: smaller and wronger number: the 2026-08-03 sweep reads "Consumed 1h 12min
+#: CPU time over 10h 6min wall clock time".
+_CONSUMED_RE = re.compile(
+    r"^(\S+)\s.*?:\s*(\S+\.service): Consumed .*? over (.+?) wall clock time"
+)
+
+
+def parse_systemd_duration(text: str) -> float | None:
+    """Seconds in a systemd duration string, or None if it holds no token."""
+    total = None
+    for value, unit in _DUR_TOKEN_RE.findall(text):
+        total = (total or 0.0) + float(value) * _DUR_UNIT_S[unit]
+    return total
+
+
+@dataclass(frozen=True)
+class BatchRun:
+    """One COMPLETED run of a batch unit, as the journal recorded it."""
+
+    unit: str  # timer name, so it keys BATCH_RUN_BUDGET_H
+    end: datetime  # UTC instant the cgroup was released
+    wall_h: float
+
+    @property
+    def start(self) -> datetime:
+        return self.end - timedelta(hours=self.wall_h)
+
+
+def _fade_overlap_h(start: datetime, end: datetime) -> float:
+    """Hours of [start, end) spent inside any 23:00-04:00Z fade window."""
+    total = 0.0
+    span_h = (24 - FADE_WINDOW_START_H) + FADE_WINDOW_END_H
+    day = (start - timedelta(days=1)).date()
+    while day <= end.date():
+        ws = datetime(day.year, day.month, day.day, FADE_WINDOW_START_H, tzinfo=UTC)
+        we = ws + timedelta(hours=span_h)
+        total += max(0.0, (min(end, we) - max(start, ws)).total_seconds())
+        day += timedelta(days=1)
+    return total / 3600.0
+
+
+def read_batch_runs(
+    days: int = BATCH_RUN_LOOKBACK_DAYS, now: datetime | None = None
+) -> dict[str, list[BatchRun] | None]:
+    """Completed runs per budgeted unit, or None for a unit journald cannot reach.
+
+    None is not an empty list: "the journal did not go back that far" and "the
+    unit never ran" are different facts and only one of them is a problem.
+    """
+    now = now or datetime.now(UTC)
+    since = now - timedelta(days=days)
+    out: dict[str, list[BatchRun] | None] = {}
+    for timer in sorted(BATCH_RUN_BUDGET_H):
+        service = timer.removesuffix(".timer") + ".service"
+        text = _journal(service, since, now)
+        if text is None:
+            out[timer] = None
+            continue
+        runs = []
+        for line in text.splitlines():
+            m = _CONSUMED_RE.match(line)
+            if not m or m.group(2) != service:
+                continue
+            try:
+                end = datetime.fromisoformat(m.group(1)).astimezone(UTC)
+            except ValueError:
+                continue
+            secs = parse_systemd_duration(m.group(3))
+            if secs is None:
+                continue
+            runs.append(BatchRun(timer, end, secs / 3600.0))
+        out[timer] = runs
+    return out
+
+
+def qa_batch_run_budget(
+    runs: dict[str, list[BatchRun] | None] | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Fail when a Kalshi batch unit outruns the budget its schedule assumes.
+
+    EXP-961. `test_kalshi_batch_units_finish_before_the_live_fade_window`
+    asserts `OnCalendar + BATCH_RUN_BUDGET_H <= 23:00Z`. That is an invariant
+    over two CONSTANTS: it is green for as long as the budget is written down,
+    whether or not the budget is true. On 2026-08-03 it was not — the sweep's
+    first full crypto pass ran **10h06m**, 2.1h past the 8.0h the constant
+    claimed, and every check in the repo stayed green through it. The suite
+    cannot see this; only the journal can. So this is the other half of the
+    same invariant, and the halves fail differently on purpose:
+
+      budget breach   -> the CONSTANT is stale. FAIL: it is repairable, either
+                         by re-measuring or by making the unit faster, and it
+                         must keep failing until someone does one of them.
+      fade overlap    -> the unit actually spent Kalshi quota inside the live
+                         agent's window (EXP-958). FAIL on a NEW date, WATCH
+                         on one already reported — a past overlap cannot be
+                         un-spent, and a permanent FAIL is the noise that
+                         trains an operator to stop reading QA.
+
+    Overlap is computed from the run's own measured interval, never from
+    OnCalendar + budget. The 08-03 run is exactly why: it started 11:10Z under
+    the pre-EXP-950 local-time schedule, not the 06:10Z its timer now reads, so
+    judging it by the current spec put its finish at 16:17Z and "7.6h clear"
+    when it truly ended 21:16:38Z with **1h43m** of margin. A schedule
+    describes future runs; only the journal describes the ones that happened.
+    """
+    now = now or datetime.now(UTC)
+    name = "batch units within measured run budget"
+    runs = read_batch_runs(now=now) if runs is None else runs
+
+    measured = {u: r for u, r in runs.items() if r}
+    if not measured:
+        _skipped.append("batch-run-budget")
+        unreachable = sorted(u for u, r in runs.items() if r is None)
+        print(
+            f"SKIP  {name} — UNVERIFIED: no COMPLETED run of any budgeted unit "
+            f"({', '.join(sorted(runs))}) could be read from the journal over the last "
+            f"{BATCH_RUN_LOOKBACK_DAYS}d"
+            + (f"; unreadable: {', '.join(unreachable)}" if unreachable else "")
+            + ", so the budgets are neither confirmed nor refuted",
+            flush=True,
+        )
+        return
+
+    over = [
+        r
+        for rs in measured.values()
+        for r in rs
+        if r.wall_h > BATCH_RUN_BUDGET_H[r.unit]
+    ]
+    overlaps = [
+        (r, _fade_overlap_h(r.start, r.end))
+        for rs in measured.values()
+        for r in rs
+        if _fade_overlap_h(r.start, r.end) > 0
+    ]
+
+    state = _load_state()
+    entry = state.setdefault("batch-run-budget", {})
+    reported = set(entry.get("reported") or [])
+    keys = {f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r, _ in overlaps}
+    fresh_overlap = sorted(keys - reported)
+    entry["reported"] = sorted(reported | keys)
+    entry.setdefault("first_seen", now.isoformat())
+    _save_state(state)
+
+    worst = {
+        u: max(r.wall_h for r in rs) for u, rs in measured.items()
+    }
+    detail = (
+        f"{sum(len(r) for r in measured.values())} completed run(s) over "
+        f"{BATCH_RUN_LOOKBACK_DAYS}d; worst "
+        + ", ".join(
+            f"{u} {worst[u]:.2f}h/{BATCH_RUN_BUDGET_H[u]:g}h" for u in sorted(worst)
+        )
+    )
+    unmeasured = sorted(u for u, r in runs.items() if not r)
+    if unmeasured:
+        detail += f"; UNMEASURED: {', '.join(unmeasured)}"
+
+    if over or fresh_overlap:
+        reasons = [
+            f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
+            f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z"
+            for r in over
+        ] + [
+            f"{r.unit} spent {h:.2f}h inside the {FADE_WINDOW_START_H}:00Z fade window "
+            f"({r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z)"
+            for r, h in overlaps
+            if f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in set(fresh_overlap)
+        ]
+        check(name, False, detail + "; " + "; ".join(reasons))
+        return
+    if overlaps:
+        print(
+            f"WATCH {name} — {detail}; "
+            + "; ".join(
+                f"{r.unit} overlapped the fade window by {h:.2f}h "
+                f"ending {r.end:%m-%d %H:%M}Z"
+                for r, h in overlaps
+            )
+            + " (already reported)",
+            flush=True,
+        )
+        return
+    check(name, True, detail)
+    _record_ok("batch-run-budget", now)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab daily data-quality checks")
     ap.add_argument("--hours", type=float, default=26.0, help="recency window")
@@ -784,6 +1020,7 @@ def main() -> None:
     qa_archive(args.hours)
     qa_collect_skips()  # sidecar journal; never gated by the archive lock
     qa_fade_window_capture()  # journal-only, for the same reason
+    qa_batch_run_budget()  # journal-only, for the same reason
     if _failures:
         print(f"[qa] {len(_failures)} FAILURES: {_failures}", flush=True)
         sys.exit(1)
