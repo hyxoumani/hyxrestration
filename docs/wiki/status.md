@@ -1,6 +1,55 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-04 08:45 UTC (THE FALSE-ALARM CLASS THE LAST ENTRY
+Updated: **2026-08-04 14:40 UTC (THE HYPOTHESIS THIS PAGE CARRIED FOR
+THREE ENTRIES WAS REFUTED BY MEASUREMENT, AND THE MEASUREMENT PAID
+TWICE: BATCHING THE 31 PER-SERIES `upsert_markets` CALLS INTO ONE DID
+NOT CAUSE THE EXP-957 WALL-CLOCK RISE — ONE executemany CALL COSTS
+11.0s AND 31 CHUNKED CALLS COST 12.4s ON THE SAME PRODUCTION-SCALE
+TABLE, BECAUSE THE PER-STATEMENT PK MAINTENANCE IS THE COST EITHER WAY
+— AND CHASING IT FOUND THE 10x FIX: THE SAME 5,913 ROWS AS ONE
+SET-BASED STAGED OR-REPLACE COST 1.0s.** Gate check first, hard
+(`date -u` 14:15): the 06:10Z sweep is STILL RUNNING (~8h in, ~114 min
+left at 14:02 -> completes ~16:00Z), so shadow-settlements /
+`qa_batch_run_budget` / atlas all stay gated; ladder fell to rung 2
+(verify an unverified design-note assumption). **LANDED (EXP-963,
+42fdb53 + 57be0cf + 7a27b9d)**: (1) `upsert_markets` rewritten
+set-based — staging table + one OR REPLACE, with a `seq` column
+preserving executemany's last-wins duplicate-key semantics (DuckDB's
+OR REPLACE over a SELECT keeps an ARBITRARY source row — probed, not
+assumed) and an empty-batch guard closing a latent crash (executemany
+raises on an empty parameter list, so a cycle whose every fetch failed
+rolled back its whole write); dedupe verified by mutation. (2) The
+collect cycle now PRINTS its decomposition every 5 minutes
+(`timings={fetch,wait,open,write,close,total}` -> journald), because
+the EXP-957 scratch figures stopped reconciling with production within
+a day. **FIRST LIVE CYCLE (14:30:39Z, from stable, sweep + backfill
+both running): fetch 35.5s, wait 0.0, open 0.0, write 3.6s, close 0.0,
+total 39.2s.** Read it against the 08-03 pair: lock hold 20.7s ->
+**3.6s (-83%)**, cycle total 59.9s -> **39.2s** — the entire EXP-957
+wall-clock rise is gone, and the decomposition locates what remains
+exactly where suspected: the FETCH half (35.5s of 39.2s), which varies
+with 429 contention from the concurrent sweep/backfill. Watch fetch_s
+drop after the sweep ends ~16:00Z — that is the natural experiment.
+**THE PROMOTE ENCODED ITS OWN EXCEPTION (7a27b9d)**: hyxlab/ moved, so
+the EXP-961 guard correctly fired the shadow restart rule — but shadow
+only READS through the kernel (`Store(read_only=True)`, never
+`upsert_markets`), and its ~24h run awaiting the first settlement is
+worth more than new code it does not call. Third hand-decomposition
+avoided: `promote.sh --defer=hyxlab-shadow.service` promotes
+everything, skips the named restart loudly, and shadow runs the OLD
+kernel until its next natural break (restart it only AFTER the first
+settlement lands). Stream restarted clean 14:29:45Z. Mistakes **#18**
+(git checkout as mutation-undo reverted the uncommitted fix; commit
+before mutation-testing). Suite **595 -> 597**, ruff clean, promoted,
+pushed. NEXT PASS, in order: (1) sweep completes ~16:00Z ->
+`shadow_settlements` first row is the whole point of the run; (2)
+`qa_batch_run_budget` verdict on 10.11h (one-time backlog vs steady
+state); (3) atlas gate reopens; (4) read the timings= series across
+the sweep boundary for the fetch-contention signature; (5) shadow
+restart only after (1) observes a settlement. Still open: shadow
+position continuity across restart is a workaround, not a fix; atlas
+quoted tier data-gated; econ needs >=336h (~08-10).**
+(prior **2026-08-04 08:45 UTC (THE FALSE-ALARM CLASS THE LAST ENTRY
 NAMED WAS CLOSED HOURS BEFORE ITS FIRST SCHEDULED FIRING: THE
 TAPE-COVERAGE CHECK WOULD HAVE FAILED TODAY'S 10:00Z QA ON A BACKFILL
 THAT WAS HEALTHY AND DRAINING, BECAUSE THE 06:10Z SWEEP IS STILL MID-RUN

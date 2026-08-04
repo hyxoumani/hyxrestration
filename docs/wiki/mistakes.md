@@ -233,6 +233,20 @@ Format: what happened → root cause → error type → prevention tier
     by mutation, six, including the winners-only record that 7a89992
     originally survived).
 
+18. **2026-08-04 — `git checkout <file>` as "undo the mutation" reverted
+    the WORK, not just the mutation.** Mutation-verifying a new test
+    (drop the dedupe clause via `sed`, expect red) on a file whose fix
+    was still UNCOMMITTED, then restoring with `git checkout
+    hyxlab/store.py` — which restores HEAD, i.e. the state before the
+    fix existed. The set-based `upsert_markets` rewrite vanished; the
+    full suite caught it minutes later only because the new empty-batch
+    test happened to fail against the old code too. Type:
+    `tooling-footgun` — checkout restores the last COMMIT, and on an
+    uncommitted file that is someone else's baseline. Prevention: RULE —
+    commit (or `git stash push`) BEFORE mutation-testing; the mutation
+    then reverts with `git checkout`/`git restore` safely, and the
+    verification run is against exactly what will ship.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
