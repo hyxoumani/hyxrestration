@@ -1,6 +1,31 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-04 20:55 UTC (THE FIRST SETTLEMENTS LANDED AND THE
+Updated: **2026-08-05 02:35 UTC (THE 20:42Z MANUAL DRAIN NEVER RAN — IT
+DIED WITH THE SESSION THAT LAUNCHED IT, BEFORE SWEEPING ONE MARKET —
+AND THE RELAUNCH IS NOW A TRANSIENT SYSTEMD UNIT THAT CANNOT DIE THAT
+WAY.** Gate check (`date -u` 02:15): `trades_swept` last row 15:24Z
+(the 08-04 timer run's crash), pending unchanged at **16,868** — the
+"launched 20:42Z" drain left zero rows and zero output. Root cause: it
+was a harness background task, killed silently when the session ended;
+no journald trace because it was never a unit. Logged as **mistakes
+#19** (ops-blindness, #5's family, new mode) and escalated to an
+ops.md rule: jobs meant to outlive the turn go through `systemd-run
+--user`; verify liveness from persisted state, never from "was
+started". **RELAUNCHED 02:17Z** as transient unit
+`hyxlab-tradepass-drain` (stable worktree, `--deadline-min 120`, ends
+~04:17Z — clear of the 05:00Z poly sweep and the 06:35Z tradepass
+timer): journald-captured, session-independent, first line confirmed
+live (`16868 settled markets pending`). This is the deadline code's
+first real live validation. EXPECT: drain ends ~04:17Z having cut
+roughly half the backlog; the 06:35Z timer run (210-min default) takes
+the rest or most of it; 07:00Z QA still FAILS batch-run-budget on the
+08-03/08-04 journal rows until they age out (~2d) — truthful, no
+action. NEXT PASS: (1) read `hyxlab-tradepass-drain` journal + 06:35Z
+timer wall (<4h expected, deadline-bounded by construction); (2)
+second settlement wave ~16:45Z — is -1.1% net stable? feed fee-sign
+into Tier-2 maker fav-long design; (3) atlas + divergence standing
+reports; (4) shadow restart still deferred to a natural cohort break.**
+(prior **2026-08-04 20:55 UTC (THE FIRST SETTLEMENTS LANDED AND THE
 LEDGER'S FIRST VERDICT IS: THE PROBE'S GROSS EDGE IS REAL AND TAKER
 FEES EAT ALL OF IT — AND THE SAME GATE-CHECK FOUND THE TRADEPASS DEAD
 AT 60%, KILLED BY THE EXACT UNGUARDED OPEN open_retry's DOCSTRING

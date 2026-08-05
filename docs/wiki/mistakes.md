@@ -247,6 +247,22 @@ Format: what happened → root cause → error type → prevention tier
     then reverts with `git checkout`/`git restore` safely, and the
     verification run is against exactly what will ship.
 
+19. **2026-08-05 — a session-tied background task is not a launch: the
+    08-04 20:42Z manual tradepass drain died with the session that
+    started it, silently, before sweeping one market.** The prior turn
+    launched the 120-min deadline-boxed drain as a harness background
+    task and ended; `trades_swept` shows the last row at 15:24Z (the
+    timer run's crash) and the pending count unchanged at 16,868 —
+    zero progress, zero captured output, discovered only because the
+    next turn's gate-check queried the DB instead of trusting the
+    status page's "launched". Type: `ops-blindness` — same family as
+    #5 (uncaptured long jobs), new mode: the harness tracks the task
+    only while the session lives. Prevention: RULE (ops.md) — any job
+    meant to outlive the turn goes through `systemd-run --user`
+    (transient unit, journald-captured, session-independent); harness
+    background tasks are for work you will personally await this turn.
+    The relaunch (02:17Z, unit `hyxlab-tradepass-drain`) applied it.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
