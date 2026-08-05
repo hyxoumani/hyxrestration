@@ -1,6 +1,56 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-05 14:20 UTC (THE 16,868-MARKET TRADEPASS BACKLOG
+Updated: **2026-08-05 20:45 UTC (SETTLEMENT WAVE 2 REFUTED THE WAVE-1
+READING — THE PROBE'S GROSS EDGE WAS NOT REAL: 137 MARKETS AT −10.3%
+GROSS BEFORE FEES, TWO-WAVE AGGREGATE −7.7% GROSS / −13.2% NET — AND
+ALL THREE STANDING REPORTS RAN ON THE REOPENED GATE, ALL HEALTHY.**
+Gate check (`date -u` 20:15): sweep finished 15:13Z (542.5 min, 0
+errors, 8 truncated), tradepass timer confirmed done from journal
+(9,969 markets, 192.8 min), shadow healthy (815MB, 19.2k fills).
+**(1) WAVE 2 (17:52Z, 137 markets): payout $4,137.81 on $4,613.39
+spend + $254.49 fees = −$730.07 net.** Wave 1's "+4.4% gross, fees
+flip the sign" did not survive: 17/24 series negative, and the
+aggregate over 215 settled markets is payout $5,186.25 / spend
+$5,617.41 / fees $310.29 (5.5% of spend) = **−$741.45 net**. Read
+against `strategies/probe.py`: the probe buys the sub-0.50 side of
+tight books — the LONGSHOT side — so negative gross is an independent
+live-paper confirmation of the fav-long taker FAIL, not a surprise;
+the durable outputs are the fee magnitude (5.5% of spend) and the
+wave-to-wave gross variance (±7pp/day), both fed into
+strategy-verdicts queue #1 for the Tier-2 maker design. Open
+exposure: 08-05 cohort 140 mkts/$4.6k (settles ~16:45Z tomorrow —
+wave 3 is the next stability reading), 08-06 122 mkts/$1.3k, plus 42
+monthly macro (KXPAYROLLS/KXU3/KXCPI/KXFED, $2.8k, settle weeks out —
+so shadow is NEVER flat; "cohort break" can only ever mean the daily
+break). **(2) STANDING REPORTS**: atlas (20260805T201720, settled
+414k vs 271k on 08-03): flagged 108→110, robust 69→77, day-robust
+22→26 — gains cluster in Financials 24h deciles 3–6; strictest
+day-weighted tier stable at 9; quoted tier still 0/data-gated. Maker
+bracket (20260805T201757): 310 orders, independence 1.0 (all-new,
+weather churn as documented), crossing 168 / pess 149 / opt 170,
+invented-lower-bound 39, forgone 28; min_sign_p 0.0625 — cannot show
+direction at default width, per the 07-31 power caveat, no drift.
+Divergence vs the CURRENT run (the no-arg default picked the old
+07-22 run — most-fills default, worth knowing): 99.5% matched,
+residual mostly reseed_twin, 31 unexplained (~0.1%) ALL clustered in
+the run's first 4.5h (start boundary), cash within 0.2%. **(3) TWO
+WATCH ITEMS CLOSED**: (a) KXSOLD/KXSOLE truncation — identical counts
+2 days running looked like the rot signature, but sweep_log shows
+watermarks advancing 18–25h/run with a stable ~2-day lag: the count
+is the series' deterministic daily production, not a cursor;
+signature encoded in data-pipeline.md (judge stall by watermark,
+never by count). (b) Shadow restart — CLOSED AS UNNECESSARY: restart
+= fresh state (shadow.py:22), would strand $5.9k open cohort, and no
+code shadow executes has changed since its 08-03 start; restart only
+when sim-side code it runs actually moves. NEXT PASS: (1) wave 3
+~16:45Z 08-06 — third gross reading; with ±7pp/day variance the
+probe ledger needs several more waves before any stability claim; (2)
+07:00Z QA — batch-budget FAIL on aged 08-03/08-04 rows expected ~1
+more day, then clean; (3) Financials 24h deciles 3–6 day-robust
+cluster is the freshest atlas lead — check persistence on the next
+atlas before treating it as a candidate; (4) econ maker bracket
+re-run legal after 08-04 (336h spacing).**
+(prior **2026-08-05 14:20 UTC (THE 16,868-MARKET TRADEPASS BACKLOG
 IS DEAD — THE TIMER RUN SWEPT ALL 9,969 REMAINING MARKETS IN 192.8
 MIN, 17 MIN INSIDE ITS 210-MIN DEADLINE, AND THE 10:00Z QA CONFIRMED
 THE TAIL AT 6 FRESH MARKETS: DRAINING, NOT ROT.** Gate check (`date

@@ -103,6 +103,19 @@ structure — see [venues](venues.md)).
    or ~16 at `--markets 15` (measured: top-15 reaches 5 city-days).
    Widening top-N changes the scored population, so it starts a NEW
    comparability series rather than extending this one.
+   **Live-paper fee evidence (2026-08-05):** the diagnostic probe's
+   shadow ledger (run 20260803T142853, 215 settled markets over two
+   waves) prices the taker leg from live paper: fees ran **5.5% of
+   spend** ($310.29 on $5,617.41), and wave 1's "+4.4% gross, fees
+   flip the sign" reading did NOT survive wave 2 (137 markets,
+   **−10.3% gross** before fees; two-wave aggregate −7.7% gross,
+   −13.2% net, 17/24 series negative). The probe buys the sub-0.50
+   side of tight books — the longshot side — so its negative gross is
+   an independent live confirmation of the fav-long taker FAIL, not
+   new information about the maker variant; what the design should
+   take is the fee magnitude and the wave-to-wave gross variance
+   (±7pp on ~$1–5k/day), which bounds how many settlement waves any
+   live verdict needs.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive

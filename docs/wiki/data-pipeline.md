@@ -114,6 +114,16 @@ migrate, watchlist, stations).
   crossed/sentinel quotes (1.3% of candles). Excluded at replay by the
   gate in `candles_as_snapshots` — see [simulation-honesty](simulation-honesty.md).
 - Data written before 2026-07-06 tz fix was box-local; already migrated.
+- **Identical per-series truncation counts across runs are NOT stall**
+  (verified 2026-08-05): fixed-cadence crypto series (KXETH 3600,
+  KXETHD 3340, KXSOLD/KXSOLE 3375) settle a deterministic number of
+  markets per day, and the windowed budget accepts ~one day's
+  production per run, so the truncation count is a constant of the
+  series, not a cursor position. Rot is judged from `sweep_log`
+  watermark advancement, never from the count: each run must advance
+  `max_close` ~18–25h; the steady state is a constant ~2-day lag,
+  safe against the 60–90d purge. A watermark that repeats across runs
+  is the real stall signature.
 
 ## Gotchas (stream)
 
