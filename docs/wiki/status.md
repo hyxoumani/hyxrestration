@@ -1,6 +1,43 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-05 02:35 UTC (THE 20:42Z MANUAL DRAIN NEVER RAN — IT
+Updated: **2026-08-05 08:45 UTC (THE DEADLINE CODE'S FIRST LIVE RUN
+PASSED TO THE MINUTE, THE BACKLOG DIES TODAY, AND THE 18-HOUR
+timings= TAPE SETTLED THE FETCH QUESTION: A 29s PAGINATION FLOOR PLUS
+A MILD CONTENTION TAX — THE REAL TAIL IS THE FLOCK, WHERE THE SWEEP'S
+DAILY ~6-MIN HOLD AT ~07:30Z COSTS EXACTLY ONE COLLECT CYCLE, BILLED
+AND INSIDE BUDGET.** Gate check (`date -u` 08:15): **(1) DRAIN
+VERIFIED FROM THE JOURNAL** (mistakes #19 honored — persisted state,
+not "was started"): `hyxlab-tradepass-drain` ran 02:17–04:17Z exactly as
+scheduled, stopped by its own deadline at **120.2 min** with 6,907/
+16,868 markets (4.99M trades, 7 errors), 9,961 left pending — first
+live validation of EXP-964, PASS. **(2) The 06:35Z timer run is live
+and on pace**: 5,000/9,969 at 08:12Z, ~1.6h left — finishes the WHOLE
+backlog inside its 210-min deadline (~09:50Z), a day ahead of the ~2d
+ETA. **(3) RUNG-2 VERIFICATION SHIPPED (journald-only; archive
+lock-gated by the sweep until ~15:00Z)**: yesterday's "fetch is
+watchlist pagination, not contention" claim, asserted from ~4 cycles,
+now measured over 213 cycles cut by concurrency window: fetch median
+**29.2s with zero concurrent consumers** (three independent windows
+agree: 24–30s), 30–39s with one, **44.2s median / ~65s p90 with
+sweep+tradepass both running** — floor confirmed, tax real but
+bounded. The sharper finding: **flock wait dominates the tail** — 9/20
+two-writer cycles waited >1s (max 188s; worst cycle total 209.8s of
+the 300s period), and both 08-04 and 08-05 the collector SKIPPED its
+07:34Z cycle after ~210s waiting on a single ~6-min sweep hold
+(holder-attributed in collect_skips.jsonl). Deterministic signature:
+ONE sweep-window skip/day is normal, more is drift; already inside
+qa_collect_skips' 3/24h budget, so no new check — encoded in
+data-pipeline.md instead. Also closed: 08-04 afternoon `errors: 1`
+per cycle was NWS MIA gridpoint 500s (external, self-cleared 0 by
+morning). NEXT PASS: (1) tradepass timer wall + `remaining: 0`
+confirmation after ~09:50Z; 10:00Z QA verdict (batch-budget FAIL on
+aged 08-03/08-04 journal rows still expected, truthful); (2) sweep
+ends ~15:00Z → atlas + maker-bracket + divergence standing reports on
+two days of new settlements; (3) settlement wave 2 ~16:45Z → is -1.1%
+net stable? feed fee-sign into Tier-2 maker fav-long design; (4)
+shadow restart at the natural cohort break AFTER wave 2 settles the
+open 08-04 positions.**
+(prior **2026-08-05 02:35 UTC (THE 20:42Z MANUAL DRAIN NEVER RAN — IT
 DIED WITH THE SESSION THAT LAUNCHED IT, BEFORE SWEEPING ONE MARKET —
 AND THE RELAUNCH IS NOW A TRANSIENT SYSTEMD UNIT THAT CANNOT DIE THAT
 WAY.** Gate check (`date -u` 02:15): `trades_swept` last row 15:24Z

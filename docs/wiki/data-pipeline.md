@@ -36,6 +36,18 @@ the next snapshot re-seeds).
   2026-07-08 walking 4k+ markets). Sim-side readers must degrade
   gracefully and retry lazily (simui's `ensure_metadata` pattern),
   never block on it.
+- **Collector cycle profile, measured (2026-08-05, 213 `timings=`
+  cycles spanning 0–2 concurrent Kalshi-API writers)**: fetch is a
+  ~29s pagination floor (median with NO other consumer; the watchlist's
+  own `get_markets` paging) plus a contention tax — median 44s / p90
+  ~65s with sweep+tradepass both running. Write is a flat ~3.6s
+  (post-EXP-963). The real tail is **flock wait, not fetch**: during
+  2-writer mornings ~half the cycles wait >1s on the archive lock, and
+  the sweep holds one ~6-min continuous stretch around 07:28–07:34Z
+  (observed both 08-04 and 08-05) that costs exactly one collect cycle
+  per day — skipped, billed to `data/collect_skips.jsonl` with holder
+  attribution, and inside `qa_collect_skips`' 3/24h budget. One
+  sweep-window skip/day is the normal signature; more is drift.
 - **Enumeration tripwire** (`collector/qa.py::qa_archive`, "poly
   swept universe not shrinking"): the Gamma offset-cap regression
   (see [venues](venues.md)) would have silently halved the poly sweep;
