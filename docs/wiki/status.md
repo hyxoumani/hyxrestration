@@ -1,6 +1,34 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-05 08:45 UTC (THE DEADLINE CODE'S FIRST LIVE RUN
+Updated: **2026-08-05 14:20 UTC (THE 16,868-MARKET TRADEPASS BACKLOG
+IS DEAD — THE TIMER RUN SWEPT ALL 9,969 REMAINING MARKETS IN 192.8
+MIN, 17 MIN INSIDE ITS 210-MIN DEADLINE, AND THE 10:00Z QA CONFIRMED
+THE TAIL AT 6 FRESH MARKETS: DRAINING, NOT ROT.** Gate check (`date
+-u` 14:15), all from persisted state per mistakes #19: **(1)
+TRADEPASS BACKLOG CLEARED** — journal shows `done: {markets: 9969,
+trades: 6194476, empty: 1742, errors: 35, elapsed_min: 192.8}` at
+09:47:49Z (14.5h CPU / 3.2h wall, 5G peak; errors were 429 backoffs,
+none fatal). Combined with the 02:17Z drain's 6,907, the whole
+16,868 backlog cleared in one day vs the ~2d ETA. Deadline code now
+2-for-2 live (drain stopped AT deadline, timer finished INSIDE it).
+**(2) 10:00Z QA verdict exactly as predicted**: single FAIL on
+batch-run-budget from the aged 08-03/08-04 tradepass rows (15.10h and
+8.83h vs 4h — historical, age out ~2d, truthful, no action); tape
+coverage WATCH at **6 unswept, oldest 0.0h** — the independent
+`remaining≈0` confirmation. **(3) Sweep gate SLIPPED ~1.2h**: at
+14:15Z it was 2500/3110 series (~118 min left, 8 truncated incl.
+KXSOLD/KXSOLE at per-series budget) → ends ~16:15Z, not ~15:00Z;
+standing reports stay lock-gated until then, and wave-2 settlements
+land ~16:45Z right behind it — so rungs (2) and (3) likely merge into
+one post-16:15Z pass. NEXT PASS: (1) after ~16:15Z: atlas +
+maker-bracket + divergence standing reports on two days of new
+settlements; (2) settlement wave 2 ~16:45Z → is -1.1% net stable?
+feed fee-sign into Tier-2 maker fav-long design; (3) shadow restart
+at the natural cohort break AFTER wave 2 settles the open 08-04
+positions; (4) watch whether KXSOLD/KXSOLE per-series truncation
+persists across runs (resumes are logged non-ok by design — rot only
+if the same series truncates without progress).**
+(prior **2026-08-05 08:45 UTC (THE DEADLINE CODE'S FIRST LIVE RUN
 PASSED TO THE MINUTE, THE BACKLOG DIES TODAY, AND THE 18-HOUR
 timings= TAPE SETTLED THE FETCH QUESTION: A 29s PAGINATION FLOOR PLUS
 A MILD CONTENTION TAX — THE REAL TAIL IS THE FLOCK, WHERE THE SWEEP'S
