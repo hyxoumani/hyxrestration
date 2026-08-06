@@ -1,6 +1,37 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-06 08:45 UTC (THE 06:10Z KALSHI SWEEP FAILED
+Updated: **2026-08-06 14:35 UTC (THE 10:00Z QA READ EXACTLY AS
+PREDICTED — THE SINGLE KNOWN BATCH-BUDGET FAIL AND NOTHING ELSE: THE
+NEAR-EMPTY SWEEP TRIPPED NO COVERAGE OR SHRINK FLAG, AND THE ONE ODD
+DATUM IN THE OUTPUT (`econ vintages fresh — age -0.7d`) IS PESSIMISM
+BY CONSTRUCTION, NOT A TIMESTAMP BUG.** Rung-1 pass at 14:15Z. **(1)
+QA verdict**: single FAIL on batch-run-budget from the aged
+08-03/08-04 tradepass rows (15.10h/8.83h vs 4h — historical, no
+action), all 16 other checks PASS/SKIP/WATCH as documented. The
+predicted "possible sweep-shrink/coverage flags from the near-empty
+sweep" did NOT fire — `sweep ran in last 36h` counts ok entries
+across the window (yesterday's 542-min run covers it) and tape
+coverage is tradepass's domain, untouched by the outage. **(2)
+Collector clean through the outage aftermath**: 14:15Z cycle 0
+errors, fetch 23.9s (the measured floor), 661 kalshi snaps; breadth
+timer firing on cadence. Breaker commit 0caa3a6 confirmed promoted
+(stable worktree AND origin at 0caa3a6) — tomorrow's 06:10Z recovery
+run executes the breaker code. **(3) The negative vintage age,
+chased to ground**: `alfred.pessimistic_knowable_at` stamps 23:59
+US/Eastern on the FETCH date; the signals timer fires 04:40Z —
+already the next ET date — so the stamp lands ~04:00Z the FOLLOWING
+day, 18h after a 10:00Z QA run. −0.7d is the steady state, pessimism
+only delays knowability (no lookahead possible), and the signature +
+the real alarm threshold (more negative than ~−1.0d) are encoded in
+data-pipeline.md Gotchas. NEXT PASS: (1) wave 3 settlements ~16:45Z
+— third probe gross reading (08-05 cohort, 140 mkts/$4.6k); (2)
+tomorrow 06:10Z sweep recovery — expect larger-than-usual market
+count as the backlog clears, and watch that the breaker does NOT
+trip on a healthy venue; (3) Financials 24h deciles 3–6 atlas
+persistence check remains data-gated on that recovery sweep; (4)
+07:00Z QA tomorrow — batch-budget FAIL ages out when the 08-03/08-04
+rows leave the 7d window.**
+(prior **2026-08-06 08:45 UTC (THE 06:10Z KALSHI SWEEP FAILED
 VENUE-SIDE — 2,569 OF 3,120 SERIES ERRORED IN AN HOUR-LONG /markets
 DEGRADATION (503s + A 429 STORM THAT OUTLASTED THE 4-TRY BACKOFF) —
 AND THE RUN STILL REPORTED SUCCESS TO SYSTEMD; A CONSECUTIVE-FAILURE

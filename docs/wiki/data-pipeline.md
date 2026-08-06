@@ -136,6 +136,15 @@ migrate, watchlist, stations).
   it (`tests/test_hyxlab_sweep_breaker.py`). An outage run is a
   DELAYED sweep, never a lost one; the recovery signal is the next
   run's larger-than-usual market count, not any repair action.
+- **A NEGATIVE econ-vintage age in QA is by design, not a timestamp
+  bug** (explained 2026-08-06): `alfred.pessimistic_knowable_at`
+  stamps vintages at 23:59 US/Eastern on the FETCH date, and the
+  signals timer fires 04:40Z — already the next ET date — so the
+  stamp lands ~04:00Z the following day, up to ~24h in the future of
+  a morning QA run (`age -0.7d` at the 10:00Z QA is the steady
+  state). Pessimism only DELAYS knowability, so it can never create
+  lookahead; chase it only if the age goes more negative than ~-1.0d
+  (would mean a stamp beyond end-of-fetch-day).
 
 ## Gotchas (stream)
 
