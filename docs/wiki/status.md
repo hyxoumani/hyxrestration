@@ -1,6 +1,39 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-06 02:30 UTC (THE FIRST INDEPENDENT ECON BRACKET
+Updated: **2026-08-06 08:45 UTC (THE 06:10Z KALSHI SWEEP FAILED
+VENUE-SIDE — 2,569 OF 3,120 SERIES ERRORED IN AN HOUR-LONG /markets
+DEGRADATION (503s + A 429 STORM THAT OUTLASTED THE 4-TRY BACKOFF) —
+AND THE RUN STILL REPORTED SUCCESS TO SYSTEMD; A CONSECUTIVE-FAILURE
+CIRCUIT BREAKER IS NOW SHIPPED.** Rung-1 gate check found today's
+sweep done in 64.3 min (vs 542.5 yesterday) with 3,523 markets / 5,726
+candles (vs 56,941 / 186,106): every series from ~550 onward errored,
+counters frozen, errors incrementing 1:1 with series. **Root cause is
+the venue, not our load**: 429s began 06:19Z (before tradepass at
+06:35Z, which ran 7.5 min mid-window and SUCCEEDED on
+`/markets/trades` with 2 backoffs), and breadth crashed on a straight
+**503** from `/markets` in the same window — endpoint-scoped
+degradation. Breadth at 08:17Z is clean (1.7s fetch), the API has
+recovered. **No data lost**: a failed series never advances its
+watermark (`run_sweep` logs `error`, `set_watermark` unreached), so
+tomorrow's 06:10Z run resumes from today's floors — expect a
+larger-than-usual market count as the recovery signal, and trade-tape
+holes are tradepass's job by design. **The defect worth fixing**: the
+sweep fail-fasted through 2,569 consecutive failures — ~10k useless
+requests against a venue refusing service, on the rate budget capture
+daemons share — then printed "Finished". SHIPPED: `ABORT_CONSEC_ERRORS
+= 25` breaker in `run_sweep` (one success resets; alternating
+error/success proven not to trip) + exit 75 on abort so systemd
+records the failure and the next firing resumes from watermarks
+(`tests/test_hyxlab_sweep_breaker.py`, suite 606; gotcha encoded in
+data-pipeline.md). NEXT PASS: (1) 10:00Z QA — expect the known aged
+batch-budget FAIL, PLUS possible sweep-shrink/coverage flags from
+today's near-empty sweep: truthful, no action, clears after
+tomorrow's recovery run; (2) wave 3 settlements ~16:45Z — third probe
+gross reading; (3) Financials 24h deciles 3–6 atlas persistence check
+is NOW DATA-GATED on tomorrow's recovery sweep (today added ~0 new
+settlements — an atlas re-run would re-measure the 08-05 corpus); (4)
+verify tomorrow's 06:10Z sweep recovers and clears the backlog.**
+(prior **2026-08-06 02:30 UTC (THE FIRST INDEPENDENT ECON BRACKET
 READING LANDED — 80% NEW ORDERS WHERE ALL FIVE PRIOR ECON RE-RUNS
 CARRIED 11–26% — AND IT CONFIRMS THE CROSSING RULE'S REGIME FLIP IN
 ECON: CROSSING 189 FILLS SITS BELOW THE QUEUE-PESS FLOOR OF 260.**

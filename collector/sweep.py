@@ -72,6 +72,17 @@ CANDLES_PAUSE_S = 0.35
 # 2,000 caps one series at ~17min so no single series can eat the run.
 MAX_MARKETS_PER_SERIES = 2000
 
+# Consecutive-failure circuit breaker. Measured 2026-08-06: Kalshi's
+# /markets endpoint degraded mid-run (503s, hour-long 429 storm) and the
+# sweep fail-fasted through 2,569 CONSECUTIVE series errors — ~10k
+# useless requests against a venue already refusing service, sharing the
+# rate budget with capture daemons — then reported success to systemd.
+# Organic series errors are rare (recent runs: 0) and never contiguous;
+# a long unbroken error run is a venue-side outage. Aborting leaves
+# every unfinished watermark untouched, so the next timer firing resumes
+# exactly where this one stopped: a delayed sweep, never a lost one.
+ABORT_CONSEC_ERRORS = 25
+
 # Per-burst open budget, deliberately far above open_retry's 60s default.
 # Releasing between series has a cost the old whole-run hold did not: a
 # READER can now get in, and DuckDB excludes a writer while any reader is
@@ -296,14 +307,17 @@ def run_sweep(
         "candles": 0,
         "errors": 0,
         "truncated": 0,
+        "aborted": False,
     }
     t0 = time.monotonic()
+    consec_errors = 0
     for i, ticker in enumerate(targets):
         try:
             n_m, n_c, truncated = sweep_series(db, ticker, days, sess, max_markets)
             totals["markets"] += n_m
             totals["candles"] += n_c
             totals["truncated"] += int(truncated)
+            consec_errors = 0
             if truncated:
                 print(
                     f"[sweep] {ticker} TRUNCATED at {n_m} markets"
@@ -312,8 +326,18 @@ def run_sweep(
                 )
         except requests.RequestException as e:
             totals["errors"] += 1
+            consec_errors += 1
             with writer_burst(db) as store:
                 store.log_sweep(ticker, None, None, 0, 0, "error", str(e)[:200])
+            if consec_errors >= ABORT_CONSEC_ERRORS:
+                totals["aborted"] = True
+                print(
+                    f"[sweep] ABORT after {consec_errors} consecutive series"
+                    f" errors at {ticker} ({str(e)[:120]}) — venue degraded;"
+                    f" watermarks intact, next run resumes",
+                    flush=True,
+                )
+                break
         if (i + 1) % 100 == 0:
             rate = (i + 1) / (time.monotonic() - t0)
             eta_min = (len(targets) - i - 1) / rate / 60
@@ -430,6 +454,12 @@ def main() -> None:
         print(f"[sweep] done: {totals}")
         with writer_burst(args.db) as store:
             print(f"[sweep] db={store.counts()}")
+        if totals.get("aborted"):
+            # Nonzero so systemd records a failed run — today's outage run
+            # said "Finished" with an 82%-error pass only the journal knew
+            # about. EX_TEMPFAIL matches the lock/reader-contention exits:
+            # the next timer firing resumes from the watermarks.
+            sys.exit(75)
     finally:
         lock.close()
 

@@ -124,6 +124,18 @@ migrate, watchlist, stations).
   `max_close` ~18–25h; the steady state is a constant ~2-day lag,
   safe against the 60–90d purge. A watermark that repeats across runs
   is the real stall signature.
+- **Venue-side outages trip the sweep's circuit breaker** (2026-08-06):
+  Kalshi's `/markets` endpoint degraded for ~1h (503s + a 429 storm
+  that outlasted the 4-try exponential backoff) — every series from
+  ~550 onward errored while `/markets/trades` kept serving (tradepass
+  succeeded mid-window). `run_sweep` now aborts after
+  `ABORT_CONSEC_ERRORS` (25) unbroken series failures and `main` exits
+  75 so systemd records the failure; watermarks stay untouched, so the
+  next timer firing resumes exactly where the aborted run stopped.
+  One success resets the count — scattered organic errors never trip
+  it (`tests/test_hyxlab_sweep_breaker.py`). An outage run is a
+  DELAYED sweep, never a lost one; the recovery signal is the next
+  run's larger-than-usual market count, not any repair action.
 
 ## Gotchas (stream)
 
