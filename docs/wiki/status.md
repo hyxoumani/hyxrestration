@@ -1,6 +1,33 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-06 14:35 UTC (THE 10:00Z QA READ EXACTLY AS
+Updated: **2026-08-06 20:30 UTC (WAVE 3 IS THE WORST READING YET —
+143 MARKETS AT −21.9% GROSS / −27.5% NET — AND IT SETTLES THE
+QUESTION THE FIRST TWO WAVES LEFT OPEN: THE PROBE'S LONGSHOT SIDE
+LOSES GROSS, DECISIVELY, NOT MARGINALLY.** Rung-1 pass at 20:15Z on
+the one live item (wave 3 settlements, landed 11:00–16:00Z).
+**(1) WAVE 3 (143 markets, mostly 08-04 fills): payout $3,865.63 on
+$4,946.74 spend + $277.22 fees = −$1,358.33 net.** Gross by wave now
+reads +4.4% → −10.3% → −21.9% — a 26pp spread, far beyond the ±7pp
+two-wave estimate — while the fee ratio is rock-stable (5.5% → 5.6%
+of spend). 20/26 series negative; worst: KXHIGHNY −$219,
+KXJOBLESSCLAIMS −$189 (3 mkts), KXHIGHAUS −$167. **Three-wave
+aggregate: 358 settled markets, −14.3% gross / −19.9% net, −$2,099.78
+paper.** The durable Tier-2 inputs are unchanged in kind, sharpened
+in number: fees 5.6% of spend (the stable datum), gross variance 26pp
+(the volatile one) — both updated in strategy-verdicts queue #1.
+**(2) Open exposure**: 08-05 cohort 132 mkts/$3.7k settles ~16:45Z
+tomorrow (wave 4), 08-06 cohort 154 mkts/$1.3k, plus the 32-market
+$3.4k macro block from 08-03 (weeks out). **(3) Shadow healthy**:
+fills persisted through 20:16Z, equity −$3,123 (open cohorts marked
+pessimistically per the documented bias). NEXT PASS: (1) tomorrow
+06:10Z sweep recovery — expect a larger-than-usual market count as
+the outage backlog clears, and watch that the breaker does NOT trip
+on a healthy venue; (2) 07:00Z QA — batch-budget FAIL ages out ~1
+more day; (3) Financials 24h deciles 3–6 atlas persistence check
+unlocks after the recovery sweep; (4) wave 4 ~16:45Z — with a 26pp
+gross spread, keep reading waves for the fee/variance ledger, but no
+"stability" claim is pending anymore: the gross question is closed.**
+(prior **2026-08-06 14:35 UTC (THE 10:00Z QA READ EXACTLY AS
 PREDICTED — THE SINGLE KNOWN BATCH-BUDGET FAIL AND NOTHING ELSE: THE
 NEAR-EMPTY SWEEP TRIPPED NO COVERAGE OR SHRINK FLAG, AND THE ONE ODD
 DATUM IN THE OUTPUT (`econ vintages fresh — age -0.7d`) IS PESSIMISM

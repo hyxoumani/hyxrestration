@@ -103,19 +103,22 @@ structure — see [venues](venues.md)).
    or ~16 at `--markets 15` (measured: top-15 reaches 5 city-days).
    Widening top-N changes the scored population, so it starts a NEW
    comparability series rather than extending this one.
-   **Live-paper fee evidence (2026-08-05):** the diagnostic probe's
-   shadow ledger (run 20260803T142853, 215 settled markets over two
-   waves) prices the taker leg from live paper: fees ran **5.5% of
-   spend** ($310.29 on $5,617.41), and wave 1's "+4.4% gross, fees
-   flip the sign" reading did NOT survive wave 2 (137 markets,
-   **−10.3% gross** before fees; two-wave aggregate −7.7% gross,
-   −13.2% net, 17/24 series negative). The probe buys the sub-0.50
-   side of tight books — the longshot side — so its negative gross is
-   an independent live confirmation of the fav-long taker FAIL, not
-   new information about the maker variant; what the design should
-   take is the fee magnitude and the wave-to-wave gross variance
-   (±7pp on ~$1–5k/day), which bounds how many settlement waves any
-   live verdict needs.
+   **Live-paper fee evidence (2026-08-05, updated 2026-08-06 wave
+   3):** the diagnostic probe's shadow ledger (run 20260803T142853,
+   358 settled markets over three waves) prices the taker leg from
+   live paper: fees ran **5.6% of spend** ($587.51 on $10,564.15) —
+   stable across all three waves — while gross went **+4.4% → −10.3%
+   → −21.9%** by wave (wave 3: 143 markets, mostly 08-04 fills,
+   20/26 series negative, worst losses in weather highs/lows plus
+   KXJOBLESSCLAIMS). Three-wave aggregate **−14.3% gross / −19.9%
+   net** (−$2,099.78 paper). The probe buys the sub-0.50 side of
+   tight books — the longshot side — so its negative gross is an
+   independent live confirmation of the fav-long taker FAIL, not new
+   information about the maker variant; what the design should take
+   is the fee magnitude (5.6%, the stable number) and the
+   wave-to-wave gross variance (now a 26pp spread on ~$1–5k/day,
+   worse than the ±7pp two-wave estimate), which bounds how many
+   settlement waves any live verdict needs.
    **First independent econ bracket reading (2026-08-06,
    `reports/maker_bracket/20260806T021621.json`):** the 336h econ
    re-run (KXCPI/KXCPIYOY/KXFED/KXU3, 2,627 orders, 8 markets, 4
