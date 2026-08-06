@@ -116,6 +116,25 @@ structure — see [venues](venues.md)).
    take is the fee magnitude and the wave-to-wave gross variance
    (±7pp on ~$1–5k/day), which bounds how many settlement waves any
    live verdict needs.
+   **First independent econ bracket reading (2026-08-06,
+   `reports/maker_bracket/20260806T021621.json`):** the 336h econ
+   re-run (KXCPI/KXCPIYOY/KXFED/KXU3, 2,627 orders, 8 markets, 4
+   underlyings, all 26JUL events) scored **new_share_vs_all 0.80** —
+   the first econ reading that is not mostly a re-measurement (all
+   five prior re-runs carried 11–26% new; calendar spacing to the
+   07-26 prior was only ~223h, but print churn in the late-JUL books
+   made it independent by the report's own binding metric). Two
+   findings: (a) **no direction**, underlyings split 2 over / 2 under
+   (sign_p 0.6875), and min_sign_p 0.0625 means 4 underlyings could
+   not have shown one anyway — consistent with the 07-31 power caveat,
+   no drift. (b) **The crossing rule's regime-dependent bias is now
+   confirmed in econ, not just weather**: crossing filled 189 vs
+   queue-pess 260 / opt 299 — crossing sits BELOW the floor
+   (net −71; strict tier −74), forgoing 162 real fills against 88
+   unambiguously invented. The 07-21 econ run had crossing INSIDE the
+   bracket [368, 404, 436]; same books, later life-cycle, opposite
+   lean. Endpoints must use queue-PESS fills — now evidenced in both
+   categories.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive

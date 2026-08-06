@@ -1,6 +1,34 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-05 20:45 UTC (SETTLEMENT WAVE 2 REFUTED THE WAVE-1
+Updated: **2026-08-06 02:30 UTC (THE FIRST INDEPENDENT ECON BRACKET
+READING LANDED — 80% NEW ORDERS WHERE ALL FIVE PRIOR ECON RE-RUNS
+CARRIED 11–26% — AND IT CONFIRMS THE CROSSING RULE'S REGIME FLIP IN
+ECON: CROSSING 189 FILLS SITS BELOW THE QUEUE-PESS FLOOR OF 260.**
+Rung-1 pass on the one live item from the 20:45Z list: econ maker
+bracket re-run (`reports/maker_bracket/20260806T021621.json`, 336h,
+KXCPI/KXCPIYOY/KXFED/KXU3, 2,627 orders / 8 markets / 4 underlyings,
+all 26JUL events). **(1) Independence**: new_share_vs_all **0.7994**
+— calendar spacing to the 07-26 prior econ run was only ~223h (the
+20:45Z "legal after 08-04" line counted from 07-21, the wrong prior),
+but late-JUL print churn made the reading independent by the metric
+the wiki says is binding; this is the first econ reading that is not
+mostly the prior one re-measured. **(2) No direction**: underlyings
+2 over / 2 under, sign_p 0.6875, min_sign_p 0.0625 — underpowered by
+construction per the 07-31 caveat, no drift, no claim. **(3) The
+durable datum**: crossing 189 vs pess 260 / opt 299, net −71 (strict
+−74) — crossing FORGOES 162 real fills vs 88 invented in these
+late-life econ books, while the 07-21 econ run had crossing INSIDE
+[368, 404, 436]. The bias flip by regime, previously a weather-only
+observation, is now shown in econ; "score endpoints via queue-PESS"
+is evidenced in both categories (encoded in strategy-verdicts queue
+#1). NEXT PASS: (1) wave 3 ~16:45Z 08-06 — third probe gross reading
+(±7pp/day variance, several more waves before stability claims); (2)
+07:00Z QA — batch-budget FAIL on aged 08-03/08-04 rows expected ~1
+more day; (3) Financials 24h deciles 3–6 persistence check on next
+atlas; (4) next INDEPENDENT econ bracket: check new_share_vs_all, not
+the calendar — the trailing window plus churn decides, not spacing
+arithmetic.**
+(prior **2026-08-05 20:45 UTC (SETTLEMENT WAVE 2 REFUTED THE WAVE-1
 READING — THE PROBE'S GROSS EDGE WAS NOT REAL: 137 MARKETS AT −10.3%
 GROSS BEFORE FEES, TWO-WAVE AGGREGATE −7.7% GROSS / −13.2% NET — AND
 ALL THREE STANDING REPORTS RAN ON THE REOPENED GATE, ALL HEALTHY.**
