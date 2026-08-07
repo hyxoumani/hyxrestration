@@ -1,6 +1,38 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-06 20:30 UTC (WAVE 3 IS THE WORST READING YET —
+Updated: **2026-08-07 02:55 UTC (THE SHADOW DAEMON WAS ~35MB FROM AN
+OOM KILL WITH WAVE 4+ EXPOSURE ON BOARD — THE HOURLY METADATA RELOAD
+MATERIALIZES THE FULL 486K-ROW MARKETS TABLE (~430MB, +13K ROWS/DAY
+SINCE THE 08-02 BREADTH WIDENING) AND DOUBLE-HOLDS IT ON SWAP; FIXED
+b962b5c, RUNNING PROCESS BRIDGED TO 2G, RESTART DEFERRED.** Rung-1
+pass at 02:15Z: doctor clean, timers on cadence, but shadow read
+VmRSS 807MB / HWM 966MB against MemoryMax=1G after 3.3 days — where
+the 07-20 verification plateaued at 270MB. Chased to ground: NOT a
+third accumulator. `Store.markets()` is unfiltered; the archive grew
+473k→486k in ~30h post-widening, so the metadata dict alone is ~430MB
+resident (measured), and the hourly refresh transiently holds old+new
+(~865MB measured) — every reload rolled dice with ~35MB headroom, on
+a process whose open cohorts die with it. **Fix (b962b5c, promoted)**:
+markets() gains venue/alive_days/include filters; shadow loads kalshi
+unsettled-or-closed-within-3d (~57k rows, ~60MB — 4x RSS cut, reload
+transient 365→60MB) and PINS held markets so a result landing after
+the recency window (the weeks-out macro block) still credits its
+payout — the existing settlement tests exercise the pin path, two new
+regression tests cover filter + reload/pin (suite 607). **Bridge**:
+the RUNNING daemon keeps old code + its open positions; MemoryMax
+raised to 2G via set-property --runtime (evaporates on restart, by
+which time the new code makes 1G comfortable). promote.sh ran with
+--defer=hyxlab-shadow.service; hyxlab-stream restarted (store.py
+moved) at 02:22 CDT, gap row per design. **RESTART POLICY**: next
+shadow restart (promote or crash) picks up the fix automatically; no
+urgency now the cliff is gone — prefer restarting AFTER the macro
+block settles so the current run's ledger stays whole. NEXT PASS:
+unchanged from 20:30Z — (1) 06:10Z sweep recovery (larger-than-usual
+count expected; breaker must NOT trip on a healthy venue); (2) 07:00Z
+QA (batch-budget FAIL ages out ~1 more day; stream restart gap is
+benign); (3) Financials 24h deciles 3–6 atlas persistence check after
+the recovery sweep; (4) wave 4 ~16:45Z.**
+(prior **2026-08-06 20:30 UTC (WAVE 3 IS THE WORST READING YET —
 143 MARKETS AT −21.9% GROSS / −27.5% NET — AND IT SETTLES THE
 QUESTION THE FIRST TWO WAVES LEFT OPEN: THE PROBE'S LONGSHOT SIDE
 LOSES GROSS, DECISIVELY, NOT MARGINALLY.** Rung-1 pass at 20:15Z on
@@ -4343,7 +4375,17 @@ stray root doc moved.
   spike) — and survived the 07-19/07-20 box-wide OOM storm untouched;
   no third accumulator. `hyxlab-simui` shares the 1G cap and replays big
   archive windows — same exposure (it holds full curves by design for
-  bounded windows); apply bounds if it ever OOMs.
+  bounded windows); apply bounds if it ever OOMs. **A THIRD class
+  found 2026-08-07 02:15 before it fired**: the hourly metadata
+  refresh loads the FULL markets table, which the 08-02 breadth
+  widening grew to 486k rows / ~430MB (+13k rows/day) — swap-reload
+  double-holds it and the daemon reached HWM 966MB of 1G. FIXED
+  b962b5c (filtered load + held-market pinning, ~60MB); running
+  process bridged with a --runtime MemoryMax=2G until its next
+  restart. Pattern across all three: any per-poll or per-reload state
+  proportional to the ARCHIVE (equity curve ∝ snapshots, metadata ∝
+  markets table) eventually outgrows a fixed cgroup cap — bound state
+  by what the daemon can ACT on, not by what the archive holds.
 
 - **Poly swept universe decline is partly a measurement artifact**
   (found 2026-07-12): day-buckets MATURE for ~2 days as later sweeps
