@@ -136,6 +136,17 @@ migrate, watchlist, stations).
   it (`tests/test_hyxlab_sweep_breaker.py`). An outage run is a
   DELAYED sweep, never a lost one; the recovery signal is the next
   run's larger-than-usual market count, not any repair action.
+- **A recovery-scale series can turn the per-series writer burst into a
+  multi-minute lock hold** (measured 2026-08-07): KXBTC's post-outage
+  backlog buffered ~3.85M trade rows and the single end-of-series
+  `writer_burst` held `data/writer.lock` for ~21 min — four consecutive
+  collect cycles exited 75, a 20-min capture gap and the QA
+  skipped-cycles FAIL. Fixed same day: `sweep_series` flushes its
+  buffers mid-series every `FLUSH_ROWS` (250k) rows, keeping each burst
+  under collect's 300s open budget. Crash-safety is unchanged — every
+  intermediate write is idempotent and the watermark advances only in
+  the final burst (`tests/test_hyxlab_writer_lock.py`). The QA FAIL was
+  truthful; the budget (3 skips/24h) was not touched.
 - **A NEGATIVE econ-vintage age in QA is by design, not a timestamp
   bug** (explained 2026-08-06): `alfred.pessimistic_knowable_at`
   stamps vintages at 23:59 US/Eastern on the FETCH date, and the

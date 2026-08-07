@@ -1,6 +1,37 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-07 08:20 UTC (RUNG-1 PASS — RECOVERY SWEEP STILL
+Updated: **2026-08-07 14:55 UTC (THE 10:00Z QA'S NEW FAIL — 4 COLLECT
+CYCLES SKIPPED FOR THE LOCK — WAS THE RECOVERY SWEEP HOLDING THE
+WRITER LOCK FOR ~21 MINUTES ON ONE FLUSH: KXBTC'S POST-OUTAGE BACKLOG
+BUFFERED ~3.85M TRADE ROWS AND THE SINGLE PER-SERIES BURST WROTE THEM
+ALL UNDER ONE HOLD; FIXED 134228a (MID-SERIES FLUSH EVERY 250K ROWS),
+PROMOTED, PUSHED.** QA read: the known aged batch-budget FAIL plus
+`collector cycles are not skipped for the lock — 4 skipped in 24h
+(max 3)`. Chased to ground with the lock's holder note: all four
+skips (07:29–07:44Z) name hyxlab-sweep pid 3360306 holding since
+07:23:56Z — a single `writer_burst` right after KXBTC truncated at
+4,216 markets; collect's DB counters bracket the flush at +3.85M
+trade rows (158.89M→162.75M), ~21 min at the measured ~3k rows/s.
+The docstring's "the DB is touched once per series for ~ms" is
+falsified at recovery scale. **Fix**: `sweep_series` flushes candles/
+trades/swept-marks mid-series every `FLUSH_ROWS=250k` buffered rows —
+each burst stays under collect's 300s open budget; watermark still
+advances ONLY in the final burst and every intermediate write is
+idempotent, so crash semantics are unchanged (2 regression tests,
+fail-without-fix verified, suite 609). Promoted: today's RUNNING
+sweep keeps old code (if another giant series flushes late today,
+tomorrow's QA may truthfully count more skips — the fix takes effect
+from tomorrow's 06:10Z firing); promote restarted hyxlab-stream per
+its own rule (gap row, benign), shadow untouched per the 02:55Z
+deferral. The QA budget (3/24h) was NOT loosened — the check was
+right. Gotcha encoded in data-pipeline.md. **Sweep at 14:04Z**:
+2100/3169 series, 50,759 markets (recovery signal confirmed), 2
+errors, 8 truncated, no breaker trip — ETA ~18:00Z. NEXT PASS: (1)
+sweep completion ~18:00Z — recovery-count + breaker verification;
+(2) Financials 24h deciles 3–6 atlas persistence check after it; (3)
+wave 4 settlements ~16:45Z; (4) tomorrow 10:00Z QA — today's 4 skips
+age out of the 26h window; batch-budget FAIL ~1 more day.**
+(prior **2026-08-07 08:20 UTC (RUNG-1 PASS — RECOVERY SWEEP STILL
 RUNNING AT 2h05m, WORKING NOT HUNG; ALL OTHER SYSTEMS NOMINAL,
 REMAINING ITEMS GATED ON ITS COMPLETION.** The 06:10Z sweep is in its
 predicted larger-than-usual recovery shape: heavy Kalshi 429
