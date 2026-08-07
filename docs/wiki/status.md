@@ -1,6 +1,20 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-07 02:55 UTC (THE SHADOW DAEMON WAS ~35MB FROM AN
+Updated: **2026-08-07 08:20 UTC (RUNG-1 PASS — RECOVERY SWEEP STILL
+RUNNING AT 2h05m, WORKING NOT HUNG; ALL OTHER SYSTEMS NOMINAL,
+REMAINING ITEMS GATED ON ITS COMPLETION.** The 06:10Z sweep is in its
+predicted larger-than-usual recovery shape: heavy Kalshi 429
+rate-limiting through the crypto giants (KXBTC truncated at 4,216
+markets on per-series budget — resumes next run, by design), process
+at 24% CPU with live sockets, no breaker trip so far — the 0caa3a6
+outage-vs-work-list fix is holding. Doctor clean (0 mirror
+violations; markets 494,524), collect cycles 0-error at ~37s, shadow
+816MB/1.0G peak under the 2G runtime bridge (restart still deferred
+past the macro block per 02:55Z policy). QA fires 10:00Z. GATED until
+sweep completes: (1) recovery-count + breaker verification, (2)
+Financials 24h deciles 3–6 atlas persistence check; (3) wave 4
+~16:45Z. Next wakeup armed for the sweep-completion check.**
+(prior **2026-08-07 02:55 UTC (THE SHADOW DAEMON WAS ~35MB FROM AN
 OOM KILL WITH WAVE 4+ EXPOSURE ON BOARD — THE HOURLY METADATA RELOAD
 MATERIALIZES THE FULL 486K-ROW MARKETS TABLE (~430MB, +13K ROWS/DAY
 SINCE THE 08-02 BREADTH WIDENING) AND DOUBLE-HOLDS IT ON SWAP; FIXED
