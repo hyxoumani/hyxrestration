@@ -588,3 +588,37 @@ def test_shadow_writes_no_settlement_while_the_market_is_open(tmp_path):
     assert runner.sim.ctx._positions[("buy_first", "kalshi", "M1", "yes")] == 5.0
     with duckdb.connect(str(shadow_db), read_only=True) as conn:
         assert conn.execute("SELECT count(*) FROM shadow_settlements").fetchone()[0] == 0
+
+
+def test_metadata_reload_is_filtered_but_pins_held_markets(tmp_path):
+    """Regression (2026-08-07): the unfiltered markets() dict reached
+    ~430MB and the hourly reload double-holds it — the daemon sat ~35MB
+    under its 1G cgroup cap. The reload must load only live-ish kalshi
+    metadata, EXCEPT markets the sim still holds: a held market whose
+    result lands after the recency window (the weeks-out macro cohorts)
+    must stay visible to _settle or its payout is never credited."""
+    from datetime import datetime as _dt
+
+    from hyxlab.store import Store
+
+    runner, archive_db, _ = _settling_runner(tmp_path)
+    old = _dt(2026, 1, 1)
+    store = Store(archive_db)
+    store.upsert_markets(
+        [
+            # held by the sim: settled long ago, must be pinned in anyway
+            MarketInfo(venue="kalshi", market_id="M1", result="yes", close_time=old),
+            # not held, settled long ago: the memory the filter exists to shed
+            MarketInfo(venue="kalshi", market_id="STALE", result="no", close_time=old),
+            # wrong venue for the kalshi-only stream tail
+            MarketInfo(venue="polymarket", market_id="P1"),
+        ]
+    )
+    store.close()
+    runner._markets_loaded_at = float("-inf")  # force the hourly refresh
+    runner.poll_once()
+    assert ("kalshi", "STALE") not in runner.sim.markets
+    assert ("polymarket", "P1") not in runner.sim.markets
+    assert ("kalshi", "M1") in runner.sim.markets  # pinned while held
+    # and the pinned metadata actually settled the position
+    assert runner.sim.ctx._positions[("buy_first", "kalshi", "M1", "yes")] == 0.0

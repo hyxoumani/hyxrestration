@@ -11,7 +11,8 @@ rule) holds three tables:
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from collections.abc import Iterable
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -492,11 +493,46 @@ class Store:
 
     # -- reads ----------------------------------------------------------
 
-    def markets(self) -> dict[tuple[str, str], MarketInfo]:
-        rows = self.conn.execute(
+    def markets(
+        self,
+        venue: str | None = None,
+        alive_days: float | None = None,
+        include: Iterable[tuple[str, str]] = (),
+    ) -> dict[tuple[str, str], MarketInfo]:
+        """Market metadata keyed (venue, market_id). Unfiltered by default.
+
+        The full table is ~486k rows / ~430MB as MarketInfo objects
+        (2026-08-07) and grows ~13k rows/day since the breadth widening —
+        long-lived holders (shadow) must filter or they eat their cgroup
+        cap. `alive_days` keeps a market while it is unsettled OR closed
+        within that many days; `include` pins specific (venue, market_id)
+        keys past any filter — a held position whose settlement lands
+        after the recency window would otherwise vanish from a reload
+        and never credit its payout.
+        """
+        clauses = []
+        params: list = []
+        if venue is not None:
+            clauses.append("venue = ?")
+            params.append(venue)
+        if alive_days is not None:
+            cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=alive_days)
+            clauses.append("(coalesce(result, '') = '' OR close_time >= ?)")
+            params.append(cutoff)
+        where = " AND ".join(clauses)
+        include = list(include)
+        if include:
+            pins = " OR ".join(["(venue = ? AND market_id = ?)"] * len(include))
+            where = f"({where}) OR {pins}" if where else pins
+            for v, m in include:
+                params += [v, m]
+        sql = (
             "SELECT venue, market_id, title, series, close_time, strike_type,"
             " floor_strike, cap_strike, result, target_date FROM markets"
-        ).fetchall()
+        )
+        if where:
+            sql += f" WHERE {where}"
+        rows = self.conn.execute(sql, params).fetchall()
         out: dict[tuple[str, str], MarketInfo] = {}
         for r in rows:
             info = MarketInfo(

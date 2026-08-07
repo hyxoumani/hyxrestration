@@ -315,3 +315,46 @@ def test_upsert_markets_last_wins_on_duplicate_keys_in_one_batch(tmp_path):
     # mistakes #10: every store writer asserts its stored timestamp
     assert updated_at is not None and updated_at.tzinfo is None  # naive-UTC
     store.close()
+
+
+def test_markets_filters_by_venue_and_liveness_and_pins_included_keys(tmp_path):
+    """Regression (2026-08-07): the unfiltered markets dict reached ~430MB
+    (486k rows, +13k/day since the breadth widening) and walked the shadow
+    daemon to within ~35MB of its 1G cgroup cap. Long-lived holders filter
+    with venue/alive_days; `include` pins keys past the filter so a held
+    position that settles after the recency window still surfaces its
+    result."""
+    from datetime import timedelta
+
+    from hyxlab.models import MarketInfo
+
+    store = Store(tmp_path / "t.duckdb")
+    now = datetime.now(UTC).replace(tzinfo=None)
+    store.upsert_markets(
+        [
+            MarketInfo(venue="kalshi", market_id="LIVE", close_time=now + timedelta(days=1)),
+            MarketInfo(venue="kalshi", market_id="OLD_OPEN", close_time=now - timedelta(days=30)),
+            MarketInfo(
+                venue="kalshi",
+                market_id="OLD_DONE",
+                close_time=now - timedelta(days=30),
+                result="yes",
+            ),
+            MarketInfo(
+                venue="kalshi",
+                market_id="FRESH_DONE",
+                close_time=now - timedelta(days=1),
+                result="no",
+            ),
+            MarketInfo(venue="kalshi", market_id="NO_CLOSE_DONE", result="yes"),
+            MarketInfo(venue="polymarket", market_id="P_LIVE", close_time=now + timedelta(days=1)),
+        ]
+    )
+    assert len(store.markets()) == 6  # default stays unfiltered
+    filtered = store.markets(venue="kalshi", alive_days=3)
+    assert {k[1] for k in filtered} == {"LIVE", "OLD_OPEN", "FRESH_DONE"}
+    pinned = store.markets(
+        venue="kalshi", alive_days=3, include=[("kalshi", "OLD_DONE"), ("kalshi", "NO_CLOSE_DONE")]
+    )
+    assert {k[1] for k in pinned} == {"LIVE", "OLD_OPEN", "FRESH_DONE", "OLD_DONE", "NO_CLOSE_DONE"}
+    store.close()

@@ -51,6 +51,11 @@ DUCK_TMP = "data/duckspill-shadow"
 # Rows pulled per fetchmany() when seeding books from the archive. Bounds
 # the Python-side result list, which DUCK_MEM does not (see _read_new).
 SEED_BATCH = 10_000
+# Metadata recency window (see _try_load_markets): a settled market stays
+# loaded this many days past close so every poll between "result lands"
+# and "falls out of the window" can consume it; _settle runs per poll
+# (~20s), so the margin is enormous. Held markets are pinned regardless.
+MARKETS_ALIVE_DAYS = 3
 
 
 def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
@@ -210,12 +215,26 @@ class ShadowRunner:
         self.stats = {"snapshots": 0, "events": 0, "polls": 0}
 
     def _try_load_markets(self) -> dict | None:
+        # The unfiltered markets dict is ~430MB and grows ~13k rows/day
+        # (2026-08-07) — the hourly reload transiently double-holds it,
+        # which walked this daemon to within ~35MB of its 1G cgroup cap.
+        # Shadow trades the live kalshi stream only, so load kalshi
+        # markets that are unsettled or recently closed (~65k rows,
+        # ~60MB), and PIN whatever the sim still holds: a held market
+        # that settles after the recency window (the weeks-out macro
+        # cohorts) must stay visible to _settle or its payout is never
+        # credited.
+        held: set[tuple[str, str]] = set()
+        sim = getattr(self, "sim", None)
+        if sim is not None:
+            held.update((v, m) for (_, v, m, _), q in sim.ctx._positions.items() if q)
+            held.update(sim._resting.keys())
         try:
             store = Store(self.archive_db, read_only=True)
         except duckdb.Error:
             return None
         try:
-            return store.markets()
+            return store.markets(venue="kalshi", alive_days=MARKETS_ALIVE_DAYS, include=held)
         finally:
             store.close()
 
