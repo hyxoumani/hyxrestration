@@ -103,22 +103,30 @@ structure — see [venues](venues.md)).
    or ~16 at `--markets 15` (measured: top-15 reaches 5 city-days).
    Widening top-N changes the scored population, so it starts a NEW
    comparability series rather than extending this one.
-   **Live-paper fee evidence (2026-08-05, updated 2026-08-06 wave
-   3):** the diagnostic probe's shadow ledger (run 20260803T142853,
-   358 settled markets over three waves) prices the taker leg from
-   live paper: fees ran **5.6% of spend** ($587.51 on $10,564.15) —
-   stable across all three waves — while gross went **+4.4% → −10.3%
-   → −21.9%** by wave (wave 3: 143 markets, mostly 08-04 fills,
-   20/26 series negative, worst losses in weather highs/lows plus
-   KXJOBLESSCLAIMS). Three-wave aggregate **−14.3% gross / −19.9%
-   net** (−$2,099.78 paper). The probe buys the sub-0.50 side of
-   tight books — the longshot side — so its negative gross is an
-   independent live confirmation of the fav-long taker FAIL, not new
-   information about the maker variant; what the design should take
-   is the fee magnitude (5.6%, the stable number) and the
-   wave-to-wave gross variance (now a 26pp spread on ~$1–5k/day,
-   worse than the ±7pp two-wave estimate), which bounds how many
-   settlement waves any live verdict needs.
+   **Live-paper fee evidence (2026-08-05, closed 2026-08-07 at wave
+   4):** the diagnostic probe's shadow ledger (run 20260803T142853,
+   499 daily-cohort markets settled over four waves) prices the taker
+   leg from live paper: fees ran **5.5% of spend** — stable across
+   all four waves — while gross went **+4.4% → −10.3% → −21.9% →
+   −9.7%** by wave (wave 4: 141 markets, 08-05 cohort, 18/25 series
+   negative, worst in weather highs/lows). The probe buys the
+   sub-0.50 side of tight books — the longshot side — so its negative
+   gross is an independent live confirmation of the fav-long taker
+   FAIL, not new information about the maker variant; what the design
+   should take is the fee magnitude (5.5%, the stable number) and the
+   wave-to-wave gross variance (26pp spread on ~$1–5k/day), which
+   bounds how many settlement waves any live verdict needs.
+   Separately, the first macro tranche (KXPAYROLLS/KXU3 jobs-report
+   brackets, 10 markets, $2,561 spend) settled 08-07 at **$0.00
+   payout — a total loss**: a longshot bracket portfolio on a single
+   monthly print loses whole, an extreme illustration of the same
+   direction. The ledger closed at the 08-07 19:31Z host reboot
+   (restart = fresh state by design): run aggregate 509 settled,
+   −26.2% gross / −31.7% net (−$5,381.58 paper), 333 open markets
+   ($8.1k spend, incl. remaining macro) stranded unscored. The
+   fee/variance numbers above are the durable Tier-2 inputs; the
+   probe ledger is CLOSED — do not extend it, the successor run
+   20260807T193303 starts a new comparability series.
    **First independent econ bracket reading (2026-08-06,
    `reports/maker_bracket/20260806T021621.json`):** the 336h econ
    re-run (KXCPI/KXCPIYOY/KXFED/KXU3, 2,627 orders, 8 markets, 4

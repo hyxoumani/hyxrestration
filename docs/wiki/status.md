@@ -1,6 +1,54 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-07 14:55 UTC (THE 10:00Z QA'S NEW FAIL — 4 COLLECT
+Updated: **2026-08-07 21:10 UTC (ALL THREE SWEEP-GATED CHECKS
+LANDED, AND THE HOST REBOOTED AT 19:31Z — SHADOW'S PROBE LEDGER IS
+CLOSED AT 509 SETTLED / −31.7% NET, THE b962b5c FILTERED-METADATA
+FIX IS NOW LIVE (266MB RSS vs 800MB+), AND NTP IS CONFIRMED DEAD
+POST-REBOOT.** **(1) Recovery sweep completed 17:39Z** (pre-reboot):
+3,169/3,169 series, 75,474 markets / 277,478 candles in 688.9 min, 3
+errors, 10 truncated, `aborted: False` — the breaker did NOT trip on
+a healthy-but-429-heavy venue; recovery count confirms the outage
+backlog cleared (vs 56,941 in the last normal run). Doctor clean
+post-reboot (0 mirror violations). Note: this run still executed
+pre-134228a code (one late KXMVE* flush could truthfully bump
+tomorrow's QA skip count; the mid-series-flush fix takes effect from
+tomorrow's 06:10Z firing). **(2) Atlas persistence check
+(`reports/atlas/20260807T201613.json`)**: Financials 24h deciles 3–6
+ALL persist at the day-robust tier (tiers 110/79/29/10, quoted still
+0); caveat — the recovery sweep added only ~2–4 settlements and 2
+days per decile, so this is the prior corpus plus two days, not yet
+an independent reading; realized-over-implied 0.64–0.84 vs 0.35–0.65
+implied, top_day_share 0.32–0.43. Keep it a lead, not a candidate;
+re-check after genuinely new settlement mass. **(3) Wave 4 settled
+12:00–16:02Z (pre-reboot, ledger intact)**: daily 08-05 cohort 141
+mkts, payout $3,506.25 / spend $3,883.85 / fees $215.97 = **−9.7%
+gross / −15.3% net** (18/25 series negative, worst KXHIGHAUS −$173);
+gross by wave +4.4 → −10.3 → −21.9 → −9.7, fees pinned at ~5.5%.
+Separately the first macro tranche settled same window: KXPAYROLLS
+(6) + KXU3 (4) jobs-report brackets paid **$0.00 on $2,561 spend** —
+a longshot bracket book on one monthly print losing whole. **(4) THE
+19:31Z REBOOT** (cause unknown, uptime 45min at check): all timers
+and daemons came back (collect 0-error at 27.8s, stream active,
+doctor clean); shadow restarted as run 20260807T193303 with the
+b962b5c filtered-metadata code — 266MB RSS under 1G, the 2G runtime
+bridge no longer needed. Old run 20260803T142853 CLOSED by design:
+509 settled, −26.2% gross / −31.7% net (−$5,381.58 paper), 333 open
+markets ($8.1k, incl. KXFED/KXCPI/remaining KXPAYROLLS macro)
+stranded unscored — no retro-rescue, the fee (5.5%) and variance
+(26pp) numbers are banked in strategy-verdicts queue #1 and the
+probe ledger is closed. **(5) NTP**: `timedatectl` post-reboot reads
+"synchronized: no, NTP service: inactive" — USER-GATED (needs root:
+`timedatectl set-ntp true`); flagged since the backlog review, now
+demonstrably live after a reboot. Archive timestamps currently ride
+an undisciplined clock. NEXT PASS: (1) tomorrow 06:10Z sweep — first
+run with the 134228a bounded-burst code, verify no >300s lock hold;
+(2) 10:00Z QA — today's 4 skips age out, batch-budget FAIL ~1 more
+day, possible truthful extra-skip from today's old-code sweep; (3)
+new shadow run 20260807T193303 accumulates its own daily cohorts
+(~25 fills/hr observed) — first settlements ~16:45Z tomorrow start a
+NEW wave series; (4) hourly metadata reload line should print ~57k
+(filtered) — spot-check on next pass.**
+(prior **2026-08-07 14:55 UTC (THE 10:00Z QA'S NEW FAIL — 4 COLLECT
 CYCLES SKIPPED FOR THE LOCK — WAS THE RECOVERY SWEEP HOLDING THE
 WRITER LOCK FOR ~21 MINUTES ON ONE FLUSH: KXBTC'S POST-OUTAGE BACKLOG
 BUFFERED ~3.85M TRADE ROWS AND THE SINGLE PER-SERIES BURST WROTE THEM
