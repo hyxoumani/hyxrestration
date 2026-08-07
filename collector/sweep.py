@@ -83,6 +83,19 @@ MAX_MARKETS_PER_SERIES = 2000
 # exactly where this one stopped: a delayed sweep, never a lost one.
 ABORT_CONSEC_ERRORS = 25
 
+# Mid-series flush threshold, in buffered rows (candles + trades).
+# "All writes for the series land in a single writer_burst" assumed the
+# burst is short; measured 2026-08-07, KXBTC's recovery backlog buffered
+# ~3.85M trade rows and that single burst held the writer lock for ~21
+# min — four consecutive collect cycles skipped (a 20-min capture gap,
+# QA FAIL). Every insert in the burst is idempotent (trade_id/candle-key
+# dedup, OR REPLACE marks) and the watermark still advances ONLY in the
+# final burst, so flushing mid-series is crash-safe: a crash between
+# bursts re-fetches and dedups exactly as before. 250k rows keeps each
+# burst well under collect's 300s open budget (measured ~3k rows/s
+# against the 165M-row trades table).
+FLUSH_ROWS = 250_000
+
 # Per-burst open budget, deliberately far above open_retry's 60s default.
 # Releasing between series has a cost the old whole-run hold did not: a
 # READER can now get in, and DuckDB excludes a writer while any reader is
@@ -171,13 +184,13 @@ def sweep_series(
 ) -> tuple[int, int, bool]:
     """Capture settled markets + candles for one series since its watermark.
 
-    Every REST call happens with NO lock and NO open connection; all
-    writes for the series land in a single `writer_burst` at the end.
-    Buffering is what makes the burst short — the fetch loop below runs
-    for minutes on a large series, and holding the lock across it is the
-    exact defect this refactor removes. Crash-safety is unchanged and
-    slightly better: a crash mid-series now leaves the watermark
-    unmoved AND nothing half-written, so the re-run is exact.
+    Every REST call happens with NO lock and NO open connection; writes
+    land in `writer_burst`s — one final burst for a normal series, plus
+    intermediate bursts every FLUSH_ROWS buffered rows for giant ones
+    (the single-burst shape held the lock ~21 min on KXBTC's 3.85M-row
+    recovery backlog, 2026-08-07). Crash-safety: the watermark advances
+    only in the final burst, and every intermediate write is idempotent,
+    so a crash mid-series re-runs exactly — flushed rows dedup away.
     """
     now = datetime.now(UTC)
     floor_ts = now - timedelta(days=days)
@@ -206,6 +219,18 @@ def sweep_series(
     trade_rows: list[tuple] = []
     swept: list[tuple[str, int, str]] = []
     max_close = floor_ts
+    n_candles = 0
+
+    def flush_buffers(store: Store) -> None:
+        nonlocal n_candles
+        n_candles += store.insert_candles(candle_rows)
+        store.insert_trades(trade_rows)
+        for ticker, n_trades, status in swept:
+            store.mark_trades_swept(ticker, n_trades, status)
+        candle_rows.clear()
+        trade_rows.clear()
+        swept.clear()
+
     for m in markets:
         open_ts = _ts(m.get("open_time"))
         close_ts = _ts(m.get("close_time"))
@@ -245,14 +270,19 @@ def sweep_series(
             print(f"[sweep] {m.get('ticker', '?')} trade tape fetch HTTP {code}", flush=True)
         close_dt = datetime.fromtimestamp(close_ts, tz=UTC)
         max_close = max(max_close, close_dt)
+        if len(candle_rows) + len(trade_rows) >= FLUSH_ROWS:
+            print(
+                f"[sweep] {series_ticker} mid-series flush at "
+                f"{len(candle_rows)} candles + {len(trade_rows)} trades",
+                flush=True,
+            )
+            with writer_burst(db) as store:
+                flush_buffers(store)
         time.sleep(CANDLES_PAUSE_S)
 
     with writer_burst(db) as store:
         store.upsert_markets(infos)
-        n_candles = store.insert_candles(candle_rows)
-        store.insert_trades(trade_rows)
-        for ticker, n_trades, status in swept:
-            store.mark_trades_swept(ticker, n_trades, status)
+        flush_buffers(store)
         store.set_watermark(series_ticker, max_close)
         # A truncated sweep is NOT 'ok'. It used to be — the only trace was a
         # print, which is how "crypto == BNB only" survived into an

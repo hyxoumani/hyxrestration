@@ -150,6 +150,121 @@ def test_sweep_still_persists_everything_it_buffered(tmp_path, monkeypatch):
         store.close()
 
 
+def _patch_trades(monkeypatch, session, per_market=3):
+    """3 trades per market, with unique trade_ids across markets."""
+
+    def get_trades(ticker, **kwargs):
+        session.observe()
+        return [(ticker, i) for i in range(per_market)], False
+
+    monkeypatch.setattr(sweep.kalshi, "get_trades", get_trades)
+    monkeypatch.setattr(
+        sweep.kalshi,
+        "trade_row",
+        lambda t: (
+            "kalshi",
+            t[0],
+            f"{t[0]}#{t[1]}",
+            datetime(2026, 7, 10, tzinfo=UTC),
+            50,
+            1,
+            "yes",
+            False,
+        ),
+    )
+
+
+def test_giant_series_flushes_mid_loop_so_no_burst_carries_the_whole_series(
+    tmp_path, monkeypatch
+):
+    """Regression (2026-08-07): KXBTC's recovery backlog buffered ~3.85M
+    trade rows and the single end-of-series burst held the writer lock
+    for ~21 min — four consecutive collect cycles skipped, a 20-min
+    capture gap. Past FLUSH_ROWS the buffers must flush mid-loop."""
+    from hyxlab.store import Store
+
+    lock_path = str(tmp_path / "writer.lock")
+    db = str(tmp_path / "t.duckdb")
+    monkeypatch.setattr(sweep, "LOCK_FILE", lock_path)
+    monkeypatch.setattr(sweep, "FLUSH_ROWS", 5)
+    markets = [_market(f"KXA-{i}", 10 + i) for i in range(4)]
+    session = _FakeSession(lock_path, markets)
+    _patch_kalshi(monkeypatch, session, markets)
+    _patch_trades(monkeypatch, session)
+
+    sizes = []
+    orig_insert = Store.insert_trades
+
+    def spy(self, rows):
+        sizes.append(len(rows))
+        return orig_insert(self, rows)
+
+    monkeypatch.setattr(Store, "insert_trades", spy)
+
+    sweep.sweep_series(db, "KXA", days=60, session=session)
+
+    total = 4 * 3
+    # Without the mid-series flush this is a single burst of all 12 rows.
+    assert max(sizes) < total, f"one burst carried the whole series: {sizes}"
+    assert len([s for s in sizes if s]) >= 2, f"never flushed mid-loop: {sizes}"
+    store = Store(db)
+    try:
+        assert store.conn.execute("SELECT count(*) FROM trades").fetchone()[0] == total
+        assert len(store.trades_swept_ids()) == 4
+        assert store.watermark("KXA") is not None
+    finally:
+        store.close()
+
+
+def test_crash_after_mid_series_flush_leaves_watermark_unmoved_and_rerun_dedups(
+    tmp_path, monkeypatch
+):
+    """Crash-safety claim behind the mid-series flush: flushed rows may
+    land before a crash, but the watermark must not move, and the exact
+    re-run must dedup — same end state as the old single-burst shape."""
+    from hyxlab.store import Store
+
+    lock_path = str(tmp_path / "writer.lock")
+    db = str(tmp_path / "t.duckdb")
+    monkeypatch.setattr(sweep, "LOCK_FILE", lock_path)
+    monkeypatch.setattr(sweep, "FLUSH_ROWS", 5)
+    markets = [_market(f"KXA-{i}", 10 + i) for i in range(4)]
+    session = _FakeSession(lock_path, markets)
+    _patch_kalshi(monkeypatch, session, markets)
+    _patch_trades(monkeypatch, session)
+
+    def crash_on_last(series_ticker, ticker, *args, **kwargs):
+        session.observe()
+        if ticker == "KXA-3":
+            raise RuntimeError("simulated crash mid-series")
+        return []
+
+    monkeypatch.setattr(sweep.kalshi, "get_candlesticks", crash_on_last)
+
+    with pytest.raises(RuntimeError):
+        sweep.sweep_series(db, "KXA", days=60, session=session)
+
+    store = Store(db)
+    try:
+        n_flushed = store.conn.execute("SELECT count(*) FROM trades").fetchone()[0]
+        assert n_flushed == 6  # the one mid-series flush landed
+        assert store.watermark("KXA") is None
+    finally:
+        store.close()
+
+    monkeypatch.setattr(
+        sweep.kalshi, "get_candlesticks", lambda *a, **k: (session.observe(), [])[1]
+    )
+    sweep.sweep_series(db, "KXA", days=60, session=session)
+
+    store = Store(db)
+    try:
+        assert store.conn.execute("SELECT count(*) FROM trades").fetchone()[0] == 12
+        assert store.watermark("KXA") is not None
+    finally:
+        store.close()
+
+
 def test_sweep_series_with_no_markets_still_logs_under_a_burst(tmp_path, monkeypatch):
     lock_path = str(tmp_path / "writer.lock")
     db = str(tmp_path / "t.duckdb")
