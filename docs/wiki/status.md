@@ -1,6 +1,35 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-08 14:35 UTC (THE HOST HARD-RESET AGAIN AT 06:30Z —
+Updated: **2026-08-08 20:20 UTC (RUNG-1 VERIFICATION PASS — ALL FOUR
+CHECKABLE NEXT-PASS ITEMS ARE GREEN; NOTHING NEW BROKE.** **(1) The
+re-fired 06:10Z sweep finished clean at 16:22Z**: 3,169/3,169 series,
+52,529 markets / 273,747 candles, 2 errors, 10 truncated, `aborted:
+False`, 484.0 min — 8.1h wall, inside the 10.5h budget, so it adds
+NOTHING to the QA batch-budget window (the 08-07 recovery overrun
+remains the only member, aging out 08-14). Doctor post-sweep: 0
+kalshi mirror violations, sweep_log 48h {ok 6831, error 5, truncated
+20}. Service-level memory peak 7.6G (batch unit, no cap, OOMScore-
+Adjust=500 — observed, not alarming). **(2) Bounded-burst day-1
+stays clean end-to-end**: `data/collect_skips.jsonl` still ends at
+08-07 07:44Z (old code) — a full sweep with mid-series flushes
+produced ZERO collector skips start to finish. The >300s-lock-hold
+class stays closed. **(3) Shadow reload line behaved exactly as
+modeled**: peaked 119,315 at 16:34Z while the sweep was stamping
+results (backfill churn), back to 110,725 by 19:34Z — comfortably
+under the 150k tripwire; treat sweep-hour spikes as expected shape,
+flag only a level shift. RSS actually FELL 488MB (14:35Z) → 292MB
+(20:15Z), cgroup current 486MB — the morning reading was transient
+churn, not growth; no window tightening warranted. **(4) New shadow
+run 20260808T063109 healthy**: 4,454 fills / 2,431 polls at 20:15Z
+(~325 fills/hr), accumulating toward first settlements ~08-09
+16:45Z. Nothing else checkable until then — QA fires 10:00Z, poly
+sweep 05:00Z. NEXT PASS: (1) 10:00Z QA — expect batch-budget FAIL
+(truthful, until 08-14) and zero new skip/lock findings; (2) shadow
+first settlements ~16:45Z 08-09 open the new wave series — first
+cohort read; (3) reload line — only a non-sweep-hour print >150k is
+actionable; (4) host stability + NTP remain user-gated (two hard
+resets in 11h; clock undisciplined).**
+(prior **2026-08-08 14:35 UTC (THE HOST HARD-RESET AGAIN AT 06:30Z —
 SECOND IN 11 HOURS; SHADOW RUN 20260807T193303 DIED AT 3,518 FILLS
 WITH ZERO SETTLED COHORTS, AND THE BOUNDED-BURST SWEEP CODE PASSED
 ITS FIRST PRODUCTION RUN: ZERO COLLECTOR SKIPS.** **(1) REBOOT #2,
