@@ -1,6 +1,54 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-08 02:30 UTC (METADATA-RELOAD SPOT-CHECK CLOSED:
+Updated: **2026-08-08 14:35 UTC (THE HOST HARD-RESET AGAIN AT 06:30Z —
+SECOND IN 11 HOURS; SHADOW RUN 20260807T193303 DIED AT 3,518 FILLS
+WITH ZERO SETTLED COHORTS, AND THE BOUNDED-BURST SWEEP CODE PASSED
+ITS FIRST PRODUCTION RUN: ZERO COLLECTOR SKIPS.** **(1) REBOOT #2,
+06:30Z (01:30 CDT)**: journal cut mid-line at 01:30:06 CDT, no
+shutdown record in wtmp (`last -x` shows both recent boots with no
+preceding shutdown), pstore empty, no MCE in the prior boot — a hard
+power/hardware reset, cause not recoverable from software. Pattern:
+19:31Z 08-07 and 06:30Z 08-08. HOST STABILITY IS NOW USER-GATED
+(hardware/power inspection; also NTP still dead post-reboot —
+"synchronized: no, NTP service: inactive" — so every reset re-skews
+an undisciplined clock). Consequence: shadow run 20260807T193303
+closed by design at 3,518 fills / 11h — it died ~10h BEFORE its
+first settlements (~16:45Z), so the run banked zero wave data; no
+retro-rescue. New run 20260808T063109 (started 06:31Z) restarts the
+cohort clock — first settlements now expected ~2026-08-09 afternoon.
+The 06:10Z sweep was killed ~20 min in; the timer re-fired at 08:17Z
+and the run is healthy (1900/3169 at 14:15Z, 1 error, 4 truncated,
+ETA ~17:30Z, within its own 10.5h budget). **(2) BOUNDED-BURST
+(134228a) PRODUCTION PASS**: ~6h of sweep so far with continuous
+mid-series flushes (KXBTC15M/KXBTCD/KXETH15M at ~250k-trade bursts,
+largest 4,643 candles + 246k trades) and `data/collect_skips.jsonl`
+has ZERO entries today — the last skips are 08-07 07:34–07:44Z under
+old code. Collector fresh throughout (QA age 304s, 0 exit-75). The
+>300s-lock-hold class is verified gone in production, not just in
+tests. **(3) QA 10:00Z**: exactly one FAIL, batch-budget — and the
+"~1 more day" prediction was WRONG: the 08-07 recovery sweep (11.49h
+vs 10.5h budget) sits in the 7-day window until 08-14; tradepass
+overruns age out 08-10/08-11. The FAIL is truthful (the recovery run
+was a deliberate overrun) — expect clear 08-14 absent new overruns.
+Yesterday's skip-FAIL aged out as predicted; tape-coverage WATCH is
+a draining tail (3 unswept, 0.0h waited). **(4) SHADOW MEMORY AFTER
+REBOOT #2**: the boot seed scan (3.66M archived events, 670k top
+states) drove the cgroup to the 1G cap — memory.events max=344,
+oom_kill=0 — page-cache reclaim absorbed it and the service is
+healthy; no code change (the spike is DuckDB read cache, kernel-
+reclaimable). Tripwire: if a future boot shows oom_kill>0, bound the
+seed scan then. RSS 488MB at 7h (vs 305MB yesterday — bigger reload
+dict + fill accumulation); hourly reload line prints 103–109k vs
+~101k yesterday, still under the 150k tripwire — growth is settle
+churn plus the recovery backfill stamping results; the 1,892
+forever-riders from yesterday's note are draining into the settled
+clause as expected. NEXT PASS: (1) sweep completion ~17:30Z — confirm
+clean finish + doctor; (2) new shadow run's first settlements
+~08-09 16:45Z start the wave series; (3) reload-line trend — if the
+churn keeps it >150k, tighten 3d→1d at the next NATURAL restart
+(reboots are providing them, sadly); (4) QA batch-budget FAIL
+expected to persist until 08-14 — flag only if a NEW unit overruns.**
+(prior **2026-08-08 02:30 UTC (METADATA-RELOAD SPOT-CHECK CLOSED:
 THE HOURLY LINE PRINTS ~101k, NOT THE PREDICTED ~57k — THE FILTER IS
 CORRECT, THE ESTIMATE WAS WRONG.** The b962b5c filter works exactly
 as written; the miss was in the size model. Measured against the
