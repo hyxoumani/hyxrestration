@@ -54,7 +54,15 @@ SEED_BATCH = 10_000
 # Metadata recency window (see _try_load_markets): a settled market stays
 # loaded this many days past close so every poll between "result lands"
 # and "falls out of the window" can consume it; _settle runs per poll
-# (~20s), so the margin is enormous. Held markets are pinned regardless.
+# (~20s), so the margin is enormous. Held markets are pinned regardless,
+# so this window is a safety net, not a correctness requirement — the
+# settled-within-window term DOMINATES the loaded dict: kalshi settles
+# 25-55k markets/day (2026-08-08, hourly crypto brackets), so 3 days
+# keeps ~91k settled rows vs ~13.5k unsettled, ~101k total (~90MB) —
+# not the ~65k first estimated. Bounded by settle-rate x window, not
+# archive age. If the reload log line grows past ~150k, tighten this
+# to 1 day at the next NATURAL shadow restart (never restart mid-run
+# for it — that closes the live probe ledger).
 MARKETS_ALIVE_DAYS = 3
 
 
@@ -219,8 +227,9 @@ class ShadowRunner:
         # (2026-08-07) — the hourly reload transiently double-holds it,
         # which walked this daemon to within ~35MB of its 1G cgroup cap.
         # Shadow trades the live kalshi stream only, so load kalshi
-        # markets that are unsettled or recently closed (~65k rows,
-        # ~60MB), and PIN whatever the sim still holds: a held market
+        # markets that are unsettled or recently closed (measured
+        # 2026-08-08: ~101k rows ~90MB — see MARKETS_ALIVE_DAYS for the
+        # breakdown), and PIN whatever the sim still holds: a held market
         # that settles after the recency window (the weeks-out macro
         # cohorts) must stay visible to _settle or its payout is never
         # credited.

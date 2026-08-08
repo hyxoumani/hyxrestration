@@ -1,6 +1,36 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-07 21:10 UTC (ALL THREE SWEEP-GATED CHECKS
+Updated: **2026-08-08 02:30 UTC (METADATA-RELOAD SPOT-CHECK CLOSED:
+THE HOURLY LINE PRINTS ~101k, NOT THE PREDICTED ~57k — THE FILTER IS
+CORRECT, THE ESTIMATE WAS WRONG.** The b962b5c filter works exactly
+as written; the miss was in the size model. Measured against the
+archive: 13,481 unsettled kalshi markets + 91,082 settled-but-closed-
+within-3-days = ~104.5k eligible (log printed 101,722 at 19:34 CDT,
+100,980 at 20:34). The settled-recency term DOMINATES because kalshi
+now settles 25–55k markets/day (hourly crypto brackets: KXBTCD/
+KXETHD/KXSOLD lead the churn) — the dict is bounded by settle-rate ×
+window (~90MB at 3 days), not archive age, so it does NOT grow
+unboundedly; the ~65k/~57k estimate predated the churn measurement.
+Memory verdict: shadow RSS 305MB at 7h uptime (266MB at boot —
+consistent with allocator high-water after one reload double-hold,
+re-check for plateau next pass), cgroup current 376MB, peak 690MB
+(the documented ~685MB boot seed scan, not the reload). 3x headroom
+under the 1G cap. Correctness does not depend on the window (held
+markets are pinned via `include=`), so no code change: tripwire
+encoded in the MARKETS_ALIVE_DAYS comment — if the reload line grows
+past ~150k, tighten 3d→1d at the next NATURAL shadow restart only
+(a mid-run restart closes the live probe ledger; never do it for a
+memory tune). Also noted: 1,892 unsettled kalshi markets closed >3d
+ago ride the unsettled clause forever until results land — dominated
+by crypto dailies whose results the recovery sweep is still
+backfilling; expected to drain, worth an eye next pass. Timers/
+daemons all nominal at 02:15Z. NEXT PASS unchanged from 21:10:
+(1) 06:10Z sweep — first bounded-burst (134228a) run, verify no
+>300s lock hold; (2) QA — 4 skips age out, batch-budget FAIL ~1 more
+day, possible truthful extra skip from yesterday's old-code sweep;
+(3) shadow run 20260807T193303 first settlements ~16:45Z start a new
+wave series; (4) RSS plateau + reload-line check (~101k expected).**
+(prior **2026-08-07 21:10 UTC (ALL THREE SWEEP-GATED CHECKS
 LANDED, AND THE HOST REBOOTED AT 19:31Z — SHADOW'S PROBE LEDGER IS
 CLOSED AT 509 SETTLED / −31.7% NET, THE b962b5c FILTERED-METADATA
 FIX IS NOW LIVE (266MB RSS vs 800MB+), AND NTP IS CONFIRMED DEAD
