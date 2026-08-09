@@ -1,6 +1,28 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-08 20:20 UTC (RUNG-1 VERIFICATION PASS — ALL FOUR
+Updated: **2026-08-09 02:25 UTC (OVERNIGHT RUNG-1 PASS — EVERYTHING
+CHECKABLE IS GREEN; THE RELOAD-LINE QUESTION IS ANSWERED AT
+BASELINE.** **(1) Reload line, non-sweep-hour reads**: 101,466 at
+00:35Z → 99,680 at 01:35Z — back at (below) the ~101k baseline,
+far under the 150k tripwire. The 119,315 sweep-hour peak was
+backfill churn exactly as modeled; the shape-vs-level rule holds
+and nothing is actionable. **(2) Shadow run 20260808T063109
+healthy**: 6,265 fills / 3,481 polls at 02:15Z (~314 fills/hr
+sustained since 06:31Z start), RSS 354MB / cgroup 562MB — flat;
+first settlements still expected ~16:45Z 08-09 to open the first
+cohort read. **(3) Bounded-burst day 2 clean**:
+`data/collect_skips.jsonl` still ends 08-07 07:44Z — zero collector
+skips through a second full sweep day; the >300s-lock-hold class
+stays closed. **(4) Doctor**: 0 kalshi mirror violations, sweep_log
+48h {ok 6831, error 5, truncated 20} — unchanged from the 20:20Z
+reading. **(5) No reboot overnight** — uptime 19h44 off the 06:30Z
+boot; NTP still "synchronized: no / NTP service: inactive". Host
+stability + NTP remain USER-GATED. NEXT PASS: (1) 10:00Z QA —
+expect the truthful batch-budget FAIL (until 08-14) and zero new
+skip/lock findings; (2) shadow first settlements ~16:45Z — first
+cohort read of the new wave series; (3) reload line — only a
+non-sweep-hour print >150k is actionable.**
+(prior **2026-08-08 20:20 UTC (RUNG-1 VERIFICATION PASS — ALL FOUR
 CHECKABLE NEXT-PASS ITEMS ARE GREEN; NOTHING NEW BROKE.** **(1) The
 re-fired 06:10Z sweep finished clean at 16:22Z**: 3,169/3,169 series,
 52,529 markets / 273,747 candles, 2 errors, 10 truncated, `aborted:
