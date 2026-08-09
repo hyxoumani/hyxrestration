@@ -1,6 +1,29 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-09 02:25 UTC (OVERNIGHT RUNG-1 PASS — EVERYTHING
+Updated: **2026-08-09 08:15 UTC (RUNG-1 PASS — ALL CHECKABLE ITEMS
+GREEN; REMAINING NEXT-PASS ITEMS ARE TIME-GATED (10:00Z QA, ~16:45Z
+FIRST SETTLEMENTS).** **(1) Reload line at/below baseline**: hourly
+prints 93,743–100,574 over the last six hours (02:36–07:37Z) —
+under the ~101k baseline, far under the 150k tripwire; nothing
+actionable. **(2) Shadow run 20260808T063109 healthy**: 8,022 fills
+/ 4,546 polls at 08:13Z (~312 fills/hr sustained since the 06:31Z
+08-08 start), RSS 305MB / cgroup 523MB — flat; first settlements
+still ~16:45Z today, opening the first cohort read of the new wave
+series. **(3) Bounded-burst day 3 clean**: `collect_skips.jsonl`
+still ends 08-07 07:44Z — zero collector skips through a third day;
+the >300s-lock-hold class stays closed. **(4) Doctor**: 0 kalshi
+mirror violations, sweep_log 48h {ok 7749, error 5, truncated 22} —
+errors flat vs 20:20Z, +2 truncated is normal crypto-tail churn.
+**(5) Poly sweep in progress**: started 05:00Z, 4,200/16,214 markets
+at 08:10Z, ETA ~17:00Z — normal multi-hour profile, no errors beyond
+one 408 trades-tail early-stop. **(6) No reboot** — uptime 1d1h44m
+off the 06:30Z 08-08 boot; NTP still inactive. Host stability + NTP
+remain USER-GATED. NEXT PASS: (1) 10:00Z QA — expect the truthful
+batch-budget FAIL (until 08-14) and zero new skip/lock findings;
+(2) shadow first settlements ~16:45Z — first cohort read; (3) reload
+line — only a non-sweep-hour print >150k is actionable; (4) poly
+sweep completion ~17:00Z.**
+(prior **2026-08-09 02:25 UTC (OVERNIGHT RUNG-1 PASS — EVERYTHING
 CHECKABLE IS GREEN; THE RELOAD-LINE QUESTION IS ANSWERED AT
 BASELINE.** **(1) Reload line, non-sweep-hour reads**: 101,466 at
 00:35Z → 99,680 at 01:35Z — back at (below) the ~101k baseline,
