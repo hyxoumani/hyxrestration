@@ -1,6 +1,34 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-09 08:15 UTC (RUNG-1 PASS — ALL CHECKABLE ITEMS
+Updated: **2026-08-09 14:30 UTC (RUNG-1 PASS — 10:00Z QA LANDED AS
+THE PREDICTED SINGLE TRUTHFUL FAIL; EVERYTHING ELSE GREEN; REMAINING
+ITEMS TIME-GATED (~16:45Z FIRST SETTLEMENTS, ~19:56Z POLY FINISH).**
+**(1) QA 10:00Z**: exactly one FAIL — batch-budget (sweep 11.49h/10.5h
+in-window until 08-14; tradepass overruns age out 08-10/08-11), as
+predicted; zero new skip/lock findings (the lock-skip check now reads
+SKIP/UNVERIFIED — no cycle has needed to wait out the lock since the
+fix, the good problem); tape-coverage WATCH is a draining tail (5
+unswept, 0.0h waited); fade-window PASS 0 lost cycles over 7 windows.
+**(2) Shadow run 20260808T063109 healthy**: 9,505 fills / 5,611 polls
+at 14:13Z (~250 fills/hr weekend pace, down from ~312 overnight —
+volume, not health), RSS 357MB / cgroup 563MB flat; first settlements
+~16:45Z today open the first cohort read. **(3) Reload line**: 93,743
+(05:36Z) → 131,573 (13:38Z), a monotone climb spanning the poly sweep
+(05:00Z start) — sweep-hour backfill churn under the 150k tripwire;
+per the shape-vs-level rule the read that matters is the first
+non-sweep-hour print after ~20:00Z. **(4) Bounded-burst day 4 clean**:
+`collect_skips.jsonl` still ends 08-07 07:44Z — zero collector skips.
+**(5) Poly sweep ETA slipped ~17:00Z → ~19:56Z** (10,000/16,214 at
+14:14Z): the ~15h wall is inside the measured 13h41m–17h11m band and
+the unit is DELIBERATELY budget-exempt (Polymarket quota, wall-clock
+lever — `collector/qa.py` constants block); nothing actionable.
+**(6) Doctor at 14:16Z**: declined the lock (poly writer active) —
+expected single-writer contention; QA already read 0 kalshi mirror
+violations at 10:00Z. Host stability + NTP remain USER-GATED. NEXT
+PASS: (1) shadow first settlements ~16:45Z — first cohort read of the
+new wave series; (2) poly completion ~19:56Z, then doctor; (3) first
+non-sweep-hour reload print after ~20:00Z — >150k is actionable.**
+(prior **2026-08-09 08:15 UTC (RUNG-1 PASS — ALL CHECKABLE ITEMS
 GREEN; REMAINING NEXT-PASS ITEMS ARE TIME-GATED (10:00Z QA, ~16:45Z
 FIRST SETTLEMENTS).** **(1) Reload line at/below baseline**: hourly
 prints 93,743–100,574 over the last six hours (02:36–07:37Z) —
