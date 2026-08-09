@@ -1,6 +1,36 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-09 14:30 UTC (RUNG-1 PASS — 10:00Z QA LANDED AS
+Updated: **2026-08-09 20:30 UTC (RUNG-1 PASS — ALL THREE TIME-GATED
+ITEMS LANDED GREEN: FIRST SETTLEMENT COHORT IN (LONGSHOT SIDE LOSES
+AGAIN), POLY FINISHED IN-BAND, RELOAD LINE DRAINING POST-SWEEP).**
+**(1) First settlement cohort of run 20260808T063109 is in**: 112
+settlements by 20:16Z (first trickle 08-08 11:32Z, main 08-08 weather
+block 08-09 11:37Z) — 15 yes / 97 no, $1,177.06 payouts vs $1,373.51
+notional across the 2,439 fills on those markets → cohort P&L ≈
+−$196 (−14%), equity −$426 at 20:16Z. Same shape as the closed wave-3
+probe finding (the longshot side loses decisively); this run exists to
+accumulate cohorts, no action — next read when the 08-09 weather block
+settles ~tomorrow 11:30Z. **(2) Poly sweep finished 19:33Z**: 869.2min
+(14h29m) wall, inside the measured 13h41m–17h11m band; 16,214 markets,
+1,065,871 prices / 2,014,657 trades, 8 errors (crypto 429 tails + one
+ReadTimeout, all logged truncation-aware). **(3) Doctor post-poly
+20:17Z clean**: 0 kalshi mirror violations; sweep_log 48h = 7,545 ok /
+20 truncated / 3 error; stream archive 404.5M book events, 1,175 gaps,
+10.8GB. **(4) Reload line draining as predicted**: 131,573 (13:38Z
+sweep-hour peak) → 119,893 (18:38Z) → 117,042 (19:39Z) — declining
+once the sweep wound down, under the 150k tripwire; the b962b5c
+filtered-load shape holds. **(5) Bounded-burst day 5 clean**:
+`collect_skips.jsonl` still ends 08-07 07:44Z — zero collector skips;
+two mid-flush lock declines in streamd (18:21Z, 19:53Z vs the poly
+writer) both held-for-retry and flushed next round, zero loss.
+**(6) Shadow daemon flat**: RSS 332MB / cgroup 559MB at 20:15Z; 12,229
+fills / 6,676 polls (~260 fills/hr weekend pace). Host stability + NTP
+remain USER-GATED. NEXT PASS: (1) 08-09 weather-block settlements
+~11:30Z tomorrow — second cohort read; (2) 10:00Z QA — expect the
+same single batch-budget FAIL until the 08-04 sweep overrun ages out
+08-14; (3) reload line first sweep-hour print tomorrow — peak >150k
+is actionable.**
+(prior **2026-08-09 14:30 UTC (RUNG-1 PASS — 10:00Z QA LANDED AS
 THE PREDICTED SINGLE TRUTHFUL FAIL; EVERYTHING ELSE GREEN; REMAINING
 ITEMS TIME-GATED (~16:45Z FIRST SETTLEMENTS, ~19:56Z POLY FINISH).**
 **(1) QA 10:00Z**: exactly one FAIL — batch-budget (sweep 11.49h/10.5h
