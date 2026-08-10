@@ -1,6 +1,40 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-10 08:30 UTC (RUNG-1 PASS FINDS AND FIXES A DAEMON
+Updated: **2026-08-10 14:45 UTC (RUNG-1 PASS — QA LANDS THE PREDICTED
+SINGLE FAIL; THE 08-09 SETTLEMENT COHORT IS CONFIRMED LOST WITH THE
+DEAD RUN, NOT PARTIAL.** **(1) QA 10:00Z**: exactly one FAIL —
+batch-budget (sweep 11.49h/10.5h + the two tradepass overruns, all
+aging out by 08-14), zero new skip/lock findings; lock-skip still
+SKIP/UNVERIFIED (no cycle has needed the wait), tape-coverage WATCH is
+a 2-market draining tail, fade-window PASS 0 lost cycles over 7
+windows. One observation: QA mem peak 11.5G (batch unit, uncapped,
+OOMScoreAdjust=500) — highest batch peak recorded; watch, not act.
+**(2) Second cohort read: LOST, not partial.** Zero settlements landed
+08-10 (the ~11:30Z window has passed) — settlement reads are
+run-scoped, and the 08-09 weather-block positions belonged to dead run
+20260808T063109, so its second cohort will never credit. Quantified at
+death (read-only ledger query): 11,841 unsettled fills across 326
+markets, $8,291.76 notional — fees paid, never resolved. Run 0808's
+usable record is cohort 1 only: 112 settlements, −$196 (−14%), same
+longshot-loses shape as the closed probe. Cohort accumulation
+restarted with run 20260810T081931 (08:19Z on the fixed persist code);
+its first cohort lands ~08-11 11:30Z. **(3) New run healthy**: 1,556
+fills / equity −118 at 14:16Z (~260 fills/hr), cgroup 390MB current /
+584MB peak; no '[shadow] ledger persist declined' journal line yet —
+the fix is still untested live (no decline has occurred; fine).
+**(4) Reload line in-band**: sweep-hour prints 102,343 (03:19Z) →
+113,935 (08:21Z) — backfill climb under the 150k tripwire, b962b5c
+shape holds. **(5) Bounded-burst day 8 clean**: `collect_skips.jsonl`
+still ends 08-07 07:44Z — zero collector skips; 14:15Z collector cycle
+exit 0, errors 0. **(6) Poly ETA slipped inside the band**:
+10,600/16,391 at 14:11Z, ~299 min left → ETA ~19:10Z (~14h10m wall,
+inside 13h41m–17h11m); the 08:30 pass's ~16:25Z estimate was an
+early-run extrapolation. Host stability + NTP remain USER-GATED. NEXT
+PASS: (1) poly completion ~19:10Z, then doctor; (2) reload-line
+post-sweep drain to the ~101k baseline; (3) run 081931 first
+settlements ~08-11 11:30Z — first cohort of the restarted series;
+(4) still watching for the first live persist-decline line.**
+(prior **2026-08-10 08:30 UTC (RUNG-1 PASS FINDS AND FIXES A DAEMON
 DEATH: RUN 20260808T063109 DIED AT 02:16Z ON AN UNHANDLED LEDGER LOCK
 CONFLICT — PERSIST IS NOW HELD-FOR-RETRY, PROMOTED 2a69145.**
 **(1) Shadow crash root-caused**: at 02:16:14Z `ledger.persist` raised
