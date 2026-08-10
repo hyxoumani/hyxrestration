@@ -1,6 +1,33 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-09 20:30 UTC (RUNG-1 PASS — ALL THREE TIME-GATED
+Updated: **2026-08-10 02:25 UTC (OVERNIGHT RUNG-1 PASS — RELOAD LINE
+COMPLETES ITS POST-SWEEP DRAIN TO BASELINE; EVERYTHING ELSE GREEN AND
+TIME-GATED.** **(1) Reload line drained exactly as predicted**: hourly
+prints 117,042 (19:39Z) → 113,165 (21:39Z) → 106,395 (00:39Z) →
+102,092 (01:40Z) — a monotone post-sweep decline back to the ~101k
+baseline, far under the 150k tripwire; the b962b5c filtered-load shape
+is now confirmed across a full sweep cycle (climb during backfill,
+drain after). **(2) Shadow run 20260808T063109 healthy**: 14,264
+fills / 7,726 polls at 02:12Z (~340 fills/hr overnight), RSS 332MB /
+cgroup 536MB — flat. Settlement cohort unchanged at 112 (last lands
+08-09 15:38Z); equity marked −676 at 02:15Z vs −426 at 20:16Z — open-
+position mark drift + fees on ~2k new fills under the documented
+pessimistic marking, not a settlement event; the cohort read stands
+at −$196. **(3) Bounded-burst day 6 clean**: `collect_skips.jsonl`
+still ends 08-07 07:44Z — zero collector skips. **(4) Doctor 02:20Z
+clean**: 0 kalshi mirror violations; sweep_log 48h = 6,835 ok / 18
+truncated / 3 error (errors 8→3 as the poly-tail window ages out);
+stream archive 406.6M book events, 1,176 gaps, 10.9GB. **(5) Two
+streamd flush declines** (23:38Z, 00:36Z, both vs the shadow reader
+PID 788) held-for-retry and flushed next round — zero loss, the known
+benign single-writer class. **(6) No reboot** — uptime 1d19h44 off
+the 06:30Z 08-08 boot; NTP still inactive. Host stability + NTP
+remain USER-GATED. NEXT PASS: (1) 05:00Z poly sweep — first
+sweep-hour reload print, peak >150k is actionable; (2) 10:00Z QA —
+expect the same single batch-budget FAIL until the 08-04 overrun ages
+out 08-14; (3) 08-09 weather-block settlements ~11:30Z — second
+cohort read of the wave series.**
+(prior **2026-08-09 20:30 UTC (RUNG-1 PASS — ALL THREE TIME-GATED
 ITEMS LANDED GREEN: FIRST SETTLEMENT COHORT IN (LONGSHOT SIDE LOSES
 AGAIN), POLY FINISHED IN-BAND, RELOAD LINE DRAINING POST-SWEEP).**
 **(1) First settlement cohort of run 20260808T063109 is in**: 112
