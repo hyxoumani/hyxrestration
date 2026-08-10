@@ -263,6 +263,28 @@ Format: what happened → root cause → error type → prevention tier
     background tasks are for work you will personally await this turn.
     The relaunch (02:17Z, unit `hyxlab-tradepass-drain`) applied it.
 
+20. **2026-08-10 — an ad-hoc read-write connect to the shadow ledger
+    killed the daemon: run 20260808T063109 died at 1d20h on an
+    unhandled persist-time lock conflict.** At 02:16:14Z shadow's
+    `ledger.persist` hit `duckdb.IOException: Could not set lock on
+    hyxshadow.duckdb` — the lock was held by an ad-hoc python process
+    (almost certainly the prior status pass querying the ledger with a
+    default read-write `duckdb.connect`). The daemon had no handler on
+    the persist path, exited 1, and systemd's restart opened a NEW run
+    — ending the accumulating settlement-cohort series one day before
+    its second cohort read. Two compounding causes, both known
+    classes: (a) writers must hold-for-retry on lock declines (streamd
+    got this 2026-07; shadow's ledger never did — item 12's family);
+    (b) ad-hoc readers must connect read-only via
+    `hyxlab.store.connect_retry` (the 07-12 recurrence-audit rule —
+    this is its first WRITE-SIDE casualty: the reader's default-mode
+    connect was the lock HOLDER, not the victim). Type:
+    `incomplete-hardening` + rule regression. Prevention: persist
+    decline now held-for-retry (regression-tested, counters advance
+    only on success); ops.md rule extended — ad-hoc queries on ANY
+    live DB (archive, stream, shadow ledger) are read-only, no
+    exceptions.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

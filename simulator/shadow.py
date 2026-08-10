@@ -374,12 +374,20 @@ class ShadowRunner:
         if self.sim._last_ts is not None:
             self.sim._settle()
         # Persist newly produced fills + settlements + one equity point.
+        # The ledger is a separate DuckDB file and ad-hoc readers can
+        # briefly writer-lock it; a persist decline must hold the rows
+        # for retry (counters advance only on success), never kill the
+        # daemon — an unhandled IOException here ended run
+        # 20260808T063109 at 1d20h (2026-08-10 02:16 UTC).
         new_fills = self.sim.result.fills[self._n_fills_persisted :]
         new_settlements = self.sim.result.settlements[self._n_settlements_persisted :]
         equity = self.sim.result.equity_curve[-1] if self.sim.result.equity_curve else None
-        self.ledger.persist(self.run_id, new_fills, equity, new_settlements)
-        self._n_fills_persisted = len(self.sim.result.fills)
-        self._n_settlements_persisted = len(self.sim.result.settlements)
+        try:
+            self.ledger.persist(self.run_id, new_fills, equity, new_settlements)
+            self._n_fills_persisted = len(self.sim.result.fills)
+            self._n_settlements_persisted = len(self.sim.result.settlements)
+        except duckdb.Error as e:
+            print(f"[shadow] ledger persist declined ({e!r}); held for retry", flush=True)
         # The sim appends one equity point PER SNAPSHOT (~2.3M/day at
         # stream rates) and shadow runs forever: the curve grew to ~800MB
         # in 2.3 days and got the daemon kernel-OOM-killed mid-run at the

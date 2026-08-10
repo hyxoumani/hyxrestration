@@ -141,6 +141,64 @@ def test_shadow_tails_only_the_future_and_persists_fills(tmp_path):
         assert conn.execute("SELECT count(*) FROM shadow_fills").fetchone()[0] == 1
 
 
+def test_shadow_holds_fills_for_retry_when_ledger_is_locked(tmp_path):
+    """Regression (run 20260808T063109 death, 2026-08-10 02:16 UTC): an
+    ad-hoc reader writer-locked the ledger DB and the unhandled
+    IOException in persist killed the daemon mid-run. A persist decline
+    must be held-for-retry — fills survive in memory and land on the
+    next successful poll, like streamd's flush declines."""
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+    shadow_db = tmp_path / "shadow.duckdb"
+
+    from hyxlab.store import Store
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.flush()
+
+    class LockableLedger(ShadowLedger):
+        locked = False
+
+        def persist(self, *args, **kwargs):
+            if self.locked:
+                raise duckdb.IOException("IO Error: Could not set lock on file")
+            super().persist(*args, **kwargs)
+
+    ledger = LockableLedger(shadow_db)
+    runner = ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ledger,
+    )
+    runner.poll_once()  # anchor
+
+    # A fill is produced while the ledger is locked: no crash, nothing
+    # persisted, the fill held in memory as unpersisted.
+    sstore.append_events(_snapshot_frame("M1", 2, 44, 55, T0 + timedelta(seconds=30)))
+    sstore.flush()
+    ledger.locked = True
+    runner.poll_once()
+    assert len(runner.sim.result.fills) == 1
+    assert runner._n_fills_persisted == 0
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        assert conn.execute("SELECT count(*) FROM shadow_fills").fetchone()[0] == 0
+
+    # Lock releases -> the held fill lands on the next poll, exactly once.
+    ledger.locked = False
+    runner.poll_once()
+    assert runner._n_fills_persisted == 1
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        fills = conn.execute("SELECT strategy, price, qty FROM shadow_fills").fetchall()
+    assert fills == [("buy_first", 0.45, 5.0)]
+
+
 def test_shadow_gap_invalidates_books(tmp_path):
     stream_db = tmp_path / "stream.duckdb"
     archive_db = tmp_path / "archive.duckdb"

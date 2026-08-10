@@ -14,3 +14,8 @@
   trusting that it was started.
 - Multi-hour DuckDB writers exist (poly sweep ~7h). Sim-side readers
   degrade + retry lazily; never wait on the archive lock in a loop.
+- Ad-hoc queries on ANY live DuckDB (hyxlab.duckdb, hyxstream.duckdb,
+  hyxshadow.duckdb) MUST connect read-only (`hyxlab.store.connect_retry`
+  or `read_only=True`). A default read-write connect takes the writer
+  lock and made the shadow daemon crash mid-persist, ending a 1d20h
+  run (mistakes #20).
