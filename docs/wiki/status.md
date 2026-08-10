@@ -1,6 +1,39 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-10 02:25 UTC (OVERNIGHT RUNG-1 PASS — RELOAD LINE
+Updated: **2026-08-10 08:30 UTC (RUNG-1 PASS FINDS AND FIXES A DAEMON
+DEATH: RUN 20260808T063109 DIED AT 02:16Z ON AN UNHANDLED LEDGER LOCK
+CONFLICT — PERSIST IS NOW HELD-FOR-RETRY, PROMOTED 2a69145.**
+**(1) Shadow crash root-caused**: at 02:16:14Z `ledger.persist` raised
+`duckdb.IOException` — hyxshadow.duckdb writer-locked by an ad-hoc
+python PID 1476939 (a default read-write connect, almost certainly the
+prior status pass's cohort query). No handler on the persist path →
+exit 1 → systemd restart opened run 20260810T021644, ending the
+cohort-accumulating run 20260808T063109 at 1d20h, one day before its
+second cohort read. The 08-09 weather-block settlements will land in
+the ledger under whichever run holds the open positions — the ~11:30Z
+read still happens but the 0808 run's open positions died with it;
+treat the second-cohort read as PARTIAL. **(2) Fix shipped**: persist
+declines now log + hold rows for retry (counters advance only on
+success, exactly-once landing regression-tested — same shape as
+streamd's flush declines); ops.md rule: ad-hoc queries on ANY live DB
+connect read-only; mistakes #20. Promoted 2a69145; shadow restarted
+08:19:31Z on fixed code as run 20260810T081931 (the 6h run 021644 was
+the cheapest-possible restart cost — no settlements before ~16h).
+**(3) Reload line green**: 95,572 at 07:18Z, below the ~101k baseline
+even mid-poly-sweep. **(4) Bounded-burst day 7 clean**:
+`collect_skips.jsonl` still ends 08-07 07:44Z — zero collector skips;
+collector 08:15Z cycle exit 0, errors 0. **(5) Poly sweep on pace**:
+started 05:00Z, 4,600/16,391 at 08:14Z, ~488 min left → ETA ~16:25Z,
+inside the measured band. **(6) One streamd kalshi-trades reconnect
+(07:42Z keepalive timeout, 1 gap, clean resubscribe)** — known benign
+class. Host stability + NTP remain USER-GATED. NEXT PASS: (1) 10:00Z
+QA — expect the single batch-budget FAIL until 08-14; (2) ~11:30Z
+08-09 weather-block settlements — verify which run_id they credit to
+and record the partial-cohort caveat; (3) poly completion ~16:25Z,
+then doctor; (4) watch for the first '[shadow] ledger persist
+declined' journal line — the fix's first live decline should flush
+next poll with zero loss.**
+(prior **2026-08-10 02:25 UTC (OVERNIGHT RUNG-1 PASS — RELOAD LINE
 COMPLETES ITS POST-SWEEP DRAIN TO BASELINE; EVERYTHING ELSE GREEN AND
 TIME-GATED.** **(1) Reload line drained exactly as predicted**: hourly
 prints 117,042 (19:39Z) → 113,165 (21:39Z) → 106,395 (00:39Z) →
