@@ -1,6 +1,30 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-10 14:45 UTC (RUNG-1 PASS — QA LANDS THE PREDICTED
+Updated: **2026-08-10 20:20 UTC (RUNG-1 PASS — POLY FINISHES *UNDER*
+THE BAND LOW (NEW FASTEST), RELOAD LINE DRAINS BELOW BASELINE; ALL
+GREEN, REMAINING ITEMS TIME-GATED.** **(1) Poly sweep done 18:26Z**:
+802.0 min (13h22m) wall — 19 min UNDER the measured 13h41m–17h11m
+band low, the fastest recorded pass (band low extends to 13h22m);
+16,391 markets, 647,041 prices / 995,438 trades, 3 errors (one 408
+non-list trades_tail + ReadTimeout tails, all logged truncation-
+aware). **(2) Doctor 20:16Z clean**: 0 kalshi mirror violations;
+sweep_log 48h = 7,029 ok / 17 truncated / 1 error (errors 3→1 aging
+out); stream archive 416.6M book events, 1,182 gaps, 11.1GB.
+**(3) Reload line completed its post-sweep drain**: 105,419 (17:21Z)
+→ 102,662 (18:22Z) → 99,806 (19:22Z) — below the ~101k baseline, far
+under the 150k tripwire; the b962b5c filtered-load shape holds for a
+second full sweep cycle. **(4) Shadow run 20260810T081931 healthy**:
+4,085 fills / 2,101 polls at 20:12Z (~340 fills/hr), cgroup 400MB
+current / 584MB peak — flat; still no '[shadow] ledger persist
+declined' journal line (the 2a69145 fix remains untested live; fine).
+**(5) Bounded-burst day 8 clean**: `collect_skips.jsonl` still ends
+08-07 07:44Z — zero collector skips; 20:15Z collector cycle exit 0,
+errors 0. Host stability + NTP remain USER-GATED. NEXT PASS: (1) run
+081931 first settlements ~08-11 11:30Z — first cohort of the
+restarted series; (2) 08-11 05:00Z sweep-hour reload print — peak
+>150k is actionable; (3) 10:00Z QA — expect the single batch-budget
+FAIL until 08-14; (4) persist-decline watch continues.**
+(prior **2026-08-10 14:45 UTC (RUNG-1 PASS — QA LANDS THE PREDICTED
 SINGLE FAIL; THE 08-09 SETTLEMENT COHORT IS CONFIRMED LOST WITH THE
 DEAD RUN, NOT PARTIAL.** **(1) QA 10:00Z**: exactly one FAIL —
 batch-budget (sweep 11.49h/10.5h + the two tradepass overruns, all
