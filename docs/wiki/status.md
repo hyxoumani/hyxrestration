@@ -1,6 +1,33 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-11 02:20 UTC (OVERNIGHT RUNG-1 PASS — RELOAD LINE
+Updated: **2026-08-11 08:35 UTC (RUNG-1 PASS — SWEEP-HOUR READ IS
+GREEN: RELOAD LINE BOTTOMS AT ~85.4K AND THE BACKFILL CLIMB RESUMES;
+ALL GREEN, EVERYTHING TIME-GATED.** **(1) The sweep-hour reload print
+answers the open question**: the drain continued to a trough of
+85,433 (06:23Z — a new low, well below the old ~101k baseline) and
+turned UPWARD with the 05:00Z sweep's backfill — 88,063 at 07:23Z.
+Neither actionable case fired (peak far under the 150k tripwire, and
+the climb did resume) — the baseline is genuinely resetting lower via
+expired-market ageout, as read. **(2) Shadow run 20260810T081931
+healthy at 24h**: 8,010 fills / 4,216 polls at 08:11Z (~360 fills/hr
+steady), cgroup 349MB current / 557MB peak — flat; still no '[shadow]
+ledger persist declined' journal line (the 2a69145 fix remains
+untested live; fine). **(3) Poly sweep on pace**: 4,400/16,454 at
+08:13Z, ~518 min left → ETA ~16:50Z, inside the 13h22m–17h11m band;
+two trades_tail 429 early-stops logged truncation-aware. Kalshi sweep
+runs concurrently with scattered 429 trade-tape fetches — known
+contention-hour class. **(4) Doctor 08:30Z clean**: 0 kalshi mirror
+violations; sweep_log 48h = 6,889 ok / 17 truncated / 1 error; stream
+archive 422.1M book events, 1,187 gaps (+2 benign), 11.3GB.
+**(5) Bounded-burst day 10 clean**: `collect_skips.jsonl` still ends
+08-07 07:44Z — zero collector skips; 08:15Z collector cycle exit 0,
+errors 0, fetch 34.2s (sweep-hour elevated, normal). Host stability +
+NTP remain USER-GATED. NEXT PASS: (1) 10:00Z QA — expect the single
+batch-budget FAIL until 08-14; (2) run 081931 first settlements
+~11:30Z — first cohort of the restarted series; (3) poly completion
+~16:50Z, then doctor + post-sweep reload peak; (4) persist-decline
+watch continues.**
+(prior **2026-08-11 02:20 UTC (OVERNIGHT RUNG-1 PASS — RELOAD LINE
 KEEPS DRAINING TO ~90K (NEW LOW), SHADOW ON PACE; ALL GREEN,
 EVERYTHING TIME-GATED.** **(1) Shadow run 20260810T081931 healthy at
 18h**: 6,431 fills / 3,166 polls at 02:15Z (~360 fills/hr), cgroup
