@@ -1,6 +1,36 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-11 14:35 UTC (RUNG-1 PASS — FIRST SETTLEMENT
+Updated: **2026-08-11 20:45 UTC (RUNG-1 PASS — POLY SETS ANOTHER
+FASTEST (13H17M) AND CROSSES 1M TRADES IN A DAY; SECOND STREAMD FLUSH
+DECLINE RETRIES CLEAN; ALL GREEN, EVERYTHING TIME-GATED.**
+**(1) Poly sweep done 18:21Z**: 797.2 min (13h17m) wall — 5 min under
+the 08-10 record 13h22m, band low extends to 13h17m; 16,454 markets,
+465,586 prices / 1,001,762 trades (first 1M+ trade day), 5 errors
+(429 trades_tail early-stops, all logged truncation-aware), 8.6G mem
+peak. The 14:12Z ETA of ~19:31Z overshot by ~70 min — the contention-
+hour drag eased late. **(2) Reload line post-sweep peak 115,839
+(15:25Z)**: 108,645 (13:25Z) → 110,740 → 115,839 → 115,616 → 113,583
+→ 111,580 → 109,631 (19:26Z) — far under the 150k tripwire, drain
+underway; the reset-lower-baseline read holds through a third full
+sweep cycle. **(3) SECOND streamd flush decline 18:36:33Z** — same
+class as 13:52Z (lock conflict with shadow's poll connection on
+hyxstream.duckdb), 3,617 rows held; the very next round 18:37:40Z
+flushed 3,872 — retry path clean again. Two occurrences in ~10h;
+still watch-not-act, but the frequency is now a tracked number.
+**(4) Shadow run 20260810T081931 healthy at 36h**: 11,104 fills /
+6,346 polls at 20:13Z (~300–360 fills/hr), cgroup 375MB current /
+557MB peak — flat; still no '[shadow] ledger persist declined' line
+(2a69145 untested live; fine). **(5) Doctor ~20:20Z clean**: 0 kalshi
+mirror violations; sweep_log 48h = 6,343 ok / 17 truncated / 0 errors
+(errors fully aged out); stream archive 425.9M book events, 1,189
+gaps (+1 benign), 11.4GB. **(6) Bounded-burst day 10 still zero
+skips**: `collect_skips.jsonl` ends 08-07 07:44Z; 20:15Z collector
+cycle exit 0, errors 0, fetch 24.0s. Host stability + NTP remain
+USER-GATED. NEXT PASS: (1) 08-12 10:00Z QA — expect the single
+batch-budget FAIL until 08-14; (2) run 081931 second settlement
+cohort ~08-12 11:30Z; (3) overnight reload-line drain + flush-decline
+frequency watch; (4) persist-decline watch continues.**
+(prior **2026-08-11 14:35 UTC (RUNG-1 PASS — FIRST SETTLEMENT
 COHORT OF THE RESTARTED SERIES LANDS AND THE PROBE LOSES AGAIN; QA
 LANDS ITS PREDICTED SINGLE FAIL; ALL GREEN, EVERYTHING TIME-GATED.**
 **(1) Run 20260810T081931 first cohort: 91 settlements 11:24–12:24Z**
