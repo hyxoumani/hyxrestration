@@ -1,6 +1,30 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-10 20:20 UTC (RUNG-1 PASS — POLY FINISHES *UNDER*
+Updated: **2026-08-11 02:20 UTC (OVERNIGHT RUNG-1 PASS — RELOAD LINE
+KEEPS DRAINING TO ~90K (NEW LOW), SHADOW ON PACE; ALL GREEN,
+EVERYTHING TIME-GATED.** **(1) Shadow run 20260810T081931 healthy at
+18h**: 6,431 fills / 3,166 polls at 02:15Z (~360 fills/hr), cgroup
+343MB current / 557MB peak — flat; still no '[shadow] ledger persist
+declined' journal line (the 2a69145 fix remains untested live; fine).
+**(2) Reload line continued its drain past baseline**: hourly prints
+99,806 (19:22Z) → 96,834 → 95,697 → 94,477 → 93,068 → 91,649 → 90,479
+(01:22Z) — monotone decline well below the ~101k baseline; reads as
+expired-market ageout after the fast 08-10 sweep, not a fault. The
+05:00Z sweep-hour print decides: peak >150k is actionable, and a
+failure to climb during backfill would also be notable (baseline may
+simply be resetting lower). **(3) Doctor 02:18Z clean**: 0 kalshi
+mirror violations; sweep_log 48h = 6,321 ok / 16 truncated / 1 error;
+stream archive 419.6M book events, 1,185 gaps (+3 benign), 11.2GB.
+**(4) Bounded-burst day 9 clean**: `collect_skips.jsonl` still ends
+08-07 07:44Z — zero collector skips; 02:15Z collector cycle exit 0,
+errors 0, fetch 18.8s. **(5) Streamd flushing normally** (~3–5k
+rows/round), no flush declines in the window. Host stability + NTP
+remain USER-GATED. NEXT PASS: (1) 05:00Z poly sweep — sweep-hour
+reload print, confirm the backfill climb resumes; (2) 10:00Z QA —
+expect the single batch-budget FAIL until 08-14; (3) run 081931 first
+settlements ~11:30Z — first cohort of the restarted series;
+(4) persist-decline watch continues.**
+(prior **2026-08-10 20:20 UTC (RUNG-1 PASS — POLY FINISHES *UNDER*
 THE BAND LOW (NEW FASTEST), RELOAD LINE DRAINS BELOW BASELINE; ALL
 GREEN, REMAINING ITEMS TIME-GATED.** **(1) Poly sweep done 18:26Z**:
 802.0 min (13h22m) wall — 19 min UNDER the measured 13h41m–17h11m
