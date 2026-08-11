@@ -1,6 +1,40 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-11 08:35 UTC (RUNG-1 PASS — SWEEP-HOUR READ IS
+Updated: **2026-08-11 14:35 UTC (RUNG-1 PASS — FIRST SETTLEMENT
+COHORT OF THE RESTARTED SERIES LANDS AND THE PROBE LOSES AGAIN; QA
+LANDS ITS PREDICTED SINGLE FAIL; ALL GREEN, EVERYTHING TIME-GATED.**
+**(1) Run 20260810T081931 first cohort: 91 settlements 11:24–12:24Z**
+— 12 yes / 79 no (13.2% win), payout 962.39 vs ~1,284 outlay on the
+settled markets (2,079 fills: 1,212.13 cost + 71.92 fees) → ~−322
+net; the longshot-loses read from the dead 063109 series holds in the
+restart. Still no '[shadow] ledger persist declined' journal line
+(the 2a69145 fix remains untested live; fine). **(2) QA 10:00Z:
+exactly the predicted single FAIL** — batch-budget (sweep 11.49h/
+10.5h on 08-07 + tradepass 8.83h/4h on 08-04, both aging out by
+08-14); zero new skip/lock findings; QA mem peak 11.1G (prior 11.5G —
+still watch-only). **(3) Reload line confirms the reset-lower read**:
+trough 85,433 (06:23Z) then the backfill climb — 88,063 → 95,336 →
+100,518 → 104,437 → 97,989 → 101,068 → 108,645 (13:25Z); well under
+the 150k tripwire. **(4) Poly sweep slowed but in-band**:
+10,400/16,454 at 14:12Z, ~319 min left → ETA ~19:31Z (wall ~14h31m,
+inside 13h22m–17h11m; the 08:13Z ETA of 16:51Z drifted ~2.6h —
+contention-hour class). **(5) Shadow healthy at 30h**: 9,300 fills /
+5,281 polls at 14:11Z (~360 fills/hr), cgroup 358MB current / 557MB
+peak — flat. **(6) One streamd flush decline 13:52:58Z** — lock
+conflict with shadow's poll connection on hyxstream.duckdb; 3,644
+rows held for retry and the next rounds flushed normally. First
+observed writer-side decline of this class; the retry path worked —
+watch, not act. **(7) Doctor ~14:25Z clean**: 0 kalshi mirror
+violations; sweep_log 48h = 7,606 ok / 21 truncated / 0 errors
+(errors fully aged out); stream archive 423.9M book events, 1,188
+gaps (+1 benign), 11.3GB. **(8) Bounded-burst day 10 still zero
+skips**: `collect_skips.jsonl` ends 08-07 07:44Z; 14:15Z collector
+cycle exit 0, errors 0. Host stability + NTP remain USER-GATED. NEXT
+PASS: (1) poly completion ~19:31Z, then doctor + post-sweep reload
+peak; (2) 08-12 10:00Z QA — expect the single batch-budget FAIL until
+08-14; (3) run 081931 second cohort ~08-12 11:30Z; (4) persist-
+decline + streamd flush-decline watch continues.**
+(prior **2026-08-11 08:35 UTC (RUNG-1 PASS — SWEEP-HOUR READ IS
 GREEN: RELOAD LINE BOTTOMS AT ~85.4K AND THE BACKFILL CLIMB RESUMES;
 ALL GREEN, EVERYTHING TIME-GATED.** **(1) The sweep-hour reload print
 answers the open question**: the drain continued to a trough of
