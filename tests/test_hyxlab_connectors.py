@@ -327,3 +327,91 @@ def test_candlesticks_retries_a_429_instead_of_losing_the_series(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda s: None)
     out = k.get_candlesticks("KXSHIBA", "KXSHIBA-1", 0, 1, session=_Sess())
     assert out == [{"end_period_ts": 1}]
+
+
+class _CandleResp:
+    def __init__(self, status, body=None):
+        self.status_code = status
+        self._body = body or {}
+        self.headers = {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(response=self)
+
+    def json(self):
+        return self._body
+
+
+class _LimitEnforcingSess:
+    """Mimics the venue's measured range limit (EXP-1274, 2026-08-12):
+    400 when (end_ts - start_ts) / period exceeds 5000 periods, else one
+    synthetic candle per hour inside the requested window, INCLUSIVE of
+    both endpoints (also measured: the boundary candle returns from both
+    adjacent requests)."""
+
+    def __init__(self):
+        self.calls: list[tuple[int, int]] = []
+
+    def get(self, url, params=None, timeout=None):
+        assert "candlesticks" in url
+        s, e, period = params["start_ts"], params["end_ts"], params["period_interval"]
+        self.calls.append((s, e))
+        if (e - s) / (period * 60) > 5000:
+            return _CandleResp(400)
+        step = period * 60
+        first = s if s % step == 0 else s + (step - s % step)
+        candles = [{"end_period_ts": t} for t in range(first, e + 1, step)]
+        return _CandleResp(200, {"candlesticks": candles})
+
+
+def test_candlesticks_long_span_is_chunked_below_the_venue_limit():
+    """Measured live 2026-08-08 (EXP-1271 §3): KXPAYROLLS-26JUL-T90000's
+    ~298-day open→close span (7150 hourly periods) drew a deterministic
+    400 ('max candlesticks: 5000') every sweep, forever. Long ranges must
+    be chunked into venue-acceptable windows."""
+    from collector.venues import kalshi as k
+
+    sess = _LimitEnforcingSess()
+    start, end = 1760364000, 1760364000 + 7150 * 3600  # the live KXPAYROLLS span
+    out = k.get_candlesticks("KXPAYROLLS", "KXPAYROLLS-26JUL-T90000", start, end, 60, session=sess)
+    assert len(sess.calls) == 2, sess.calls
+    for s, e in sess.calls:
+        assert (e - s) / 3600 <= 5000, "a chunk still exceeds the venue limit"
+    # contiguous chunks: no gap between them, full range covered
+    assert sess.calls[0][0] == start
+    assert sess.calls[0][1] == sess.calls[1][0]
+    assert sess.calls[-1][1] == end
+    assert out, "stitched result lost the candles"
+
+
+def test_candlesticks_chunk_stitching_has_no_gap_and_no_duplicate():
+    """The venue's window is inclusive at BOTH ends (measured 2026-08-12:
+    a candle whose end_period_ts equals the shared chunk boundary is
+    returned by both adjacent requests), so stitching must dedup on
+    end_period_ts while keeping ascending order and every hour exactly
+    once."""
+    from collector.venues import kalshi as k
+
+    sess = _LimitEnforcingSess()
+    start = 5000 * 3600 * 4  # step-aligned so the boundary candle exists in both chunks
+    end = start + 6000 * 3600
+    out = k.get_candlesticks("KXPAYROLLS", "KXPAYROLLS-26JUL-T90000", start, end, 60, session=sess)
+    ts = [c["end_period_ts"] for c in out]
+    assert len(ts) == len(set(ts)), "boundary candle duplicated across chunks"
+    assert ts == sorted(ts), "stitched candles out of order"
+    expected = list(range(start, end + 1, 3600))
+    assert ts == expected, "gap or loss at the chunk boundary"
+
+
+def test_candlesticks_short_span_stays_a_single_request():
+    """Chunking must not change behaviour for the normal case (weather
+    dailies span hours, not months): one request, same params as before."""
+    from collector.venues import kalshi as k
+
+    sess = _LimitEnforcingSess()
+    out = k.get_candlesticks("KXHIGHNY", "KXHIGHNY-26AUG12-B90.5", 7200, 7200 + 6 * 3600, 60, session=sess)
+    assert sess.calls == [(7200, 7200 + 6 * 3600)]
+    assert len(out) == 7

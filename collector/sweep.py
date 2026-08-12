@@ -262,14 +262,26 @@ def sweep_series(
             continue
         try:
             candles = kalshi.get_candlesticks(
-                series_ticker, m["ticker"], open_ts, close_ts, 60, session=session
+                series_ticker,
+                m["ticker"],
+                open_ts,
+                close_ts,
+                60,
+                session=session,
+                pause_s=CANDLES_PAUSE_S,
             )
         except requests.HTTPError as e:
             if e.response is not None and e.response.status_code == 429:
                 retry_after = e.response.headers.get("Retry-After")
                 time.sleep(float(retry_after) if retry_after else 5.0)
                 candles = kalshi.get_candlesticks(
-                    series_ticker, m["ticker"], open_ts, close_ts, 60, session=session
+                    series_ticker,
+                    m["ticker"],
+                    open_ts,
+                    close_ts,
+                    60,
+                    session=session,
+                    pause_s=CANDLES_PAUSE_S,
                 )
             else:
                 raise

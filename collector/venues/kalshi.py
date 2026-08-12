@@ -372,6 +372,16 @@ def get_series_list(session: requests.Session | None = None) -> list[dict[str, A
     return resp.json().get("series", [])
 
 
+# Measured 2026-08-12 against the live API (EXP-1274): the candlesticks
+# endpoint rejects any request whose span exceeds this many periods —
+# 5000 periods returned 200, 5001 returned 400 with body
+# 'requested time range with candlesticks: 5001.000000, max candlesticks:
+# 5000'. Long-lived monthly markets (KXPAYROLLS-26JUL-T90000's ~298-day
+# open→close span = 7150 hourly periods) hit it, and post-EXP-1271 the
+# sweep retried that deterministic 400 daily.
+MAX_CANDLES_PER_REQUEST = 5000
+
+
 def get_candlesticks(
     series_ticker: str,
     market_ticker: str,
@@ -379,11 +389,21 @@ def get_candlesticks(
     end_ts: int,
     period_interval: int = 60,
     session: requests.Session | None = None,
+    pause_s: float = 0.0,
 ) -> list[dict[str, Any]]:
     """Historical candles (price + yes_bid/yes_ask OHLC) for one market.
 
     period_interval is in minutes (1, 60, or 1440). Available for settled
     markets — this is what makes Tier-1 historical backtesting possible.
+
+    Spans over MAX_CANDLES_PER_REQUEST periods are chunked into
+    limit-sized windows and stitched. Chunk boundaries are INCLUSIVE at
+    both ends (measured 2026-08-12: a candle whose end_period_ts equals
+    the shared boundary is returned by BOTH adjacent requests), so
+    stitching dedups on end_period_ts; within a request the API returns
+    ascending end_period_ts, and chunks are walked ascending, so order is
+    preserved. `pause_s` paces BETWEEN chunk requests, same convention as
+    get_markets' between-pages pacing.
 
     Goes through `_get_with_429_retry` like every other endpoint here.
     `sweep_series` has its own inline single-retry around this call, but a
@@ -392,13 +412,32 @@ def get_candlesticks(
     `run_sweep` recorded as status='error' with zero markets kept. Capped
     exponential backoff turns that into a pause instead of a lost series.
     """
+    import time as _time
+
     sess = session or requests.Session()
-    resp = _get_with_429_retry(
-        sess,
-        f"{BASE}/series/{series_ticker}/markets/{market_ticker}/candlesticks",
-        {"start_ts": start_ts, "end_ts": end_ts, "period_interval": period_interval},
-    )
-    return resp.json().get("candlesticks", [])
+    url = f"{BASE}/series/{series_ticker}/markets/{market_ticker}/candlesticks"
+    max_span_s = MAX_CANDLES_PER_REQUEST * period_interval * 60
+    out: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    chunk_start = start_ts
+    while True:
+        chunk_end = min(chunk_start + max_span_s, end_ts)
+        if chunk_start != start_ts and pause_s:
+            _time.sleep(pause_s)
+        resp = _get_with_429_retry(
+            sess,
+            url,
+            {"start_ts": chunk_start, "end_ts": chunk_end, "period_interval": period_interval},
+        )
+        for c in resp.json().get("candlesticks", []):
+            ts = c.get("end_period_ts")
+            if ts in seen:
+                continue  # boundary candle already stitched from the previous chunk
+            seen.add(ts)
+            out.append(c)
+        if chunk_end >= end_ts:
+            return out
+        chunk_start = chunk_end
 
 
 def candle_row(series: str, m: dict[str, Any], c: dict[str, Any], period_s: int) -> tuple:
