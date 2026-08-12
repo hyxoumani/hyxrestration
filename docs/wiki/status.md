@@ -1,6 +1,43 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-11 20:45 UTC (RUNG-1 PASS — POLY SETS ANOTHER
+Updated: **2026-08-12 02:35 UTC (OVERNIGHT RUNG-1 PASS — JOURNAL
+AUDIT CORRECTS THE FLUSH-DECLINE COUNT: 10 IN ~23H, NOT 2; ALL
+RETRIES CLEAN; ALL GREEN, EVERYTHING TIME-GATED.**
+**(1) Flush-decline frequency was undercounted.** A full journal grep
+(08-10 19:00 local onward) finds TEN streamd flush declines, not the
+two the 20:45 entry tracked: 08-11 03:11, 04:28, 09:52, 10:21, 11:20,
+13:52, 18:36Z and 08-12 00:27, 00:37, 01:40Z. The "first observed
+13:52Z" read was a grep-window artifact — each pass only counted
+declines inside its own look-back. Holder breakdown: 9/10 are the
+shadow daemon's read connection on hyxstream.duckdb (PID 1725897);
+1 (10:21Z, QA hour) a one-off reader PID 2600362. Every decline
+retried clean the next round (2.6–4.6k rows held, then normal 1.9–
+4.7k flushes); zero data loss; spill-cap headroom is ~100x (400k cap
+vs ~4k rows/round). New tracked baseline: ~10/day. Timing note: the
+00:27:28Z decline lands 20s after shadow's 00:27:08Z hourly metadata
+reload (04:28Z pairs the same way) — the reload's long read window is
+a likely collision driver alongside the 20s polls. Actionable
+threshold now explicit: >3 consecutive declines, or held rows >50k in
+one round, or a sustained jump above ~10/day → act (stagger/shorten
+shadow's reload connection). **(2) Reload line draining on script**:
+109,631 (19:26Z) → 107,666 → 107,191 → 105,756 → 104,343 → 102,934 →
+102,177 (01:27Z) — approaching the ~101k baseline, far under the 150k
+tripwire. **(3) Shadow run 20260810T081931 healthy at ~42h**: 12,673
+fills / 7,411 polls at 02:15Z (~330 fills/hr), cgroup 422MB current /
+557MB peak; still no '[shadow] ledger persist declined' line (2a69145
+untested live; fine). **(4) Doctor 02:20Z clean**: 0 kalshi mirror
+violations; sweep_log 48h = 6,343 ok / 17 truncated / 0 errors;
+stream archive 427.7M book events, 1,190 gaps (+1 benign), 11.5GB.
+**(5) Bounded-burst day 11 still zero skips**: `collect_skips.jsonl`
+ends 08-07 07:44Z; 02:15Z collector cycle exit 0, errors 0, fetch
+28.8s. QA unit's 'failed' state is the predicted 10:00Z batch-budget
+FAIL already recorded at 14:35 — not a new fault. Host stability +
+NTP remain USER-GATED. NEXT PASS: (1) 05:00Z poly sweep + sweep-hour
+reload print; (2) 10:00Z QA — expect the single batch-budget FAIL
+until 08-14; (3) run 081931 second settlement cohort ~11:30Z;
+(4) flush-decline count vs the new ~10/day baseline;
+(5) persist-decline watch continues.**
+(prior **2026-08-11 20:45 UTC (RUNG-1 PASS — POLY SETS ANOTHER
 FASTEST (13H17M) AND CROSSES 1M TRADES IN A DAY; SECOND STREAMD FLUSH
 DECLINE RETRIES CLEAN; ALL GREEN, EVERYTHING TIME-GATED.**
 **(1) Poly sweep done 18:21Z**: 797.2 min (13h17m) wall — 5 min under
