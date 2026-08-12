@@ -1,6 +1,43 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-12 08:25 UTC (RUNG-1 PASS — POLY SWEEP-HOUR READ
+Updated: **2026-08-12 14:30 UTC (RUNG-1 PASS — SECOND SETTLEMENT
+COHORT LANDS AND THE PROBE LOSES AGAIN (LARGER SAMPLE, SAME READ); QA
+LANDS ITS PREDICTED SINGLE FAIL; ZERO NEW FLUSH DECLINES; ALL GREEN,
+EVERYTHING TIME-GATED.**
+**(1) Run 20260810T081931 second cohort: 140 settlements 11:00–13:59Z**
+— 22 yes / 118 no (15.7% win), payout 3,925.21 vs 4,751.11 outlay +
+264.70 fees on the settled markets (6,523 fills) → ~−1,091 net. Second
+cohort, larger than the first (91), same longshot-loses direction —
+two-for-two in the restarted series. **(2) QA 10:00Z: exactly the
+predicted single FAIL** — batch-budget (sweep 11.49h/10.5h on 08-07 +
+tradepass 8.83h/4h on 08-04, both aging out by 08-14); zero new
+skip/lock findings; QA mem peak 11.0G (watch-only, stable).
+**(3) ZERO new streamd flush declines since the 08:25 pass** (~6h
+window) — running pace now well under the ~10/day baseline; no
+threshold armed. Still no '[shadow] ledger persist declined' line
+(2a69145 untested live; fine). **(4) Reload line mid-sweep climb on
+script**: 108,413 (08:31Z) → 113,284 → 117,241 → 118,647 → 119,402 →
+123,108 (13:32Z) — backfill climb continuing through the sweep, far
+under the 150k tripwire. **(5) Poly sweep in-band**: 10,400/16,656 at
+14:05Z, ~326 min left → ETA ~19:31Z (wall ~14h31m, inside 13h17m–
+17h11m); the 08:14Z fastest-ever ETA faded to contention-hour drag as
+predicted; two more trades_tail 429 early-stops logged truncation-
+aware. **(6) Shadow healthy at ~54h**: 15,109 fills / 9,541 polls at
+14:15Z (~190 fills/hr over the last 6h — low side of the daytime
+range but poll cadence is exactly on pace at ~20.5s; fills track
+market activity, watch-only), cgroup 400MB current / 557MB peak —
+flat. **(7) Doctor 14:20Z clean**: 0 kalshi mirror violations;
+sweep_log 48h = 8,011 ok / 23 truncated / 0 errors; stream archive
+431.3M book events, 1,198 gaps (+5 in ~6h — above the recent +1..+3
+per-pass trickle, still benign-class; count next pass), 11.6GB.
+**(8) Bounded-burst day 12 still zero skips**: `collect_skips.jsonl`
+ends 08-07 07:44Z; 14:15Z collector cycle exit 0, errors 0, fetch
+33.8s (sweep-hour elevated, normal). Host stability + NTP remain
+USER-GATED. NEXT PASS: (1) poly completion ~19:31Z, then doctor +
+post-sweep reload peak; (2) gap-count delta vs the +5 read; (3)
+flush-decline count vs ~10/day; (4) run 081931 third settlement
+cohort ~08-13 11:30Z; (5) persist-decline watch continues.**
+(prior **2026-08-12 08:25 UTC (RUNG-1 PASS — POLY SWEEP-HOUR READ
 GREEN AGAIN: RELOAD TROUGH 97.9K THEN THE BACKFILL CLIMB; FLUSH
 DECLINES TRACK UNDER THE NEW ~10/DAY BASELINE; ALL GREEN, EVERYTHING
 TIME-GATED.**
