@@ -1,6 +1,37 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-12 02:35 UTC (OVERNIGHT RUNG-1 PASS — JOURNAL
+Updated: **2026-08-12 08:25 UTC (RUNG-1 PASS — POLY SWEEP-HOUR READ
+GREEN AGAIN: RELOAD TROUGH 97.9K THEN THE BACKFILL CLIMB; FLUSH
+DECLINES TRACK UNDER THE NEW ~10/DAY BASELINE; ALL GREEN, EVERYTHING
+TIME-GATED.**
+**(1) Poly sweep on pace**: 4,400/16,656 at 08:14Z (universe +202 vs
+yesterday), ~530 min left → ETA ~17:04Z (wall ~12h04m if it holds —
+would be a new fastest; expect contention-hour drag to pull it back
+toward the 13h17m–17h11m band). Three trades_tail 429 early-stops
+logged truncation-aware. **(2) Reload line fully on script**: 102,177
+(01:27Z) → 101,347 → 100,495 → 99,697 → 98,834 → trough 97,909
+(06:28Z) → 104,837 (07:31Z) — the sweep-hour backfill climb resumed
+on cue; trough well above the 08-11 low of 85,433 and far under the
+150k tripwire. **(3) Two flush declines since the 02:35 audit** —
+03:36:54Z (2,845 rows held) and 04:21:57Z (2,782), both shadow's
+read connection (PID 1725897), both retried clean the very next
+round; non-consecutive, pace ~7/day — at/below the ~10/day baseline,
+no threshold fired. **(4) Shadow run 20260810T081931 healthy at
+~48h**: 13,948 fills / 8,461 polls at 08:10Z (~215 fills/hr overnight
+— the usual night slowdown, daytime was ~330), cgroup 430MB current /
+557MB peak — flat; still no '[shadow] ledger persist declined' line
+(2a69145 untested live; fine). **(5) Doctor 08:20Z clean**: 0 kalshi
+mirror violations; sweep_log 48h = 6,911 ok / 18 truncated / 0
+errors; stream archive 429.6M book events, 1,193 gaps (+3 benign),
+11.6GB. **(6) Bounded-burst day 12 still zero skips**:
+`collect_skips.jsonl` ends 08-07 07:44Z; 08:15Z collector cycle exit
+0, errors 0, fetch 34.0s (sweep-hour elevated, normal). Host
+stability + NTP remain USER-GATED. NEXT PASS: (1) 10:00Z QA — expect
+the single batch-budget FAIL until 08-14; (2) run 081931 second
+settlement cohort ~11:30Z; (3) poly completion ~17:04Z (fastest-ever
+watch), then doctor + post-sweep reload peak; (4) flush-decline count
+vs ~10/day; (5) persist-decline watch continues.**
+(prior **2026-08-12 02:35 UTC (OVERNIGHT RUNG-1 PASS — JOURNAL
 AUDIT CORRECTS THE FLUSH-DECLINE COUNT: 10 IN ~23H, NOT 2; ALL
 RETRIES CLEAN; ALL GREEN, EVERYTHING TIME-GATED.**
 **(1) Flush-decline frequency was undercounted.** A full journal grep
