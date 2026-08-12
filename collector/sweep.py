@@ -72,6 +72,46 @@ CANDLES_PAUSE_S = 0.35
 # 2,000 caps one series at ~17min so no single series can eat the run.
 MAX_MARKETS_PER_SERIES = 2000
 
+# Per-series budget raises for the series that settle more markets/day than
+# the flat budget reaches (EXP-1275, 2026-08-12; densities measured from
+# sweep_log covered-range 08-03..08-12). Post-294a5ae these series resume
+# honestly, but resume cannot outrun density: KXETH/KXETHD/KXSOLD/KXSOLE
+# settle ~6.7-7.8k/day against ~3.4k delivered per run (the flat budget stops
+# at the first accepted window past 2,000), so their frontier recedes
+# ~12-13h/day until it pins at the purge horizon (~110 days out), after which
+# ~half of every day is lost permanently. KXBTC/KXBTCD sit at ~4.4-4.6k/day
+# vs ~4.4k delivered — borderline, so they are included too. These series ARE
+# consumed (hylshi's decided_tail_scan and price_path_signal_scan read the
+# archive's crypto candles directly; cross-family-fade-replication-2026-08-03
+# names the daily crypto sweep a prerequisite). 8,000 clears the densest
+# measured day (7.8k) with catch-up slack and bounds one series at ~75 min;
+# in steady state a caught-up series only fetches what settled since its
+# watermark (~its density), so the raise costs catch-up transients, not a
+# permanent 4x spend. Applies only under the DEFAULT budget — an explicit
+# --max-markets (smoke tests) wins uniformly.
+SERIES_MAX_MARKETS: dict[str, int] = {
+    "KXBTC": 8000,
+    "KXBTCD": 8000,
+    "KXETH": 8000,
+    "KXETHD": 8000,
+    "KXSOLD": 8000,
+    "KXSOLE": 8000,
+}
+
+# Families deliberately NOT swept, even though their category is allowlisted
+# (EXP-1275, 2026-08-12). KXMVE* (multivariate parlays, Exotics/Mentions):
+# measured close-time density ~85k-7M markets/day against ~3.4k/run — full
+# keep-up would cost 20-35 HOURS of sweep per day, so coverage was <3% of
+# close-time and pinned at the purge horizon regardless of budget. NOTHING
+# consumes the family: zero references in strategies/, simulator/ or hyxlab/,
+# and hylshi's archive_reconcile_job already excludes KXMVE% outright
+# (99.97% of the raw deficit, no traded family). The 3 chronic truncators
+# ate 12,939 markets = 21% of the 08-11 sweep (61,566 markets, 9.4h) for an
+# archive slice nobody reads. Freeing that pays for the crypto raises above
+# with room to spare. A targeted `--series` repair pass bypasses this —
+# it is a default, not a ban.
+EXCLUDED_SERIES_PREFIXES: tuple[str, ...] = ("KXMVE",)
+
 # Consecutive-failure circuit breaker. Measured 2026-08-06: Kalshi's
 # /markets endpoint degraded mid-run (503s, hour-long 429 storm) and the
 # sweep fail-fasted through 2,569 CONSECUTIVE series errors — ~10k
@@ -358,8 +398,12 @@ def run_sweep(
         # Targeted repair pass: the alphabetical whole-category order is what
         # starved KXBTC*/KXETH*/KXSOL* (EXP-931), so recovering a specific
         # family must not have to wait its turn behind 200 unrelated series.
+        # Deliberately NOT filtered by EXCLUDED_SERIES_PREFIXES: naming a
+        # series explicitly is the bypass.
         wanted = set(only_series)
         targets = [t for t in targets if t in wanted]
+    else:
+        targets = [t for t in targets if not t.startswith(EXCLUDED_SERIES_PREFIXES)]
     targets.sort()
     if limit:
         targets = targets[:limit]
@@ -374,8 +418,14 @@ def run_sweep(
     t0 = time.monotonic()
     consec_errors = 0
     for i, ticker in enumerate(targets):
+        # Per-series raises ride the DEFAULT budget only; an explicit
+        # --max-markets (or 0 = unbounded) wins uniformly, so a --limit
+        # smoke test never burns an hour draining 8,000 KXETH markets.
+        budget = max_markets
+        if max_markets == MAX_MARKETS_PER_SERIES:
+            budget = SERIES_MAX_MARKETS.get(ticker, max_markets)
         try:
-            n_m, n_c, truncated = sweep_series(db, ticker, days, sess, max_markets)
+            n_m, n_c, truncated = sweep_series(db, ticker, days, sess, budget)
             totals["markets"] += n_m
             totals["candles"] += n_c
             totals["truncated"] += int(truncated)
