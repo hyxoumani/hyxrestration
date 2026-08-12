@@ -8,6 +8,9 @@ crashes safe; a re-run resumes where the last one stopped.
     python -m collector.sweep --days 60            # initial retention capture
     python -m collector.sweep --days 2             # daily incremental
     python -m collector.sweep --days 2 --limit 20  # smoke test
+    python -m collector.sweep --series KXETH \
+        --refetch-from 2026-08-02T02:00 --refetch-to 2026-08-02T09:00Z
+        # targeted BELOW-watermark hole repair (EXP-1287); watermark untouched
 
 Rationale: Kalshi purges market data ~60-90 days after settlement
 (verified 2026-07-06); anything not swept is gone. The allowlist excludes
@@ -228,6 +231,8 @@ def sweep_series(
     days: int,
     session: requests.Session,
     max_markets: int | None = MAX_MARKETS_PER_SERIES,
+    refetch_from: datetime | None = None,
+    refetch_to: datetime | None = None,
 ) -> tuple[int, int, bool]:
     """Capture settled markets + candles for one series since its watermark.
 
@@ -238,11 +243,34 @@ def sweep_series(
     recovery backlog, 2026-08-07). Crash-safety: the watermark advances
     only in the final burst, and every intermediate write is idempotent,
     so a crash mid-series re-runs exactly — flushed rows dedup away.
+
+    `refetch_from` / `refetch_to` (EXP-1287): a targeted BELOW-watermark
+    repair window. The normal resume floor is `wm + 1s`, which by design
+    can never see a hole BEHIND the watermark — and the pre-294a5ae
+    `--days` clamp burned exactly such holes into every chronically
+    truncated series (measured 08-02..08-12: ~29h each on KXBTC/KXBTCD,
+    ~117-120h each on KXETH/KXETHD/KXSOLD/KXSOLE). A bare watermark
+    reset is NOT a substitute for the dense series: it forces re-walking
+    the interleaved already-covered ranges too (~2x the requests) and
+    drags the live frontier weeks stale while the walk catches back up.
+    In repair mode the watermark is READ nothing and WRITTEN never — the
+    nightly incremental sweep's frontier is untouched; every insert is
+    idempotent, and sweep_log records the repaired [floor, max_close]
+    interval so recovery is verifiable. Bounded below by the purge
+    horizon like everything else.
     """
     now = datetime.now(UTC)
+    repair = refetch_from is not None
     floor_ts = now - timedelta(days=days)
-    with writer_burst(db) as store:
-        wm = store.watermark(series_ticker)
+    ceiling_ts = now
+    wm = None
+    if repair:
+        floor_ts = max(refetch_from, now - timedelta(days=PURGE_HORIZON_DAYS))
+        if refetch_to is not None:
+            ceiling_ts = min(refetch_to, now)
+    else:
+        with writer_burst(db) as store:
+            wm = store.watermark(series_ticker)
     if wm is not None:
         # Resume from the watermark, NEVER clamped forward by the --days
         # window. The old `max(now - days, wm + 1s)` silently jumped the
@@ -263,7 +291,7 @@ def sweep_series(
         series_ticker=series_ticker,
         status="settled",
         min_close_ts=int(floor_ts.timestamp()),
-        max_close_ts=int(now.timestamp()),
+        max_close_ts=int(ceiling_ts.timestamp()),
         max_markets=max_markets,
         session=session,
         pause_s=MARKETS_PAUSE_S,
@@ -355,11 +383,26 @@ def sweep_series(
     with writer_burst(db) as store:
         store.upsert_markets(infos)
         flush_buffers(store)
-        store.set_watermark(series_ticker, max_close)
+        if not repair:
+            # A repair pass must NEVER move the watermark: forward would
+            # skip the un-repaired remainder for the nightly sweep;
+            # backward would make the nightly re-walk already-covered
+            # range. Its coverage lives in sweep_log, not the watermark.
+            store.set_watermark(series_ticker, max_close)
         # A truncated sweep is NOT 'ok'. It used to be — the only trace was a
         # print, which is how "crypto == BNB only" survived into an
         # experiment's premises (EXP-931). status='truncated' puts it in
         # sweep_log where doctor(), QA and any later analyst must trip over it.
+        note = ""
+        if markets_truncated:
+            note = f"budget {max_markets} markets reached; resume from {max_close:%Y-%m-%dT%H:%M}Z"
+        if repair:
+            resume = (
+                f"; re-run with --refetch-from {max_close:%Y-%m-%dT%H:%M:%S}Z"
+                if markets_truncated
+                else ""
+            )
+            note = f"repair pass (watermark untouched){resume}"
         store.log_sweep(
             series_ticker,
             floor_ts,
@@ -367,9 +410,7 @@ def sweep_series(
             len(markets),
             n_candles,
             "truncated" if markets_truncated else "ok",
-            f"budget {max_markets} markets reached; resume from {max_close:%Y-%m-%dT%H:%M}Z"
-            if markets_truncated
-            else "",
+            note,
         )
     return len(markets), n_candles, markets_truncated
 
@@ -380,6 +421,13 @@ def _ts(v: str | None) -> int | None:
     return int(datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp())
 
 
+def _utc_arg(v: str) -> datetime:
+    """Parse a CLI ISO timestamp; naive values are UTC (all archive
+    timestamps — sweep_log, watermarks, close_time — are UTC)."""
+    dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
 def run_sweep(
     db: str,
     days: int,
@@ -388,7 +436,14 @@ def run_sweep(
     limit: int | None = None,
     only_series: list[str] | None = None,
     max_markets: int | None = MAX_MARKETS_PER_SERIES,
+    refetch_from: datetime | None = None,
+    refetch_to: datetime | None = None,
 ) -> dict:
+    if refetch_from is not None and not only_series:
+        # A below-watermark refetch is a scalpel: it re-requests a range
+        # the watermark says is done, so pointing it at whole categories
+        # would re-walk the archive. Explicit series only.
+        raise ValueError("--refetch-from requires --series (targeted repair only)")
     sess = session or requests.Session()
     series = kalshi.get_series_list(sess)  # HTTP outside the lock
     with writer_burst(db) as store:
@@ -425,7 +480,12 @@ def run_sweep(
         if max_markets == MAX_MARKETS_PER_SERIES:
             budget = SERIES_MAX_MARKETS.get(ticker, max_markets)
         try:
-            n_m, n_c, truncated = sweep_series(db, ticker, days, sess, budget)
+            repair_kw = (
+                {"refetch_from": refetch_from, "refetch_to": refetch_to}
+                if refetch_from is not None
+                else {}
+            )
+            n_m, n_c, truncated = sweep_series(db, ticker, days, sess, budget, **repair_kw)
             totals["markets"] += n_m
             totals["candles"] += n_c
             totals["truncated"] += int(truncated)
@@ -524,6 +584,20 @@ def main() -> None:
         default=MAX_MARKETS_PER_SERIES,
         help="per-series, per-run market budget (0 = unbounded)",
     )
+    ap.add_argument(
+        "--refetch-from",
+        type=_utc_arg,
+        default=None,
+        help="ISO timestamp: repair floor BELOW the watermark (requires --series;"
+        " watermark is neither consulted nor advanced)",
+    )
+    ap.add_argument(
+        "--refetch-to",
+        type=_utc_arg,
+        default=None,
+        help="ISO timestamp: repair ceiling (default now); bounds the hole"
+        " so a repair never re-walks covered range above it",
+    )
     ap.add_argument("--doctor", action="store_true", help="print archive health and exit")
     args = ap.parse_args()
 
@@ -562,6 +636,8 @@ def main() -> None:
             limit=args.limit,
             only_series=args.series,
             max_markets=args.max_markets or None,
+            refetch_from=args.refetch_from,
+            refetch_to=args.refetch_to,
         )
         print(f"[sweep] done: {totals}")
         with writer_burst(args.db) as store:
