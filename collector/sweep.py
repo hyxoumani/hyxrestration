@@ -96,6 +96,13 @@ ABORT_CONSEC_ERRORS = 25
 # against the 165M-row trades table).
 FLUSH_ROWS = 250_000
 
+# Resume floor for series with a watermark. Kalshi purges settled-market
+# data ~60-90 days out (module docstring), so resuming from a watermark
+# older than this buys nothing — the range is gone. It bounds the cost of
+# a long-dormant series to a handful of empty adaptive-window probes.
+# 60 matches the initial `--days 60` retention-capture depth.
+PURGE_HORIZON_DAYS = 60
+
 # Per-burst open budget, deliberately far above open_retry's 60s default.
 # Releasing between series has a cost the old whole-run hold did not: a
 # READER can now get in, and DuckDB excludes a writer while any reader is
@@ -197,7 +204,20 @@ def sweep_series(
     with writer_burst(db) as store:
         wm = store.watermark(series_ticker)
     if wm is not None:
-        floor_ts = max(floor_ts, wm.replace(tzinfo=UTC) + timedelta(seconds=1))
+        # Resume from the watermark, NEVER clamped forward by the --days
+        # window. The old `max(now - days, wm + 1s)` silently jumped the
+        # floor past any watermark more than `days` old, so a truncated
+        # dense series (daily timer: --days 2) lost the wm -> now-2d range
+        # every single day while its sweep_log note promised "resume from
+        # <max_close>" — measured 08-03..08-12: 0.8h-24h of close-time
+        # coverage lost per day on each of the 9 chronically-truncated
+        # crypto/MVE series (EXP-1271; the EXP-931 range-loss shape).
+        # The only forward bound is the venue purge horizon: below that
+        # the data no longer exists to fetch.
+        floor_ts = max(
+            wm.replace(tzinfo=UTC) + timedelta(seconds=1),
+            now - timedelta(days=PURGE_HORIZON_DAYS),
+        )
 
     markets, markets_truncated = kalshi.get_markets_ascending(
         series_ticker=series_ticker,
