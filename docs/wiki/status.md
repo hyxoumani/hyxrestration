@@ -1,6 +1,44 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-12 14:30 UTC (RUNG-1 PASS — SECOND SETTLEMENT
+Updated: **2026-08-12 20:30 UTC (RUNG-1 PASS — POLY COMPLETES IN-BAND
+AT 13H28M WITH A SECOND 1M-TRADE DAY; THE 14:30 PASS'S ZERO-DECLINE
+READ WAS A GREP-PHRASE ARTIFACT (CORRECTED: 5 NEW, ALL RETRIED CLEAN,
+PACE ~11/DAY); RELOAD LINE SETS A NEW 130.4K HIGH THEN DRAINS; ALL
+GREEN, EVERYTHING TIME-GATED.**
+**(1) Poly sweep done 18:28Z**: 16,656 markets, 5 errors, 556,493
+prices / 1,098,380 trades (second 1M-trade day), wall 13h28m — near
+the fast end of the 13h17m–17h11m band, mem peak 10G; errors were 3
+trades_tail 429/408 early-stops (truncation-aware) + 1 ReadTimeout.
+**(2) Flush-decline correction — mistakes #21 logged**: the 14:30
+"ZERO since 08:25" read grep'd a paraphrase; the journal's literal
+line is `flush FAILED`. True count: 08:40:46Z, 08:56:38Z, 10:00:01Z
+inside that window plus 15:42:40Z and 17:04:26Z since → 11 in the
+last ~20h, pace ~11–13/day, slightly above the ~10/day baseline;
+none consecutive, max 4.6k rows held, every one drained on the next
+rounds (3.9k/4.7k and 3.7k flushes observed). No threshold fired;
+watch the pace next pass. CANONICAL COUNT COMMAND: `journalctl --user
+-u hyxlab-stream | grep "flush FAILED"`. **(3) Reload line new
+tracked high then post-sweep drain on script**: 123,108 (13:32Z) →
+129,035 → peak 130,450 (15:33Z) → 128,452 → 126,476 → 124,476 →
+122,486 (19:33Z) — prior high was ~123k; still ~20k under the 150k
+tripwire, but the peak grows with the widened universe — track it.
+**(4) Doctor 20:20Z clean**: 0 kalshi mirror violations; sweep_log
+48h = 6,407 ok / 18 truncated / 0 errors; stream archive 433.1M book
+events, 1,201 gaps (+3 in ~6h — the benign trickle resumed after the
++5 read), 11.7GB. **(5) Shadow run 20260810T081931 healthy at ~60h**:
+16,762 fills / 10,591 polls at 20:11Z (~277 fills/hr over the last
+6h — back in the daytime range), cgroup 431MB current / 584MB peak
+(peak +27MB from the sweep-hour metadata reload at the 130k high —
+same flat class). Still no '[shadow] ledger persist declined' line
+(2a69145 untested live; fine). **(6) Bounded-burst day 12 still zero
+skips**: `collect_skips.jsonl` ends 08-07 07:44Z; 20:15Z collector
+cycle exit 0, errors 0, fetch 23.9s. Host stability + NTP remain
+USER-GATED. NEXT PASS: (1) run 081931 third settlement cohort ~08-13
+11:30Z; (2) 10:00Z QA — expect the single batch-budget FAIL until
+the 08-14 ageout; (3) flush-decline pace vs ~10/day via the
+canonical grep; (4) next poly sweep (05:00Z start) + reload peak vs
+130.4k; (5) persist-decline watch continues.**
+(prior **2026-08-12 14:30 UTC (RUNG-1 PASS — SECOND SETTLEMENT
 COHORT LANDS AND THE PROBE LOSES AGAIN (LARGER SAMPLE, SAME READ); QA
 LANDS ITS PREDICTED SINGLE FAIL; ZERO NEW FLUSH DECLINES; ALL GREEN,
 EVERYTHING TIME-GATED.**

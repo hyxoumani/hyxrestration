@@ -285,6 +285,23 @@ Format: what happened → root cause → error type → prevention tier
     live DB (archive, stream, shadow ledger) are read-only, no
     exceptions.
 
+21. **2026-08-12 — counting a journal signal by paraphrase instead of
+    the literal log string produced a false zero, twice.** Monitoring
+    passes track "streamd flush declines", but the actual journal line
+    is `flush FAILED (...); N rows held for retry` — there is no word
+    "decline" in it. The 02:35Z audit had already corrected one
+    undercount (grep-window artifact); the 14:30Z pass then reported
+    "ZERO new declines since 08:25" while the journal shows three in
+    that window (08:40:46Z, 08:56:38Z, 10:00:01Z) — a phrase artifact
+    this time. Same family as item 12: a tracked operational metric is
+    a measurement, and a grep pattern is part of its definition. Type:
+    `wrong-assumption` (measurement-by-paraphrase). Prevention: the
+    canonical command is now recorded on the status page — count with
+    `journalctl --user -u hyxlab-stream | grep "flush FAILED"`, never
+    a paraphrase; when a tracked count reads zero, re-derive the
+    pattern from source (`collector/streamd.py` flusher) before
+    trusting it.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
