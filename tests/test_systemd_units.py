@@ -276,26 +276,31 @@ def test_fade_window_overrun_catches_a_late_but_correctly_pinned_start():
 
 PROMOTE = UNIT_DIR.parent / "promote.sh"
 
-#: `needs_restart '<paths regex>' && RESTART+=(<unit>)` in promote.sh.
+#: `needs_restart <root module> '<fallback regex>' && RESTART+=(<unit>)`
+#: in promote.sh (EXP-1276: primary gate is the root module's static import
+#: closure via scripts/daemon_imports.py; the regex survives as fallback).
 _RESTART_GUARD_RE = re.compile(
-    r"needs_restart\s+'([^']+)'\s*&&\s*RESTART\+=\(([\w.-]+)\)"
+    r"needs_restart\s+([\w.]+)\s+'([^']+)'\s*&&\s*RESTART\+=\(([\w.-]+)\)"
 )
 
 
 def test_promote_restarts_a_daemon_only_when_its_own_code_moved():
-    """EXP-961. The restart must be conditional, and conditioned correctly.
+    """EXP-961, mechanism upgraded by EXP-1276. The restart must be
+    conditional, and conditioned correctly.
 
     `hyxlab-shadow` needs ~16h unbroken to observe its first settlement, so an
     unconditional restart in `promote.sh` charged that against every promote,
     including the two consecutive ones that touched no simulator code at all.
     Both had to be decomposed by hand. This pins the encoded form: each
-    daemon is gated on a path regex that actually covers the package its own
-    ExecStart runs, so re-pointing an ExecStart cannot silently leave a daemon
-    running stale code after a promote.
+    daemon is gated on the import closure of EXACTLY the module its own
+    ExecStart runs (with a fallback path regex that covers that package plus
+    the shared kernel), so re-pointing an ExecStart cannot silently leave a
+    daemon running stale code after a promote.
     """
     text = PROMOTE.read_text()
     guards = dict(
-        (unit, paths) for paths, unit in _RESTART_GUARD_RE.findall(text)
+        (unit, (root, paths))
+        for root, paths, unit in _RESTART_GUARD_RE.findall(text)
     )
     assert guards, "promote.sh no longer guards its daemon restarts"
 
@@ -308,17 +313,23 @@ def test_promote_restarts_a_daemon_only_when_its_own_code_moved():
         f"{sorted(daemons)}; a daemon with no guard never picks up new code"
     )
 
-    for unit, paths in guards.items():
+    for unit, (root, paths) in guards.items():
         mods = re.findall(r"-m\s+([\w.]+)", "\n".join(_field(services[unit], "ExecStart")))
         assert mods, f"{unit}: no `-m module` in ExecStart to check the guard against"
+        assert mods == [root], (
+            f"promote.sh gates {unit} on the import closure of `{root}`, but "
+            f"its ExecStart actually runs {mods}. A promote touching only the "
+            f"real module's code would leave it running stale."
+        )
         for mod in mods:
             pkg = mod.split(".")[0]
             assert re.match(paths, f"{pkg}/x.py"), (
-                f"promote.sh gates {unit} on `{paths}`, which does not match "
-                f"`{pkg}/` — the package its ExecStart actually runs. A "
-                f"promote touching only {pkg}/ would leave it on stale code."
+                f"promote.sh's fallback for {unit} is `{paths}`, which does "
+                f"not match `{pkg}/` — the package its ExecStart actually "
+                f"runs. If daemon_imports.py errors, a promote touching only "
+                f"{pkg}/ would leave it on stale code."
             )
         assert re.match(paths, "hyxlab/store.py"), (
-            f"promote.sh gates {unit} on `{paths}`, which misses the shared "
-            "kernel every daemon imports"
+            f"promote.sh's fallback for {unit} is `{paths}`, which misses "
+            "the shared kernel every daemon imports"
         )

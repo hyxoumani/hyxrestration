@@ -50,12 +50,14 @@ echo "== what this promotion moves =="
 CHANGED=$(git -C "$STABLE" diff --name-only HEAD main || true)
 printf '%s\n' "${CHANGED:-(nothing)}" | sed 's/^/   /'
 
-# Each daemon's ExecStart module, plus the shared kernel it imports.
+# Each daemon's ExecStart module, plus everything it imports.
 # hyxlab-stream: collector.streamd | hyxlab-shadow: simulator.shadow
-needs_restart() {  # $1 = extended regex of paths that unit executes
-    [[ "$FORCE_RESTART" == 1 ]] && return 0
-    grep -qE "$1" <<<"$CHANGED"
-}
+# needs_restart (scripts/restart_decision.sh, EXP-1276) intersects CHANGED
+# with the daemon's static import closure via scripts/daemon_imports.py —
+# the old directory regexes survive only as the fallback if the tool errors.
+# (Three promotions on 2026-08-12 hit the regexes' coarseness: sweep-only /
+# venue-only changes demanded hand-verified --defer=hyxlab-stream.service.)
+source "$DEV/scripts/restart_decision.sh"
 
 echo "== fast-forward stable -> main =="
 git -C "$STABLE" merge --ff-only main
@@ -72,8 +74,8 @@ systemctl --user daemon-reload
 
 echo "== restart daemons whose code moved (timers pick up new code on next run) =="
 RESTART=()
-needs_restart '^(collector|hyxlab)/' && RESTART+=(hyxlab-stream.service)
-needs_restart '^(simulator|strategies|hyxlab)/' && RESTART+=(hyxlab-shadow.service)
+needs_restart collector.streamd '^(collector|hyxlab)/' && RESTART+=(hyxlab-stream.service)
+needs_restart simulator.shadow '^(simulator|strategies|hyxlab)/' && RESTART+=(hyxlab-shadow.service)
 if [[ -n "$DEFER" ]]; then
     KEPT=()
     for u in "${RESTART[@]}"; do
