@@ -1,6 +1,42 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-12 20:30 UTC (RUNG-1 PASS — POLY COMPLETES IN-BAND
+Updated: **2026-08-13 02:20 UTC (RUNG-1 PASS — QUIET NIGHT WINDOW:
+FLUSH DECLINES AT ~8/DAY VIA THE CANONICAL GREP, RELOAD LINE DRAINING
+ON SCRIPT, DOCTOR CLEAN; SHADOW MEMORY UP A STEP (513MB CURRENT /
+611MB PEAK) — NEW EXPLICIT TRACK ITEM; ALL GREEN, EVERYTHING
+TIME-GATED.**
+**(1) Flush declines — 3 new since the 17:04Z mark** (canonical
+`journalctl --user -u hyxlab-stream | grep "flush FAILED"`): 20:41:13Z
+(2,779 rows held), 21:44:02Z (3,520), 00:12:38Z (3,321) — all the
+shadow read connection (PID 1725897), none consecutive, every one
+drained on the next round (e.g. 4,161 flushed at 00:17:38Z). Pace ~8/
+day, back at/below the ~10/day baseline after yesterday's ~11–13
+blip; no threshold fired. **(2) Reload line post-sweep drain on
+script**: 122,486 (19:33Z) → 115,885 (00:34Z) → 114,312 (01:34Z) —
+heading toward the ~101k baseline, far under the 150k tripwire; next
+peak read at the 05:00Z sweep vs the 130.4k high. **(3) Shadow run
+20260810T081931 healthy at ~66h but memory stepped up**: 17,982
+fills / 11,656 polls at 02:13Z (~202 fills/hr over the last 6h —
+normal night range), cgroup 513MB current / 611MB peak vs 431/584 at
+the 20:30Z pass. Peak growth (+27MB) is the known sweep-hour reload
+class, but CURRENT at 513MB is ~80MB above the ~400–430MB flat band
+that held through ~60h — could be post-sweep metadata still resident;
+if current doesn't settle back under ~450MB by the next pass, treat
+as a leak lead (the 07-12 shadow OOM fix history makes this the one
+non-time-gated thing worth chasing). Still no '[shadow] ledger
+persist declined' line (2a69145 untested live; fine). **(4) Doctor
+02:20Z clean**: 0 kalshi mirror violations; sweep_log 48h = 6,407 ok
+/ 18 truncated / 0 errors; stream archive 434.8M book events, 1,204
+gaps (+3 in ~6h — benign trickle steady), 11.76GB. **(5)
+Bounded-burst day 13 zero skips**: `collect_skips.jsonl` still ends
+08-07 07:44Z; 02:15Z collector cycle exit 0, errors 0, fetch 29.7s.
+Host stability + NTP remain USER-GATED. NEXT PASS: (1) shadow cgroup
+current vs the 513MB step — settle or leak; (2) poly sweep starts
+05:00Z — reload peak vs 130.4k; (3) 10:00Z QA — expect the single
+batch-budget FAIL until the 08-14 ageout; (4) run 081931 third
+settlement cohort ~11:30Z; (5) flush-decline pace via the canonical
+grep; (6) persist-decline watch continues.**
+(prior **2026-08-12 20:30 UTC (RUNG-1 PASS — POLY COMPLETES IN-BAND
 AT 13H28M WITH A SECOND 1M-TRADE DAY; THE 14:30 PASS'S ZERO-DECLINE
 READ WAS A GREP-PHRASE ARTIFACT (CORRECTED: 5 NEW, ALL RETRIED CLEAN,
 PACE ~11/DAY); RELOAD LINE SETS A NEW 130.4K HIGH THEN DRAINS; ALL
