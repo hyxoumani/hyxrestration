@@ -1,6 +1,54 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-13 08:40 UTC (RUNG-1 PASS + INCIDENT: KALSHI-TRADES
+Updated: **2026-08-13 14:25 UTC (RUNG-1 PASS — KALSHI-TRADES RECOVERY
+CONFIRMED, WITH A WRINKLE: THE FIRST 7 POST-RESTART RECONNECTS ALSO
+CAME BACK HALF-DEAD AND THE WATCHDOG CYCLED EVERY ~5 MIN UNTIL THE
+08:57:58Z CONNECT TOOK; HEALTHY 149k–289k TRADES/HR SINCE 09:00Z, ZERO
+dead_air FIRES IN 5.3h; QA LANDS ITS PREDICTED SINGLE FAIL; THIRD
+SETTLEMENT COHORT IN; ALL GREEN, EVERYTHING TIME-GATED.**
+**(1) Kalshi-trades recovery + first live watchdog firing.** After the
+08:22:49Z restart the trades channel came back half-dead AGAIN — 7
+consecutive dead_air cycles (08:27:49→08:57:57Z, one per ~300s; books
+fired twice too, 08:28/08:41Z) before the 08:57:58Z reconnect finally
+delivered. Reading: the half-dead condition was server-side and
+persisted ~35 min across FRESH connections — reconnect alone doesn't
+clear it instantly; the watchdog did exactly its job, bounding the
+loss to 5-min gap-row-marked slices instead of another open-ended
+82-min hole. Since 08:58Z: 149k/188k/237k/277k/289k trades per hour
+(09:00–13:00Z hours), max recv_ts 14:15:46Z, ZERO dead_air fires in
+~5.3h — no spurious-fire signal at DEAD_AIR_SECS=300 during active
+hours; the real quiet-hour test is tonight. **(2) QA 10:00Z lands the
+predicted single FAIL** — batch-budget (hyxlab-sweep 11.49h vs 10.5h,
+the 08-07 run) ages out 08-14; 15 PASS, 2 WATCH (tape draining tail;
+fade-window leading indicator), skip-check UNVERIFIED-consistent.
+**(3) Third settlement cohort landed**: run 20260810T081931 now 382
+settlements (105 on 08-11 / 146 on 08-12 / 131 on 08-13), 324 no / 58
+yes — probe keeps losing, as expected. Fills 20,022 at 14:16Z (~76h,
+~175/hr band holds). **(4) Reload line: NEW HIGH 132,430 (13:37Z)** vs
+the 130.4k prior high — sweep-hour climb on cue (123.6k→124.7k→127.6k
+→130.3k→132.4k over 09:36→13:37Z), far under the 150k tripwire; the
+high creeping up with the growing poly universe is the expected shape.
+Expect the post-sweep drain toward ~101k. **(5) Shadow memory via
+canonical script**: anon=275MiB (baseline 262, +13 mid-sweep-hour),
+file-cache=67MiB, current=467MB, peak 622MB — flat, no leak signature.
+**(6) Flush declines — 3 new since the restart** (09:52:45Z 1,696
+held; 10:35:03Z 3,158; 12:51:08Z 2,699 — two the shadow read
+connection, the 09:52 one PID 548424, a QA-window reader), all drained
+on the next rounds (3,454/3,420/3,590 flushed). Pace holds ~8/day.
+**(7) Poly-books JSONDecodeError churn: ZERO recurrence since 08:22Z**
+— stays a one-off, no watch item. **(8) Poly sweep in-band**:
+10,400/16,751 at 14:09Z, ~333 min left → ETA ~19:42Z (wall ~14h40m —
+contention drag pulled back the early record pace, as usual). **(9)
+Doctor 14:20Z clean**: 0 kalshi mirror violations; sweep_log 48h =
+7,496 ok / 20 truncated / 0 errors; stream archive 439.6M book events
+/ 294.3M trades, 11.9GB. NEXT PASS: (1) quiet-hour (~07–09Z) dead_air
+behavior overnight — first night with the watchdog live is the real
+spurious-fire test (books lull near quiet hours); (2) reload
+post-sweep drain from the 132.4k high; (3) poly sweep completion +
+matured-day read; (4) shadow anon vs the 262–275MiB band; (5)
+flush-decline pace via the canonical grep; (6) 08-14 10:00Z QA —
+batch-budget FAIL should age out to all-PASS.**
+(prior **2026-08-13 08:40 UTC (RUNG-1 PASS + INCIDENT: KALSHI-TRADES
 DEAD AIR — THE 07:09Z RECONNECT CAME BACK HALF-DEAD AND ARCHIVED ZERO
 TRADES FOR ~82 MIN WITH NO ERROR LINE; DEAD-AIR WATCHDOG SHIPPED
 (e3dbdbf) AND PROMOTED, STREAM RESTARTED 08:22:49Z; SHADOW "MEMORY
