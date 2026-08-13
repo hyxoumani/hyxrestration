@@ -45,6 +45,14 @@ TICKER_REFRESH_SECS = 3600.0
 POLY_PING_SECS = 10.0
 POLY_TOP_MARKETS = 50  # busiest books streamed even without verified pairs
 BACKOFF_MAX = 60.0
+# Reconnect a Kalshi channel that goes silent this long. Both channels
+# chatter continuously (trades ~105 ev/s exchange-wide; books across
+# ~500 open tickers), so real silence means a half-dead connection:
+# WS pings keep the TCP session alive while the subscription is gone,
+# and recv() otherwise blocks forever — the trades channel came back
+# from a 07:00Z reconnect unsubscribed and archived zero trades for
+# 75+ minutes with no error (2026-08-13).
+DEAD_AIR_SECS = 300.0
 # Space the per-series ticker-refresh calls apart (see open_tickers).
 SERIES_PAUSE_S = float(os.environ.get("HYXLAB_SERIES_PAUSE_S", "0.35"))
 # Retry waits when a book task's subscription set comes back EMPTY (venue
@@ -186,20 +194,29 @@ class Daemon:
                     first, backoff = False, 1.0
                     _log(f"kalshi-{channel}: connected")
                     tracker = kalshi_ws.SeqTracker()
-                    next_refresh = asyncio.get_event_loop().time() + TICKER_REFRESH_SECS
+                    mono = asyncio.get_event_loop().time
+                    next_refresh = mono() + TICKER_REFRESH_SECS
+                    last_frame = mono()
                     while True:
-                        timeout = (
-                            max(1.0, next_refresh - asyncio.get_event_loop().time())
-                            if refresh
-                            else None
-                        )
+                        deadline = last_frame + DEAD_AIR_SECS
+                        if refresh:
+                            deadline = min(deadline, next_refresh)
                         try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                            raw = await asyncio.wait_for(
+                                ws.recv(), timeout=max(1.0, deadline - mono())
+                            )
                         except TimeoutError:
-                            next_refresh = asyncio.get_event_loop().time() + TICKER_REFRESH_SECS
-                            if await refresh():
-                                break  # reconnect with the new ticker set
+                            if refresh and mono() >= next_refresh:
+                                next_refresh = mono() + TICKER_REFRESH_SECS
+                                if await refresh():
+                                    break  # reconnect with the new ticker set
+                            if mono() - last_frame > DEAD_AIR_SECS:
+                                self._gap("kalshi", channel, last_recv, "dead_air")
+                                raise ConnectionError(
+                                    f"no frames for {DEAD_AIR_SECS:.0f}s (dead air)"
+                                ) from None
                             continue
+                        last_frame = mono()
                         recv_ts = datetime.now(UTC)
                         self._clock_check("kalshi", channel, recv_ts, last_recv)
                         frame = json.loads(raw)

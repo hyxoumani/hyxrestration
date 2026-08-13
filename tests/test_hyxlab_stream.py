@@ -978,3 +978,63 @@ def test_open_tickers_still_paces_when_a_series_raises(monkeypatch):
 
     assert out == {"A-X", "C-X"}
     assert sleeps == [0.1, 0.1]
+
+
+def test_kalshi_dead_air_logs_gap_and_reconnects(tmp_path, monkeypatch):
+    """Regression (2026-08-13): the trades channel reconnected half-dead —
+    subscription gone but WS pings keeping TCP alive — and recv() blocked
+    forever (timeout=None when refresh is None): zero trades archived for
+    75+ minutes with no error line. Silence past DEAD_AIR_SECS must log a
+    dead_air gap and force a reconnect."""
+    import asyncio
+
+    from collector import streamd
+
+    monkeypatch.setattr(streamd, "DEAD_AIR_SECS", 0.0)
+    monkeypatch.setattr(streamd.kalshi_ws, "auth_headers", lambda kid, pem: {})
+
+    async def instant_timeout(awaitable, timeout):
+        assert timeout is not None  # the old code passed None and blocked forever
+        awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(streamd.asyncio, "wait_for", instant_timeout)
+
+    async def no_sleep(secs):
+        pass
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", no_sleep)
+
+    class FakeWS:
+        async def send(self, msg):
+            pass
+
+        async def recv(self):
+            pass
+
+    connects = 0
+
+    class FakeConnect:
+        def __init__(self, *a, **kw):
+            nonlocal connects
+            connects += 1
+            if connects > 1:
+                raise asyncio.CancelledError  # stop the test after one reconnect
+
+        async def __aenter__(self):
+            return FakeWS()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(streamd.websockets, "connect", FakeConnect)
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    d = streamd.Daemon(store, watchlist={})
+    d.key_id, d.pem = "k", b"p"
+    with contextlib.suppress(asyncio.CancelledError):
+        asyncio.run(d._kalshi_loop("trades", lambda: "{}", None))
+
+    assert connects == 2  # dead air forced a reconnect
+    store.flush()
+    assert duckdb_reason(tmp_path / "s.duckdb") == "dead_air"
