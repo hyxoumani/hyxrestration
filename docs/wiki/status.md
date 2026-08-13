@@ -1,6 +1,67 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-13 02:20 UTC (RUNG-1 PASS — QUIET NIGHT WINDOW:
+Updated: **2026-08-13 08:40 UTC (RUNG-1 PASS + INCIDENT: KALSHI-TRADES
+DEAD AIR — THE 07:09Z RECONNECT CAME BACK HALF-DEAD AND ARCHIVED ZERO
+TRADES FOR ~82 MIN WITH NO ERROR LINE; DEAD-AIR WATCHDOG SHIPPED
+(e3dbdbf) AND PROMOTED, STREAM RESTARTED 08:22:49Z; SHADOW "MEMORY
+STEP" RESOLVED AS CACHE/ACCOUNTING, NOT A LEAK — ANON HELD ~262MiB;
+POLY-BOOKS HAD A SELF-HEALED 95-MIN RECONNECT CHURN OVERNIGHT.**
+**(1) INCIDENT — kalshi-trades dead air 07:00:28Z→08:22:49Z.** Trades
+flowed 200k–535k/hr all night, then a kalshi/trades gap 07:00:28→
+07:09:03Z; after that reconnect the channel delivered ZERO trades for
+~74 more minutes (last archived trade recv_ts = the gap-open instant;
+books + poly flowing normally throughout) — half-dead socket: WS pings
+kept TCP alive, subscription gone, and `_kalshi_loop` passed
+`timeout=None` when `refresh is None`, so `recv()` blocked forever
+with no watchdog. FIX (e3dbdbf, promoted, regression-tested): silence
+past `DEAD_AIR_SECS=300` on either Kalshi channel now writes a
+`dead_air` gap row and forces a reconnect. promote.sh restarted
+hyxlab-stream 08:22:49Z; kalshi-trades reconnected at once. The lost
+window is honestly marked (07:00–08:22Z inside gap rows + startup
+gap); trades are unrecoverable by design — accepted loss. Note: the
+old daemon died holding 581 rows from an 08:22:30Z flush decline;
+that window sits inside the startup gap. VERIFY NEXT PASS: trades
+counter advancing, and no spurious `dead_air` reconnects (books can
+legitimately lull near quiet hours — watch reason=dead_air rate).
+**(2) Poly-books reconnect churn 04:33–06:08Z, self-healed**: 228
+polymarket/market gap rows (~44 min cumulative) — every connect got
+`JSONDecodeError: Expecting value: line 1 column 1` (server sending
+non-JSON) within ~10–40s and cycled. Started before the 05:00Z sweep,
+so not sweep-caused; stopped on its own 06:08Z, poly_events back to
+~500/min. Explains the stream_gaps jump 1,204→1,436 — burst
+accounted, benign trickle otherwise (+4 kalshi rows in 12h).
+**(3) Shadow "513MB step" RESOLVED — not a leak.** Split the cgroup:
+anon (the actual heap) held ~262–267MiB across three reads while
+`memory.current` drifted 550→501→485MB on its own; the step was
+~81MiB reclaimable DuckDB file cache + per-CPU stat lag, over a
+~300MB heap — comfortable under the 1G MemoryHigh. CANONICAL READ:
+`scripts/shadow-mem.sh` (72cc3c6) — trend ANON across passes, not
+MemoryCurrent. Baseline 08:20Z: anon=262MiB file-cache=81MiB. Run
+20260810T081931 untouched by the stream restart (~72h): 19,031 fills
+/ 12,711 polls at 08:15Z (~175 fills/hr — normal night range).
+**(4) Flush declines — 2 new since 00:13Z** (canonical grep): 06:43:16Z
+(6,326 held), 06:57:53Z (1,436) — both the shadow read connection,
+both drained on the next rounds (3,107/1,500/1,398 flushed). Pace
+holds ~8/day. (Restart resets the journal-unit stream; counting
+continues across it.) **(5) Reload line drains on script**: 110,518
+(07:35Z) — below the 114,312 01:34Z read, heading to ~101k baseline;
+sweep-hour peak vs 130.4k still to come. **(6) Poly sweep in-band**:
+4,400/16,751 at 08:17Z, ~540 min left → ETA ~17:15Z (wall ~12h15m —
+would be a new fastest; contention drag usually pulls it back).
+**(7) Doctor 08:18Z clean**: 0 kalshi mirror violations; sweep_log
+48h = 6,981 ok / 19 truncated / 0 errors; stream archive 438.0M book
+events, 11.8GB. Bounded-burst zero-skip streak continues. Mistakes
+#22 logged (journalctl `--since` is LOCAL time — use ` UTC` suffix or
+`--utc`; an empty read over a should-be-noisy window means the window
+is wrong). Host stability + NTP remain USER-GATED. NEXT PASS: (1)
+kalshi-trades counter advancing + dead_air reconnect rate (spurious-
+fire check); (2) 10:00Z QA — expect the single batch-budget FAIL
+until the 08-14 ageout; (3) run 081931 third settlement cohort
+~11:30Z; (4) reload peak vs 130.4k as the sweep runs; (5) shadow
+anon trend via scripts/shadow-mem.sh vs 262MiB; (6) flush-decline
+pace via the canonical grep; (7) poly-books JSONDecodeError churn —
+recurrence means a churn-class watch item.**
+(prior **2026-08-13 02:20 UTC (RUNG-1 PASS — QUIET NIGHT WINDOW:
 FLUSH DECLINES AT ~8/DAY VIA THE CANONICAL GREP, RELOAD LINE DRAINING
 ON SCRIPT, DOCTOR CLEAN; SHADOW MEMORY UP A STEP (513MB CURRENT /
 611MB PEAK) — NEW EXPLICIT TRACK ITEM; ALL GREEN, EVERYTHING

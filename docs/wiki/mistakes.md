@@ -302,6 +302,20 @@ Format: what happened → root cause → error type → prevention tier
     pattern from source (`collector/streamd.py` flusher) before
     trusting it.
 
+22. **2026-08-13 — journalctl `--since`/`--until` interpret bare
+    timestamps in LOCAL time (box is UTC-5), while every tracked mark
+    on the status page is UTC.** An 08:15Z pass queried
+    `--since "2026-08-13 06:00"` intending 06:00Z and got `-- No
+    entries --` — that timestamp is 11:00Z, the future. An empty read
+    from a window mistake is indistinguishable from a true zero (same
+    trap as item 21's false zero). Caught in-pass because a daemon
+    known to be logging "had no entries". Type: `wrong-assumption`
+    (clock-domain mismatch in a measurement). Prevention: journal
+    windows use explicit UTC (`--since "2026-08-13 06:00 UTC"` works)
+    or `journalctl --utc`; and an empty journal read over a window
+    that should contain routine lines (stats every 5 min) means the
+    window is wrong, not that the daemon was silent.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
