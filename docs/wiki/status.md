@@ -1,6 +1,52 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-13 14:25 UTC (RUNG-1 PASS — KALSHI-TRADES RECOVERY
+Updated: **2026-08-13 20:25 UTC (RUNG-1 PASS — ALL GREEN: KALSHI-TRADES
+FULLY HEALTHY 11.3h POST-RECOVERY WITH ZERO dead_air FIRES; POLY SWEEP
+COMPLETES IN-BAND; TWO ELEVATED-BUT-NOT-ALARMING TRENDS TO WATCH:
+RELOAD-LINE PEAK JUMPS +11.3k DAY-OVER-DAY TO 143.8k (150k TRIPWIRE
+~2 SWEEP DAYS OUT AT THIS PACE) AND FLUSH DECLINES RAN ~4x BASELINE
+PACE THIS WINDOW (ALL DRAINED CLEAN).**
+**(1) Kalshi-trades fully healthy**: 307k/349k/444k/491k/452k/465k
+trades per hour (14:00–19:00Z hours), max recv_ts 20:15:58Z; ZERO
+dead_air fires since the 08:58Z recovery (~11.3h). Only reconnect was
+legitimate: kalshi-books open-set change 453→614 at 17:37Z. The
+quiet-hour (~07–09Z) spurious-fire test is still tonight. **(2) Poly
+sweep COMPLETED in-band 18:46:53Z**: 16,751 markets, 13 errors,
+546,455 prices / 1,079,082 trades, wall 822.5 min (~13h43m, 14G
+oneshot memory peak); one 429 trades_tail early-stop + two CLOB
+ReadTimeouts absorbed mid-run. **(3) Matured-day read healthy**:
+08-11 matured at 7,608 distinct markets (floor ~5k), 08-12 at 6,701
+still maturing, 08-13 fresh 5,456 — no universe-decline signal.
+**(4) Reload line NEW PEAK 143,768 (18:38Z sweep tail)**, 140,079 at
+19:38Z draining — under the 150k tripwire, but the sweep-hour peak
+jumped +11.3k day-over-day (132.4k→143.8k); at that pace the peak
+crosses 150k in ~2 sweep days. The tripwire only fires on NON-sweep-
+hour prints >150k (by design), so no false-fire risk yet — but if the
+peak trend holds, decide deliberately: tighten the shadow metadata
+filter (MARKETS_ALIVE_DAYS) or raise the tripwire. Drain toward ~101k
+expected overnight; the non-sweep baseline is the number to check.
+**(5) Shadow anon 307MiB — above the 262–275MiB band (+32)**,
+file-cache=69MiB, current=503MB, peak 622MB — consistent with the
+larger reload dict (reload line ∝ anon is the known shape), not a
+leak signature; re-read post-drain next pass. **(6) Flush declines
+ELEVATED: 7 new 14:15→20:16Z** (15:05/16:55/17:45/18:54/19:23/19:54/
+19:58Z, 2.9k–4.4k held each, all vs the shadow connection's lock),
+ALL drained on subsequent rounds (5,517/4,625/5,049 flushed after the
+last) — ~28/day pace vs the ~8/day baseline. Sweep-day contention is
+the likely driver, though 3 of 7 landed post-sweep (shadow persist
+windows); recount overnight before treating as a trend. **(7) Shadow
+run 20260810T081931**: 21,224 fills / 14,841 polls at 20:16Z
+(~200/hr, normal active-hours band; +1,202 fills over the 6h window).
+**(8) Doctor 20:17Z clean**: 0 kalshi mirror violations; sweep_log
+48h = 6,738 ok / 15 truncated / 0 errors; stream archive 441.2M book
+events / 296.9M trades, 11.95GB. Everything remains time-gated or
+user-gated. NEXT PASS: (1) overnight quiet-hour (~07–09Z) dead_air
+behavior — the real spurious-fire test; (2) reload-line drain to
+~101k + non-sweep baseline vs the 150k tripwire; (3) shadow anon vs
+the 262–275MiB band post-drain; (4) flush-decline overnight recount
+vs ~8/day; (5) 08-14 10:00Z QA — batch-budget FAIL ages out, expect
+all-PASS; (6) fourth settlement cohort ~11:30Z.**
+(prior **2026-08-13 14:25 UTC (RUNG-1 PASS — KALSHI-TRADES RECOVERY
 CONFIRMED, WITH A WRINKLE: THE FIRST 7 POST-RESTART RECONNECTS ALSO
 CAME BACK HALF-DEAD AND THE WATCHDOG CYCLED EVERY ~5 MIN UNTIL THE
 08:57:58Z CONNECT TOOK; HEALTHY 149k–289k TRADES/HR SINCE 09:00Z, ZERO
