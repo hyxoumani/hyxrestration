@@ -93,11 +93,20 @@ SWEEP_UNIT = "hyxlab-poly-sweep.service"
 #:                     25m15s over 2026-07-27..08-02, then 2026-08-03:
 #:                     11:10:00Z -> 21:16:38Z, **10h06m38s** — the first full
 #:                     pass after Crypto entered sweep.DEFAULT_CATEGORIES on
-#:                     08-02, a 24x step over the day before. 10.5 is that
-#:                     measurement plus ~0.4h. Whether it is the one-time
-#:                     crypto backlog or the new steady state is UNKNOWN until
-#:                     a second full pass completes; `qa_batch_run_budget` is
-#:                     what will say so out loud.
+#:                     08-02, a 24x step over the day before. 10.5 was that
+#:                     measurement plus ~0.4h; the open question then (one-time
+#:                     backlog or steady state?) was ANSWERED by 08-06..08-12:
+#:                     steady state settled at 7h52m-9h26m (one 11h29m outlier
+#:                     on 08-07), comfortably inside 10.5. Then EXP-1275
+#:                     (2026-08-12) deliberately raised the crypto per-series
+#:                     candle budget to 8k, and the first pass under it
+#:                     (2026-08-13, 06:10Z -> 18:18:51Z) measured **12h08m51s**
+#:                     — the same shape as the 08-03 step: a capacity change
+#:                     moved the worst case, not drift. 12.5 is that
+#:                     measurement plus ~0.35h. Whether 12h09m is the 8k-budget
+#:                     backlog or its steady state is UNKNOWN until subsequent
+#:                     passes complete; `qa_batch_run_budget` is what will say
+#:                     so out loud, exactly as it did last time.
 #:   hyxlab-tradepass  up to 2h51m (see QA_CLEARANCE_H in the unit tests);
 #:                     4.0h allowed.
 #:
@@ -110,7 +119,7 @@ SWEEP_UNIT = "hyxlab-poly-sweep.service"
 #: duty cycle, so no start time clears a 5h window. Its lever is wall clock,
 #: not OnCalendar. Do NOT "fix" this by adding it here and moving its timer.
 BATCH_RUN_BUDGET_H = {
-    "hyxlab-sweep.timer": 10.5,
+    "hyxlab-sweep.timer": 12.5,
     "hyxlab-tradepass.timer": 4.0,
 }
 #: Journald on this box holds ~16M / ~2 days, so this is a ceiling on the
