@@ -57,13 +57,18 @@ SEED_BATCH = 10_000
 # (~20s), so the margin is enormous. Held markets are pinned regardless,
 # so this window is a safety net, not a correctness requirement — the
 # settled-within-window term DOMINATES the loaded dict: kalshi settles
-# 25-55k markets/day (2026-08-08, hourly crypto brackets), so 3 days
-# keeps ~91k settled rows vs ~13.5k unsettled, ~101k total (~90MB) —
-# not the ~65k first estimated. Bounded by settle-rate x window, not
-# archive age. If the reload log line grows past ~150k, tighten this
-# to 1 day at the next NATURAL shadow restart (never restart mid-run
-# for it — that closes the live probe ledger).
-MARKETS_ALIVE_DAYS = 3
+# 25-55k markets/day (2026-08-08, hourly crypto brackets). Bounded by
+# settle-rate x window, not archive age. Tightened 3 -> 1 on 2026-08-14
+# after matured churn reached 63-65k closes/day and the reload line
+# crossed the ~150k advisory ceiling (peak 154,933 at 17:43Z; the 3-day
+# window steady-states near 15k unsettled + 3x64k ~ 207k). One day
+# ~ 15k + 65k ~ 80k, comfortably in band. Held-market pinning
+# (include=held) independently guarantees settlement visibility, so the
+# window is a safety net, not a correctness requirement. Shipped with
+# --defer=hyxlab-shadow.service: the running daemon keeps the 3-day
+# window until its next NATURAL restart (never restart mid-run for
+# this — that closes the live probe ledger).
+MARKETS_ALIVE_DAYS = 1
 
 
 def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
