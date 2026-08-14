@@ -1,6 +1,58 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-14 14:30 UTC (RUNG-1 PASS + ACTION: QA's
+Updated: **2026-08-14 20:15 UTC (RUNG-1 PASS + ACTION: RELOAD LINE
+CROSSED 150k ON SCHEDULE (PEAK 154,933 AT 17:43Z) — MARKETS_ALIVE_DAYS
+TIGHTENED 3→1 AND PROMOTED WITH --defer=hyxlab-shadow.service (a4bf182):
+THE RUNNING DAEMON KEEPS THE 3-DAY WINDOW UNTIL ITS NEXT NATURAL
+RESTART, THE NEW VALUE IS ALREADY ON STABLE. KALSHI SWEEP'S FIRST
+STEADY-STATE DATAPOINT UNDER THE 8k BUDGET: 11h23m — THE 12.5h BUDGET
+HOLDS. NEW WATCH: POLY SWEEP 14h38m IS A NEW WORST (~1h PAST THE
+~18:45Z ESTIMATE).**
+**(1) Kalshi sweep done 17:34Z, elapsed 683.4 min (11h23m)** — first
+backlog-vs-steady-state datapoint under EXP-1275's 8k crypto budget:
+FASTER than 08-13's 12h09m worst, so 08-13 carried one-time backlog
+and steady state is settling ~11.4h; the re-measured 12.5h budget
+holds with ~1.1h margin, no further action. 74,095 markets / 173,173
+candles / 0 errors / 4 truncated (KXSOLE hit its 10,650 per-series
+budget; resumes next run). **(2) Poly sweep done 19:42Z, elapsed
+878.1 min (14h38m) — NEW WORST**, ~1h past the ~18:45Z in-band
+estimate (prior band 13h28m–13h43m); 16,683 markets, 591,728 prices,
+1,023,425 trades (third 1M-trade day), 10 errors. The runtime trend
+is the thing status.md's maturation note says to watch — read
+tomorrow's completion time; if it grows again it's a trend, not a
+big-tape day. **(3) RELOAD LINE: peak 154,933 at 17:43Z** (145,210→
+153,614→154,933→152,212→149,449 over 15:43→19:44Z), crossing the
+~150k advisory ceiling exactly on the root-cause math. ACTION
+SHIPPED: MARKETS_ALIVE_DAYS 3→1 (a4bf182, promoted --defer per the
+2026-08-04 precedent; promote.sh confirmed DEFERRED and left both
+daemons running — stream since 08-13, shadow since 08-10). At the
+next NATURAL shadow restart the reload line drops to ~80k; until
+then sweep-hour peaks >150k are expected and tripwire-silent by
+design. **(4) Zero dead_air fires — ~35.3h since the 08-13 08:58Z
+recovery**; only event a kalshi-books open-set reconnect 15:06Z
+(464→614, 1 gap row, legit). kalshi_trades counter 10.96M at
+16:19Z. **(5) Flush declines: 11 in trailing 24h** (vs ~16
+yesterday, ~8/day baseline) — receding on script; the 16:07Z
+decline (2,622 held vs shadow's lock) drained on the next round
+(4,956 flushed 16:09Z). **(6) Shadow anon 315MiB** (333→302→315),
+cache=39MiB, current=393MB, peak 622MB; dict 149,449. Still
+oscillating above the 262–275 band with the dict ~40% above its
+old size — consistent with dict-size, not a fourth accumulator;
+the 3→1 tighten will settle this question when it lands. **(7)
+Settlements: 516 total / 134 today (unchanged since 14:16Z — fourth
+cohort complete; fifth lands ~tomorrow 11:30Z)**; fills 25,503 /
+19,071 polls at 20:12Z (~148/hr band holds); probe still losing
+(ledger-only, zero capital). **(8) Doctor 20:20Z clean**: 0 kalshi
+mirror violations; sweep_log 48h = 6,592 ok / 10 truncated / 0
+errors; stream archive 448.8M book events / 305.8M trades, 12.2GB.
+NEXT PASS: (1) tomorrow's 10:00Z QA — expect all-PASS under the
+12.5h budget (a batch-budget FAIL would be a THIRD breach class:
+chase it); (2) poly sweep completion — new-worst 14h38m: trend or
+big-tape day?; (3) tomorrow's kalshi sweep vs 11h23m (steady-state
+confirmation); (4) reload peak (>150k expected, tripwire-silent by
+design until the natural restart); (5) shadow anon vs band; (6)
+fifth settlement cohort ~11:30Z; (7) flush-decline recount.**
+(prior **2026-08-14 14:30 UTC (RUNG-1 PASS + ACTION: QA's
 batch-budget FAIL turned out NOT to be the aging 08-07 run — the
 08-13 sweep set a NEW worst at 12h09m, the FIRST full pass under
 EXP-1275's 8k crypto candle budget; budget RE-MEASURED 10.5h→12.5h
