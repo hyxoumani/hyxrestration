@@ -1,6 +1,72 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-14 02:20 UTC (RUNG-1 PASS — ALL GREEN OVERNIGHT:
+Updated: **2026-08-14 08:35 UTC (RUNG-1 PASS — ALL GREEN; QUIET-HOUR
+dead_air TEST PASSES (ZERO FIRES THROUGH THE 07–09Z LOW-VOLUME
+WINDOW, ~23.4h SINCE RECOVERY); FLUSH DECLINES ZERO SINCE 02:16Z;
+RELOAD-LINE GROWTH ROOT-CAUSED: THE ALIVE-SET IS ~15k UNSETTLED +
+THE 3-DAY SETTLED CRYPTO-CHURN TAIL, AND MATURED CHURN NOW RUNS
+63–65k CLOSES/DAY → A 3-DAY WINDOW MATHEMATICALLY WANTS ~200k, SO
+THE 150k CROSSING IS WHEN, NOT IF — RECOMMENDATION: TIGHTEN
+MARKETS_ALIVE_DAYS 3→1 AT THE NEXT NATURAL SHADOW RESTART (AS
+shadow.py:63 ALREADY PRESCRIBES), DO NOT RAISE THE TRIPWIRE.**
+**(1) Quiet-hour spurious-fire test PASSES**: trade volume fell on
+the usual overnight curve — 542k/589k/455k/386k/306k/264k/195k per
+hour (01:00Z→07:00Z) — and the dead-air watchdog stayed silent
+through the lowest-volume hours; ZERO dead_air fires since the 08-13
+08:58Z recovery (~23.4h). The only event in the window was a
+kalshi-trades ConnectionClosedError (keepalive ping timeout) at
+07:44:51Z — a connection-level drop, reconnected in 1s with a gap
+row; the watchdog correctly did not fire. Max recv_ts 08:17:03Z.
+**(2) Flush declines: ZERO new since 02:16Z** (~6.2h) — 15 total in
+the trailing 24h, all drained; the sweep-day-contention spike has
+fully receded toward the ~8/day baseline. **(3) Reload line: trough
+115,041 at 06:40Z** (115,909→115,041→117,922 over 05:40→07:40Z, the
+07:40Z uptick being the sweep-hour climb on cue). Trough is climbing
++5.4k d/d (97.9k 08-12 → 109.7k 08-13 → 115.0k 08-14) alongside the
+peak trend (+11.3k d/d to 143.8k). ROOT CAUSE (new analysis,
+read-only vs hyxlab.duckdb): the alive-set (119,273 at 08:25Z) is
+only ~15.0k unsettled markets (8.9k past-close stale + 3.4k >30d
+out + 2.8k near-close) — the other ~104k is the 3-DAY SETTLED TAIL
+of kalshi crypto hourly/daily churn (top prefixes KXBTCD 12.8k,
+KXBTC 12.6k, KXSOLD 7.5k, KXSOLE 7.5k, KXETHD 7.1k…). Matured
+close-days now run 63–65k/day (08-10: 64.8k, 08-11: 63.0k; recent
+days read low only because sweep ingestion matures ~2d). At that
+churn a 3-day window steady-states near 15k + 3×64k ≈ 207k — the
+150k tripwire crossing is a trajectory certainty, not drift to
+debate. DECISION RECOMMENDATION: tighten, don't raise —
+shadow.py:63-66 already prescribes MARKETS_ALIVE_DAYS 3→1 at the
+next NATURAL shadow restart (never mid-run; it would close live
+probe run 20260810T081931's ledger), and held-market pinning
+(include=held) independently guarantees settlement visibility, so
+the 3-day tail is belt-and-braces only; 1 day ≈ 15k + 65k ≈ 80k,
+comfortably in band. Until a natural restart lands, sweep-hour
+peaks >150k stay tripwire-silent by design; a non-sweep-hour fire
+is ~6–7 days out at trough pace if no restart intervenes. **(4)
+Shadow anon 333MiB — above the 262–275MiB band (+58)** and UP from
+279 at 02:20Z while the reload dict SHRANK (125.1k→117.9k) — the
+dict-size explanation does NOT cover this step; cache=35MiB,
+current=377MB vs 1G cap, peak 622MB unchanged, zero journal errors.
+Not alarming (63% headroom) but the band story is weakening —
+re-read next pass; if anon keeps stepping while the dict is flat,
+that's a fourth accumulator candidate, not dict shape. **(5) Shadow
+run 20260810T081931**: 23,385 fills / 16,956 polls at 08:15Z
+(+1,010 fills over ~6h, ~168/hr, normal overnight band). **(6)
+Doctor 08:20Z clean**: 0 kalshi mirror violations; sweep_log 48h =
+7,433 ok / 15 truncated / 0 errors; stream archive 444.8M book
+events / 301.8M trades, 12.09GB (under 20GB). **(7) Sweeps in
+flight, on schedule**: poly sweep started 05:00Z (~3.4h in, in-band
+completion ~18:45Z), kalshi sweep started 06:10Z. QA (10:00Z) and
+the fourth settlement cohort (~11:30Z) land after this pass.
+Everything remains time-gated or user-gated. NEXT PASS: (1) 10:00Z
+QA verdict — batch-budget FAIL predicted to age out (if it lands
+FAIL again, the 08-07 11.49h run is being counted by END time
+17:39Z and it clears tomorrow — known cause either way, not new
+drift); (2) fourth settlement cohort (~11:30Z) probe P&L; (3)
+today's sweep-hour reload peak vs 143.8k prior — expect higher as
+08-12/08-13 close-days mature; confirm tighten-don't-raise; (4)
+shadow anon vs 333MiB with dict size in hand — accumulator check;
+(5) poly sweep completion ~18:45Z in-band.**
+(prior **2026-08-14 02:20 UTC (RUNG-1 PASS — ALL GREEN OVERNIGHT:
 KALSHI-TRADES 17.3h ZERO dead_air FIRES; RELOAD LINE DRAINING ON
 SCRIPT (143.8k→125.1k); SHADOW ANON EASING BACK TOWARD BAND (307→279
 MiB); FLUSH-DECLINE PACE HALVED FROM YESTERDAY'S SPIKE (~28→~16/day),
