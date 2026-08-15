@@ -1,6 +1,54 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-15 14:20 UTC (RUNG-1 PASS — QA ALL-PASS AS
+Updated: **2026-08-15 20:15 UTC (RUNG-1 PASS — FIFTH SETTLEMENT
+COHORT LANDED, WATCH RESOLVED (121 settlements 16:00–19:00Z, right
+after the kalshi sweep closed); BOTH SWEEPS DONE — KALSHI 10h24m (new
+steady-state best under the 8k budget), POLY 13h32m (back OFF its
+14h38m worst); RELOAD NEW PEAK 163,295; FILL-RATE REVERSED UP TO
+~257/hr ON A VISIBLY BUSY TAPE; ZERO dead_air ~59.3h.**
+**(1) Zero dead_air fires — ~59.3h since the 08-13 08:58Z recovery.**
+Only stream event since 14:20Z: one kalshi-books open-set reconnect
+(14:28Z 464→614), 1 gap row, legit. kalshi_trades counter 20.83M at
+19:11Z, flush rounds every ~5min at 3,600–6,500 rows (busy tape).
+**(2) Fifth settlement cohort LANDED — watch resolved**: 121
+settlements today, arriving 16:00–19:00Z (38/51/12/20 by hour)
+immediately after the kalshi sweep closed 16:34Z — exactly the
+sweep-runs-later hypothesis; run-total 516→637. No escalation.
+Post-sweep landing may be the new normal — confirm at the sixth
+cohort before moving the 11:00–13:00Z expectation. Probe equity
+−2,348 at 20:16Z (−2,050 at 14:16Z; still losing, ledger-only, zero
+capital). **(3) Kalshi sweep done 16:34Z at 10h24m** (623.7min, 3,313
+series, 68,483 markets, 308,032 candles, 0 errors / 3 truncated) —
+second steady-state point under the 8k crypto budget (11h23m →
+10h24m), well inside 12.5h; the 13:22Z ~9.5h projection was optimistic
+(slower back half). **(4) Poly sweep done 18:36Z at 13h32m — back OFF
+the 14h38m worst** (16,747 markets, 546,623 prices, 1,046,052 trades,
+13 errors — trades_tail 429 rate-limits, 0 prints lost to non-list
+bodies); between the 13h43m band point and the worst, watch eases.
+**(5) Reload line NEW PEAK 163,295 at 16:48Z** (+8.4k d/d vs
+154,933), then draining on script: 160,462→157,588→154,725 by 19:49Z.
+Tripwire-silent by design; MARKETS_ALIVE_DAYS 3→1 (a4bf182) still
+deferred on the running daemons — peaks keep climbing until the
+natural restart, expected. **(6) Fill-rate REVERSED: ~257/hr.** Fills
+30,283 / 23,316 polls at 20:14Z — +1,554 over ~6.05h (194→179→165→
+257 vs the ~148 band). Tape-driven, not sim drift: kalshi_trades
+stream counter +2.03M over ~5h (~406k/hr vs ~216k/hr the prior
+window) — busy Saturday crypto tape. Watch continues; recheck when
+the weekend tape quiets. **(7) Shadow anon 340MiB** (369→340),
+cache=34MiB, current=434MiB, peak 622MB — easing with the dict drain
+(154.7k), same dict-size scaling; settles at the natural restart.
+**(8) Flush declines: 5 since 14:20Z, 15 in trailing 24h** (vs 12 —
+slight rise with the busy tape; canonical grep per mistakes #21): all
+vs shadow's writer PID, all held-for-retry and drained on the next
+round (18:50:43Z 3,551 held → 18:51:01Z 6,538 flushed). **(9) Doctor
+20:20Z clean**: 0 kalshi mirror violations; sweep_log 48h = 7,345 ok
+/ 9 truncated / 0 errors; stream archive 455.9M book events / 314.5M
+trades, 12.5GB. NEXT PASS (02:15Z autoloop): (1) fill-rate vs ~148
+band as the weekend tape quiets — tape-tracking or drift?; (2) reload
+overnight drain from the 163,295 peak; (3) flush declines vs 15/24h;
+(4) shadow anon vs 262–275 band; (5) sixth settlement cohort timing
+(post-sweep landing pattern?).**
+(prior **2026-08-15 14:20 UTC (RUNG-1 PASS — QA ALL-PASS AS
 PREDICTED; ZERO dead_air ~53.4h; KALSHI SWEEP TRACKING A FAST ~9.5h
 FINISH; POLY SWEEP REPEATING ITS 14h38m WORST; FIFTH SETTLEMENT
 COHORT NOT YET LANDED (NEW WATCH — SWEEP RUNNING LATER THROUGH THE
