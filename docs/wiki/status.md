@@ -1,6 +1,38 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-15 02:20 UTC (RUNG-1 PASS — QUIET OVERNIGHT WINDOW,
+Updated: **2026-08-15 08:20 UTC (RUNG-1 PASS — MID-WINDOW CHECK, ALL
+GREEN; BOTH SWEEPS IN FLIGHT (POLY SINCE 05:00Z, KALSHI SINCE 06:10Z);
+ZERO dead_air ~47.4h; RELOAD LINE DRAINED TO 126,605 THEN TURNED UP
+INTO SWEEP HOURS ON SCRIPT; FILL-RATE EASING (~179/hr).**
+**(1) Zero dead_air fires — ~47.4h since the 08-13 08:58Z recovery.**
+Only stream events since 02:20Z: two kalshi-books open-set reconnects
+(06:29Z 614→506, 07:37Z 506→488), 1 gap row each, legit.
+kalshi_trades counter 17.49M at 08:12Z, flush rounds every ~5min at
+1,800–2,900 rows. **(2) Reload line on the root-cause math**: hourly
+reloads 134,029→131,607→129,458→127,052→126,605 (02:45→06:46Z), then
+the turn UP at 07:46Z (130,238) as the 05:00/06:10 sweeps repopulate
+— today's sweep-hour peak (>150k, tripwire-silent by design) reads at
+the next pass. MARKETS_ALIVE_DAYS 3→1 (a4bf182) still deferred on the
+running daemons. **(3) Flush declines: 1 since 02:20Z, 12 in trailing
+24h** (vs 10 — flat, canonical `grep "flush FAILED"` per mistakes
+#21): the 08:01:35Z decline (2,158 held vs shadow's writer PID)
+drained on the next round (2,861 flushed 08:02:40Z). **(4) Shadow
+anon 306MiB** (308→306), cache=42MiB, current=400MB, peak 622MB —
+holding just above the 262–275 band, consistent with the ~130k dict;
+settles at the natural restart. **(5) Settlements 516 run-total,
+unchanged — fifth cohort lands ~11:30Z (next pass).** Probe equity
+−2,034 at 08:16Z (−1,989 at 00:45Z; still losing, ledger-only, zero
+capital). Fills 27,739 / 21,186 polls at 08:11Z — +1,060 over ~5.9h
+≈ ~179/hr: easing from overnight's ~194 but still above the ~148
+band; watch continues. **(6) Doctor 08:20Z clean**: 0 kalshi mirror
+violations; sweep_log 48h = 7,170 ok / 10 truncated / 0 errors;
+stream archive 452.5M book events / 310.6M trades, 12.4GB. NEXT
+PASS (14:15Z autoloop): (1) 10:00Z QA verdicts — expect all-PASS
+under the 12.5h budget; (2) kalshi sweep completion vs 11h23m
+steady-state; (3) poly sweep progress vs the 14h38m new worst
+(finishes ~19:40Z if repeating); (4) reload sweep-hour peak; (5)
+fifth settlement cohort; (6) fill-rate vs band; (7) shadow anon.**
+(prior **2026-08-15 02:20 UTC (RUNG-1 PASS — QUIET OVERNIGHT WINDOW,
 ALL GREEN. RELOAD LINE DRAINING ON SCRIPT FROM THE 154,933 PEAK
 (136,404 AT 01:45Z); ZERO dead_air ~41.4h; FLUSH DECLINES KEEP
 RECEDING (10 IN TRAILING 24h, ALL DRAINED); SHADOW ANON 308MiB.**
@@ -33,7 +65,7 @@ poly sweep (starts 05:00Z) completion vs the new-worst 14h38m —
 trend or big-tape day?; (3) kalshi sweep (06:10Z) vs 11h23m
 steady-state; (4) reload peak (>150k expected, tripwire-silent by
 design); (5) fifth settlement cohort ~11:30Z; (6) fill-rate recheck
-(~194/hr vs ~148/hr band); (7) shadow anon vs band.**
+(~194/hr vs ~148/hr band); (7) shadow anon vs band.**)
 (prior **2026-08-14 20:15 UTC (RUNG-1 PASS + ACTION: RELOAD LINE
 CROSSED 150k ON SCHEDULE (PEAK 154,933 AT 17:43Z) — MARKETS_ALIVE_DAYS
 TIGHTENED 3→1 AND PROMOTED WITH --defer=hyxlab-shadow.service (a4bf182):
