@@ -1,6 +1,40 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-14 20:15 UTC (RUNG-1 PASS + ACTION: RELOAD LINE
+Updated: **2026-08-15 02:20 UTC (RUNG-1 PASS — QUIET OVERNIGHT WINDOW,
+ALL GREEN. RELOAD LINE DRAINING ON SCRIPT FROM THE 154,933 PEAK
+(136,404 AT 01:45Z); ZERO dead_air ~41.4h; FLUSH DECLINES KEEP
+RECEDING (10 IN TRAILING 24h, ALL DRAINED); SHADOW ANON 308MiB.**
+**(1) Zero dead_air fires — ~41.4h since the 08-13 08:58Z recovery.**
+Only stream event in the window: one polymarket/market GAP reconnect
+at 21:00Z, single gap row, legit. kalshi_trades counter 15.55M at
+02:12Z; flush rounds landing every ~5min at 2,800–4,800 rows. **(2)
+Reload line draining exactly on the root-cause math**: hourly reloads
+146,590→145,567→143,385→141,052→138,756→136,404 (20:44→01:45Z) from
+the 154,933 sweep-hour peak. The MARKETS_ALIVE_DAYS 3→1 tighten
+(a4bf182) remains deferred on the running daemon (shadow up since
+08-10, stream since 08-13) — next natural restart drops the line to
+~80k. **(3) Flush declines: 3 since 20:00Z, 10 in trailing 24h**
+(vs 11 yesterday) — all lock-contention vs shadow's writer (PID
+matches the shadow daemon), all drained on the following round.
+**(4) Shadow anon 308MiB** (315→308), cache=39MiB, current=385MB,
+peak 622MB — still oscillating above the 262–275 band with the dict
+at 136k, consistent with dict-size; the 3→1 tighten settles this at
+restart. **(5) Settlements: 516 run-total / 134 today, unchanged —
+fourth cohort closed; fifth lands ~11:30Z.** Probe equity −1,989 at
+00:45Z (recovered from −2,764 at 14:16Z; still losing, ledger-only,
+zero capital). Fills 26,679 / ~20,140 polls at 02:15Z — +1,176 fills
+over ~6h (~194/hr vs the ~148/hr band): overnight crypto tape looks
+busy; recheck at next pass, not yet a trend. **(6) Doctor 02:17Z
+clean**: 0 kalshi mirror violations; sweep_log 48h = 6,592 ok / 10
+truncated / 0 errors; stream archive 450.4M book events / 308.7M
+trades, 12.3GB. NEXT PASS: (1) 10:00Z QA — expect all-PASS under the
+12.5h budget (batch-budget FAIL = THIRD breach class, chase it); (2)
+poly sweep (starts 05:00Z) completion vs the new-worst 14h38m —
+trend or big-tape day?; (3) kalshi sweep (06:10Z) vs 11h23m
+steady-state; (4) reload peak (>150k expected, tripwire-silent by
+design); (5) fifth settlement cohort ~11:30Z; (6) fill-rate recheck
+(~194/hr vs ~148/hr band); (7) shadow anon vs band.**
+(prior **2026-08-14 20:15 UTC (RUNG-1 PASS + ACTION: RELOAD LINE
 CROSSED 150k ON SCHEDULE (PEAK 154,933 AT 17:43Z) — MARKETS_ALIVE_DAYS
 TIGHTENED 3→1 AND PROMOTED WITH --defer=hyxlab-shadow.service (a4bf182):
 THE RUNNING DAEMON KEEPS THE 3-DAY WINDOW UNTIL ITS NEXT NATURAL
