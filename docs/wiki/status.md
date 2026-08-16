@@ -1,6 +1,53 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-16 02:15 UTC (RUNG-1 PASS — QUIETEST WINDOW OF
+Updated: **2026-08-16 08:15 UTC (RUNG-1 PASS — ZERO dead_air ~71.3h;
+FILL-RATE WATCH STAYS OPEN: RATE HELD ~176/hr WHILE THE TAPE QUIETED
+580k→358k trades/hr — RATE DID NOT FOLLOW VOLUME DOWN, SO THE
+OVERNIGHT DISCRIMINATOR CAME BACK AMBIGUOUS; RELOAD TROUGHED 132,084
+THEN TURNED UP INTO SWEEP HOURS ON SCRIPT; BOTH SWEEPS IN FLIGHT.**
+**(1) Zero dead_air fires — ~71.3h since the 08-13 08:58Z recovery.**
+Three kalshi-books open-set reconnects since 02:15Z (05:31Z 614→566,
+06:38Z 566→506, 07:48Z 506→488), 1 gap row each — legit overnight
+churn, no dead_air. kalshi_trades counter 27.06M at 08:13Z — +2.14M
+over ~5.98h ≈ ~358k/hr (tape quieted from ~580k/hr as expected for
+weekend overnight); flush rounds every ~5min at 1,400–3,000 rows.
+**(2) Fill-rate ~176/hr — the decisive quiet-tape read is AMBIGUOUS.**
+Fills 32,408 / 25,431 polls at 08:14Z — +1,063 over ~6.03h. Rate held
+flat (178→176) while raw tape volume dropped 38% — so the rate is
+decoupled from raw volume in BOTH directions. Still consistent with
+tape-composition-tracking (the busy crypto hourlies persist through
+the overnight), but flatness on a quieter tape keeps sim-drift alive
+as a hypothesis. Next discriminator: a full quiet Sunday — if the
+rate holds ~175+ through today's low-composition hours, lean
+sim-side and audit the poll→fill path; if it eases toward ~148, close
+as composition-tracking. **(3) Reload line: overnight trough 132,084
+at 05:52Z** (163,295 peak → 139,191→136,795→134,475→132,084 hourly,
+02:51→05:52Z), then the sweep-hour turn on script: 135,231 (06:52Z) →
+139,306 (07:52Z). MARKETS_ALIVE_DAYS 3→1 (a4bf182) still deferred to
+the natural daemon restart. **(4) Flush declines: 1 since 02:15Z, 15
+in trailing 24h** (vs 16 — flat; canonical grep per mistakes #21):
+03:30:49Z, 2,558 rows held vs shadow's writer PID, drained next
+round. **(5) Shadow anon 319MiB** (300→319, small rise with the
+reload line turning up into sweep hours), cache=27MiB, current=365MiB,
+peak 622MB — same dict-size scaling; 262–275 band at natural restart.
+**(6) Both sweeps in flight**: poly 4,400/16,857 markets at 08:12Z
+(~532min left → ~17:00Z finish, tracking in-band vs 13h32m); kalshi
+600/3,313 series at 08:15Z (~566min left — early-series projection
+runs pessimistic; scattered 429s on crypto trade-tapes, retried, 0
+errors / 0 truncated so far). **(7) Settlements: sixth cohort NOT yet
+landed (expected)** — zero today as of 08:16Z; post-sweep-landing
+hypothesis says watch after the kalshi sweep closes (~16:30Z).
+Run-total 643. Probe equity −2,387 at 08:16Z (−2,449 at 02:16Z —
+ticked up, still losing, ledger-only, zero capital). **(8) Doctor
+08:20Z clean**: 0 kalshi mirror violations; sweep_log 48h = 7,268 ok
+/ 7 truncated / 0 errors; stream archive 458.2M book events / 320.2M
+trades, 12.6GB. NEXT PASS (14:15Z autoloop): (1) fill-rate through
+the quiet Sunday vs ~148 band — hold means audit the sim poll→fill
+path, ease means close the watch; (2) both sweeps' finish times vs
+10h24m / 13h32m; (3) sixth settlement cohort after the kalshi sweep
+closes; (4) reload sweep-hour peak vs 163,295; (5) flush declines vs
+15/24h; (6) shadow anon vs 262–275 band.**
+(prior **2026-08-16 02:15 UTC (RUNG-1 PASS — QUIETEST WINDOW OF
 THE STREAK: ZERO dead_air ~65.4h AND ZERO RECONNECTS SINCE 20:15Z;
 FILL-RATE EASED TO ~178/hr WHILE THE TAPE GOT BUSIER (~580k
 trades/hr) — RATE DECOUPLED FROM RAW TAPE VOLUME, ARGUES
