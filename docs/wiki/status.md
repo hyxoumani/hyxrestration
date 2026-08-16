@@ -1,6 +1,48 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-15 20:15 UTC (RUNG-1 PASS — FIFTH SETTLEMENT
+Updated: **2026-08-16 02:15 UTC (RUNG-1 PASS — QUIETEST WINDOW OF
+THE STREAK: ZERO dead_air ~65.4h AND ZERO RECONNECTS SINCE 20:15Z;
+FILL-RATE EASED TO ~178/hr WHILE THE TAPE GOT BUSIER (~580k
+trades/hr) — RATE DECOUPLED FROM RAW TAPE VOLUME, ARGUES
+TAPE-COMPOSITION-TRACKING NOT SIM DRIFT; RELOAD DRAINING ON SCRIPT
+FROM THE 163,295 PEAK; SHADOW ANON 300MiB EASING TOWARD BAND.**
+**(1) Zero dead_air fires — ~65.4h since the 08-13 08:58Z recovery,
+and ZERO stream events of any kind since 20:15Z** (no reconnects, no
+gap rows — quietest 6h window of the streak). kalshi_trades counter
+24.92M at 02:14Z — +4.09M over ~7.05h ≈ ~580k/hr (busier still than
+the ~406k/hr that drove yesterday's 257/hr fill spike); flush rounds
+every ~5min at 3,100–4,300 rows. **(2) Fill-rate EASED to ~178/hr
+against a BUSIER tape**: fills 31,345 / 24,366 polls at 02:12Z —
++1,062 over ~5.97h (257→178 while tape went 406k→580k trades/hr).
+The rate moving DOWN as raw volume moves UP decouples fill-rate from
+tape volume — it tracks tape composition (which markets are busy),
+not a monotonic sim drift. Still above the ~148 band; the decisive
+read is the quiet weekend-overnight tape at the next pass. **(3)
+Reload line draining on script**: 151,802→150,748→148,544→146,253→
+143,983→141,585 hourly (20:49→01:50Z) from the 163,295 peak —
+root-cause math holding; MARKETS_ALIVE_DAYS 3→1 (a4bf182) still
+deferred until the natural daemon restart. **(4) Flush declines: 4
+since 20:15Z, 16 in trailing 24h** (vs 15 — flat on a busy tape;
+canonical grep per mistakes #21): two vs shadow's writer PID, two
+(00:33/00:34Z) vs transient batch-unit PIDs since exited; all
+held-for-retry and drained (00:36:22Z round flushed 3,090). **(5)
+Shadow anon 300MiB** (340→300), cache=32MiB, current=347MiB, peak
+622MB — easing with the dict drain (141.6k), on the same dict-size
+scaling toward the 262–275 band. **(6) Settlements 637→643**: +6
+stragglers at 20Z closing the fifth cohort's tail; sixth cohort is
+the post-sweep-landing hypothesis test (kalshi sweep starts 06:10Z,
+expect the cohort near its ~16:30Z close). Probe equity −2,449 at
+02:16Z (−2,348 at 20:16Z; still losing, ledger-only, zero capital).
+**(7) Doctor 02:20Z clean**: 0 kalshi mirror violations; sweep_log
+48h = 6,621 ok / 7 truncated / 0 errors; stream archive 456.9M book
+events / 318.0M trades, 12.6GB. NEXT PASS (08:15Z autoloop): (1)
+fill-rate on the quiet overnight tape vs ~148 band — the decisive
+tape-vs-drift read; (2) reload overnight trough, then the sweep-hour
+turn; (3) both sweeps in flight (poly 05:00Z, kalshi 06:10Z)
+progress vs 13h32m / 10h24m; (4) flush declines vs 16/24h; (5)
+shadow anon vs 262–275 band; (6) sixth settlement cohort timing
+after the kalshi sweep closes.**
+(prior **2026-08-15 20:15 UTC (RUNG-1 PASS — FIFTH SETTLEMENT
 COHORT LANDED, WATCH RESOLVED (121 settlements 16:00–19:00Z, right
 after the kalshi sweep closed); BOTH SWEEPS DONE — KALSHI 10h24m (new
 steady-state best under the 8k budget), POLY 13h32m (back OFF its
