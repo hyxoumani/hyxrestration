@@ -1,6 +1,55 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-16 14:15 UTC (RUNG-1 PASS — FILL-RATE WATCH
+Updated: **2026-08-16 20:15 UTC (RUNG-1 PASS — KALSHI SWEEP NEW
+BEST 8h27m (506.8 min, 0 errors, 1 truncated, finished 14:37Z);
+SIXTH SETTLEMENT COHORT LANDED ON THE POST-SWEEP SCRIPT (131 @
+16–19Z, run-total 774 — hypothesis now confirmed on consecutive
+cohorts); NEW WATCH: poly sweep logged 9 errors + a keyset walk
+INCOMPLETE at 11,700 markets (Gamma 500s persisted after retry) —
+first non-zero error count of the run; ZERO dead_air ~83.3h.**
+**(1) Zero dead_air fires — ~83.3h since the 08-13 08:58Z
+recovery.** One kalshi-books open-set reconnect since 14:15Z
+(14:38:55Z 464→614 — open set GREW right after the kalshi sweep
+close, expected churn; 1 gap row, legit). kalshi_trades counter
+30.79M at 20:12Z — +2.51M over ~5.95h ≈ ~422k/hr (tape busy again
+after the 203k/hr lull); flush rounds every ~5min at ~2,600 rows.
+**(2) Sweeps: kalshi NEW BEST 8h27m** — done 14:37:28Z, 3,313
+series / 55,317 markets / 73,044 candles, 0 errors, 1 truncated
+(vs prior best 10h24m; the ~8h50m in-flight projection was even
+slightly pessimistic). **Poly 13h53m (832.4 min), back off the
+14h38m worst, BUT first non-zero error count of the run: 9 errors,
+plus keyset walk INCOMPLETE at 11,700 markets at 05:04Z (Gamma 500s
+persisted after retry)** — market total still 16,857 (matches
+yesterday exactly, i.e. zero NEW market discovery, consistent with
+the truncated walk); trades_tail 429s continued (~10 stop-earlies).
+NEW WATCH: if tomorrow's poly sweep market count jumps, tonight's
+discovery was short-changed by the Gamma 500s — check the walk line
+first. **(3) Sixth settlement cohort LANDED on script: 131 @
+16–19Z** (37/53/18/23 by hour), starting ~1.5h after the kalshi
+sweep close — post-sweep-landing hypothesis confirmed on a second
+consecutive cohort; run-total 774. Probe equity −2,821 at 20:16Z
+(−2,364 at 14:16Z — dropped ~457 with the cohort; ledger-only,
+zero capital). **(4) Reload line NEW PEAK 171,743 at 14:54Z**
+(+735 vs 171,008), then draining on script: 168,915→166,083→
+163,254→160,453→157,595 (15:55→19:56Z hourly). MARKETS_ALIVE_DAYS
+3→1 (a4bf182) still deferred to the natural daemon restart.
+**(5) Flush declines: 1 since 14:15Z, 11 in trailing 24h** (down
+from 15; canonical grep per mistakes #21): 18:48:16Z, 3,567 rows
+held vs shadow's writer PID, drained next round. **(6) Shadow anon
+320MiB** (342→320, easing with the reload drain), file=35MiB,
+current=393MiB, peak 622MB — same dict-size scaling; 262–275 band
+at natural restart. **(7) Fill-rate spot check: ~246/hr, in the new
+150–270 weather-tracking band.** Fills 35,005 / 27,546 polls at
+20:11Z — +1,463 over ~5.95h; polls steady ~176/hr. **(8) Doctor
+20:20Z clean**: 0 kalshi mirror violations; sweep_log 48h = 7,354
+ok / 5 truncated / 0 errors; stream archive 461.1M book events /
+323.9M trades, 12.75GB. NEXT PASS (02:15Z autoloop): (1) reload
+overnight trough vs 132,084; (2) flush declines vs 11/24h; (3)
+shadow anon vs 262–275 band; (4) fill-rate spot check vs 150–270
+band; (5) note for the 08-17 sweep-window pass: poly keyset walk —
+did the Gamma 500s recur, and did market discovery jump (tonight's
+walk truncated at 11,700)?**
+(prior **2026-08-16 14:15 UTC (RUNG-1 PASS — FILL-RATE WATCH
 CLOSED BY COMPOSITION AUDIT: PROBE FILLS ARE ~90% WEATHER SERIES
 (KXHIGH*/KXLOWT* DAILY TEMPERATURE MARKETS), BLIND TO THE
 CRYPTO-DOMINATED TAPE — NOT SIM DRIFT (run-rate flat-to-DECLINING
@@ -58,7 +107,7 @@ cohort after the kalshi sweep close; (2) kalshi finish vs ~8h50m
 (new best?) and poly finish vs 14h38m worst; (3) reload sweep-hour
 peak vs 171,008 then the drain; (4) flush declines vs 15/24h; (5)
 shadow anon vs 262–275 band; (6) fill-rate only as a spot check
-under the new ~150–270 weather-tracking expectation.**
+under the new ~150–270 weather-tracking expectation.**)
 (prior **2026-08-16 08:15 UTC (RUNG-1 PASS — ZERO dead_air ~71.3h;
 FILL-RATE WATCH STAYS OPEN: RATE HELD ~176/hr WHILE THE TAPE QUIETED
 580k→358k trades/hr — RATE DID NOT FOLLOW VOLUME DOWN, SO THE
