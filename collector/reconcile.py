@@ -125,8 +125,11 @@ from hyxlab.store import connect_retry
 
 __all__ = [
     "GRACE_DAYS",
+    "MAX_MARKETS_PER_BATCH",
     "PURGE_HORIZON_DAYS",
     "Missing",
+    "bounded_batches",
+    "candle_request_cost",
     "diff_missing",
     "ledger_findings",
     "plan_cost",
@@ -161,6 +164,21 @@ MAX_PER_SERIES = 2000
 #: how much of the tail is pulled into memory (the full deficit is 7.6M rows
 #: and 96% of it is one parlay family).
 SCAN_LIMIT = 200_000
+
+#: Cap on markets repaired per BATCH in the full (non-metadata) path. Budgets
+#: are checked BETWEEN batches, and a URL-length metadata batch is ~190
+#: tickers — so before this cap, one batch could spend the run's whole time
+#: budget and then some. Measured (EXP-1307, 2026-08-13..15): the same
+#: 240-market / 360-request work order went 162s -> 516s -> >1020s as the
+#: missing mix shifted from short-lived Crypto hourlies to long-lived
+#: Financials/Economics monthlies (59,639 candles inserted on 08-13 vs 1,390
+#: on 08-11; request rate 2.85 -> 0.93 Hz), and the invoker's outer timeout
+#: killed the process mid-batch two days running because `--max-minutes`
+#: never got a boundary to fire at. 25 markets bounds the overshoot at
+#: ~2 minutes even at the worst measured per-market cost (~4.3 s/market).
+#: Metadata-only runs keep the URL-length batches: they make one request per
+#: batch, so splitting them would multiply requests for no bound gained.
+MAX_MARKETS_PER_BATCH = 25
 
 DEFAULT_DB = "data/hyxlab.duckdb"
 DEFAULT_STREAM_DB = "data/hyxstream.duckdb"
@@ -500,6 +518,32 @@ def _ts(v: str | None) -> int | None:
     return int(datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp())
 
 
+def bounded_batches(batches: list[list[str]], cap: int | None) -> list[list[str]]:
+    """Re-split URL-length batches so no batch exceeds `cap` markets,
+    PRESERVING ORDER (the caller's order is a priority order).
+
+    This is what makes `reconcile`'s between-batch budget checks mean
+    something in the full path: the checks can only fire at batch
+    boundaries, so batch size IS the overshoot bound (EXP-1307).
+    """
+    if not cap:
+        return batches
+    return [b[i:i + cap] for b in batches for i in range(0, len(b), cap)]
+
+
+def candle_request_cost(start_ts: int, end_ts: int, period_interval: int = 60) -> int:
+    """How many HTTP requests `kalshi.get_candlesticks` will actually spend.
+
+    Spans over MAX_CANDLES_PER_REQUEST periods are chunked (EXP-1274), and
+    before EXP-1307 each candles call was counted as ONE request no matter
+    how many chunks it made — a 298-day monthly market is 2 requests, so
+    `--max-requests` under-counted exactly when the work order was slowest.
+    """
+    span_s = max(0, int(end_ts) - int(start_ts))
+    max_span_s = kalshi.MAX_CANDLES_PER_REQUEST * period_interval * 60
+    return max(1, -(-span_s // max_span_s))  # ceil division
+
+
 def reconcile(
     order: list[Missing],
     db: str = DEFAULT_DB,
@@ -514,12 +558,15 @@ def reconcile(
     ledger_state: str | None = LEDGER_STATE,
     ledger_tool: str = LEDGER_TOOL,
     now: datetime | None = None,
+    max_markets_per_batch: int | None = MAX_MARKETS_PER_BATCH,
 ) -> dict:
     """Repair `order` (already prioritised) and report what is left.
 
     Every batch is: HTTP (no lock) -> one short `writer_burst`. Budgets are
     checked BETWEEN batches so a stop is always at a clean boundary and the
-    unreached tail is reported as `remaining`, never as done.
+    unreached tail is reported as `remaining`, never as done. In the full
+    path, batches are capped at `max_markets_per_batch` markets so those
+    checks actually get boundaries to fire at (EXP-1307).
     """
     sess = session or requests.Session()
     t0 = time.monotonic()
@@ -534,6 +581,12 @@ def reconcile(
     stop_reason = ""
 
     batches = kalshi.batch_tickers([m.market_id for m in order])
+    if not metadata_only:
+        # Metadata-only runs are one request per batch, so re-splitting them
+        # would multiply requests for no bound gained; the full path is
+        # 1 + 2/market and MUST be re-split or the between-batch budget
+        # checks below are decorative (EXP-1307).
+        batches = bounded_batches(batches, max_markets_per_batch)
     for i, batch in enumerate(batches):
         if max_markets is not None and processed >= max_markets:
             stop_reason = "max-markets"
@@ -568,7 +621,9 @@ def reconcile(
                     candles = kalshi.get_candlesticks(
                         series, ticker, open_ts, close_ts, 60, session=sess
                     )
-                    requests_made += 1
+                    # Chunked long-span markets spend several requests; count
+                    # what was actually spent, not one (EXP-1307).
+                    requests_made += candle_request_cost(open_ts, close_ts, 60)
                     candle_rows.extend(kalshi.candle_row(series, m, c, 3600) for c in candles)
                 except requests.HTTPError as e:
                     code = e.response.status_code if e.response is not None else "?"

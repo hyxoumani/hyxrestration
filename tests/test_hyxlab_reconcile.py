@@ -532,3 +532,59 @@ def test_a_live_cursor_makes_unseen_tickers_undetermined_not_absent():
         ["A-OK", "B-?"], session=_S(), max_pages=2)
     assert sorted(found) == ["A-OK"]
     assert absent == [] and undet == ["B-?"]
+
+
+# ---------------------------------------------------------------------------
+# 7. EXP-1307 — budget checks need batch boundaries to fire at
+# ---------------------------------------------------------------------------
+
+
+def test_bounded_batches_caps_size_and_preserves_priority_order():
+    """Budgets are checked BETWEEN batches, so batch size IS the overshoot
+    bound. Measured 2026-08-14/15: one ~240-ticker URL-length batch ran past
+    the invoker's outer timeout (>1020s) because `--max-minutes` never got a
+    boundary to fire at. Order must survive the re-split — it is a
+    time-to-purge priority order, not a convenience grouping."""
+    batches = [[f"T{i:03d}" for i in range(190)], [f"U{i:03d}" for i in range(60)]]
+    out = rec.bounded_batches(batches, 25)
+    assert all(len(b) <= 25 for b in out)
+    assert [t for b in out for t in b] == [t for b in batches for t in b]
+    # cap=None / 0 means "leave the URL-length batches alone" (metadata path)
+    assert rec.bounded_batches(batches, None) == batches
+    assert rec.bounded_batches(batches, 0) == batches
+
+
+def test_full_path_batches_are_capped_but_metadata_only_is_not(tmp_path, monkeypatch):
+    """The full path is 1 + 2/market and must be re-split; metadata-only is
+    one request per batch, so re-splitting it would only multiply requests."""
+    seen: list[int] = []
+
+    def spy_by_tickers(batch, session=None, pause_s=0.0):
+        seen.append(len(batch))
+        return {}, list(batch), []  # everything purged: no HTTP, no lock
+
+    monkeypatch.setattr(rec.kalshi, "get_markets_by_tickers", spy_by_tickers)
+    monkeypatch.setattr(rec, "record_holes", lambda *a, **k: 0)
+    order = [rec.Missing(f"KXPAY-{i:04d}", "KXPAY", "Economics",
+                         NOW - timedelta(days=10)) for i in range(60)]
+
+    rec.reconcile(order, db=str(tmp_path / "x.duckdb"), max_markets_per_batch=25,
+                  ledger_state=None, now=NOW)
+    assert seen and all(n <= 25 for n in seen), seen
+
+    seen.clear()
+    rec.reconcile(order, db=str(tmp_path / "x.duckdb"), metadata_only=True,
+                  max_markets_per_batch=25, ledger_state=None, now=NOW)
+    assert seen == [60]  # one URL-length batch, untouched
+
+
+def test_candle_request_cost_counts_chunks_not_calls():
+    """A 298-day monthly market spans ~7,150 hourly periods = 2 chunked
+    requests (EXP-1274); counting it as 1 makes `--max-requests` undercount
+    exactly when the work order is slowest."""
+    h = 3600
+    assert rec.candle_request_cost(0, 100 * h) == 1
+    assert rec.candle_request_cost(0, 5000 * h) == 1
+    assert rec.candle_request_cost(0, 5001 * h) == 2
+    assert rec.candle_request_cost(0, 7150 * h) == 2
+    assert rec.candle_request_cost(0, 0) == 1  # degenerate span still costs one call
