@@ -1,6 +1,65 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-16 08:15 UTC (RUNG-1 PASS — ZERO dead_air ~71.3h;
+Updated: **2026-08-16 14:15 UTC (RUNG-1 PASS — FILL-RATE WATCH
+CLOSED BY COMPOSITION AUDIT: PROBE FILLS ARE ~90% WEATHER SERIES
+(KXHIGH*/KXLOWT* DAILY TEMPERATURE MARKETS), BLIND TO THE
+CRYPTO-DOMINATED TAPE — NOT SIM DRIFT (run-rate flat-to-DECLINING
+270→~185/hr, composition stable, polls steady ~178/hr; the ~148
+BAND WAS A LULL ARTIFACT, NOT A BASELINE); ZERO dead_air ~77.3h;
+KALSHI SWEEP TRACKING ~8h50m — WOULD BE NEW BEST; RELOAD NEW PEAK
+171,008.**
+**(1) Zero dead_air fires — ~77.3h since the 08-13 08:58Z
+recovery.** One kalshi-books open-set reconnect since 08:15Z
+(09:26Z 488→464), 1 gap row, legit. kalshi_trades counter 28.28M at
+14:15Z — +1.22M over ~6.03h ≈ ~203k/hr (tape quieted a third
+consecutive window, 580→358→203k/hr); flush rounds every ~5min at
+1,800–2,800 rows. **(2) FILL-RATE WATCH CLOSED — the quiet-Sunday
+read said "hold" (fills 33,542 / 26,496 polls at 14:14Z, +1,134
+over ~6.0h ≈ ~189/hr on the quietest tape of the streak), the
+pre-commit said audit the poll→fill path, and the audit found a
+wrong baseline, not drift.** shadow_fills composition (current run
+20260810T081931): last-48h top fills are KXHIGHDEN 20% / KXHIGHCHI
+20% / KXHIGHNY 16% / KXHIGHAUS 14% / KXHIGHMIA 12% / KXLOWT* ~12%
+— ~90% daily temperature series that trade on their own daily
+cadence and are insensitive to the crypto-dominated kalshi_trades
+counter, which explains the both-directions volume decoupling
+outright. No upward drift: daily fill-rates ran 234→270→224→184→
+180→196→~182/hr (08-10→today) — flat-to-declining from the run's
+start; polls steady ~178/hr cadence; composition stable early-vs-
+recent (only change: KXFED, 20% of first-48h fills, exited after
+the Fed event and weather backfilled the share). The ~148 "band"
+traces to a single 08-14 lull window and was never a baseline. NEW
+EXPECTATION: ~150–270/hr tracking active-weather-series count;
+re-open only on a sustained fills-per-poll regime break or weather
+share collapsing while the rate holds. **(3) Reload line NEW PEAK
+171,008 at 13:54Z** (+7.7k d/d vs 163,295) on the sweep-hour climb
+script: 145,646→152,494→156,733→157,609→164,209→171,008
+(08:53→13:54Z). MARKETS_ALIVE_DAYS 3→1 (a4bf182) still deferred to
+the natural daemon restart. **(4) Flush declines: 5 since 08:15Z,
+15 in trailing 24h** (flat vs 15; canonical grep per mistakes #21):
+08:24, 08:32, 09:57, 11:29, 13:19Z — mixed shadow-writer and
+transient-batch PIDs, all held-for-retry and drained next round.
+**(5) Shadow anon 342MiB** (319→342, tracking the reload climb to
+171k), cache=32MiB, current=408MiB, peak 622MB — same dict-size
+scaling; 262–275 band at natural restart. **(6) Sweeps: kalshi
+3,000/3,313 series at 14:05Z, ~50min left → ~15:00Z finish ≈
+8h50m — would be a NEW BEST vs 10h24m** (0 errors, 1 truncated,
+scattered crypto-tape 429s retried); poly 10,600/16,857 at 14:12Z,
+~323min left → ~19:35Z ≈ 14h35m — back AT the 14h38m worst, watch
+the finish (trades_tail 429s continuing). **(7) Settlements: sixth
+cohort still pending (expected)** — zero today at 14:16Z, run-total
+643; post-sweep hypothesis says land 15–19Z after the kalshi sweep
+closes. Probe equity −2,364 at 14:16Z (−2,387 at 08:16Z — ticked
+up, still losing, ledger-only, zero capital). **(8) Doctor 14:20Z
+clean**: 0 kalshi mirror violations; sweep_log 48h = 8,464 ok / 8
+truncated / 0 errors; stream archive 459.9M book events / 321.4M
+trades, 12.7GB. NEXT PASS (20:15Z autoloop): (1) sixth settlement
+cohort after the kalshi sweep close; (2) kalshi finish vs ~8h50m
+(new best?) and poly finish vs 14h38m worst; (3) reload sweep-hour
+peak vs 171,008 then the drain; (4) flush declines vs 15/24h; (5)
+shadow anon vs 262–275 band; (6) fill-rate only as a spot check
+under the new ~150–270 weather-tracking expectation.**
+(prior **2026-08-16 08:15 UTC (RUNG-1 PASS — ZERO dead_air ~71.3h;
 FILL-RATE WATCH STAYS OPEN: RATE HELD ~176/hr WHILE THE TAPE QUIETED
 580k→358k trades/hr — RATE DID NOT FOLLOW VOLUME DOWN, SO THE
 OVERNIGHT DISCRIMINATOR CAME BACK AMBIGUOUS; RELOAD TROUGHED 132,084
@@ -46,7 +105,7 @@ the quiet Sunday vs ~148 band — hold means audit the sim poll→fill
 path, ease means close the watch; (2) both sweeps' finish times vs
 10h24m / 13h32m; (3) sixth settlement cohort after the kalshi sweep
 closes; (4) reload sweep-hour peak vs 163,295; (5) flush declines vs
-15/24h; (6) shadow anon vs 262–275 band.**
+15/24h; (6) shadow anon vs 262–275 band.**)
 (prior **2026-08-16 02:15 UTC (RUNG-1 PASS — QUIETEST WINDOW OF
 THE STREAK: ZERO dead_air ~65.4h AND ZERO RECONNECTS SINCE 20:15Z;
 FILL-RATE EASED TO ~178/hr WHILE THE TAPE GOT BUSIER (~580k
