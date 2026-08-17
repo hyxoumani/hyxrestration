@@ -163,6 +163,37 @@ def test_iter_markets_keyset_persistent_error_logs_incomplete(monkeypatch, capsy
 
             return R()
 
-    out = iter_markets_by_volume(100.0, session=_AlwaysError({}))
+    sess = _AlwaysError({})
+    out = iter_markets_by_volume(100.0, session=sess)
     assert out == []
+    assert len(sess.calls) == 4  # escalating-backoff ladder, not one retry
+    logged = capsys.readouterr().out
+    assert "INCOMPLETE" in logged
+    # The failing cursor is the recurrence discriminator (2026-08-17:
+    # two consecutive walks died at exactly 11,700 markets — same-cursor
+    # means a deterministic Gamma fault, different-cursor means load).
+    assert "cursor None" in logged
+
+
+def test_iter_markets_keyset_non_json_body_retries_then_incomplete(monkeypatch, capsys):
+    """A Gamma 5xx with an HTML body must hit the same retry/INCOMPLETE
+    path, not raise out of the walk."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    class _NonJson(_KeysetSession):
+        def get(self, url, params=None, timeout=None):
+            self.calls.append((url, dict(params)))
+
+            class R:
+                status_code = 502
+
+                def json(self):
+                    raise ValueError("no JSON")
+
+            return R()
+
+    sess = _NonJson({})
+    out = iter_markets_by_volume(100.0, session=sess)
+    assert out == []
+    assert len(sess.calls) == 4
     assert "INCOMPLETE" in capsys.readouterr().out

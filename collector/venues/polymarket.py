@@ -74,15 +74,18 @@ def iter_markets_by_volume(
     /markets/keyset, pages chained via `after_cursor` from the response's
     `next_cursor`, with the threshold also applied server-side
     (`volume_num_min`). Gamma is ~60 req/min unauthenticated and
-    occasionally answers with an error object — retried once, then the
-    walk stops (a skipped keyset page would break the cursor chain).
+    occasionally answers with an error object — retried with escalating
+    backoff, then the walk stops (a skipped keyset page would break the
+    cursor chain). The INCOMPLETE line carries the failing cursor: two
+    walks dying at the SAME cursor is a deterministic server-side fault
+    (poisoned page / depth limit), not load.
     """
     import time
 
     sess = session or requests.Session()
     out: list[dict[str, Any]] = []
     cursor: str | None = None
-    for _ in range(max_pages):
+    for page_idx in range(max_pages):
         params: dict[str, Any] = {
             "closed": str(closed).lower(),
             "order": "volumeNum",
@@ -94,19 +97,25 @@ def iter_markets_by_volume(
         if cursor:
             params["after_cursor"] = cursor
         body = None
-        for _attempt in range(2):
+        for backoff_s in (5, 15, 45, None):
             resp = sess.get(f"{GAMMA}/markets/keyset", params=params, timeout=30)
-            candidate = resp.json()
+            try:
+                candidate = resp.json()
+            except ValueError:  # non-JSON 5xx body: same retry path
+                candidate = None
             if isinstance(candidate, dict) and "markets" in candidate:
                 body = candidate
                 break
-            time.sleep(5)
+            if backoff_s is not None:
+                time.sleep(backoff_s)
         if body is None:
             # Same failure class the QA shrink-tripwire catches a day
             # late — the same-run signal is this log line.
             print(
                 f"[poly] keyset walk INCOMPLETE at {len(out)} markets"
-                f" (Gamma errors persisted after retry; status {getattr(resp, 'status_code', '?')})",
+                f" (Gamma errors persisted after retry; status"
+                f" {getattr(resp, 'status_code', '?')};"
+                f" page {page_idx}, cursor {cursor!r})",
                 flush=True,
             )
             break
