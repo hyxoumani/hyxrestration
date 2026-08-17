@@ -1,6 +1,43 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-16 20:15 UTC (RUNG-1 PASS — KALSHI SWEEP NEW
+Updated: **2026-08-17 02:15 UTC (RUNG-1 PASS — QUIETEST WINDOW OF
+THE RUN: ZERO dead_air ~89.3h AND zero kalshi-books reconnects
+~11.6h (none since the 14:38:55Z post-sweep churn); all lines on
+script; NEW WATCH probe equity slid −2,821→−3,005 with ZERO
+settlements in the window — pure mark-to-market drift on open
+positions (ledger-only, zero capital).**
+**(1) Zero dead_air fires — ~89.3h since the 08-13 08:58Z
+recovery; zero reconnects since 14:38:55Z (~11.6h)** — quietest
+stretch of the streak. kalshi_trades counter 33.70M at 02:14Z —
++2.91M over ~6.03h ≈ ~483k/hr (busy tape held); flush rounds every
+~5min at 2,100–4,000 rows. **(2) Reload line draining on script**:
+157,595→154,732→153,804→151,801→149,589→147,397→145,163
+(19:56→01:57Z hourly, ~2.1k/h) — overnight trough vs 132,084 due
+~05–06Z, next-pass check. MARKETS_ALIVE_DAYS 3→1 (a4bf182) still
+deferred to the natural daemon restart. **(3) Flush declines: 2
+since 20:15Z, 9 in trailing 24h** (down from 11; canonical grep per
+mistakes #21): 23:33:48Z 4,930 rows and 00:58:12Z 3,854 rows, both
+held vs shadow's writer PID, drained next round. **(4) Shadow anon
+326MiB** (320→326, small wiggle against the reload drain),
+file=35MiB, current=400MiB, peak 622MB — same dict-size scaling;
+262–275 band at natural restart. **(5) Fill-rate ~193/hr, in the
+150–270 weather-tracking band.** Fills 36,168 / 28,611 polls at
+02:14Z — +1,163 over ~6.04h; polls steady ~176/hr. **(6)
+Settlements: zero in window (expected — post-sweep cohorts land
+16–19Z)**, run-total 774. NEW WATCH: probe equity −3,004.52 at
+02:16Z (−2,821 at 20:16Z) — dropped ~184 with zero settlements,
+i.e. pure mark-to-market drift on open positions, worth an eye on
+whether the slide persists into the next cohort; ledger-only, zero
+capital. **(7) Doctor 02:20Z clean**: 0 kalshi mirror violations;
+sweep_log 48h = 6,624 ok / 4 truncated / 0 errors; stream archive
+462.7M book events / 326.8M trades, 12.8GB. NEXT PASS (08:15Z
+autoloop, sweep window): (1) poly keyset walk — did the Gamma 500s
+recur, and did market discovery jump above 16,857 (last walk
+truncated at 11,700)?; (2) reload overnight trough vs 132,084;
+(3) both sweeps in flight vs kalshi 8h27m best / poly 13h53m;
+(4) flush declines vs 9/24h; (5) shadow anon vs 262–275 band;
+(6) probe-equity drift — did the no-settlement slide continue?**
+(prior **2026-08-16 20:15 UTC (RUNG-1 PASS — KALSHI SWEEP NEW
 BEST 8h27m (506.8 min, 0 errors, 1 truncated, finished 14:37Z);
 SIXTH SETTLEMENT COHORT LANDED ON THE POST-SWEEP SCRIPT (131 @
 16–19Z, run-total 774 — hypothesis now confirmed on consecutive
@@ -48,7 +85,7 @@ overnight trough vs 132,084; (2) flush declines vs 11/24h; (3)
 shadow anon vs 262–275 band; (4) fill-rate spot check vs 150–270
 band; (5) note for the 08-17 sweep-window pass: poly keyset walk —
 did the Gamma 500s recur, and did market discovery jump (tonight's
-walk truncated at 11,700)?**
+walk truncated at 11,700)?**)
 (prior **2026-08-16 14:15 UTC (RUNG-1 PASS — FILL-RATE WATCH
 CLOSED BY COMPOSITION AUDIT: PROBE FILLS ARE ~90% WEATHER SERIES
 (KXHIGH*/KXLOWT* DAILY TEMPERATURE MARKETS), BLIND TO THE
