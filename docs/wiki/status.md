@@ -1,6 +1,65 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-17 02:15 UTC (RUNG-1 PASS — QUIETEST WINDOW OF
+Updated: **2026-08-17 08:15 UTC (RUNG-1 PASS — POLY KEYSET-WALK
+WATCH ANSWERED: GAMMA 500s RECURRED AND THE WALK DIED AT EXACTLY
+11,700 MARKETS A SECOND CONSECUTIVE NIGHT (05:04Z, status 500;
+market total 16,821 vs 16,857 — zero new discovery again). An
+identical stopping point twice argues a DETERMINISTIC server-side
+fault (poisoned page or depth limit), not load — HARDENED THIS
+PASS: retry ladder 2 attempts/5s → 4 attempts with 5/15/45s
+backoff, the INCOMPLETE line now logs the failing page index +
+cursor (the recurrence discriminator: same cursor = deterministic,
+different = transient), and a non-JSON 5xx body now takes the
+retry path instead of raising out of the walk
+(`collector/venues/polymarket.py` + 2 tests, suite 649). Promoted
+with `--defer=hyxlab-stream.service` (streamd only calls the walk
+once at startup with max_pages=1 — not worth the capture gap;
+stream runs old code until its next natural restart, alongside the
+already-deferred a4bf182). Tomorrow's 05:0xZ walk line carries the
+cursor — check it first. ZERO dead_air ~95.3h.**
+**(1) Zero dead_air fires — ~95.3h.** One kalshi-books open-set
+reconnect since 02:15Z (06:28:39Z 614→506, 1 gap row, legit).
+kalshi_trades counter 35.50M at 08:14Z — +1.80M over ~6.0h ≈
+~300k/hr (easing from 483k); flush rounds every ~5min at
+1,400–2,400 rows. **(2) Reload line: overnight trough 136,077 at
+05:58Z** — HIGHER than the 132,084 prior trough (+4.0k d/d,
+consistent with markets-table growth), then the sweep-hour turn on
+script: 137,148→139,116 (06:58→07:58Z). MARKETS_ALIVE_DAYS 3→1
+(a4bf182) still deferred to the natural daemon restart. **(3) Both
+sweeps in flight in-band**: poly started 05:00Z, trades_tail
+408/429 stop-earlies continuing (~6 since 06:19Z); kalshi
+mid-flight in the KXBTCD crypto series at 08:01Z, scattered 429s
+retried, 0 errors. **(4) Flush declines: 3 since 02:15Z, 11 in
+trailing 24h** (up from 9; canonical grep per mistakes #21):
+03:34:45Z, 05:47:24Z, 06:08:13Z — all held-for-retry, flush
+rounds continuous after each. **(5) Shadow anon 339MiB** (326→339,
+tracking the reload sweep-hour climb), RSS 389MiB, peak 622MB —
+same dict-size scaling; 262–275 band at natural restart. **(6)
+Fill-rate ~183/hr, in the 150–270 weather-tracking band.** Fills
+37,263 / 29,661 polls at 08:12Z — +1,095 over ~5.97h; polls steady
+~176/hr. **(7) Probe-equity slide CONTINUED: −3,147.21 at 08:16Z**
+(−3,005 at 02:16Z, −2,821 at 20:16Z) — another −142 with ZERO
+settlements (run-total 774), ~−326 over 12h of pure mark-to-market
+drift on open positions; ledger-only, zero capital. Watch stays
+open — today's post-sweep cohort (16–19Z) shows whether
+settlements REALIZE the marked losses or the marks are stale-quote
+pessimism (the lab's documented conservative-marking bias). **(8)
+Doctor 08:20Z clean**: 0 kalshi mirror violations; sweep_log 48h =
+7,210 ok / 4 truncated / 0 errors; stream archive 465.7M book
+events / 328.6M trades, 12.9GB. Box note: the sibling `hylshi-*`
+live-trading stack (separate workspace, own watchdog) has
+`hylshi-health-check.service` in a failed state — out of hyxlab
+scope, not touched, flagged for the user. NEXT PASS (14:15Z
+autoloop): (1) kalshi sweep finish vs 8h27m best, poly finish vs
+13h53m and its error count vs 9; (2) seventh settlement cohort
+post-sweep 16–19Z — and does the −3,147 mark realize or snap back
+on settlement; (3) reload sweep-hour peak vs 171,743; (4) flush
+declines vs 11/24h; (5) shadow anon vs 262–275 band; (6) fill-rate
+spot check vs 150–270; (7) note for the 08-18 sweep-window pass:
+the hardened walk's first live INCOMPLETE line (if any) now carries
+page+cursor — same cursor as tonight ⇒ file the deterministic-fault
+investigation.**
+(prior **2026-08-17 02:15 UTC (RUNG-1 PASS — QUIETEST WINDOW OF
 THE RUN: ZERO dead_air ~89.3h AND zero kalshi-books reconnects
 ~11.6h (none since the 14:38:55Z post-sweep churn); all lines on
 script; NEW WATCH probe equity slid −2,821→−3,005 with ZERO
@@ -36,7 +95,7 @@ recur, and did market discovery jump above 16,857 (last walk
 truncated at 11,700)?; (2) reload overnight trough vs 132,084;
 (3) both sweeps in flight vs kalshi 8h27m best / poly 13h53m;
 (4) flush declines vs 9/24h; (5) shadow anon vs 262–275 band;
-(6) probe-equity drift — did the no-settlement slide continue?**
+(6) probe-equity drift — did the no-settlement slide continue?**)
 (prior **2026-08-16 20:15 UTC (RUNG-1 PASS — KALSHI SWEEP NEW
 BEST 8h27m (506.8 min, 0 errors, 1 truncated, finished 14:37Z);
 SIXTH SETTLEMENT COHORT LANDED ON THE POST-SWEEP SCRIPT (131 @
