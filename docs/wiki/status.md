@@ -1,6 +1,55 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-17 08:15 UTC (RUNG-1 PASS — POLY KEYSET-WALK
+Updated: **2026-08-17 14:15 UTC (RUNG-1 PASS — PROBE-EQUITY WATCH
+PARTIAL ANSWER: the mark SNAPPED BACK −3,147 → −3,029 (+118 over
+~6h, 08:17→14:17Z) with only 5 settlements in the window (13Z, all
+payout 0.0, run-total 779) — the slide reversed WITHOUT meaningful
+settlement flow, supporting the stale-quote/conservative-marking
+read over genuine position deterioration. Final verdict still
+rides on the seventh post-sweep cohort (16–19Z): does −3,029 hold
+through real settlements. ZERO dead_air ~101.3h.**
+**(1) Zero dead_air fires — ~101.3h.** Reconnect cluster 09:16–
+09:49Z (kalshi/trades GAP 09:16:47Z, books+trades GAPs 09:48:57/
+09:49:52Z) plus one open-set reconnect 11:19:51Z (506→464) — all
+gap-rowed, legit. kalshi_trades counter 36.71M at 14:15Z — +1.21M
+over ~6.0h ≈ ~201k/hr (easing 300k→201k); flush rounds every ~5min
+at 1,600–6,600 rows. **(2) Reload line on the sweep-hour script**:
+143,131→147,748→152,519→155,384→160,014→165,368 (08:59→13:59Z
+hourly, ~4.5k/h climb) — peak vs 171,743 is the next-pass check.
+MARKETS_ALIVE_DAYS 3→1 (a4bf182) still deferred to natural daemon
+restart. **(3) Sweeps: kalshi tracking near-best** — 3,000/3,313
+series at 14:02Z, 0 errors, 0 truncated, ~49min left → projected
+finish ~14:50Z ≈ 8h40m (vs 8h27m best). **Poly running SLOW: 7,200/
+16,821 at 11:18Z with ~500min still left** — heavy trades_tail 429
+stop-early burst 12:55–12:59Z (13 in 5 min) plus 2 clob price-page
+500s at 12:24Z; projecting well past 13h53m, watch for a new worst
++ its error count vs 9. Keyset walk: NO new data this pass —
+today's 05:04Z walk (second consecutive 11,700 death, already
+recorded at 08:15Z) ran OLD code; the hardening (1fbcc66) promoted
+~08:00Z, AFTER the 05:00Z start. First hardened-walk live line is
+tomorrow 05:0xZ — check page+cursor there. **(4) Flush declines: 1
+since 08:15Z, 7 in trailing 24h** (down from 11; canonical grep per
+mistakes #21): 09:55:10Z 1,188 rows held-for-retry, drained next
+round. **(5) Shadow anon 334MiB** (339→334, easing slightly against
+the reload climb), peak 622MB; 262–275 band at natural restart.
+**(6) Fill-rate ~153/hr — in-band at the LOW edge of 150–270.**
+Fills 38,183 / 30,726 polls at 14:15Z — +920 over ~6.03h; polls
+steady ~176/hr. **(7) QA 10:00Z: 16 PASS, 0 FAIL, 1 section SKIP**
+(collect-skips UNVERIFIED — no collector cycle needed to wait out
+the lock, so production untested; benign standing skip, not a
+regression from "17 PASS" — the check had nothing to measure).
+**(8) Doctor 14:20Z clean**: 0 kalshi mirror violations; sweep_log
+48h = 8,466 ok / 4 truncated / 0 errors; stream archive 468.1M book
+events / 329.8M trades, 12.9GB. NEXT PASS (20:15Z autoloop): (1)
+kalshi finish vs 8h27m best; poly finish — new worst? error count
+vs 9?; (2) seventh settlement cohort 16–19Z — cohort size vs 131,
+and does the −3,029 mark hold through real settlements (watch
+verdict); (3) reload sweep-hour peak vs 171,743; (4) flush declines
+vs 7/24h; (5) shadow anon vs 262–275 band; (6) fill-rate vs 153/hr
+low-edge; (7) tomorrow's 05:0xZ pass: hardened walk's first live
+INCOMPLETE line carries page+cursor — same cursor ⇒ deterministic-
+fault investigation.**
+(prior **2026-08-17 08:15 UTC (RUNG-1 PASS — POLY KEYSET-WALK
 WATCH ANSWERED: GAMMA 500s RECURRED AND THE WALK DIED AT EXACTLY
 11,700 MARKETS A SECOND CONSECUTIVE NIGHT (05:04Z, status 500;
 market total 16,821 vs 16,857 — zero new discovery again). An
@@ -58,7 +107,7 @@ declines vs 11/24h; (5) shadow anon vs 262–275 band; (6) fill-rate
 spot check vs 150–270; (7) note for the 08-18 sweep-window pass:
 the hardened walk's first live INCOMPLETE line (if any) now carries
 page+cursor — same cursor as tonight ⇒ file the deterministic-fault
-investigation.**
+investigation.**)
 (prior **2026-08-17 02:15 UTC (RUNG-1 PASS — QUIETEST WINDOW OF
 THE RUN: ZERO dead_air ~89.3h AND zero kalshi-books reconnects
 ~11.6h (none since the 14:38:55Z post-sweep churn); all lines on
