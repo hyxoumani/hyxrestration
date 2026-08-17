@@ -1,6 +1,53 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-17 14:15 UTC (RUNG-1 PASS — PROBE-EQUITY WATCH
+Updated: **2026-08-17 20:15 UTC (RUNG-1 PASS — PROBE-EQUITY WATCH
+VERDICT: THE SNAP-BACK DID NOT HOLD. Seventh post-sweep cohort
+landed on script (135 settlements 16–20Z vs 131 prior, gross
+payouts +2,679.82, run-total 914) yet equity FELL through the
+settlement window: −3,008 (14:07Z) → −3,223 (16:43Z) → −3,489
+(18:28Z) → −3,357 (20:16Z). Settlements paying out did not lift
+the mark — the deterioration is at least partly REAL position
+loss, not purely stale-quote pessimism. Working read: mixed —
+conservative marks overstate the slide intraday, but the
+settled-through level (~−3,3xx to −3,5xx) is ~350 below the
+pre-cohort mark. Ledger-only, zero capital; watch continues on
+whether the −3,3xx band holds overnight with zero settlements.
+ZERO dead_air ~107.3h.**
+**(1) Zero dead_air fires — ~107.3h.** Two kalshi-books open-set
+reconnects since 14:15Z (14:19:12Z 464→602, 15:25:07Z 602→614),
+both gap-rowed, legit. kalshi_trades counter 38.87M at 20:15Z —
++2.16M over ~6.0h ≈ ~360k/hr (re-busying 201k→360k); flush rounds
+every ~5min at 1,900–3,200 rows. **(2) Reload line: sweep-hour
+peak 166,537 at 14:59Z — BELOW the 171,743 prior peak (−5.2k)**,
+then draining on script: 163,763→158,038→155,305→152,508→149,540
+(15:59→20:01Z hourly, ~3k/h). MARKETS_ALIVE_DAYS 3→1 (a4bf182)
+still deferred to natural daemon restart. **(3) Both sweeps
+FINISHED**: kalshi 8h32m (511.7 min, 3,313 series, 55,356
+markets, 0 errors, 0 truncated) — near-best, 8h27m record stands.
+Poly 14h06m (846.2 min, 16,821 markets, 10 errors vs 9 prior) —
+slower than the 13h53m steady-state but NOT a new worst (14h38m
+stands); zero new-market discovery again (16,821 flat, walk died
+pre-hardening). First hardened-walk line lands tomorrow 05:0xZ —
+page+cursor is the discriminator. **(4) Flush declines: 1 since
+14:15Z, 7 in trailing 24h** (flat; canonical grep per mistakes
+#21): 20:05:31Z 2,614 rows held-for-retry vs shadow's writer PID,
+drained next round. **(5) Shadow anon 333MiB** (334→333, flat),
+peak 622MB; 262–275 band at natural restart. **(6) Fill-rate
+~242/hr — rebounded off the low edge, mid-band 150–270.** Fills
+39,621 / 31,776 polls at 20:11Z — +1,438 over ~5.93h; polls
+steady ~176/hr. **(7) Doctor 20:25Z clean**: 0 kalshi mirror
+violations; sweep_log 48h = 7,355 ok / 2 truncated / 0 errors;
+stream archive 469.7M book events / 332.0M trades, 13.0GB. NEXT
+PASS (02:15Z autoloop): (1) probe equity overnight — does the
+−3,3xx band hold with zero settlements (drift back down ⇒
+marking bias still in play; hold ⇒ settled level is real); (2)
+reload overnight trough vs 136,077; (3) flush declines vs 7/24h;
+(4) shadow anon vs 262–275 band; (5) fill-rate vs 242/hr; (6)
+08:1xZ pass: hardened keyset walk's FIRST live line at 05:0xZ —
+INCOMPLETE with same cursor as 11,700 deaths ⇒ open the
+deterministic-fault investigation; COMPLETE past 11,700 ⇒
+hardening worked, check discovery jump above 16,821.**
+(prior **2026-08-17 14:15 UTC (RUNG-1 PASS — PROBE-EQUITY WATCH
 PARTIAL ANSWER: the mark SNAPPED BACK −3,147 → −3,029 (+118 over
 ~6h, 08:17→14:17Z) with only 5 settlements in the window (13Z, all
 payout 0.0, run-total 779) — the slide reversed WITHOUT meaningful
@@ -48,7 +95,7 @@ verdict); (3) reload sweep-hour peak vs 171,743; (4) flush declines
 vs 7/24h; (5) shadow anon vs 262–275 band; (6) fill-rate vs 153/hr
 low-edge; (7) tomorrow's 05:0xZ pass: hardened walk's first live
 INCOMPLETE line carries page+cursor — same cursor ⇒ deterministic-
-fault investigation.**
+fault investigation.**)
 (prior **2026-08-17 08:15 UTC (RUNG-1 PASS — POLY KEYSET-WALK
 WATCH ANSWERED: GAMMA 500s RECURRED AND THE WALK DIED AT EXACTLY
 11,700 MARKETS A SECOND CONSECUTIVE NIGHT (05:04Z, status 500;
