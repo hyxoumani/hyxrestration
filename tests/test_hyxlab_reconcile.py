@@ -189,6 +189,55 @@ def test_exclude_series_pattern(tmp_path):
     assert census["missing_total"] == 1
 
 
+def _excl_split_dbs(tmp_path):
+    """Two KXMVE legs + one Crypto market, all missing, all past the grace."""
+    lab = _make_lab(tmp_path / "lab.duckdb", archived=[],
+                    series={"KXMVECROSS": "Exotics", "KXBTCD": "Crypto"})
+    stream = _make_stream(
+        tmp_path / "stream.duckdb",
+        [("KXMVECROSS-a-1", NOW - timedelta(days=5)),
+         ("KXMVECROSS-a-2", NOW - timedelta(days=6)),
+         ("KXBTCD-26JUL10-T50", NOW - timedelta(days=5))],
+    )
+    return lab, stream
+
+
+def test_census_splits_excluded_by_prefix_even_without_the_flag(tmp_path):
+    """The hylshi job always passes KXMVE%; the CLI defaults to None. The
+    census must show the split EITHER way, so a direct run can never print
+    the excluded-by-design mass as if it were a coverage gap (EXP-1336)."""
+    lab, stream = _excl_split_dbs(tmp_path)
+    _, census = rec.diff_missing(db=lab, stream_db=stream, now=NOW,
+                                categories=["Exotics", "Crypto"])
+    assert census["missing_total"] == 3
+    assert census["missing_excluded_by_prefix"] == 2
+    assert census["missing_in_scope"] == 1
+    assert census["excluded_prefixes"] == ["KXMVE"]
+
+
+def test_census_split_with_the_pattern_passed_matches_todays_behavior(tmp_path):
+    """With KXMVE% excluded up front (the production job's invocation),
+    the excluded rows are already out of the total: in_scope == total."""
+    lab, stream = _excl_split_dbs(tmp_path)
+    _, census = rec.diff_missing(db=lab, stream_db=stream, now=NOW,
+                                categories=["Exotics", "Crypto"],
+                                exclude_series_like="KXMVE%")
+    assert census["missing_total"] == 1
+    assert census["missing_excluded_by_prefix"] == 0
+    assert census["missing_in_scope"] == 1 == census["missing_total"]
+
+
+def test_cli_census_line_prints_both_halves_of_the_split(tmp_path, capsys):
+    lab, stream = _excl_split_dbs(tmp_path)
+    code = rec.main(["--db", lab, "--stream-db", stream, "--dry-run",
+                     "--categories", "Exotics", "Crypto"])
+    out = capsys.readouterr().out
+    assert code == 2                       # dry run over a non-empty deficit
+    assert "missing_excluded_by_prefix=2" in out
+    assert "missing_in_scope=1" in out
+    assert "KXMVE*" in out                 # names WHAT is excluded, not just counts
+
+
 # ---------------------------------------------------------------------------
 # 2. time-to-purge ordering
 # ---------------------------------------------------------------------------

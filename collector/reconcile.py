@@ -119,7 +119,13 @@ from typing import NamedTuple
 
 import requests
 
-from collector.sweep import CANDLES_PAUSE_S, DEFAULT_CATEGORIES, MARKETS_PAUSE_S, writer_burst
+from collector.sweep import (
+    CANDLES_PAUSE_S,
+    DEFAULT_CATEGORIES,
+    EXCLUDED_SERIES_PREFIXES,
+    MARKETS_PAUSE_S,
+    writer_burst,
+)
 from collector.venues import kalshi
 from hyxlab.store import connect_retry
 
@@ -271,6 +277,15 @@ def diff_missing(
     The census counts are EXACT over the whole deficit even when the
     returned list is truncated to `scan_limit` — a pass that reports only
     what it looked at is how a 12% hole stays invisible.
+
+    The census ALWAYS splits `missing_total` against the production
+    exclusion list (`sweep.EXCLUDED_SERIES_PREFIXES`), whether or not
+    `exclude_series_like` was passed: the hylshi job always excludes
+    KXMVE% while this module's CLI defaults to None, and that asymmetry
+    once let a direct run print a 12.4M excluded-by-design mass as if it
+    were a coverage gap (EXP-1336/EXP-1343). `missing_excluded_by_prefix`
+    is the part of the deficit the production job deliberately skips;
+    `missing_in_scope` is the remainder — the only part that means work.
     """
     now = now or datetime.now(UTC)
     allowed = _allowed_series(db, categories)
@@ -310,6 +325,21 @@ def diff_missing(
             total = con.execute(
                 base.format(cols="count(*)"), params
             ).fetchone()[0]
+            # Split against the DEFAULT production exclusion list even when
+            # `exclude_series_like` is unset, so a CLI-default run still
+            # shows which part of the deficit is excluded-by-design. When
+            # the pattern IS passed, the excluded rows are already out of
+            # `total`, this count is (near-)zero, and in_scope == total —
+            # today's behaviour, unchanged.
+            excluded_by_prefix = 0
+            if EXCLUDED_SERIES_PREFIXES:
+                prefix_cond = " OR ".join(
+                    "s.series LIKE ?" for _ in EXCLUDED_SERIES_PREFIXES
+                )
+                excluded_by_prefix = con.execute(
+                    base.format(cols="count(*)") + f" AND ({prefix_cond})",
+                    [*params, *[f"{p}%" for p in EXCLUDED_SERIES_PREFIXES]],
+                ).fetchone()[0]
             by_cat = con.execute(
                 base.format(cols="al.category, count(*)") + " GROUP BY 1 ORDER BY 2 DESC",
                 params,
@@ -330,6 +360,9 @@ def diff_missing(
         "archived_markets": n_archived,
         "allowed_series": len(allowed),
         "missing_total": total,
+        "missing_excluded_by_prefix": excluded_by_prefix,
+        "missing_in_scope": total - excluded_by_prefix,
+        "excluded_prefixes": list(EXCLUDED_SERIES_PREFIXES),
         "missing_scanned": len(missing),
         "missing_by_category": {c or "?": n for c, n in by_cat},
         "grace_days": grace_days,
@@ -773,8 +806,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"=== archive reconciliation (EXP-934) === {now.isoformat(timespec='seconds')}")
     print(f"  archive: {census['archived_markets']} kalshi markets, "
           f"{census['allowed_series']} series in scope")
+    prefixes = "/".join(f"{p}*" for p in census["excluded_prefixes"]) or "(none)"
     print(f"  MISSING (traded on the wire, absent from the archive): "
-          f"{census['missing_total']}")
+          f"{census['missing_total']} "
+          f"(missing_excluded_by_prefix={census['missing_excluded_by_prefix']} "
+          f"= {prefixes} excluded-by-design in the production job; "
+          f"missing_in_scope={census['missing_in_scope']})")
     for cat, n in census["missing_by_category"].items():
         print(f"    {cat:<26} {n}")
     print(f"  scanned {census['missing_scanned']} most-endangered; "
