@@ -76,9 +76,16 @@ def iter_markets_by_volume(
     (`volume_num_min`). Gamma is ~60 req/min unauthenticated and
     occasionally answers with an error object — retried with escalating
     backoff, then the walk stops (a skipped keyset page would break the
-    cursor chain). The INCOMPLETE line carries the failing cursor: two
-    walks dying at the SAME cursor is a deterministic server-side fault
-    (poisoned page / depth limit), not load.
+    cursor chain). The INCOMPLETE line carries the failing cursor.
+
+    Fault window (probed 2026-08-18): four consecutive 05:00Z walks
+    died to persistent 500s at 05:04:18/05:04:27/05:04:25/05:05:24Z —
+    the constant is the CLOCK, not the page (11,600 one night, 11,700
+    the next). Replaying the 05:05Z failing cursor at 08:20Z returned
+    200, refuting poisoned-page/depth-limit reads: Gamma has a daily
+    server-side fault window opening ~05:04Z that outlasted the old
+    65s ladder. The ladder now spans ~18 min, and each failed attempt
+    logs status + clock so the window's true length gets measured.
     """
     import time
 
@@ -97,7 +104,7 @@ def iter_markets_by_volume(
         if cursor:
             params["after_cursor"] = cursor
         body = None
-        for backoff_s in (5, 15, 45, None):
+        for attempt, backoff_s in enumerate((5, 15, 45, 120, 300, 600, None)):
             resp = sess.get(f"{GAMMA}/markets/keyset", params=params, timeout=30)
             try:
                 candidate = resp.json()
@@ -106,6 +113,12 @@ def iter_markets_by_volume(
             if isinstance(candidate, dict) and "markets" in candidate:
                 body = candidate
                 break
+            print(
+                f"[poly] keyset page {page_idx} attempt {attempt + 1} failed"
+                f" (status {getattr(resp, 'status_code', '?')})"
+                + (f"; backing off {backoff_s}s" if backoff_s is not None else ""),
+                flush=True,
+            )
             if backoff_s is not None:
                 time.sleep(backoff_s)
         if body is None:

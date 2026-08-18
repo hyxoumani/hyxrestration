@@ -166,12 +166,15 @@ def test_iter_markets_keyset_persistent_error_logs_incomplete(monkeypatch, capsy
     sess = _AlwaysError({})
     out = iter_markets_by_volume(100.0, session=sess)
     assert out == []
-    assert len(sess.calls) == 4  # escalating-backoff ladder, not one retry
+    # 7-attempt ladder spanning ~18 min: the 2026-08-18 probe showed the
+    # nightly ~05:04Z Gamma fault window outlasts a 65s ladder but clears
+    # eventually (the failing cursor replayed clean at 08:20Z).
+    assert len(sess.calls) == 7
     logged = capsys.readouterr().out
     assert "INCOMPLETE" in logged
-    # The failing cursor is the recurrence discriminator (2026-08-17:
-    # two consecutive walks died at exactly 11,700 markets — same-cursor
-    # means a deterministic Gamma fault, different-cursor means load).
+    # Each failed attempt logs status + clock so the window's length
+    # gets measured from the journal.
+    assert "attempt 1 failed" in logged
     assert "cursor None" in logged
 
 
@@ -195,5 +198,5 @@ def test_iter_markets_keyset_non_json_body_retries_then_incomplete(monkeypatch, 
     sess = _NonJson({})
     out = iter_markets_by_volume(100.0, session=sess)
     assert out == []
-    assert len(sess.calls) == 4
+    assert len(sess.calls) == 7
     assert "INCOMPLETE" in capsys.readouterr().out
