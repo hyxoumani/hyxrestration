@@ -1,6 +1,73 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-18 02:15 UTC (RUNG-1 PASS — PROBE-EQUITY
+Updated: **2026-08-18 08:15 UTC (RUNG-1 PASS — KEYSET-WALK
+DETERMINISTIC-FAULT INVESTIGATION OPENED AND ANSWERED: the
+HARDENED walk still died INCOMPLETE at 11,700 (05:05:24Z,
+page 117), but the cursor diagnostics did their job. Decoded
+cursor: volume ≈ $10,050.60, id 3474672 — just above the $10k
+floor. Journal across four nights kills the poisoned-page and
+depth-limit reads: deaths at 05:04:18 / 05:04:27 / 05:04:25 /
+05:05:24Z with counts 11,600 / 11,700 / 11,700 / 11,700 — the
+constant is the CLOCK, not the page (constant ~2.6s/page pacing
+converts a fixed time into a near-fixed page count). Replaying
+today's failing cursor at 08:20Z returned HTTP 200 with a clean
+page. Verdict: Gamma has a DAILY SERVER-SIDE FAULT WINDOW
+opening ~05:04Z that outlasts the 65s ladder (today's death at
+05:05:24 = still 500ing ~70s after first failure) but clears by
+08:20Z. Fix shipped (684906d): ladder extended to ~18 min
+(5/15/45/120/300/600s) + per-attempt status/clock logging —
+tomorrow's 05:0xZ journal either survives the window or
+measures its length. Promoted + pushed; promote restarted
+hyxlab-stream 08:19:24Z (polymarket.py is in its import graph)
+— clean reconnects, gap-rowed. NOTE: MARKETS_ALIVE_DAYS 3→1 is
+shadow-side and remains deferred (shadow untouched, up since
+08-10). Data impact of the dead walk stays minimal: only open
+markets with volume $10,000–$10,050.6 below the cursor are
+missed; enumeration still grew 16,821→16,926 (+105 d/d).**
+**(1) Zero dead_air fires — ~119.4h.** Overnight reconnects: 3
+kalshi-books open-set changes (05:47Z 614→566, 06:52Z 566→506,
+07:53Z 506→488) + 1 poly GAP 08:07:32Z, all gap-rowed, legit;
+then the 08:19:24Z promote restart (464 tickers / 31 series,
+100 poly tokens on reconnect). **(2) Reload line: NEW TROUGH
+130,183 at 06:02Z — BELOW the 136,077 prior trough (−5.9k
+d/d)**, drained 138,364→136,381→134,411→132,308→130,183
+(21:01Z→06:02Z hourly, ~2k/h), then sweep-hour turn on script:
+131,626→133,772 (07/08Z). **(3) Probe equity — the ~−150/day
+drift did NOT continue: overnight band −2,9xx→−3,1xx, roughly
+flat-to-BETTER d/d.** Zero settlements since 08-17 20:01Z, yet
+equity drifted up overnight (03Z hour low −3,165 → 05Z hour
+−2,985/−2,917 → 08Z −3,00x) — a FOURTH settlement-free
+reversal, marking-bias read intact. Daily overnight-band
+series: −2,821 (08-16) → −3,0xx (08-17) → −3,1xx (08-18 00-03Z)
+→ −2,9xx/−3,0xx (08-18 04-08Z). Watch continues on daily bands.
+**(4) Both sweeps in flight, in-band**: kalshi 700/3,370 series
+at 08:19Z (12,601 markets, 0 errors, 0 truncated, ~491 min
+left → projects ~16:30Z ≈ 10.3h, off-best but in-band; one
+tape-fetch 429 at 08:05Z). Poly 4,400/16,926 at 08:18Z (~550
+min left → projects ~17:30Z ≈ 12.5h, faster than yesterday's
+14h06m). **(5) Flush declines: 4 since 02:15Z, 7 in trailing
+24h** (up from 3; canonical grep per mistakes #21) — all
+writer-lock conflicts (shadow PID + collector PIDs), rows
+held-for-retry and drained. **(6) Shadow anon 348MiB**
+(RssAnon 356,404 kB; 347→348 flat, HWM 610MiB). **(7)
+Fill-rate ~160/hr — in-band low-mid.** Fills 41,694 / 33,921
+polls at 08:18Z — +977 over ~6.1h; polls steady ~177/hr. **(8)
+Doctor 08:30Z clean**: 0 kalshi mirror violations; sweep_log
+48h = 7,423 ok / 1 truncated / 0 errors; stream archive 472.7M
+book events / 336.6M trades, 13.1GB. NEXT PASS (14:15Z
+autoloop): (1) both sweeps finish — kalshi vs 10.3h projection
+/ 8h27m best, poly vs 12.5h projection + error count vs 10; (2)
+eighth post-sweep settlement cohort 16–19Z (may land next pass);
+(3) probe equity — does the −3,0xx band hold through the
+settlement window; (4) reload sweep-hour peak vs 166,537; (5)
+flush declines vs 7/24h; (6) fill-rate vs 160/hr; (7) shadow
+anon vs 348MiB; (8) TOMORROW 05:0xZ (08:15Z pass): hardened
+ladder's per-attempt lines — COMPLETE past 11,700 ⇒ window
+spanned, discovery unlocked; INCOMPLETE after ~18 min of
+retries ⇒ window is longer than 18 min, consider shifting the
+poly-sweep timer off 05:00Z (e.g. 04:15Z start clears page 117
+before the window opens).**
+(prior **2026-08-18 02:15 UTC (RUNG-1 PASS — PROBE-EQUITY
 OVERNIGHT ANSWER: the −3,3xx band did NOT hold, and it broke
 UPWARD on zero settlements — a THIRD settlement-free reversal.
 At 21:58Z the mark jumped +397 in a single tick (−3,457 →
@@ -43,7 +110,7 @@ the overnight band (−3,0xx/−3,1xx) not intraday ticks; is the
 ~−150/day drift continuing; (4) both sweeps in flight in-band
 (kalshi vs 8h27m best, poly vs 14h38m worst + error count vs
 10); (5) flush declines vs 3/24h; (6) fill-rate vs 183/hr;
-(7) shadow anon vs 262–275 at any natural restart.**
+(7) shadow anon vs 262–275 at any natural restart.**)
 (prior **2026-08-17 20:15 UTC (RUNG-1 PASS — PROBE-EQUITY WATCH
 VERDICT: THE SNAP-BACK DID NOT HOLD. Seventh post-sweep cohort
 landed on script (135 settlements 16–20Z vs 131 prior, gross
