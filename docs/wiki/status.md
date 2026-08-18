@@ -1,6 +1,57 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-18 08:15 UTC (RUNG-1 PASS — KEYSET-WALK
+Updated: **2026-08-18 14:20 UTC (RUNG-1 PASS — EIGHTH SETTLEMENT
+COHORT LANDED EARLY: 91 settlements at 12–14Z (33/46/12 by hour,
+payouts +2,762, run-total 914→1,005) — the first cohort OFF the
+16–19Z post-sweep script since the hypothesis was formed; kalshi
+sweep was still mid-run (2,600/3,370 at 12:44Z), so settlement
+timing is NOT strictly sweep-gated — earlier-close markets can
+settle mid-sweep. Equity slid through the window on script:
+−2,9xx/−3,0xx (08Z) → −3,17x/−3,28x (11–13Z) → −3,375 at 14:16Z —
+payouts realized yet marks worsen, the established
+settle-and-slide pattern, fifth occurrence. Overnight-band
+verdict next pass. ZERO dead_air ~125.4h.**
+**(1) Zero dead_air fires — ~125.4h**; zero reconnects/GAPs since
+the 08:19:24Z promote restart (quiet 6h window). kalshi_trades
+1.28M on the new connection at 14:15Z ≈ ~200k/hr (quiet tape).
+**(2) Reload line on sweep-hour climb**: 133,772→138,475→143,445
+→148,709→150,334→153,838→159,028 (08:03→14:04Z hourly) — peak vs
+166,537 lands 15–17Z, next pass. **(3) Probe equity −3,375 at
+14:16Z** — intraday slide ~−400 through the settlement window
+(see headline); daily overnight-band series unchanged: −2,821
+(08-16) → −3,0xx (08-17) → −3,0xx (08-18, flat-to-better d/d).
+**(4) Sweeps: kalshi in-band, poly projecting NEW WORST.** Kalshi
+2,600/3,370 at 12:44Z (41,548 markets, 0 errors, 0 truncated,
+~117 min left → ~14:4xZ ≈ 8.5h near-best) BUT grinding a
+KXSOLD/KXSOLE solar tape block since 12:44Z with 46 tape-fetch
+429s (up from 1 yesterday; pacing, not errors) — final wall-clock
+next pass. Poly 10,200/16,926 at 14:06Z (~357 min left → ~20:00Z
+≈ 15h0m, would beat 14h35m worst) — rate steady ~200 markets/10.5
+min, only 1 clob 500 + the known 05:05:24Z keyset death (pre-
+hardening code; first 18-min-ladder run is TOMORROW 05:0xZ);
+runtime growth tracks the enumeration growth (16,821→16,926), the
+flagged watch condition. **(5) Flush declines: 8 since 08:15Z, 14
+in trailing 24h — DOUBLED from 7** (canonical grep per mistakes
+#21) — all writer-lock conflicts (shadow PID 1725897 + collector
+PIDs), all rows held-for-retry and drained, no spill; watch the
+24h count next pass. **(6) Shadow anon 318MiB** (RssAnon 325,908
+kB; 348→318 easing, HWM 610MiB). **(7) Fill-rate ~152/hr —
+in-band low.** Fills 42,596 / 34,971 polls at 14:14Z — +902 over
+~5.9h; polls steady ~177/hr. **(8) QA 10:00Z: 16 PASS + benign
+collect-skips SKIP; doctor 14:18Z clean**: 0 kalshi mirror
+violations; sweep_log 48h = 8,016 ok / 1 truncated / 0 errors;
+stream archive 474.4M book events / 337.9M trades, 13.2GB. NEXT
+PASS (20:15Z autoloop): (1) kalshi sweep final wall-clock vs
+8h27m best (solar-429 drag) + poly finish vs ~15h0m would-be
+worst + error count; (2) does a SECOND cohort land 16–19Z on the
+old script, or was 12–14Z the whole day's flow; (3) probe equity
+— overnight-band entry vs −3,0xx; (4) reload sweep-hour peak vs
+166,537; (5) flush declines vs 14/24h (doubled — drain check);
+(6) fill-rate vs 152/hr; (7) shadow anon vs 318MiB; (8) TOMORROW
+08:15Z pass owns the hardened keyset ladder's first live 05:0xZ
+journal (COMPLETE past 11,700 ⇒ window spanned; INCOMPLETE ⇒
+consider shifting poly-sweep timer to ~04:15Z).**
+(prior **2026-08-18 08:15 UTC (RUNG-1 PASS — KEYSET-WALK
 DETERMINISTIC-FAULT INVESTIGATION OPENED AND ANSWERED: the
 HARDENED walk still died INCOMPLETE at 11,700 (05:05:24Z,
 page 117), but the cursor diagnostics did their job. Decoded
