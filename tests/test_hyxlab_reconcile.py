@@ -588,3 +588,61 @@ def test_candle_request_cost_counts_chunks_not_calls():
     assert rec.candle_request_cost(0, 5001 * h) == 2
     assert rec.candle_request_cost(0, 7150 * h) == 2
     assert rec.candle_request_cost(0, 0) == 1  # degenerate span still costs one call
+
+
+class _OpenFutureSession(_Session):
+    """Serves OPEN, far-dated markets (close years past NOW), like the
+    KXFEDFUNDSYEAR-30JAN01 family the census actually surfaces."""
+
+    OPEN = "2026-07-24T12:00:00Z"      # 9.75 days before NOW
+    CLOSE = "2030-01-01T05:00:00Z"     # ~3.4 years past NOW
+
+    def get(self, url, params=None, timeout=None):
+        resp = super().get(url, params=params, timeout=timeout)
+        if url.endswith("/markets"):
+            for m in resp.json()["markets"]:
+                m["status"] = "active"
+                m["result"] = ""
+                m["open_time"] = self.OPEN
+                m["close_time"] = self.CLOSE
+        return resp
+
+
+def test_candle_fetch_is_clamped_to_now_for_open_far_dated_markets(tmp_path):
+    """Candles cannot exist in the future, but an OPEN year-contract's
+    open->close span is dozens of 5000-candle chunks. Measured on the
+    2026-08-16/17 counting runs (EXP-1314): 745 of 924 candle requests (81%)
+    covered time past `now` and were guaranteed empty. The fetch AND the
+    request accounting must both stop at now."""
+    db = _make_lab(tmp_path / "lab.duckdb", archived=[], series={"KXPAY": "Economics"})
+    lock = str(tmp_path / "writer.lock")
+    order = [rec.Missing(f"KXPAY-30JAN01-T{i}", "KXPAY", "Economics",
+                         NOW - timedelta(days=5)) for i in range(2)]
+    sess = _OpenFutureSession(alive={m.market_id for m in order}, lock_file=lock)
+    out = rec.reconcile(order, db=db, session=sess, lock_file=lock,
+                        ledger_state=None, pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    assert out["repaired"] == 2
+    candle_calls = [c for c in sess.calls if "candlesticks" in c["url"]]
+    assert len(candle_calls) == 2, "one single-chunk call per market, not ~7"
+    now_ts = int(NOW.timestamp())
+    for c in candle_calls:
+        assert c["params"]["end_ts"] == now_ts, "fetch must be clamped to now"
+        assert c["params"]["start_ts"] == rec._ts(_OpenFutureSession.OPEN)
+    # Accounting matches what was actually spent: 1 metadata batch +
+    # (1 clamped candle chunk + 1 trades) per market — NOT the ~7 chunks
+    # the unclamped open->close span would cost.
+    assert out["requests"] == 1 + 2 * 2
+
+
+def test_candle_fetch_of_a_settled_market_still_reaches_its_close(tmp_path):
+    """The clamp is min(close, now): a settled market (close < now) must be
+    fetched to its close exactly as before."""
+    db = _make_lab(tmp_path / "lab.duckdb", archived=[],
+                   series={"KXHIGHNY": "Climate and Weather"})
+    lock = str(tmp_path / "writer.lock")
+    order = _repair_order(1)
+    sess = _Session(alive={m.market_id for m in order}, lock_file=lock)
+    rec.reconcile(order, db=db, session=sess, lock_file=lock,
+                  ledger_state=None, pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    (candle_call,) = [c for c in sess.calls if "candlesticks" in c["url"]]
+    assert candle_call["params"]["end_ts"] == rec._ts(_mkt("x")["close_time"])

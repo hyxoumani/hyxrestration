@@ -570,6 +570,7 @@ def reconcile(
     """
     sess = session or requests.Session()
     t0 = time.monotonic()
+    now_ts = int((now or datetime.now(UTC)).timestamp())
     requests_made = 0
     repaired: list[str] = []
     purged: list[Missing] = []
@@ -617,13 +618,22 @@ def reconcile(
                 if open_ts is None or close_ts is None:
                     print(f"[reconcile] {ticker} skipped: missing open/close time", flush=True)
                     continue
+                # Candles cannot exist in the future, but the census surfaces
+                # OPEN far-dated markets (KXFEDFUNDSYEAR closes 2030-2037) and
+                # `get_candlesticks` walks 5000-candle chunks all the way to
+                # close_time — measured on the 2026-08-16/17 counting runs,
+                # 745 of 924 candle requests (81%) covered time past `now`
+                # and were guaranteed empty (EXP-1314). Clamp the fetch to
+                # now; the not-yet-existing tail is captured by the settled
+                # sweep once the market settles, exactly as it always was.
+                candle_end_ts = max(open_ts, min(close_ts, now_ts))
                 try:
                     candles = kalshi.get_candlesticks(
-                        series, ticker, open_ts, close_ts, 60, session=sess
+                        series, ticker, open_ts, candle_end_ts, 60, session=sess
                     )
                     # Chunked long-span markets spend several requests; count
                     # what was actually spent, not one (EXP-1307).
-                    requests_made += candle_request_cost(open_ts, close_ts, 60)
+                    requests_made += candle_request_cost(open_ts, candle_end_ts, 60)
                     candle_rows.extend(kalshi.candle_row(series, m, c, 3600) for c in candles)
                 except requests.HTTPError as e:
                     code = e.response.status_code if e.response is not None else "?"
