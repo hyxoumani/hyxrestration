@@ -1,6 +1,69 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-18 14:20 UTC (RUNG-1 PASS — EIGHTH SETTLEMENT
+Updated: **2026-08-18 20:30 UTC (RUNG-1 PASS — NO SECOND COHORT:
+the 16–19Z post-sweep window produced almost nothing (41
+settlements @ 15Z + 6 @ 18Z, payouts +306, run-total 1,005→1,052)
+— the early 12–14Z cohort WAS the day's flow. Two consecutive
+days now break the post-sweep script (yesterday's early cohort,
+today's empty window): settlement timing is CLOSE-TIME-DRIVEN,
+not sweep-gated; the "post-sweep cohort" hypothesis is demoted to
+coincidence-of-close-times. Equity round-tripped on script:
+−3,375 (14:16Z) → −3,469 low (15–16Z) → recovered to −3,004 by
+20:17Z with only 6 settlements in the recovery window — a
+SIXTH largely settlement-free reversal, marking-noise read
+intact. S-190 CONFIRMED LIVE: promote restart 18:47:12Z wrote
+the first two synthetic seq_reset gap rows (kalshi/trades +
+kalshi/books) on reconnect. ZERO dead_air ~131.5h.**
+**(1) Zero dead_air fires — ~131.5h.** Reconnects since 14:20Z:
+14:34Z kalshi-books open-set change 464→614, 15:31Z poly GAP,
+then the 18:47:12Z promote restart (ffcbc06; 614 tickers / 31
+series, 100 poly tokens) — clean, gap-rowed, seq_reset rows
+verified. NOTE: ffcbc06 was committed+promoted at 18:47Z but
+left UNPUSHED; pushed this pass (0d9e906..ffcbc06). CONCURRENT
+SESSION: EXP-1333 landed 2ffb5ff at ~20:45Z (kalshi 429-header
+capture to data/rate_limit_headers.jsonl + test-sink conftest)
+while this pass ran — its 17:59–18:06Z-style ad-hoc PIDs and
+mid-edit test state explain this pass's transient suite FAIL
+(re-ran green, 660 passed). **(2)
+Reload line: NEW PEAK 167,788 at 16:04Z** (above 166,537, +1.3k
+d/d — tracks the kalshi universe growth, 3,370 series vs 3,313
++57), then draining on script: 165,801→163,734→161,630→159,476
+(17–20Z hourly, ~2.1k/h). **(3) Probe equity −3,004 at 20:17Z**
+— full round trip (see headline); daily overnight-band series
+unchanged −2,821 → −3,0xx → −3,0xx, tonight's entry ~−3,0xx
+flat d/d. **(4) Both sweeps DONE, in-band.** Kalshi 15:49:25Z:
+578.8 min ≈ 9h39m, 62,962 markets / 306,568 candles, 0 errors,
+0 truncated — ~1h12m off the 8h27m best, drag = solar 429
+pacing + 57 new series; market count in historical band
+(55–74k). Poly 18:55:52Z: 830.5 min ≈ 13h50m, 16,926 markets, 4
+errors — NOT a new worst (14h35m stands), beat the ~15h0m
+projection. **(5) Flush declines: 17 since 14:20Z, 30 in
+trailing 24h — MORE THAN DOUBLED from 14** (canonical grep per
+mistakes #21), but 13 of the 17 are ONE BURST 17:59–18:06Z
+against five short-lived NON-UNIT python PIDs (1443120 → 1446100
+→ 1446925 → 1448354 → 1451853; no journal lines of their own —
+ad-hoc/test processes, plausibly the ffcbc06 session's pre-
+promote suite), held rows peaked 20,916 then drained (flushed
+rounds normal 3.4–5.8k from 18:03Z), no spill; remainder are
+routine shadow-PID conflicts. Watch: does the 24h count recede
+once the burst ages out. **(6) Shadow anon 360MiB** (RssAnon
+368,880 kB; 318→360 re-climbing, HWM 610MiB; daemon 8d12h up).
+**(7) Fill-rate ~269/hr — REBOUNDED from 152.** Fills 44,203 /
+36,021 polls at 20:13Z — +1,607 over ~6.0h; polls steady
+~176/hr. **(8) Doctor 20:25Z clean**: 0 kalshi mirror
+violations; sweep_log 48h = 6,691 ok / 0 truncated / 0 errors;
+stream archive 476.7M book events / 340.1M trades, 13.25GB;
+stream_gaps 1,496. NEXT PASS (02:15Z autoloop): (1) reload
+overnight trough vs 130,183; (2) probe equity — overnight band
+entry vs −3,0xx; (3) flush declines vs 30/24h (burst one-off
+check — non-burst baseline is ~17/24h); (4) fill-rate vs
+269/hr; (5) shadow anon vs 360MiB; (6) 08:15Z pass still owns
+the hardened keyset ladder's first live 05:0xZ journal
+(COMPLETE past 11,700 ⇒ window spanned; INCOMPLETE ⇒ consider
+shifting poly-sweep timer to ~04:15Z); (7) settlement-timing
+note: stop predicting 16–19Z cohorts — track daily totals
+instead.**
+(prior **2026-08-18 14:20 UTC (RUNG-1 PASS — EIGHTH SETTLEMENT
 COHORT LANDED EARLY: 91 settlements at 12–14Z (33/46/12 by hour,
 payouts +2,762, run-total 914→1,005) — the first cohort OFF the
 16–19Z post-sweep script since the hypothesis was formed; kalshi
