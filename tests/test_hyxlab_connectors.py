@@ -415,3 +415,125 @@ def test_candlesticks_short_span_stays_a_single_request():
     out = k.get_candlesticks("KXHIGHNY", "KXHIGHNY-26AUG12-B90.5", 7200, 7200 + 6 * 3600, 60, session=sess)
     assert sess.calls == [(7200, 7200 + 6 * 3600)]
     assert len(out) == 7
+
+
+# ---------------------------------------------------------------------------
+# 429 header capture — EXP-1333 (hylshi): the only load-test-free path to
+# learning Kalshi's rate-limit semantics is logging ALL headers of an ORGANIC
+# 429. Additive only: retry behavior must not change.
+# ---------------------------------------------------------------------------
+
+
+def _sink_rows():
+    import json
+    from pathlib import Path
+
+    from collector.venues import kalshi as k
+
+    p = Path(k.RATE_LIMIT_HEADERS_LOG)
+    if not p.exists():
+        return []
+    return [json.loads(line) for line in p.read_text().splitlines()]
+
+
+_HDRS_429 = {
+    "Retry-After": "0",
+    "x-ratelimit-limit": "30",
+    "x-ratelimit-remaining": "0",
+}
+
+
+class _HdrResp:
+    def __init__(self, status, body=None, headers=None):
+        self.status_code = status
+        self._body = body or {}
+        self.headers = dict(headers) if headers else {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(response=self)
+
+    def json(self):
+        return self._body
+
+
+def test_429_headers_captured_in_retry_helper_without_behavior_change(monkeypatch):
+    from collector.venues import kalshi as k
+
+    responses = [
+        _HdrResp(429, headers=_HDRS_429),
+        _HdrResp(200, {"markets": [{"ticker": "A"}], "cursor": ""}),
+    ]
+
+    class _Sess:
+        def get(self, url, params=None, timeout=None):
+            return responses.pop(0)
+
+    sleeps = []
+    monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
+    out = k.get_markets(series_ticker="KXHIGHNY", session=_Sess())
+
+    assert [m["ticker"] for m in out] == ["A"]  # behavior unchanged
+    assert sleeps == [0.0]  # honored Retry-After exactly as before
+    rows = _sink_rows()
+    assert len(rows) == 1
+    assert rows[0]["status"] == 429
+    assert rows[0]["headers"] == _HDRS_429  # ALL headers, verbatim
+    assert rows[0]["url"].endswith("/markets")
+    assert rows[0]["source"] == "collector/venues/kalshi.py"
+    assert "ts" in rows[0]
+
+
+def test_exhausted_429s_each_captured_before_the_raise(monkeypatch):
+    import pytest
+    import requests
+
+    from collector.venues import kalshi as k
+
+    responses = [_HdrResp(429, headers=_HDRS_429), _HdrResp(429, headers=_HDRS_429)]
+
+    class _Sess:
+        def get(self, url, params=None, timeout=None):
+            return responses.pop(0)
+
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    with pytest.raises(requests.HTTPError):
+        k._get_with_429_retry(_Sess(), f"{k.BASE}/markets", {}, tries=2)
+
+    assert len(_sink_rows()) == 2  # the final, fatal 429's headers are kept too
+
+
+def test_trade_tape_429_headers_captured_before_the_raise():
+    """The trade tape has NO retry wrapper — a 429 escapes to sweep_series'
+    except arm and was previously reduced to a print. The headers must be
+    captured before raise_for_status discards the response."""
+    import pytest
+    import requests
+
+    from collector.venues import kalshi as k
+
+    class _Sess:
+        def get(self, url, params=None, timeout=None):
+            assert "trades" in url
+            return _HdrResp(429, headers=_HDRS_429)
+
+    with pytest.raises(requests.HTTPError):
+        k.get_trades("KXHIGHNY-26AUG18-B90.5", session=_Sess())
+
+    rows = _sink_rows()
+    assert len(rows) == 1
+    assert rows[0]["url"].endswith("/markets/trades")
+    assert rows[0]["headers"] == _HDRS_429
+
+
+def test_2xx_responses_write_nothing():
+    from collector.venues import kalshi as k
+
+    class _Sess:
+        def get(self, url, params=None, timeout=None):
+            return _HdrResp(200, {"trades": [], "cursor": ""})
+
+    k.get_trades("KXHIGHNY-26AUG18-B90.5", session=_Sess())
+    assert _sink_rows() == []  # additive only: no rows without a 429

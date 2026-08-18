@@ -38,6 +38,39 @@ _MONTHS = {
 
 from hyxlab.models import MarketInfo, Snapshot  # noqa: E402
 
+# EXP-1333 (hylshi). Sink for the headers of ORGANIC 429 responses. Kalshi's
+# 2xx responses carry no rate-limit headers (measured, hylshi EXP-1326) and a
+# load test is forbidden, so the only way to learn the Retry-After/limit
+# semantics is to capture ALL headers when a 429 naturally occurs — routine
+# here during sweeps (~6 in 2h measured 2026-08-18). Relative path, same
+# convention as collector/collect.py's SKIP_LOG (cwd = repo root under the
+# systemd units). Additive telemetry only; retry behavior is unchanged.
+RATE_LIMIT_HEADERS_LOG = "data/rate_limit_headers.jsonl"
+
+
+def _log_429_headers(resp: Any, url: str) -> None:
+    """Append ALL headers of one 429 response to the JSONL sink. One line per
+    429 response observed; called on the 429 branch only. Never raises — a
+    logging failure must not turn a retryable 429 into a lost series."""
+    import json
+    import os
+
+    try:
+        headers = dict(getattr(resp, "headers", None) or {})
+        row = {
+            "ts": datetime.now(UTC).isoformat(),
+            "source": "collector/venues/kalshi.py",
+            "url": url,
+            "status": 429,
+            "headers": headers,
+        }
+        log_path = RATE_LIMIT_HEADERS_LOG
+        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+        with open(log_path, "a") as f:
+            f.write(json.dumps(row, default=str) + "\n")
+    except Exception as e:  # noqa: BLE001 — telemetry only
+        print(f"[kalshi] WARNING: failed to log 429 headers for {url}: {e}", flush=True)
+
 
 def _get_with_429_retry(
     sess: requests.Session,
@@ -60,6 +93,8 @@ def _get_with_429_retry(
     delay = 5.0
     for attempt in range(tries):
         resp = sess.get(url, params=params, timeout=timeout)
+        if resp.status_code == 429:
+            _log_429_headers(resp, url)  # EXP-1333: capture only, no behavior change
         if resp.status_code != 429 or attempt == tries - 1:
             resp.raise_for_status()
             return resp
@@ -340,6 +375,13 @@ def get_trades(
         if cursor:
             params["cursor"] = cursor
         resp = sess.get(f"{BASE}/markets/trades", params=params, timeout=30)
+        # getattr: adds NO new happy-path requirement on the response object
+        # (a pre-existing test double here has no status_code at all).
+        if getattr(resp, "status_code", None) == 429:
+            # EXP-1333: the trade tape has no retry wrapper (a 429 escapes to
+            # sweep_series' except and is printed there) — capture the headers
+            # before raise_for_status throws them away.
+            _log_429_headers(resp, f"{BASE}/markets/trades")
         resp.raise_for_status()
         body = resp.json()
         out.extend(body.get("trades", []))
