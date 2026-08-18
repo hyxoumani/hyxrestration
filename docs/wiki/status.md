@@ -1,6 +1,50 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-17 20:15 UTC (RUNG-1 PASS — PROBE-EQUITY WATCH
+Updated: **2026-08-18 02:15 UTC (RUNG-1 PASS — PROBE-EQUITY
+OVERNIGHT ANSWER: the −3,3xx band did NOT hold, and it broke
+UPWARD on zero settlements — a THIRD settlement-free reversal.
+At 21:58Z the mark jumped +397 in a single tick (−3,457 →
+−3,060) with the settlement run-total frozen at 914 (0 payouts
+in the whole window), then oscillated in a −2,97x→−3,15x band
+overnight; −3,132 at 02:16Z. A discrete one-tick improvement
+with zero flow is quote-driven marking, full stop — the
+stale-quote/conservative-marking component now has three
+confirmations (08-17 08:17Z snap-back, 08-17 intraday slide,
+tonight's jump). Working read updated: INTRADAY levels are
+marking noise (±400 swings); the real signal is the multi-day
+drift of the overnight bands — −2,821 (08-16) → −3,0xx (08-17)
+→ −3,1xx (08-18), a slow ~−150/day true deterioration, much
+gentler than the intraday marks suggested. Ledger-only, zero
+capital; watch continues on the daily overnight-band series,
+not intraday levels. ZERO dead_air ~113.3h.**
+**(1) Zero dead_air fires — ~113.3h, and ZERO reconnects/GAPs
+since 20:15Z** (quietest 6h window of the run). kalshi_trades
+counter 41.42M at 02:11Z — +2.55M over ~6.0h ≈ ~425k/hr
+(re-busying 360k→425k); flush rounds every ~5min at 2,900–5,600
+rows. **(2) Reload line draining on script**: 149,540→148,241→
+146,279→144,356→142,339→140,333→138,364 (20:01→02:01Z hourly,
+~1.9k/h) — trough vs 136,077 lands ~06Z, next pass.
+MARKETS_ALIVE_DAYS 3→1 (a4bf182) still deferred to natural
+daemon restart. **(3) Flush declines: 0 since 20:15Z, 3 in
+trailing 24h** (down from 7; canonical grep per mistakes #21).
+**(4) Shadow anon 347MiB** (333→347, tracking nothing alarming;
+HWM 610MiB), 262–275 band at natural restart. **(5) Fill-rate
+~183/hr — in-band, eased off 242.** Fills 40,717 / 32,841 polls
+at 02:12Z — +1,096 over ~6.0h; polls steady ~177/hr. **(6)
+Doctor 02:20Z clean**: 0 kalshi mirror violations; sweep_log 48h
+= 6,629 ok / 1 truncated / 0 errors; stream archive 471.0M book
+events / 334.6M trades, 13.1GB. NEXT PASS (08:15Z autoloop):
+(1) FIRST PRIORITY — hardened keyset walk's first live line at
+05:0xZ: INCOMPLETE with the same cursor as the 11,700 deaths ⇒
+open the deterministic-fault investigation; COMPLETE past
+11,700 ⇒ hardening worked, check discovery jump above 16,821;
+(2) reload overnight trough vs 136,077; (3) probe equity — read
+the overnight band (−3,0xx/−3,1xx) not intraday ticks; is the
+~−150/day drift continuing; (4) both sweeps in flight in-band
+(kalshi vs 8h27m best, poly vs 14h38m worst + error count vs
+10); (5) flush declines vs 3/24h; (6) fill-rate vs 183/hr;
+(7) shadow anon vs 262–275 at any natural restart.**
+(prior **2026-08-17 20:15 UTC (RUNG-1 PASS — PROBE-EQUITY WATCH
 VERDICT: THE SNAP-BACK DID NOT HOLD. Seventh post-sweep cohort
 landed on script (135 settlements 16–20Z vs 131 prior, gross
 payouts +2,679.82, run-total 914) yet equity FELL through the
@@ -46,7 +90,7 @@ reload overnight trough vs 136,077; (3) flush declines vs 7/24h;
 08:1xZ pass: hardened keyset walk's FIRST live line at 05:0xZ —
 INCOMPLETE with same cursor as 11,700 deaths ⇒ open the
 deterministic-fault investigation; COMPLETE past 11,700 ⇒
-hardening worked, check discovery jump above 16,821.**
+hardening worked, check discovery jump above 16,821.**)
 (prior **2026-08-17 14:15 UTC (RUNG-1 PASS — PROBE-EQUITY WATCH
 PARTIAL ANSWER: the mark SNAPPED BACK −3,147 → −3,029 (+118 over
 ~6h, 08:17→14:17Z) with only 5 settlements in the window (13Z, all
