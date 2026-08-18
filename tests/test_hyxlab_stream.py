@@ -402,6 +402,157 @@ def duckdb_reason(path):
         return conn.execute("SELECT reason FROM stream_gaps").fetchone()[0]
 
 
+# -- seq-reset synthetic gap rows (S-190; S-188 loss class 3) ------------------
+#
+# Every (re)connect resets the Kalshi ws sequence. In-process reconnects
+# already logged a 'reconnect' row, but a PROCESS RESTART lost `last_recv`
+# and wrote nothing per-channel — the 2026-08-02 17:16 restart's misses sat
+# outside the coarse '*' daemon_start row. The loop must now write a
+# 'seq_reset' row bounded [last persisted/in-process recv_ts -> first
+# post-reset frame recv_ts] on each connection's first frame, and nothing
+# extra while the sequence flows normally.
+
+
+def _scripted_kalshi_loop(tmp_path, monkeypatch, connections, db=None):
+    """Run _kalshi_loop against scripted per-connection frame lists.
+
+    `connections` is a list of lists of raw frames; each inner list is one
+    ws connection's recv() sequence. Exhausting the LAST connection raises
+    CancelledError (test over); exhausting an earlier one raises
+    ConnectionError (forces a reconnect). Returns the store."""
+    import asyncio
+
+    from collector import streamd
+
+    class ScriptedWS:
+        def __init__(self, frames, last):
+            self._frames = list(frames)
+            self._last = last
+
+        async def send(self, msg):
+            pass
+
+        async def recv(self):
+            if not self._frames:
+                raise asyncio.CancelledError if self._last else ConnectionError("scripted drop")
+            return self._frames.pop(0)
+
+    remaining = [list(c) for c in connections]
+
+    class FakeConnect:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return ScriptedWS(remaining.pop(0), last=not remaining)
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def no_sleep(secs):
+        pass
+
+    monkeypatch.setattr(streamd.websockets, "connect", FakeConnect)
+    monkeypatch.setattr(streamd.kalshi_ws, "auth_headers", lambda kid, pem: {})
+    monkeypatch.setattr(streamd.asyncio, "sleep", no_sleep)
+
+    store = StreamStore(db or tmp_path / "s.duckdb")
+    d = streamd.Daemon(store, watchlist={})
+    d.key_id, d.pem = "k", b"p"
+    with contextlib.suppress(asyncio.CancelledError):
+        asyncio.run(d._kalshi_loop("trades", lambda: "{}", None))
+    store.flush()
+    return store
+
+
+def _gap_rows(path):
+    import duckdb
+
+    with duckdb.connect(str(path), read_only=True) as conn:
+        return conn.execute(
+            "SELECT venue, channel, started_at, ended_at, reason"
+            " FROM stream_gaps ORDER BY ended_at"
+        ).fetchall()
+
+
+def test_restart_writes_seq_reset_row_bounded_by_persisted_recv_ts(tmp_path, monkeypatch):
+    """Fresh process over a DB with history (the restart-blackout class):
+    the first frame must produce a per-channel seq_reset row starting at
+    the channel's last PERSISTED recv_ts and ending at that frame."""
+    db = tmp_path / "s.duckdb"
+    prior = StreamStore(db)  # the previous daemon's life
+    prior.append_trades(kalshi_ws.parse_message(_trade_frame(), RECV)[1])
+    prior.flush()
+
+    before = datetime.now(UTC).replace(tzinfo=None)
+    _scripted_kalshi_loop(tmp_path, monkeypatch, [[json.dumps(_trade_frame(seq=1))]], db=db)
+
+    rows = [r for r in _gap_rows(db) if r[4] == "seq_reset"]
+    assert len(rows) == 1
+    venue, channel, started, ended, _ = rows[0]
+    assert (venue, channel) == ("kalshi", "trades")
+    assert started == RECV.replace(tzinfo=None)  # last persisted recv_ts
+    assert ended >= before  # first post-reset frame, not connect/start time
+
+
+def test_in_seq_flow_writes_no_further_gap_rows(tmp_path, monkeypatch):
+    """Consecutive in-seq frames after the seed frame add nothing: one
+    seq_reset per connection, zero seq_gap."""
+    db = tmp_path / "s.duckdb"
+    prior = StreamStore(db)
+    prior.append_trades(kalshi_ws.parse_message(_trade_frame(), RECV)[1])
+    prior.flush()
+
+    frames = [json.dumps(_trade_frame(seq=s)) for s in (1, 2, 3, 4)]
+    store = _scripted_kalshi_loop(tmp_path, monkeypatch, [frames], db=db)
+
+    reasons = [r[4] for r in _gap_rows(db)]
+    assert reasons == ["seq_reset"]  # exactly one, no seq_gap/reconnect noise
+    assert store.counts()["stream_trades"] == 5  # prior + all four frames kept
+
+
+def test_empty_db_first_ever_run_writes_no_seq_reset(tmp_path, monkeypatch):
+    """Nothing persisted -> nothing was being covered -> no synthetic row
+    (mirrors mark_startup_gap's no-op on an empty DB)."""
+    store = _scripted_kalshi_loop(tmp_path, monkeypatch, [[json.dumps(_trade_frame(seq=1))]])
+    assert _gap_rows(store.path) == []
+
+
+def test_reconnect_seq_reset_row_spans_last_frame_to_first_new_frame(tmp_path, monkeypatch):
+    """In-process reconnect: the seq_reset row must start at the LAST frame
+    of the dying connection (in-process last_recv, not the DB) and end at
+    the new connection's first frame — extending the 'reconnect' row, which
+    ends at connect time, through the actual resume."""
+    store = _scripted_kalshi_loop(
+        tmp_path,
+        monkeypatch,
+        [[json.dumps(_trade_frame(seq=1))], [json.dumps(_trade_frame(seq=1))]],
+    )
+
+    rows = _gap_rows(store.path)
+    reasons = [r[4] for r in rows]
+    assert reasons == ["reconnect", "seq_reset"]  # first connection seeded none (empty DB)
+    reconnect, seq_reset = rows
+    assert seq_reset[:2] == ("kalshi", "trades")
+    assert seq_reset[2] == reconnect[2]  # both start at the dying conn's last recv
+    assert seq_reset[3] >= reconnect[3]  # ...but seq_reset covers through first frame
+
+
+def test_last_recv_ts_reads_per_channel_table(tmp_path):
+    """trades channel -> stream_trades; book channels -> book_events;
+    empty tables -> None."""
+    store = StreamStore(tmp_path / "s.duckdb")
+    assert store.last_recv_ts("kalshi", "trades") is None
+    store.append_trades(kalshi_ws.parse_message(_trade_frame(), RECV)[1])
+    store.append_events(
+        [BookEvent("kalshi", "M1", RECV.replace(hour=13), None, 1, 1, "snap", "yes", 0.4, 1.0)]
+    )
+    store.flush()
+    assert store.last_recv_ts("kalshi", "trades") == RECV.replace(tzinfo=None)
+    assert store.last_recv_ts("kalshi", "books") == RECV.replace(hour=13, tzinfo=None)
+    assert store.last_recv_ts("polymarket", "trades") is None  # venue-scoped
+
+
 # -- stream store -------------------------------------------------------------
 
 

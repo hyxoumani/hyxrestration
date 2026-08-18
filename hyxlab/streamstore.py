@@ -389,6 +389,20 @@ class StreamStore:
             conn.executemany("INSERT INTO stream_gaps VALUES (?,?,?,?,?)", gaps)
         conn.execute("COMMIT")
 
+    def last_recv_ts(self, venue: str, channel: str) -> datetime | None:
+        """Last persisted recv_ts for one venue/channel (the trades
+        firehose lands in stream_trades; every book channel in
+        book_events). The daemon uses it to bound a `seq_reset` gap when
+        its in-process `last_recv` is gone (fresh process): the
+        venue='*' daemon_start row starts at the max across BOTH tables,
+        so the channel that died earlier keeps an uncovered tail without
+        this (S-188 loss class 3). Returns naive UTC (as stored)."""
+        table = "stream_trades" if channel == "trades" else "book_events"
+        with duckdb.connect(str(self.path)) as conn:
+            return conn.execute(
+                f"SELECT max(recv_ts) FROM {table} WHERE venue = ?", [venue]
+            ).fetchone()[0]
+
     def mark_startup_gap(self, now: datetime | None = None) -> None:
         """Record daemon downtime: everything between the last archived
         event and this start is unknown coverage. No-op on an empty DB

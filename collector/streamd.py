@@ -16,8 +16,12 @@ Connections (each an independent task; one failing never stops others):
   skipped while the pair list is empty (pairs land with B3.5).
 
 Gap discipline: a gap row is written for every reconnect, every Kalshi
-seq jump, and daemon downtime (mark_startup_gap). Replay treats books as
-unknown inside gaps until the next snapshot.
+seq jump, daemon downtime (mark_startup_gap), and — bounded to the first
+frame actually received — every Kalshi ws sequence reset ('seq_reset':
+each (re)connect starts a fresh sid/seq, and a process restart loses the
+in-process last_recv, so the row starts from the last PERSISTED recv_ts;
+S-188 loss class 3). Replay treats books as unknown inside gaps until
+the next snapshot.
 
 Writes go to the stream store's own DuckDB (see streamstore.py for why
 not the main archive), flushed every FLUSH_SECS.
@@ -182,6 +186,18 @@ class Daemon:
             _log(f"kalshi-{channel}: missing KALSHI_API_KEY_ID/KALSHI_PRIVATE_KEY_PATH; idle")
             return
         backoff, last_recv, first = 1.0, None, True
+        # Bound for the first connection's seq_reset row: in-process
+        # `last_recv` does not survive a restart (S-188 class 3), so read
+        # the channel's last PERSISTED recv_ts once, up front — never in
+        # the frame path, where a transient reader lock would cost the
+        # frame in hand and force a reconnect. Best-effort: a failed read
+        # only shortens the startup row, and the '*' daemon_start row
+        # still marks the downtime coarsely.
+        try:
+            resume_since = await asyncio.to_thread(self.store.last_recv_ts, "kalshi", channel)
+        except Exception as exc:
+            _log(f"kalshi-{channel}: last_recv_ts unavailable ({type(exc).__name__}: {exc})")
+            resume_since = None
         while True:
             try:
                 headers = kalshi_ws.auth_headers(self.key_id, self.pem)
@@ -194,6 +210,7 @@ class Daemon:
                     first, backoff = False, 1.0
                     _log(f"kalshi-{channel}: connected")
                     tracker = kalshi_ws.SeqTracker()
+                    seeded = False  # first frame of THIS connection not yet seen
                     mono = asyncio.get_event_loop().time
                     next_refresh = mono() + TICKER_REFRESH_SECS
                     last_frame = mono()
@@ -218,6 +235,22 @@ class Daemon:
                             continue
                         last_frame = mono()
                         recv_ts = datetime.now(UTC)
+                        if not seeded:
+                            # Every (re)connect resets the ws sequence, so
+                            # anything between the last frame we archived and
+                            # this connection's FIRST frame is unrecoverable.
+                            # The reconnect row above ends at connect time and
+                            # a process restart loses `last_recv` entirely
+                            # (S-188 class 3) — bound the hole honestly:
+                            # [last in-process recv, or last PERSISTED recv on
+                            # a fresh process, -> first post-reset frame].
+                            seeded = True
+                            since = last_recv or resume_since
+                            if since is not None:
+                                self.store.append_gap(
+                                    "kalshi", channel, since, recv_ts, "seq_reset"
+                                )
+                                _log(f"kalshi/{channel} GAP (seq_reset)")
                         self._clock_check("kalshi", channel, recv_ts, last_recv)
                         frame = json.loads(raw)
                         # Continuity check on the raw frame (sid/seq are
