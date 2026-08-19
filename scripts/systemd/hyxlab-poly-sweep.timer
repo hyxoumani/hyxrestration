@@ -1,5 +1,9 @@
 [Unit]
-Description=hyxlab poly sweep daily 04:15 UTC (keyset enumeration clears Gamma's ~05:04Z daily fault window; before kalshi sweep + QA)
+# The 04:15 slot clears Gamma's daily fault window (historically ~five-past-5am
+# UTC) before the kalshi sweep + QA. Referenced time kept out of the
+# Description: prose_code_parity reads Description clock-times as CLAIMED
+# fire times (hylshi tests/test_prose_code_parity.py).
+Description=hyxlab poly sweep daily 04:15 UTC (keyset enumeration; before kalshi sweep + QA)
 [Timer]
 OnCalendar=*-*-* 04:15:00 UTC
 Persistent=true
