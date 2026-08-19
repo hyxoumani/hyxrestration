@@ -1,6 +1,52 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-18 20:30 UTC (RUNG-1 PASS — NO SECOND COHORT:
+Updated: **2026-08-19 02:30 UTC (RUNG-1 PASS — QUIET OVERNIGHT,
+BURST CONFIRMED ONE-OFF: zero flush declines since 20:30Z (the
+13-in-8-min 17:59–18:06Z ad-hoc-PID burst did not recur; trailing
+24h still reads 30 but is all pre-20:30 — expect ~13 next pass as
+the burst ages out). ZERO settlements since 20:30Z, run-total
+frozen 1,052 — 08-18 daily total closes at 138 (91 @ 12–14Z + 47
+@ 15/18Z), first day tracked by daily total per the demoted
+post-sweep-cohort script. NOTE FOUND IN JOURNAL: hyxlab-stream
+was restarted 20:20:22Z by the concurrent EXP-1333 promote
+(2ffb5ff) — the prior pass attributed the running connection to
+the 18:47Z restart; the 20:20Z restart was clean (614 tickers /
+31 series, 100 poly tokens) and wrote BOTH synthetic seq_reset
+gap rows (kalshi/trades + kalshi/books) — SECOND live S-190
+confirmation. ZERO dead_air ~137.2h.**
+**(1) Zero dead_air fires — ~137.2h.** Reconnects since 20:30Z:
+2 poly GAPs (23:31:04Z, 23:50:09Z), both gap-rowed, legit.
+kalshi_trades 2.83M on the 20:20Z connection at 02:14Z ≈
+~480k/hr (busy tape). **(2) Reload line draining on script**:
+158,836→156,655→154,588→152,555→150,757→148,769 (21:05→02:06Z
+hourly, ~2.0k/h) — trough vs 130,183 lands ~06Z, next pass.
+**(3) Probe equity −3,155 at 02:16Z** — overnight band entry
+−3,13x/−3,23x (hourly min/max: 21Z −3,183/−3,023, 23Z
+−3,231/−3,161, 01Z −3,233/−3,147), slightly BELOW the −3,0xx
+entries of the prior two nights on zero settlements; daily
+overnight-band series −2,821 → −3,0xx → −3,0xx → −3,1xx/−3,2xx
+— watch whether the band keeps stepping ~−100/night or
+round-trips like the last six marking-noise reversals. **(4) No
+sweeps in flight** (poly starts 05:00Z, kalshi 06:10Z);
+sweep_log 48h = 6,692 ok / 0 truncated / 0 errors. **(5) Flush
+declines: 0 since 20:30Z, 30 in trailing 24h — all pre-20:30**
+(canonical grep per mistakes #21); burst verdict: one-off.
+**(6) Shadow anon 352MiB** (RssAnon 360,052 kB; 360→352 easing,
+HWM 610MiB; daemon 8d18h up). **(7) Fill-rate ~204/hr —
+in-band.** Fills 45,438 at 02:16Z — +1,235 over ~6.05h; polls
+37,071, steady ~174/hr. **(8) Doctor 02:20Z clean**: 0 kalshi
+mirror violations; stream archive 478.5M book events / 342.9M
+trades, 13.3GB; stream_gaps 1,501 (+5, the restart + poly GAPs).
+NEXT PASS (08:15Z autoloop): (1) THE KEYSET LADDER'S FIRST LIVE
+05:0xZ JOURNAL — per-attempt lines: COMPLETE past 11,700 ⇒
+fault window spanned, discovery unlocked; INCOMPLETE after ~18
+min ⇒ window >18 min, consider shifting poly-sweep timer to
+~04:15Z; (2) reload overnight trough vs 130,183; (3) probe
+equity — does the −3,1xx/−3,2xx band hold or round-trip; (4)
+flush declines 24h vs ~13 expected as burst ages out; (5)
+fill-rate vs 204/hr; (6) shadow anon vs 352MiB; (7) 08-19 daily
+settlement total (track daily, not 16–19Z windows).**
+(prior **2026-08-18 20:30 UTC (RUNG-1 PASS — NO SECOND COHORT:
 the 16–19Z post-sweep window produced almost nothing (41
 settlements @ 15Z + 6 @ 18Z, payouts +306, run-total 1,005→1,052)
 — the early 12–14Z cohort WAS the day's flow. Two consecutive
