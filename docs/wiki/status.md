@@ -1,6 +1,64 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-19 08:35 UTC (RUNG-1 PASS — KEYSET-LADDER
+Updated: **2026-08-19 14:35 UTC (RUNG-1 PASS — NINTH COHORT
+LANDS EARLY AGAIN + POLY-BOOKS CHURN RECURRED: 114 settlements
+12–14Z (45@12Z + 57@13Z + 12@14Z, payouts +3,132, run-total
+1,052→1,166; 08-19 daily 114) — THIRD consecutive day the
+cohort lands 12–14Z, close-time-driven timing now the standing
+model. Equity slid through the cohort on script: hourly lows
+−3,25x (08–10Z) → −3,350 (12Z) → −3,476 (13Z), −3,474 at
+14:17Z — sixth settle-and-slide, NEW RUN LOW. SECOND poly-books
+churn episode 09:07:03→12:47:49Z — 513 JSONDecodeError GAP
+reconnects, self-healed (~3h41m; 0 in the 20 min before
+14:15Z), all gap-rowed (stream_gaps 1,900→2,417, +517
+accounted) — twice in one day upgrades yesterday's 'broader
+poly infra incident' read to a recurring condition, watch
+tomorrow. HOUSEKEEPING: found + reverted an unexplained
+uncommitted edit to scripts/systemd/hyxlab-poly-sweep.timer
+(mtime 13:13Z, no owning session found) whose comment cited a
+NONEXISTENT test (`tests/test_prose_code_parity.py`, garbled
+"hylshi") — tree restored to promoted 5bdd0b6 content. ZERO
+dead_air ~149.3h.**
+**(1) Zero dead_air fires — ~149.3h.** Reconnects since 08:35Z:
+the 09:07–12:48Z churn episode (headline) only; no kalshi
+reconnects observed. **(2) Reload NEW PEAK 169,610 at 14:09Z**
+(> 167,788 prior peak): hourly 148,956→153,926→159,245→163,502
+→164,624→169,610 (09–14Z), sweep-hour climb ~4-5k/h. **(3)
+Probe equity −3,474 at 14:17Z — NEW RUN LOW** (see headline;
+marking-vs-real: this slide came WITH settlement flow, same
+shape as the five prior settle-and-slides that later
+round-tripped — overnight band is the tell). **(4) Both sweeps
+in flight.** Kalshi RECOVERED vs the 12.1h scare: 2700/3451 at
+13:42Z, 0 errors, 0 truncated, ~125 min left → ~15:4xZ ≈ 9.6h;
+drag today is KXSOLE solar-tape 429s (51 so far), not KXBTCD.
+Poly SLOW: 10,200/16,859 at 14:13Z, ~347 min left → ~20:0xZ ≈
+15h0m projection (ties the worst-projection watch; actual worst
+13h50m) — 11 trades_tail stop-earlies (status 429) + a handful
+of clob ReadTimeouts, error count low. **(5) Flush declines: 6
+since 08:35Z** (09:00, 09:55, 09:57, 11:25, 13:34Z + 1;
+canonical grep per mistakes #21), 25 in trailing 24h — two
+sweep-hour holds were LARGE (15,140 / 14,744 rows vs ad-hoc
+PIDs 2250351/2248455) but all drained, no spill; 08-18 burst
+ages out ~18Z as scripted. **(6) Shadow anon 338MiB** (RssAnon
+346,528 kB; 335→338 flat-to-up, HWM 610MiB; daemon 9d6h up).
+**(7) Fill-rate ~147/hr — in-band LOW-EDGE.** Fills 47,453 at
+14:15Z — +879 over ~6.0h; polls 39,201 steady. **(8) Doctor
+14:20Z clean**: 0 kalshi mirror violations; stream archive
+488.1M book events / 346.4M trades, 13.5GB; sweep_log 48h =
+8,159 ok / 0 truncated / 0 errors.
+NEXT PASS (20:15Z autoloop): (1) kalshi finish ~15:4xZ vs 9.6h
+proj + poly finish ~20:0xZ vs 15h0m (worst-watch) + final error
+counts; (2) probe equity — does −3,47x round-trip like the six
+prior marking-noise reversals or hold (overnight-band entry is
+the datum); (3) 08-19 daily settlement total vs 114 — does a
+second cohort appear (two prior days: no); (4) flush declines —
+burst aged out at ~18Z, expect ~8-10/24h; (5) fill-rate vs
+147/hr low-edge; (6) shadow anon vs 338MiB; (7) poly-books
+churn — a THIRD episode today would make it chronic; (8)
+TOMORROW 08:15Z pass still owns the 04:15Z timer's FIRST
+journal (COMPLETE past 11,700 ⇒ window cleared; INCOMPLETE ⇒
+window moved with the walk — reopens investigation).**
+(prior **2026-08-19 08:35 UTC (RUNG-1 PASS — KEYSET-LADDER
 VERDICT + TIMER SHIFTED: the 18-min ladder's first live run did
 NOT span the fault window — all 7 attempts 05:04:10→05:22:29Z
 returned status 500, walk INCOMPLETE at 11,600 (page 116, cursor
@@ -66,7 +124,7 @@ the 04:06–05:50Z JSONDecodeError incident recur; (8) TOMORROW
 past 11,700 ⇒ window cleared + check discovery above 16,859;
 INCOMPLETE at ~05:04Z ⇒ the window moved with the walk (query-
 driven, not clock-driven) — that would reopen the
-investigation.**
+investigation.**)
 (prior **2026-08-19 02:30 UTC (RUNG-1 PASS — QUIET OVERNIGHT,
 BURST CONFIRMED ONE-OFF: zero flush declines since 20:30Z (the
 13-in-8-min 17:59–18:06Z ad-hoc-PID burst did not recur; trailing
