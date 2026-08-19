@@ -52,7 +52,7 @@ turn, arm the next one (running background task, or ScheduleWakeup
 
 Scheduled (systemd user units, run from the stable worktree; canonical
 files in `scripts/systemd/`, installed by `scripts/promote.sh`): timers
-`hyxlab-collect` (5 min), `hyxlab-poly-sweep` (05:00 UTC),
+`hyxlab-collect` (5 min), `hyxlab-poly-sweep` (04:15 UTC),
 `hyxlab-sweep` (06:10 UTC), `hyxlab-qa` (10:00 UTC); daemons
 `hyxlab-stream` and `hyxlab-shadow`. DuckDB is single-writer — ad-hoc
 runs may need to wait seconds for the collector's flock.

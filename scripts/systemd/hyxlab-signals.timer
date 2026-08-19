@@ -1,5 +1,5 @@
 [Unit]
-Description=hyxlab signals daily 04:40 UTC (before poly sweep + QA)
+Description=hyxlab signals daily 04:40 UTC (before QA; overlaps poly sweep which starts 04:15)
 [Timer]
 OnCalendar=*-*-* 04:40:00 UTC
 Persistent=true

@@ -1,7 +1,7 @@
 [Unit]
-Description=hyxlab poly sweep daily 05:00 UTC (before kalshi sweep + QA)
+Description=hyxlab poly sweep daily 04:15 UTC (keyset enumeration clears Gamma's ~05:04Z daily fault window; before kalshi sweep + QA)
 [Timer]
-OnCalendar=*-*-* 05:00:00 UTC
+OnCalendar=*-*-* 04:15:00 UTC
 Persistent=true
 [Install]
 WantedBy=timers.target
