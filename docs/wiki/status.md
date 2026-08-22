@@ -1,6 +1,86 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-22 08:45 UTC (RUNG-1 PASS — THE POLY FAULT
+Updated: **2026-08-22 14:30 UTC (RUNG-1 PASS — QA WAS COUNTING A
+DEAD SWEEP AS A FAST ONE: `read_batch_runs` parsed only systemd's
+`Consumed ... over ...` line, which systemd emits for FAILED runs
+exactly as for successful ones, so the 08-20 sweep — designed `ABORT
+after 25 consecutive series errors`, exit 75/TEMPFAIL 1h21m in, 7,744
+of ~46,000 markets swept — entered the measurement set as a 1.36h
+"completed run". The error only points ONE way: an abort truncates
+wall clock, so a unit that dies reads further INSIDE its budget than
+one that does the work; a sweep aborting after ten minutes every night
+for a week would have reported `worst 0.17h/12.5h` and passed green
+while the archive rotted. The same blindness misdiagnosed the breach
+it DID catch — 08-21's 14.64h (CPU 2h15m vs the usual 1h15m) was
+catch-up carrying 08-20's backlog, and QA called it a stale constant
+and implied "re-measure the budget", the one repair that would bake a
+one-off in and blind the check to real drift. FIX SHIPPED (5207aed,
+promoted, pushed): `BatchRun.ok` read off the outcome lines that
+precede the cgroup accounting (flag clears at each `Consumed` so it
+cannot leak between runs); budget judged on healthy runs only; a unit
+whose every run aborted reads UNVERIFIED, not pass; fade overlap still
+reads ALL runs (a run that died in the window still spent the quota);
+a breach following an abort is attributed to catch-up; aborts FAIL
+once then decay to WATCH, matching this check's existing overlap
+policy. Live: the 08-20 abort now reads `ok=False` off the real
+journal and the check names it instead of blaming the constant. Suite
+675 green; no daemon restart needed (QA is timer-driven). Logged in
+data-pipeline gotchas.**
+**(0) THE AUTOLOOP IS ALIVE AGAIN — the spend-limit gate is LIFTED.**
+The 08-22 03:42Z firing ran (it shipped db1e214) and this 14:15Z pass
+is a normal timer firing, not a hand invocation. The 8-failure streak
+08-20 09:15Z → 08-22 was billing, and it is resolved; item (1) of the
+prior status is CLOSED. **(1) SETTLEMENT FLOW HAS RESTARTED on run
+`20260821T015256`** — 08-22 = 86 settlements, +1,577.9, in a compact
+**11–13Z** block (31@11Z / 45@12Z / 10@13Z) after 08-21's 7 @ payout
+0.0. The cohort is one hour EARLIER than the three-day 12–14Z pattern
+but still a tight ~3h block, so the close-time-driven model stands.
+**(2) SETTLE-AND-SLIDE REPRODUCES ON THE CLEAN RUN** — the fresh run
+peaked **+161.7 (04Z)** and slid through the cohort to **−171.5 (13Z)**,
+now **−104.9 at 14:20Z**. This matters: the shape is no longer
+confounded by the old run's accumulated positions or its −3,7xx floor,
+so a settle-and-slide on a 1.5-day-old book is evidence the pattern is
+structural, not an artifact of that run. Watch whether it round-trips
+overnight. **(3) KALSHI SWEEP BACK IN BUDGET** — 2700/3478 at 13:32Z,
+~127 min left → ~15:4xZ ≈ **9.6h**, 0 errors, 3 truncated (the designed
+per-series budget cap: KXETHD/KXNASDAQ100U). That confirms 14.64h was
+one-off catch-up, exactly as EXP-1351 now reports it. **(4) Poly sweep
+SLOW** — 10,800/16,952 at 14:19Z, ~331 min → ~19:5xZ ≈ **15h4xm**, at
+or past the worst-projection watch; a few clob ReadTimeouts, error
+count low. This is PID 660268, the last walk running pre-db1e214 code
+(started 04:15Z, before the 08:37Z promote), so it is also the last one
+that can log the old `INCOMPLETE`. Poly is deliberately NOT in
+`BATCH_RUN_BUDGET_H` (Polymarket spends no Kalshi quota; its lever is
+wall clock, not OnCalendar) so this carries no QA implication.
+**(5) dead_air ZERO in 24h** — last fire 08-20 08:55:00Z, so the streak
+restarted ~29.4h ago; the 08-20 26-fire cluster remains a single Kalshi
+incident, not a condition. Gaps 48h = 106 reconnect / 22 seq_reset /
+2 daemon_start, total 2,644. **(6) Flush declines 0/24h.** **(7)
+Fill-rate ~298/hr** (1,789 in 6h; 216,870 total) — mid-band. **(8)
+Shadow anon 137MiB**, re-climbing off the 126MiB post-reboot baseline
+(HWM history void; daemon up since 08-20 20:52Z). **(9) Doctor clean**:
+0 kalshi mirror violations; 1.54M markets, 250.9M trades, 9.4M candles;
+stream archive 14,300 MB; sweep_log 48h = 6,184 ok / 8 truncated /
+**0 errors** (the 08-20 burst aged out).
+NEXT PASS: (1) **the 04:15Z walk's first journal under db1e214** —
+still the headline owed item, now due 08-23 04:15Z since today's sweep
+predates the promote; expect `chain restart 1 below volume …` and NO
+`INCOMPLETE`, with the poly enumeration total stepping up off 16,952;
+(2) does the new run's settle-and-slide ROUND-TRIP overnight — the
+clean-run re-test of the question the old run died holding; (3) 08-23
+settlement cohort hour vs today's 11–13Z (drifting earlier, or is
+11–13Z the close-time truth); (4) poly sweep finish vs the ~15h4xm
+projection and final error count; (5) QA at 10:00Z — `batch units
+within measured run budget` should now WATCH the 08-20 abort rather
+than FAIL it, and FAIL only on the 08-21 breach until it ages out
+2026-08-28; `trade latency p99 sane` (26.4s) stays the one chronic
+red; (6) dead_air vs the restarted streak; (7) shadow anon vs 137MiB;
+(8) the ~4h20m pre-reboot shadow silence on 08-20 — still unexplained,
+still a watch item; (9) streamd's cosmetic `TRUNCATED at 100 markets`
+per reconnect, worth silencing when convenient.
+NOTHING IS USER-GATED THIS PASS — the spend limit that was the standing
+gate has been lifted.**
+(prior **2026-08-22 08:45 UTC (RUNG-1 PASS — THE POLY FAULT
 WINDOW DOES NOT EXIST: the 04:15Z timer's first two walks died at
 04:19:00Z and 04:19:14Z, page 116, 11,600 markets — same page,
 clock moved 45 min, model falsified. Four daylight probes at

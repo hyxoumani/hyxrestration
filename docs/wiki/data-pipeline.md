@@ -106,6 +106,29 @@ migrate, watchlist, stations).
 
 ## Gotchas
 
+- **A batch unit's wall clock does not tell you whether it worked**
+  (EXP-1351, 2026-08-22). systemd emits `Consumed ... over ... wall
+  clock time` for FAILED runs exactly as for successful ones, so any
+  check that reads duration alone is blind to aborts — and blind in the
+  dangerous direction, because an abort TRUNCATES wall clock and makes a
+  dying unit look further inside its budget than a working one. The
+  sweep's designed `ABORT after 25 consecutive series errors` (exit
+  75/TEMPFAIL, "venue degraded; watermarks intact, next run resumes")
+  is a normal, expected event on a bad venue night, so this is not a
+  rare path. `qa.read_batch_runs` now reads the outcome lines that
+  precede the cgroup accounting into `BatchRun.ok`; judge budgets on
+  healthy runs only.
+- **An aborted sweep makes the NEXT run long.** 08-20 aborted 1h21m in
+  at 600/3458 series (7,744 of ~46,000 markets); 08-21 then ran 14.64h
+  against a 12.5h budget with 2h15m CPU, near double the usual 1h15m,
+  carrying the backlog. 08-22 came back at ~9.6h. So a post-abort breach
+  is catch-up, NOT a stale constant — re-measuring the budget upward to
+  "fix" it bakes a one-off in and blinds the check to real drift. QA
+  attributes this automatically now. The tail risk worth watching: the
+  sweep starts 06:10Z and the fade window opens 23:00Z, leaving 16.83h;
+  the catch-up run used 14.64h of it, so a deeper abort on a heavier day
+  could push a catch-up run into the live window.
+
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.
 - Long background jobs: use `python -u` (buffered stdout hid 4h of
