@@ -146,6 +146,45 @@ structure — see [venues](venues.md)).
    bracket [368, 404, 436]; same books, later life-cycle, opposite
    lean. Endpoints must use queue-PESS fills — now evidenced in both
    categories.
+   **Band curve from the same instrument (2026-08-22,
+   `simulator/shadow_attribution.py`, shadow run 20260810T081931, 1,324
+   settled positions — the largest settlement sample the ledger has
+   ever held).** The 08-05 note above reads the probe as a single
+   pooled number ("negative gross, confirms the taker FAIL"). Split by
+   ENTRY PRICE it is not one number, it is monotone, and the favorite
+   end of its own book has the opposite sign. Bias = entry price minus
+   realized win rate, i.e. what the taker PAID over what the contract
+   turned out to be worth: <5c **+0.030** (428 positions, ZERO
+   winners), 5-15c +0.048, 15-25c +0.013, 25-35c −0.008, 35-45c
+   **−0.119**, 45c+ **−0.275**. Sign crosses near 25-30c. Two
+   consequences. (a) The pooled "probe loses" is a statement about its
+   MIX (it is capped at mid < 0.5 and its mass sits under 15c), not
+   about taker entry as such — and the equity decomposition says the
+   same thing: of the run's −4,302.3, realized settlement PnL is
+   −3,495.0 (81%) and open-book carry only −807.3, with fees at 5.6% of
+   notional turning a −1,757.9 gross realized loss into −3,495.0. The
+   "settle-and-slide" shape watched for six status passes was the
+   cohort BOOKING that loss, not marking noise. (b) The dear end's
+   negative bias was measured under a ONE-TICK SPREAD GATE (the probe's
+   own entry condition), which is precisely the condition
+   FavoriteLongshot v1's post-mortem blames for its death ("the spread
+   decides — realized 85.2% vs 89.0¢ paid at the ask, while the
+   underpricing lives at the MID"). That is a new conditioning
+   variable with an a-priori mechanism, not a re-reading of the dead
+   result, so it goes to a NEW registration:
+   `docs/hyxpredict/prereg_favlong_tight_backtest.md` (2026-08-22,
+   REGISTERED, NOT YET RUN) — taker entry gated on a one-tick book
+   spread, bands A=[0.80,0.95] (v1's, like-for-like) and B=[0.95,0.99]
+   (v1's untested complement) both fixed in advance. **Family size is
+   now 2 and both members are exploratory**; the registration binds
+   that if both bands FAIL the fav-long family is CLOSED and no third
+   variant is registered. Caveats carried by the measurement itself and
+   repeated in the pre-reg: settled positions are 82% of positions
+   (77-85% by band, mildly declining with price), the net-PnL column is
+   noisy at these n (the +49.1% on 45c+/n=62 is not a result — read the
+   bias column), and the mix is KXHIGH*/KXLOWT* city-temperature
+   ladders, where the cheap band is where a bracket set's overround has
+   to sit. This measures the weather-bracket complex, not Kalshi.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive

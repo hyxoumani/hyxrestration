@@ -1,6 +1,126 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-22 14:30 UTC (RUNG-1 PASS — QA WAS COUNTING A
+Updated: **2026-08-22 20:15 UTC (RUNG-1 PASS — "SETTLE-AND-SLIDE"
+DECOMPOSED, AND IT IS A LONGSHOT BOOK BOOKING ITS LOSSES, NOT A
+MYSTERY. Six consecutive passes narrated the shadow equity curve as a
+SHAPE — a drop through the settlement cohort hour, watched for an
+overnight round-trip — and never once split it. Split now
+(`simulator/shadow_attribution.py`, shipped this pass) on the dead
+10-day run `20260810T081931`, whose 1,324 settled positions are the
+only real settlement sample the ledger has ever held: equity −4,302.3
+= realized at settlement **−3,495.0** + open-book carry −807.3. So 81%
+of the loss is BOOKED at the cohort hour, not marked there. The shape
+was a correct observation of the CLOCK and a wrong theory of the
+CAUSE. The mechanism is fees on a cheap book: Kalshi charges
+0.07·p·(1−p) per contract, which at this ledger's 0.169 average fill
+price is **5.6% of notional**, so a −1,757.9 gross realized loss
+finishes at −3,495.0. **THE BAND CURVE IS THE REAL FIND.** `probe`
+(TightSpreadProbe) is explicitly "NOT a money thesis" — it buys YES at
+the touch whenever the spread is one tick and the mid is under 0.5,
+takes no view, and is therefore an opinion-free INSTRUMENT. Its
+realized bias (entry price − realized win rate) by band: <5c +0.030
+(428 positions, **ZERO winners**), 5-15c +0.048, 15-25c +0.013, 25-35c
+−0.008, 35-45c −0.119, 45c+ −0.275. Monotone, sign-crossing near
+25-30c — textbook favorite-longshot bias measured LIVE at the ask
+rather than inferred from a mid. Net-PnL per band is noisy at these n
+(the +49.1% on 45c+/n=62 is not a result); the BIAS column is the
+robust one. Validity bounds are in the report, not left to memory:
+settled positions are 82% of positions (77-85% by band, mildly
+declining with price — the dear bands are the more censored), a run
+that settled nothing reads `realized: null` not 0.0, `long_only` is
+CHECKED (a closing sell would void the basis arithmetic and nulls the
+split instead of publishing it wrong), and the mix is
+KXHIGH*/KXLOWT* city-temperature ladders — so this measures the
+weather-bracket complex, where the cheap band IS the overround's
+resting place, not Kalshi at large. Suite 683 green.**
+**(1) SUCCESSOR REGISTERED, NOT RUN —
+`docs/hyxpredict/prereg_favlong_tight_backtest.md`.** The favorite end
+of that curve is the mirror of FavoriteLongshot v1, which FAILED
+2026-07-11 (ROI −5.0%) — so the retro-rescue rule is live and the
+registration is written to be judged against it. v1's recorded cause
+of death is a CONDITION, not the band: "the spread decides — realized
+85.2% vs 89.0¢ paid at the ask, while the underpricing lives at the
+MID". This test fixes that condition (entry only when the book spread
+is one tick, so the ask sits within half a tick of the mid) instead of
+moving the band to where the loss is smaller, and it runs on entries
+v1 mostly never took — the tight subset is 24% of the 80-95¢ candidate
+rows. Bands A=[0.80,0.95] (like-for-like) and B=[0.95,0.99] (v1's
+untested complement, where the fee is ~0.2% of stake instead of 5.6%
+of notional) are BOTH registered so neither can be picked after the
+fact. Family size is 2 and both members are exploratory by the
+standing rule; a power check counted candidate rows ONLY (80-95¢ tight
+170,720/10,960 markets; 95-99¢ tight 218,088/12,867) with no outcome
+column read, and that contact is disclosed. Binding: if both bands
+FAIL, **the fav-long family is closed** and no third variant is
+registered. NOT RUN this pass — the spread gate needs a strategy
+build; that is the next item.
+**(2) THE SLIDE DID NOT ROUND-TRIP, AND THE CONTROL DAY SAYS THE
+COHORT IS NOT THE WHOLE STORY.** New run `20260821T015256`: peak
++161.7 (04Z), through the cohort to −171.5 (13Z), then ON to a NEW RUN
+LOW **−301.3 (17Z)**, recovering only to −107.0 at 20:15Z. The deeper
+trough is four hours AFTER the last settlement (14:59Z) — and 08-21,
+which had NO cohort at all (7 settlements, payout 0.0), traced the
+same 15-17Z dive to −296.9 before recovering to +329 by 22Z. So the
+16-17Z trough is a time-of-day feature that survives a day with zero
+settlement flow. Consistent with (0): the cohort books the realized
+loss, the afternoon marks the open book, and they are different
+things that the old narrative fused. **(3) TODAY'S COHORT WAS
+NEAR-BREAK-EVEN — 102 settlements, 11-14Z (31@11Z/45@12Z/10@13Z/16@14Z),
+payout +1,600.6 against basis 1,551.7, realized +48.9.** One hour
+earlier than the three-day 12-14Z pattern and one hour wider, but
+still a tight block; close-time-driven model stands. Run total 109.
+Note the sign: the new run's 109 settlements read lo-band +393.5,
+opposite the old run's −4,701.6 — n is far too small to contest the
+measurement, but it is the reason the pre-reg tests archive data and
+not this ledger. **(4) BOTH SWEEPS FINISHED CLEAN.** Kalshi
+**10h57m** (656.7 min), 0 errors, 5 truncated (the designed per-series
+budget cap: KXSOLE/KXETHD/KXNASDAQ100U class) — inside the 12.5h
+`BATCH_RUN_BUDGET_H`, so 08-21's 14.64h stays a one-off catch-up
+exactly as EXP-1351 now reports it. Poly **14h29m**, 16,952 markets, 9
+errors (clob ReadTimeouts) — under the ~15h4x projection, NOT a new
+worst. **(5) The poly run that just finished is the LAST pre-db1e214
+walk** and it logged the old failure verbatim: page 116, 7 attempts
+23:19:14→23:37:33Z, `INCOMPLETE at 11600` — the 7-attempt ladder
+confirms old code, and the 45-minute clock shift vs the prior night's
+04:19Z again refutes the fault-window model. **The first db1e214 walk
+fires tonight 04:15Z**; it remains the headline owed item (expect
+`chain restart 1 below volume …`, NO `INCOMPLETE`, enumeration total
+stepping off 16,952). **(6) dead_air ZERO in 48h** — last fire
+08-20 08:55:00Z, streak now **59.3h**. Gaps 48h = 102 reconnect / 19
+seq_reset / 2 daemon_start; total 2,646. **(7) Flush declines 0/24h.**
+**(8) Fill-rate 410/hr** (2,462 in 6h; 218,574 total) — above the
+recent 147-334 band, a new high-edge reading. **(9) Shadow anon
+145MiB** (file-cache 144, current 564, peak 740), re-climbing off the
+126MiB post-reboot baseline. **(10) Doctor clean**: 0 kalshi mirror
+violations; 1.568M markets, 251.6M trades, 9.47M candles; stream
+archive 14,393 MB; sweep_log 48h = 6,941 ok / 10 truncated / **0
+errors**.
+NOT PROMOTED THIS PASS, DELIBERATELY. `scripts/daemon_imports.py
+intersect simulator.shadow` returns empty for both new files, so
+promote would not restart the shadow daemon — but the change is
+sim-side only and buys nothing in stable, while run
+`20260821T015256` is 1.8 days old and has finally started settling.
+Its settlement sample is the scarce thing here (see
+`simulator.shadow_coverage`: a restart resets positions and forfeits
+every unresolved position). Nothing to gain, a real sample to lose.
+Committed and pushed only.
+NEXT PASS: (1) **build the spread gate and RUN the registered
+FavLongTight backtest** — thresholds are fixed, both bands, verdict
+appended unmodified; (2) the 04:15Z walk's first journal under
+db1e214 (fault-window verdict, still owed); (3) does the new run's
+equity round-trip overnight off −301.3, and does 08-23's trough
+repeat at 16-17Z a third time — that is now a specific, decomposed
+question, not a shape-watch; (4) 08-23 cohort hour vs today's 11-14Z;
+(5) QA at 10:00Z — `batch units within measured run budget` should
+WATCH the 08-20 abort and FAIL only the 08-21 breach until it ages
+out 2026-08-28; `trade latency p99 sane` stays the chronic red;
+(6) fill-rate 410/hr — one reading or a regime step; (7) shadow anon
+vs 145MiB; (8) the ~4h20m pre-reboot shadow silence on 08-20, still
+unexplained; (9) streamd's cosmetic `TRUNCATED at 100 markets` per
+reconnect.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-22 14:30 UTC (RUNG-1 PASS — QA WAS COUNTING A
 DEAD SWEEP AS A FAST ONE: `read_batch_runs` parsed only systemd's
 `Consumed ... over ...` line, which systemd emits for FAILED runs
 exactly as for successful ones, so the 08-20 sweep — designed `ABORT
