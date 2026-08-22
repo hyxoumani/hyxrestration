@@ -166,10 +166,12 @@ def test_iter_markets_keyset_persistent_error_logs_incomplete(monkeypatch, capsy
     sess = _AlwaysError({})
     out = iter_markets_by_volume(100.0, session=sess)
     assert out == []
-    # 7-attempt ladder spanning ~18 min: the 2026-08-18 probe showed the
-    # nightly ~05:04Z Gamma fault window outlasts a 65s ladder but clears
-    # eventually (the failing cursor replayed clean at 08:20Z).
-    assert len(sess.calls) == 7
+    # 4-attempt ladder (~65s). The long ladder existed for a fault
+    # window the 2026-08-22 probes falsified; the tail fault it was
+    # chasing is persistent, so waiting longer buys nothing and the
+    # chain restart is the real recovery. Page 0 has nothing collected
+    # below which to restart, so this walk is genuinely INCOMPLETE.
+    assert len(sess.calls) == 4
     logged = capsys.readouterr().out
     assert "INCOMPLETE" in logged
     # Each failed attempt logs status + clock so the window's length
@@ -198,5 +200,79 @@ def test_iter_markets_keyset_non_json_body_retries_then_incomplete(monkeypatch, 
     sess = _NonJson({})
     out = iter_markets_by_volume(100.0, session=sess)
     assert out == []
-    assert len(sess.calls) == 7
+    assert len(sess.calls) == 4  # shortened ladder; see the restart tests below
     assert "INCOMPLETE" in capsys.readouterr().out
+
+
+class _TailFaultSession(_KeysetSession):
+    """Gamma's tail fault: the last page of a chain 500s instead of
+    carrying `next_cursor: null`. A fresh chain ceilinged below the
+    last collected row serves that remainder (probed 2026-08-22)."""
+
+    def __init__(self):
+        super().__init__({})
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        self.calls.append((url, dict(params)))
+        ceiling = params.get("volume_num_max")
+
+        class R:
+            status_code = 500
+
+            def __init__(self, body=None):
+                self._body = body
+
+            def json(self):
+                if self._body is None:
+                    raise ValueError("no JSON")
+                return self._body
+
+        if ceiling is None:
+            if not params.get("after_cursor"):
+                return R({"markets": [_mkt("1", 500.0), _mkt("2", 300.0)], "next_cursor": "C1"})
+            return R()  # tail of the first chain: persistent 500
+        # Restarted chain: the ceiling row comes back as a duplicate.
+        return R({"markets": [_mkt("2", 300.0), _mkt("3", 200.0)], "next_cursor": None})
+
+
+def test_iter_markets_keyset_restarts_chain_below_last_row(monkeypatch, capsys):
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    sess = _TailFaultSession()
+    out = iter_markets_by_volume(100.0, session=sess)
+
+    # The tail is recovered and the boundary row is not double-counted.
+    assert [m["id"] for m in out] == ["1", "2", "3"]
+    logged = capsys.readouterr().out
+    assert "chain restart 1 below volume 300" in logged
+    assert "INCOMPLETE" not in logged
+    # The restarted chain drops the cursor and ceilings on the last row.
+    restarted = [c for _u, c in sess.calls if "volume_num_max" in c]
+    assert restarted and all("after_cursor" not in c for c in restarted)
+    assert restarted[0]["volume_num_max"] == "300.0"
+
+
+def test_iter_markets_keyset_restart_requires_strict_progress(monkeypatch, capsys):
+    """A restart that cannot lower the ceiling must give up, not spin."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    class _NeverPastTheCeiling(_TailFaultSession):
+        def get(self, url, params=None, timeout=None):
+            resp = super().get(url, params, timeout)
+            if params.get("volume_num_max"):
+                # Serves only the boundary row, so the ceiling never moves.
+                class R:
+                    status_code = 500
+
+                    def json(self):
+                        raise ValueError("no JSON")
+
+                return R()
+            return resp
+
+    sess = _NeverPastTheCeiling()
+    out = iter_markets_by_volume(100.0, session=sess)
+    assert [m["id"] for m in out] == ["1", "2"]
+    logged = capsys.readouterr().out
+    assert "INCOMPLETE" in logged
+    assert "restarts 1" in logged

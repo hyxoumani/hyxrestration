@@ -64,6 +64,7 @@ def iter_markets_by_volume(
     session: requests.Session | None = None,
     page_pause_s: float = 1.1,
     max_pages: int = 400,
+    max_restarts: int = 20,
     **extra_params: Any,
 ) -> list[dict[str, Any]]:
     """Active (or closed) markets ordered volume-desc, down to min_volume.
@@ -73,25 +74,41 @@ def iter_markets_by_volume(
     would silently truncate the daily sweep to its top half. So:
     /markets/keyset, pages chained via `after_cursor` from the response's
     `next_cursor`, with the threshold also applied server-side
-    (`volume_num_min`). Gamma is ~60 req/min unauthenticated and
-    occasionally answers with an error object — retried with escalating
-    backoff, then the walk stops (a skipped keyset page would break the
-    cursor chain). The INCOMPLETE line carries the failing cursor.
+    (`volume_num_min`).
 
-    Fault window (probed 2026-08-18): four consecutive 05:00Z walks
-    died to persistent 500s at 05:04:18/05:04:27/05:04:25/05:05:24Z —
-    the constant is the CLOCK, not the page (11,600 one night, 11,700
-    the next). Replaying the 05:05Z failing cursor at 08:20Z returned
-    200, refuting poisoned-page/depth-limit reads: Gamma has a daily
-    server-side fault window opening ~05:04Z that outlasted the old
-    65s ladder. The ladder now spans ~18 min, and each failed attempt
-    logs status + clock so the window's true length gets measured.
+    Tail fault (probed 2026-08-22, supersedes the poisoned-page, daily
+    fault-window and chain-depth reads that preceded it): on a long
+    walk Gamma answers the LAST page — the short one that should carry
+    `next_cursor: null` — with a persistent 500 instead. Six nightly
+    INCOMPLETE walks all died a hair above their own volume floor
+    (cursor volumes 10,050 / 10,053 / 10,116 / 10,163 …), which read as
+    a clock window only because the floor is the same every night. Four
+    daylight probes at 08:1x–08:3xZ, well outside the alleged window,
+    reproduced it on demand and pinned the trigger to the floor rather
+    than the clock or the page index: bands [10k,50k], [11k,50k] and
+    [20k,50k] failed at pages 70 / 65 / 38 respectively, each one row-
+    group short of its own bottom, while the shallow [40k,50k] band and
+    the whole closed=false walk terminated clean.
+
+    So a failed page is not a reason to abandon the walk. `volume_num_max`
+    IS honoured, so the recovery is to drop the cursor and open a FRESH
+    chain ceilinged at the last row already collected: the remainder is
+    a smaller set whose own tail Gamma will serve. The 08:22Z probe that
+    died at $10,161.41 returned the missing 79-row tail this way and
+    terminated cleanly. Restarts must strictly lower the ceiling, so the
+    walk cannot spin; duplicates at the boundary are dropped by id.
     """
     import time
 
     sess = session or requests.Session()
     out: list[dict[str, Any]] = []
+    seen: set[Any] = set()
     cursor: str | None = None
+    ceiling: float | None = None
+    restarts = 0
+    resp = None
+    truncated = True
+
     for page_idx in range(max_pages):
         params: dict[str, Any] = {
             "closed": str(closed).lower(),
@@ -101,10 +118,12 @@ def iter_markets_by_volume(
             "volume_num_min": str(min_volume),
             **extra_params,
         }
+        if ceiling is not None:
+            params["volume_num_max"] = str(ceiling)
         if cursor:
             params["after_cursor"] = cursor
         body = None
-        for attempt, backoff_s in enumerate((5, 15, 45, 120, 300, 600, None)):
+        for attempt, backoff_s in enumerate((5, 15, 45, None)):
             resp = sess.get(f"{GAMMA}/markets/keyset", params=params, timeout=30)
             try:
                 candidate = resp.json()
@@ -122,33 +141,64 @@ def iter_markets_by_volume(
             if backoff_s is not None:
                 time.sleep(backoff_s)
         if body is None:
+            last_vol = float(out[-1].get("volumeNum") or 0) if out else None
+            can_restart = (
+                last_vol is not None
+                and restarts < max_restarts
+                and (ceiling is None or last_vol < ceiling)
+            )
+            if can_restart:
+                # The tail fault, not a dead walk: re-open below the last
+                # row instead of losing everything under it.
+                restarts += 1
+                print(
+                    f"[poly] keyset chain restart {restarts} below volume"
+                    f" {last_vol:g} at {len(out)} markets (page {page_idx},"
+                    f" status {getattr(resp, 'status_code', '?')})",
+                    flush=True,
+                )
+                ceiling, cursor = last_vol, None
+                time.sleep(page_pause_s)
+                continue
             # Same failure class the QA shrink-tripwire catches a day
             # late — the same-run signal is this log line.
             print(
                 f"[poly] keyset walk INCOMPLETE at {len(out)} markets"
                 f" (Gamma errors persisted after retry; status"
                 f" {getattr(resp, 'status_code', '?')};"
-                f" page {page_idx}, cursor {cursor!r})",
+                f" page {page_idx}, cursor {cursor!r},"
+                f" restarts {restarts})",
                 flush=True,
             )
+            truncated = False
             break
         rows = [m for m in body["markets"] or [] if isinstance(m, dict)]
         # Server-side volume_num_min is belt-and-braces; keep the local
         # filter so a silently ignored param can't widen the sweep.
-        out.extend(m for m in rows if float(m.get("volumeNum") or 0) >= min_volume)
+        for m in rows:
+            if float(m.get("volumeNum") or 0) < min_volume:
+                continue
+            key = m.get("id")
+            if key is not None:
+                if key in seen:  # boundary row re-served by a restart
+                    continue
+                seen.add(key)
+            out.append(m)
         cursor = body.get("next_cursor") or None
         if not rows or cursor is None:
+            truncated = False
             break
         if float(rows[-1].get("volumeNum") or 0) < min_volume:
+            truncated = False
             break
         time.sleep(page_pause_s)
-    else:
-        if cursor is not None:
-            print(
-                f"[poly] keyset walk TRUNCATED at {len(out)} markets"
-                f" (max_pages={max_pages} exhausted, cursor live)",
-                flush=True,
-            )
+
+    if truncated and cursor is not None:
+        print(
+            f"[poly] keyset walk TRUNCATED at {len(out)} markets"
+            f" (max_pages={max_pages} exhausted, cursor live)",
+            flush=True,
+        )
     return out
 
 
