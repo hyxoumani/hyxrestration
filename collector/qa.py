@@ -918,6 +918,12 @@ _DUR_UNIT_S = {"d": 86400.0, "h": 3600.0, "min": 60.0, "s": 1.0, "ms": 1e-3, "us
 _CONSUMED_RE = re.compile(
     r"^(\S+)\s.*?:\s*(\S+\.service): Consumed .*? over (.+?) wall clock time"
 )
+#: systemd's two ways of saying a run did not finish its work. The `status=`
+#: form is matched with an explicit non-zero test because `status=0/SUCCESS`
+#: rides the same sentence on a clean stop.
+_FAILED_RE = re.compile(
+    r"Failed with result|Main process exited, code=\w+, status=(?!0/)"
+)
 
 
 def parse_systemd_duration(text: str) -> float | None:
@@ -930,11 +936,19 @@ def parse_systemd_duration(text: str) -> float | None:
 
 @dataclass(frozen=True)
 class BatchRun:
-    """One COMPLETED run of a batch unit, as the journal recorded it."""
+    """One run of a batch unit that TERMINATED, as the journal recorded it.
+
+    `ok` is the difference between a unit that finished its work and one that
+    stopped early, and it is not decoration: systemd emits the `Consumed ...
+    over ...` line for both, so wall clock alone cannot separate them, and the
+    confusion is asymmetric. An abort TRUNCATES wall clock, so a unit that dies
+    reads as further INSIDE its budget than one that does the work (EXP-1351).
+    """
 
     unit: str  # timer name, so it keys BATCH_RUN_BUDGET_H
     end: datetime  # UTC instant the cgroup was released
     wall_h: float
+    ok: bool = True  # exited 0; False for any of systemd's failure results
 
     @property
     def start(self) -> datetime:
@@ -972,10 +986,17 @@ def read_batch_runs(
             out[timer] = None
             continue
         runs = []
+        failed = False
         for line in text.splitlines():
+            # Failure is announced BEFORE the cgroup accounting, so the flag is
+            # always set by the time its own `Consumed` line arrives, and is
+            # cleared there so it cannot leak onto the next run in the read.
+            if _FAILED_RE.search(line) and f"{service}:" in line:
+                failed = True
             m = _CONSUMED_RE.match(line)
             if not m or m.group(2) != service:
                 continue
+            ok, failed = not failed, False
             try:
                 end = datetime.fromisoformat(m.group(1)).astimezone(UTC)
             except ValueError:
@@ -983,9 +1004,27 @@ def read_batch_runs(
             secs = parse_systemd_duration(m.group(3))
             if secs is None:
                 continue
-            runs.append(BatchRun(timer, end, secs / 3600.0))
+            runs.append(BatchRun(timer, end, secs / 3600.0, ok=ok))
         out[timer] = runs
     return out
+
+
+def _catch_up_clause(run: BatchRun, siblings: list[BatchRun]) -> str:
+    """Name the abort a breach is catching up from, when there is one.
+
+    A run that follows an aborted one carries the work the abort left behind,
+    so it is long for a reason that re-measuring the budget would not fix —
+    it would bake a one-off backlog in and blind the check to real drift.
+    Live case: 08-20 aborted 1h21m in at 600/3458 series, and 08-21 then ran
+    14.64h against a 12.5h budget with double the usual CPU time.
+    """
+    prior = [r for r in siblings if r.end <= run.start]
+    if not prior or max(prior, key=lambda r: r.end).ok:
+        return ""
+    last = max(prior, key=lambda r: r.end)
+    return (
+        f" — catch-up after the {last.end:%m-%d %H:%M}Z abort, not a stale budget"
+    )
 
 
 def qa_batch_run_budget(
@@ -1037,12 +1076,20 @@ def qa_batch_run_budget(
         )
         return
 
+    # Only a run that finished measures how long the work takes. An aborted
+    # run's wall clock says when it died, and folding that into the budget can
+    # only ever understate it (EXP-1351).
+    healthy = {u: [r for r in rs if r.ok] for u, rs in measured.items()}
+    aborted = [r for rs in measured.values() for r in rs if not r.ok]
+
     over = [
         r
-        for rs in measured.values()
+        for rs in healthy.values()
         for r in rs
         if r.wall_h > BATCH_RUN_BUDGET_H[r.unit]
     ]
+    # Overlap, unlike the budget, is about quota actually spent — a run that
+    # died inside the fade window still spent it, so this reads every run.
     overlaps = [
         (r, _fade_overlap_h(r.start, r.end))
         for rs in measured.values()
@@ -1054,47 +1101,70 @@ def qa_batch_run_budget(
     entry = state.setdefault("batch-run-budget", {})
     reported = set(entry.get("reported") or [])
     keys = {f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r, _ in overlaps}
-    fresh_overlap = sorted(keys - reported)
+    keys |= {f"abort:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r in aborted}
+    fresh = keys - reported
     entry["reported"] = sorted(reported | keys)
     entry.setdefault("first_seen", now.isoformat())
     _save_state(state)
 
-    worst = {
-        u: max(r.wall_h for r in rs) for u, rs in measured.items()
-    }
+    fresh_overlap = {k for k in fresh if not k.startswith("abort:")}
+    fresh_abort = [
+        r for r in aborted if f"abort:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh
+    ]
+
+    worst = {u: max(r.wall_h for r in rs) for u, rs in healthy.items() if rs}
     detail = (
-        f"{sum(len(r) for r in measured.values())} completed run(s) over "
-        f"{BATCH_RUN_LOOKBACK_DAYS}d; worst "
-        + ", ".join(
+        f"{sum(len(rs) for rs in healthy.values())} completed run(s) over "
+        f"{BATCH_RUN_LOOKBACK_DAYS}d"
+    )
+    if worst:
+        detail += "; worst " + ", ".join(
             f"{u} {worst[u]:.2f}h/{BATCH_RUN_BUDGET_H[u]:g}h" for u in sorted(worst)
         )
-    )
+    if aborted:
+        detail += f"; {len(aborted)} aborted (" + ", ".join(
+            f"{r.unit} {r.end:%m-%d %H:%M}Z after {r.wall_h:.2f}h"
+            for r in sorted(aborted, key=lambda r: r.end)
+        ) + ")"
+    starved = sorted(u for u, rs in healthy.items() if not rs)
+    if starved:
+        detail += (
+            f"; UNVERIFIED, every run aborted so the budget is unmeasured: "
+            f"{', '.join(starved)}"
+        )
     unmeasured = sorted(u for u, r in runs.items() if not r)
     if unmeasured:
         detail += f"; UNMEASURED: {', '.join(unmeasured)}"
 
-    if over or fresh_overlap:
+    if over or fresh_overlap or fresh_abort:
         reasons = [
             f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
             f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z"
+            + _catch_up_clause(r, measured[r.unit])
             for r in over
         ] + [
             f"{r.unit} spent {h:.2f}h inside the {FADE_WINDOW_START_H}:00Z fade window "
             f"({r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z)"
             for r, h in overlaps
-            if f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in set(fresh_overlap)
+            if f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh_overlap
+        ] + [
+            f"{r.unit} ABORTED {r.wall_h:.2f}h in at {r.end:%m-%d %H:%M}Z — its wall "
+            f"clock measures the abort, not the work"
+            for r in sorted(fresh_abort, key=lambda r: r.end)
         ]
         check(name, False, detail + "; " + "; ".join(reasons))
         return
-    if overlaps:
+    if overlaps or aborted:
+        past = [
+            f"{r.unit} overlapped the fade window by {h:.2f}h "
+            f"ending {r.end:%m-%d %H:%M}Z"
+            for r, h in overlaps
+        ] + [
+            f"{r.unit} aborted {r.wall_h:.2f}h in at {r.end:%m-%d %H:%M}Z"
+            for r in sorted(aborted, key=lambda r: r.end)
+        ]
         print(
-            f"WATCH {name} — {detail}; "
-            + "; ".join(
-                f"{r.unit} overlapped the fade window by {h:.2f}h "
-                f"ending {r.end:%m-%d %H:%M}Z"
-                for r, h in overlaps
-            )
-            + " (already reported)",
+            f"WATCH {name} — {detail}; " + "; ".join(past) + " (already reported)",
             flush=True,
         )
         return
