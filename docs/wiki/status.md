@@ -1,6 +1,86 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-19 20:25 UTC (RUNG-1 PASS — SETTLE-AND-SLIDE
+Updated: **2026-08-22 08:45 UTC (RUNG-1 PASS — THE POLY FAULT
+WINDOW DOES NOT EXIST: the 04:15Z timer's first two walks died at
+04:19:00Z and 04:19:14Z, page 116, 11,600 markets — same page,
+clock moved 45 min, model falsified. Four daylight probes at
+08:1x-08:3xZ (hours outside the alleged window) reproduced the
+500 on demand and re-pinned it: bands [10k,50k] / [11k,50k] /
+[20k,50k] failed at pages 70 / 65 / 38, each one row-group short
+of ITS OWN volume floor, while shallow [40k,50k] (932 rows) and
+the whole closed=false leg (5,343) terminated clean. Gamma 500s
+on the LAST page of a long chain instead of returning
+`next_cursor: null`; the nightly ~05:04Z constant was never the
+clock, it was `min_volume`, which is the same every night. FIX
+SHIPPED (db1e214, promoted, pushed): `volume_num_max` is
+honoured, so a failed page re-opens a FRESH chain ceilinged at
+the last row collected instead of ending the walk — strict
+ceiling descent so it cannot spin, boundary rows deduped by id,
+INCOMPLETE retained only when nothing was collected to restart
+below. Ladder cut 7 attempts (~18 min) -> 4 (~65s): it was sized
+for a window that does not exist and the tail fault is
+persistent. LIVE CHECK: the closed leg that reported INCOMPLETE
+at 11,800 now completes at 11,815, one restart, no duplicates,
+floor reached at $10,004 (loss was small — but it was unbounded
+and unmeasured before, and is now provably zero). Logged as
+mistakes #23. Suite 665 green; stream restarted 08:37:33Z by the
+promote, clean.**
+**(1) AUTOLOOP HAS BEEN DEAD SINCE 2026-08-20 09:15Z — USER-GATED.**
+Every 6h firing since has exited 1 with "You've hit your monthly
+spend limit"; 8 consecutive failures, no pass ran 08-20 → 08-22.
+This is a billing action only the user can take (`/usage-credits`).
+Everything below is therefore a 60-hour catch-up read, not a 6h
+delta. **(2) THE ZERO-DEAD_AIR STREAK BROKE — 26 fires on 08-20,
+07:00:26→08:55:00Z**, 23 on `trades` (metronomic ~5 min) + 3 on
+`books`; self-healed, ZERO since, 0 in the trailing 24h. Same
+morning, `sweep_log` took 25 `error` rows in a 28-second burst at
+07:31:14→07:31:42Z, all KXBTC* series, all Kalshi 500/504, all
+n_markets=0 — one Kalshi-side incident hitting the WS trades feed
+and the REST sweep together. First dead_air since 08-13 (9).
+**(3) THE SHADOW RUN THAT OWNED THE WHOLE EQUITY NARRATIVE IS
+OVER.** Unclean reboot 08-21 01:52:48Z ended run
+`20260810T081931` (last equity 08-20 21:33:37Z — note the ~4h20m
+of silence BEFORE the reboot, unexplained, watch item). New run
+`20260821T015256` from boot. So the −3,782 run low, the six
+settle-and-slides and the round-trip watch are all closed
+history: the new run is at **+57.7 at 08:38Z** after ~1d7h, band
+so far −297 (08-21 17Z) → +329 (08-21 22Z). Settlement flow has
+NOT restarted with it — 08-21 = 7 settlements @ payout 0.0,
+08-22 = 0 so far, against 136/136/138/140 on 08-20/19/18/17. The
+cohort clock is the thing to watch, not the equity level.
+**(4) sweep_log 48h = 5,027 ok / 5 truncated / 25 error.** The 5
+truncated are the DESIGNED budget cap with a resume watermark
+("budget 8000 markets reached; resume from …", KXETH/KXETHD/
+KXNASDAQ100U/KXSOLD/KXSOLE) — routine, 5-10/day all month, not an
+incident; the 25 errors are item (2). **(5) Poly sweeps both
+finished** — 08-20 13h45m (16,869 mkts, 9 err), 08-21 14h16m
+(16,892 mkts, 10 err); the 08-22 sweep (PID 660268) is still in
+flight and was NOT disturbed by the promote (it is the last walk
+that will ever log the old INCOMPLETE). **(6) Stream gaps 48h:**
+52 reconnect / 52 seq_reset / 26 dead_air / 2 daemon_start; total
+2,558. **(7) Fill-rate ~334/hr** (2,001 fills in 6h; 216,006
+total). **(8) Shadow anon 126MiB** — reset by the reboot from
+351MiB, HWM history void. **(9) Flush declines 0/24h.**
+**(10) Doctor clean**: 0 kalshi mirror violations; 248.6M trades,
+9.2M candles, 1.5M markets; stream archive 14,231 MB.
+NEXT PASS: (1) **the 04:15Z walk's first journal under db1e214 —
+expect `chain restart 1 below volume …` and NO `INCOMPLETE`**;
+that is the shipped fix's live verdict and the poly enumeration
+total should step up off 16,892; (2) does settlement flow restart
+for run `20260821T015256`, and if so at what hour — a fresh test
+of the close-time-driven cohort model on a clean run; (3) new-run
+equity band vs +57.7 (the old run's ~−100/night overnight step
+was never separated from marking bias — a fresh run is the clean
+re-test); (4) dead_air — 08-20 was one Kalshi incident, a second
+cluster makes it a condition; (5) the ~4h20m pre-reboot shadow
+silence — did the daemon die before the box did; (6) shadow anon
+re-climb off 126MiB (fresh baseline for the OOM watch);
+(7) streamd's deliberate `max_pages=1` top-50 call logs a
+cosmetic `TRUNCATED at 100 markets` every reconnect — pre-existing,
+behaviour-preserved by db1e214, worth silencing when convenient.
+USER-GATED, NAMED: the autoloop spend limit (1) — until it is
+lifted, passes only run when invoked by hand.**
+(prior Updated: **2026-08-19 20:25 UTC (RUNG-1 PASS — SETTLE-AND-SLIDE
 DID NOT ROUND-TRIP: probe equity kept falling after the cohort,
 hourly lows −3,548 (14Z) → −3,700 (15Z) → −3,782 (16Z, NEW RUN
 LOW) then only partial recovery to −3,6xx (−3,655 at 20:17Z) —
@@ -6470,4 +6550,4 @@ stray root doc moved.
 Zero capital without pre-registered Tier-2+ PASS **and** explicit user
 authorization. No retro-rescues of failed strategies. Probe before
 build. Every new store writer ships with a stored-timestamp assertion
-(mistakes #10). Vacuous backtests must refuse to run.
+(mistakes #10). Vacuous backtests must refuse to run.)

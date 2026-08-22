@@ -316,6 +316,36 @@ Format: what happened → root cause → error type → prevention tier
     that should contain routine lines (stats every 5 min) means the
     window is wrong, not that the daemon was silent.
 
+23. **2026-08-22 — a five-night failure model was never tested outside
+    the window it postulated, and the fix it justified moved a timer
+    for nothing.** The poly keyset walk logged `INCOMPLETE` every
+    night at ~05:04Z. Four nights of that clock, with the failing page
+    varying (11,600 / 11,700), was read as "the constant is the CLOCK,
+    not the page" — a daily Gamma fault window — and the conclusion
+    was written into the function docstring, a longer retry ladder
+    (7 attempts, ~18 min), and a promoted timer shift (05:00Z ->
+    04:15Z) meant to duck it. The very next walk died at 04:19Z, same
+    page, and the one after that too. The model had survived five
+    nights only because nobody had ever run the walk at any other
+    hour: the discriminating experiment was a single daylight replay
+    of the FULL walk, ~3 minutes, available from day one. Run at
+    08:2xZ it reproduced the 500 on demand, and three volume-banded
+    walks then pinned the trigger to each walk's own volume floor —
+    Gamma 500s on the last page of a long chain instead of returning
+    `next_cursor: null`. The nightly clock was never the constant; the
+    *floor* was, because `min_volume` is the same every night. Type:
+    `wrong-assumption` (a hypothesis confirmed only on data that could
+    not discriminate it). Prevention: **a failure model that predicts
+    "only under condition X" is not adopted until it has been tested
+    under NOT-X.** Repeated observations under X are not evidence; the
+    single cheap negative control is. Corollary, from the cost here: a
+    remediation shipped on an untested model (the ladder, the timer
+    shift) buys nothing and makes the model look load-bearing — one
+    replay before promoting would have saved both. Note the earlier
+    single-request replay of the failing *cursor* returned 200 and was
+    read as supporting the window; a single request is not the walk,
+    and it discriminated nothing.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
