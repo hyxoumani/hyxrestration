@@ -1,6 +1,88 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-23 10:30 UTC (RUNG-1 PASS — THE AFTERNOON TROUGH WAS
+Updated: **2026-08-23 14:30 UTC (RUNG-1 PASS — THE ENUMERATION
+TRIPWIRE WAS WATCHING THE WRONG COLUMN, AND THAT COLUMN WAS FIVE HOURS
+WRONG. Last pass queued "is `poly swept universe not shrinking` a check
+that can actually go red" because it PASSED at 5,876 vs a prior-week
+peak of 10,240 — 57%, uncomfortably close to its own 0.5 floor. It
+cannot. It read `poly_prices`, whose `ts` is a CLOB **print** time, so
+it counted markets that TRADED on a day rather than markets the sweep
+**enumerated**; and because later sweeps backfill history, a day's
+count keeps GROWING for days afterwards, making the newest complete day
+permanently the least-filled one. Measured this pass: 10,984 nine days
+back against 6,302 yesterday, **with nothing wrong** — the 57% is
+structural, not a signal. The remediation for the 2026-07-08 Gamma
+offset cap could only ever have caught a halving of a halving.
+**The right column already existed**: `poly_market_stats` holds one row
+per market per sweep RUN, all stamped with that run's start, so a run
+is a `ts` group and `count(DISTINCT market_id)` IS the enumeration.
+That series is flat — **16,391–16,952 across the nine runs to 08-22, a
+3.4% band** — which is why the floor moves **0.5 → 0.75**: on a clean
+signal 0.75 catches a quarter of the universe going missing and still
+sits far outside the observed spread. Grouping by the exact instant
+also drops the day alignment that flaked 07-12, and a **20h settle
+window** keeps the in-flight walk's partial count from reading as a
+collapse (at the 10:00Z QA the live run is ~6h old, yesterday's ~30h).
+**THEN THE COLUMN ITSELF TURNED OUT TO BE BROKEN.**
+`insert_poly_stats` passed its aware-UTC `now` straight to
+`executemany`, and DuckDB converts an aware datetime to the BOX's local
+time on a naive TIMESTAMP — the exact convention `migration_1` exists
+to undo. `poly_market_stats` postdates that migration, so it kept the
+bug while every other writer moved to `_naive_utc`: the journal shows
+the sweep stamped `2026-08-22 23:15` actually started **`2026-08-23
+04:15 UTC`**. Any window joining this table to another was silently
+`America/Chicago`-skewed. Fixed at the writer; `migration_2` rewrites
+the rows; **a sweep of all 19 TIMESTAMP columns in the archive
+confirms this was the only survivor**. Second-order: `promote.sh`
+ships code but never migrates and nothing asserts the version at open,
+so a shipped migration could sit unapplied forever while reads quietly
+used the old convention — now checked (`archive schema at current
+version`). That check is also what lets the migration WAIT for a quiet
+writer instead of racing the live sweep, and the 20h settle window
+makes the tripwire read correctly on either side of it. Mistakes
+#25/#26. Suite 683 → **721 green**.**
+**(1) THE REGISTERED FavLongTight REPLAY DIED IN ITS OWN SUMMARY
+STATISTIC AND IS RE-RUNNING.** The 03:15Z unit ran **2h43m / 7.7 GB
+peak** over 9,322,870 candle-snapshots and then raised `TypeError` from
+`statistics.median` over `close_time`s — median averages the two middle
+values on an even n, and datetimes do not add. **No verdict was
+produced, so nothing is decided and nothing is rescued**; the cost was
+the lost pass. `median_low` instead (the registered split needs an
+ORDER, not a mean, and the low median is a real close_time so H1 is
+never empty when a whole daily ladder shares one close). Thresholds
+untouched. The real gap was coverage — the strategy had nine tests and
+`_band_block`, which turns fills into the registered verdict, had zero,
+so the only way to see a verdict was to spend three hours earning one.
+`tests/test_hyxlab_favlong_tight_report.py` drives every threshold path
+in **0.2s**; six of its nine fail against the old call (mistakes #27).
+**Re-launched 14:16:54Z** as transient unit `favlong-tight-replay`,
+journald-captured this time rather than a `/tmp` file, 9,491,893
+snapshots / 1,618,926 markets — **ETA ~17:00Z, NOT RESOLVED THIS
+PASS**.
+**(2) STILL OWED, BOTH BLOCKED ON THE SAME EVENT.** The poly sweep is
+mid-walk (PID 2061389, 11,000/17,004 at 09:17Z local, **~5.4h left,
+ETA ~19:50Z**), running from the stable worktree. Until it is down:
+**(a) promote `f64c2ab`** (poly `want_top_n`, collection-side, held
+since last pass — swapping code under a live walk is the
+half-old/half-new hazard); **(b) promote `490b67e`** (this pass, also
+collection-side); **(c) run `python -m hyxlab.migrate`** — single-writer,
+so it must not race the sweep. Order: sweep down → promote → migrate.
+The new QA check will read red until (c) runs, which is the point.
+NEXT PASS: (1) **the FavLongTight verdict** — append both band blocks
+to the registration unmodified; if both FAIL the fav-long family is
+CLOSED and that is binding; (2) the promote+migrate sequence above;
+(3) does the hour-END curve repeat its +72/−247/+150 cycle on 08-23,
+now that there is a convention to compare against — the profile still
+needs a 3rd draw per hour to stop reading UNDERPOWERED; (4) the ~4h20m
+pre-reboot shadow silence on 08-20, still unexplained; (5) `trade
+latency p99 sane` ~26s, the chronic red nobody has costed; (6) with the
+tripwire now on a real signal, the first honest enumeration reading
+lands next QA — 17,004 is the new post-`db1e214` baseline and the
+pre-fix 16,859–16,952 series is a FLOOR, not a count, so do not read
+the step as growth.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-23 10:30 UTC (RUNG-1 PASS — THE AFTERNOON TROUGH WAS
 THE SAMPLING RULE, NOT THE MARKET. Six passes narrated the shadow
 equity curve with readings like "a NEW RUN LOW −301.3 (17Z)" and
 "08-21 traced the same 15-17Z dive to −296.9", and queued "does the

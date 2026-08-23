@@ -376,6 +376,80 @@ Format: what happened → root cause → error type → prevention tier
     `flagged_day_weighted`: the statistic was fine, the denominators
     were not equal.
 
+25. **2026-08-23 — an enumeration tripwire measured price ACTIVITY, sat
+    pinned just above its own floor for a structural reason, and was
+    reported as a PASS for six weeks.** `poly swept universe not
+    shrinking` was added 2026-07-11 as the remediation for the Gamma
+    offset cap (item 5's near-miss: a lucky dead probe, not QA, caught
+    the universe halving from ~4600 to ~2000). It read `poly_prices`,
+    whose `ts` is a CLOB PRINT time — so it counted markets that TRADED
+    on a day, not markets the sweep ENUMERATED. Because later sweeps
+    backfill history, a day's count keeps growing for days afterwards,
+    so the newest complete day is always the least-filled one and the
+    ratio decays toward the floor by construction: 10,984 nine days
+    back against 6,302 "yesterday", with nothing wrong. It could only
+    ever have caught a halving of a halving. Type: `wrong-assumption`
+    (a proxy column mistaken for the quantity it proxies). Same family
+    as items 14/16 — a check that cannot go red — but the new part is
+    the TELL: the ratio was reported as 57% of peak in a passing check
+    and nobody asked why a green check lived that close to its
+    threshold. **Prevention: a tripwire's headline number is itself a
+    datum. If it sits near the threshold for many consecutive runs,
+    that is a finding about the CHECK, not reassurance about the
+    system.** And the remediation for a silent-drop incident must be
+    tested against a synthetic drop of the size that actually happened,
+    on the real column — the 07-11 tests seeded `poly_prices` directly
+    and so validated the arithmetic while never touching the
+    proxy assumption underneath it. **Sharpest detail: the maturation
+    effect was ALREADY documented** in `data-pipeline.md` — "Poly
+    day-bucket counts MATURE for ~2 days ... the shrink tripwire's 0.5
+    threshold absorbs it." The observation was right and the conclusion
+    was wrong: a fixed threshold cannot absorb an UNBOUNDED drift, and
+    writing down the confound next to a reassurance retired the
+    question instead of opening it. When a note says "X biases this
+    check, but the threshold absorbs it", that is an unverified claim
+    about magnitude and needs a number.
+
+26. **2026-08-23 — a table added after the tz migration re-acquired the
+    exact bug the migration existed to undo.** `insert_poly_stats`
+    passed an aware-UTC datetime straight to `executemany`; DuckDB
+    converts aware values to the BOX's local time on a naive TIMESTAMP
+    column, so `poly_market_stats.ts` sat `America/Chicago` behind
+    every other timestamp in the archive — the sweep stamped
+    `2026-08-22 23:15` actually started `2026-08-23 04:15 UTC`. The
+    convention was already documented in `_naive_utc`'s docstring and
+    already enforced by `migration_1` on five columns; this table
+    simply postdated it and no test covered its writer. Type:
+    `regression` (a fixed class recurring in new code). Prevention:
+    per the standing "recurrences jump straight to test" rule, the
+    guard is now a writer-level test rather than a docstring —
+    `test_poly_stats_stores_naive_utc_not_box_local`. **Generalize: a
+    migration fixes ROWS, not the CODE PATH, so every migration needs a
+    paired test on the writer or the next table reintroduces it.** A
+    sweep of all 19 TIMESTAMP columns confirmed this was the only
+    survivor. Second-order finding from the same pass: `promote.sh`
+    ships code but never migrates, and nothing asserts the schema
+    version at open — so a shipped migration could sit unapplied
+    indefinitely while reads silently used the old convention. Now
+    checked in QA (`archive schema at current version`).
+
+27. **2026-08-23 — a pre-registered backtest burned 2h43m of replay and
+    died in its own summary statistic.** The FavLongTight runner
+    reached its report block after 9.3M candle-snapshots and raised
+    `TypeError` from `statistics.median` over `close_time`s (median
+    averages the two middle values on an even n; datetimes do not add).
+    No verdict was produced, so nothing was rescued and nothing
+    decided — the cost was purely the lost pass. The strategy had nine
+    tests; `_band_block`, which turns its fills into the registered
+    verdict, had zero. Type: `test-coverage`. Prevention: **the
+    reporting stage of an expensive run is the part most worth unit
+    testing, because it is the part reached last and therefore
+    exercised least.** Cheap rule of thumb: if a code path can only be
+    reached by spending hours, it needs a fixture that reaches it in
+    seconds. `tests/test_hyxlab_favlong_tight_report.py` drives every
+    threshold path in 0.2s; six of its nine tests fail against the old
+    call.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

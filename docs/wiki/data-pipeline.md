@@ -26,7 +26,11 @@ the next snapshot re-seeds).
 - **Naive-UTC timestamps everywhere** via `store._naive_utc()`. DuckDB
   silently converts tz-aware inserts to BOX-LOCAL time otherwise
   (machine-dependent corruption). Migration 1 fixed legacy rows,
-  verified against unix ground truth.
+  verified against unix ground truth. **A migration fixes ROWS, not the
+  CODE PATH**: `poly_market_stats`, added after migration 1, reacquired
+  the bug and sat `America/Chicago` behind the whole archive until
+  2026-08-23 (migration 2 + a writer-level test). Every writer taking an
+  aware `now` needs `_naive_utc` AND a test asserting it.
 - **Idempotent inserts**: `insert_new()` anti-join on natural keys; any
   backfill/sweep re-run is safe. (Fixed a real dup-on-rerun defect.)
 - **Single writer**: DuckDB blocks even read_only connects while a
@@ -51,10 +55,19 @@ the next snapshot re-seeds).
 - **Enumeration tripwire** (`collector/qa.py::qa_archive`, "poly
   swept universe not shrinking"): the Gamma offset-cap regression
   (see [venues](venues.md)) would have silently halved the poly sweep;
-  it was caught by a lucky dead probe, not QA. Fixed by comparing the
-  last completed day's distinct swept markets against the prior
-  week's peak (0.5x threshold, absorbing the ~5%/day organic decline
-  from resolving markets) — a step-function halving now fails QA.
+  it was caught by a lucky dead probe, not QA. It reads
+  `poly_market_stats`, NOT `poly_prices`: the stats table holds one row
+  per market per sweep RUN stamped with that run's start, so a `ts`
+  group IS one run and `count(DISTINCT market_id)` IS the enumerated
+  universe. The 2026-07-11 version read `poly_prices` (a CLOB PRINT
+  time) and therefore counted markets that TRADED, which decays toward
+  the floor by construction as later sweeps backfill history — it
+  measured maturation, not enumeration. Now: last COMPLETED run vs the
+  prior 10 days' peak, 0.75x, with a 20h settle window excluding the
+  in-flight walk. 0.75 because the enumeration series is flat
+  (16,391-16,952 over the nine runs to 2026-08-22, a 3.4% band), so the
+  check now catches a quarter of the universe going missing rather than
+  only a halving.
 - **Provenance**: every signal row carries when it became knowable
   (forecast runtime, vintage release, poll time). The no-lookahead
   boundary is enforced by this column, not convention.
@@ -222,6 +235,13 @@ ingestion behind a `FeatureView` as-of API.
   excludes writers → consistent file copy; 7-slot weekday rotation in
   data/backups (local tier); point HYXLAB_BACKUP_DIR at a mount for
   off-box (standing user item).
-- Poly day-bucket counts MATURE for ~2 days (later sweeps backfill
-  history into past days) — fresh-vs-matured comparisons overstate
-  decline; the shrink tripwire's 0.5 threshold absorbs it.
+- Poly PRICE day-bucket counts MATURE for many days (later sweeps
+  backfill history into past days), so fresh-vs-matured comparisons
+  overstate decline without bound — measured 2026-08-23: 10,984 at
+  nine days back vs 6,302 at one day back, with nothing wrong. This
+  was recorded here in 2026-07 with the conclusion "the shrink
+  tripwire's 0.5 threshold absorbs it", which was WRONG: a threshold
+  cannot absorb an unbounded drift, and the tripwire was structurally
+  pinned just above its floor. Never compare a maturing count across
+  ages; use `poly_market_stats`, which is stamped once per run and does
+  not mature.
