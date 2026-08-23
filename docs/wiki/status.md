@@ -1,6 +1,85 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-23 14:30 UTC (RUNG-1 PASS — THE ENUMERATION
+Updated: **2026-08-23 20:30 UTC (RUNG-1 PASS — THE FAV-LONG FAMILY IS
+CLOSED, AND THE DAILY SHAPE DOES NOT REPEAT. Every item owed by the
+last two passes is now discharged: the verdict, the promote, the
+migration.**
+**(1) FavLongTight FAILS BOTH BANDS — BINDING.** The re-launched replay
+finished 17:02:15Z (run `20260823T170215_4c2fb295`, 2h45m / 7.9 GB over
+9,491,893 candle-snapshots / 1,618,926 markets); both band blocks are
+appended to `prereg_favlong_tight_backtest.md` unmodified. **A: ROI
++0.03%** on $42.6K/4,762 fills (3/5 categories, H1 negative, low
+sub-band negative). **B: ROI +0.27%** on $73.5K/7,514 fills — 5/5
+categories, both halves and both sub-bands positive, and still four
+times under the +1.0% floor (DSR 0.874, n_trials 2). The registration's
+own clause fires: **no third fav-long variant may be registered, on
+this evidence or any re-reading of it**, and the queue item is closed.
+The finding worth carrying: **the gate worked and there was nothing
+beneath it.** Band A is v1's band, horizon and fee model with the
+one-tick spread gate added, and it moves **−5.0% → +0.03%** — so v1's
+named cause of death ("the spread decides") is CONFIRMED rather than
+explained away, and what the gate uncovers is a market that prices to
+break-even net of the Kalshi parabolic fee, with fees taking **96.0% of
+band A's gross**. Do not re-cite band B as "nearly passed": the +1.0%
+floor exists because Tier-1 fills assume the ask was available.
+**(2) PROMOTE + MIGRATE DONE, AND THE NEW QA CHECKS READ GREEN LIVE.**
+Poly sweep down, so `f64c2ab` (held since two passes ago) and `490b67e`
+promoted together at `d05b469`; `migration_2` then rewrote **715,197
+`poly_market_stats.ts` rows America/Chicago → UTC**. The 20:17Z QA
+confirms both: `archive schema at current version` PASSES (v2/v2), and
+the rebuilt enumeration tripwire reads its first honest number —
+**16,952 for the last completed sweep vs a prior-10d peak of 16,925**,
+i.e. ratio 1.002 against a 0.75 floor, i.e. a check that is now on a
+real signal instead of 57% of a print-time artifact. The 20h settle
+window correctly excludes the 08-23 run (16h old). **Cost to note
+honestly**: the promote's restart guard fired on `hyxlab-shadow`
+(store.py + registry.py + the new strategy are in its closure) and
+ended the 2d18h run `20260821T015256`. Its 245 settlements were already
+persisted, so the record survives and only the accumulation was lost —
+and `shadow_settlements` now holds **2,190 rows across 4 runs**, so the
+"scarcest asset in the archive is an unbroken run" framing in
+`promote.sh`'s header is stale and should be re-costed rather than
+re-quoted.
+**(3) THE +72/−247/+150 CYCLE DOES NOT REPEAT — AND IT WAS NEVER A
+DAY.** Last pass published that curve as "the honest daily shape" and
+queued whether 08-23 repeats it. It cannot be answered by the report
+that raised it: `by_hour_of_day` is a mean OVER days, and averaging is
+precisely what destroys the evidence for recurrence — three days
+tracing one curve and three days oscillating independently give the
+same mean. EXP-1357 adds `by_day` (each day's hour-end series
+unaveraged + pairwise Spearman over shared hours; UNSCORED below 12
+shared hours so thin overlap is never read as disagreement, UNDERPOWERED
+below two scorable pairs so one agreeing pair cannot publish a cycle).
+Measured on the now-complete run: **DOES NOT REPEAT, weakest pair rho
+0.262.** No day traces +72/−247/+150 — the troughs are **−269.9 (16Z),
+−224.6 (16Z), −551.9 (18Z)** and the peaks 22Z/21Z/00Z. **What IS
+common to all three days and should be quoted instead: every day
+troughs in 16-18Z and peaks in 21-00Z.** What is not shared is the
+overnight leg — 08-21 declined monotonically from −4 to −270 through
+the night while 08-22 and 08-23 held positive — which is what drags the
+weakest pair down; 08-22 vs 08-23 alone is **0.795**. Logged as
+mistakes #28 (`wrong-statistic`, the #24 family one dimension over: a
+mean is a level, never a pattern). Suite 721 → **727 green**.
+**(4) QA 20:17Z: 2 FAILs, both known.** `trade latency p99 sane` 25.93s
+(the chronic red nobody has costed) and `batch units within measured
+run budget` (the 08-21 catch-up breach, inside its window until
+2026-08-28). All other checks PASS or WATCH as expected.
+NEXT PASS: (1) **`trade latency p99 sane` — cost it or retire it.** It
+has been red for many passes with no one establishing whether 26s of
+p99 lag costs the sim anything, and a permanent red is a check nobody
+reads; either quantify the damage or move the threshold with a stated
+reason. (2) The ~4h20m pre-reboot shadow silence on 08-20, still
+unexplained. (3) The new shadow run started 20:17Z — in ~3 days it can
+re-run `by_day` as a genuine out-of-sample test of the 16-18Z trough /
+21-00Z peak claim, which is the only part of the diurnal shape that
+survived this pass. (4) `promote.sh`'s shadow-restart rationale is
+stale now that settlements are no longer scarce (2,190 rows) — re-cost
+the guard so future passes are not paying a premium to protect an asset
+the archive already has. (5) Second honest enumeration reading lands
+next QA.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-23 14:30 UTC (RUNG-1 PASS — THE ENUMERATION
 TRIPWIRE WAS WATCHING THE WRONG COLUMN, AND THAT COLUMN WAS FIVE HOURS
 WRONG. Last pass queued "is `poly swept universe not shrinking` a check
 that can actually go red" because it PASSED at 5,876 vs a prior-week

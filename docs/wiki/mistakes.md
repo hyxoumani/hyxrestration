@@ -450,6 +450,29 @@ Format: what happened → root cause → error type → prevention tier
     threshold path in 0.2s; six of its nine tests fail against the old
     call.
 
+28. **2026-08-23 — a mean over days was published as "the honest daily
+    shape", and no day traced it.** EXP-1354 correctly killed the
+    min-sampling artifact and replaced it with the hour-END series,
+    then quoted the result as a specific curve: "+72 (03Z) → −247 (16Z)
+    → +150 (22Z), one clean daily oscillation". Those three numbers are
+    hour-of-day MEANS over 2–3 days. Measured per day (EXP-1357), the
+    troughs are −269.9, −224.6 and −551.9, the peak hours are 22Z, 21Z
+    and 00Z, and the weakest pair of days ranks at rho 0.262 — the
+    shape DOES NOT REPEAT. The status page then queued "does the cycle
+    repeat on 08-23" as the follow-up, a question the report that
+    raised it structurally cannot answer, because averaging is the
+    operation that destroys the evidence for recurrence. Type:
+    `wrong-statistic`. Same family as #24, one dimension over: there
+    the denominators were unequal, here the aggregation answers a
+    different question than the one being asked of it. Prevention:
+    **before quoting an aggregate as a shape, ask whether the
+    disaggregated draws agree — and publish the agreement statistic
+    NEXT TO the aggregate, not on request.** `shadow_diurnal.by_day`
+    now does this (pairwise Spearman, UNSCORED below 12 shared hours,
+    UNDERPOWERED below two scorable pairs), and the lesson generalises
+    to every hour-of-day, per-category and per-band mean in the repo:
+    a mean is a level, never a pattern.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
