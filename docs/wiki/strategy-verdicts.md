@@ -26,6 +26,24 @@ strategies stay in the repo as records.
   (maker-side entry, scoreable via queue-position bounds) requires a
   NEW registration.
 
+- **FavLongTight v1** (2026-08-23,
+  `docs/hyxpredict/prereg_favlong_tight_backtest.md`): v1's entry
+  gated on a one-tick book spread — the condition v1's own post-mortem
+  named as its cause of death — on band A=[0.80,0.95] and band
+  B=[0.95,0.99]. **BOTH BANDS FAIL, AND THE FAVORITE-LONGSHOT FAMILY
+  IS THEREFORE CLOSED** (binding: the registration forbids a third
+  variant). 9,491,893 candle-snapshots / 1,618,926 markets.
+  A: ROI +0.03% on $42.6K/4,762 fills, 3/5 categories positive, H1
+  negative, low sub-band negative. B: ROI +0.27% on $73.5K/7,514
+  fills — 5/5 categories, both halves and both sub-bands positive, and
+  still four times under the +1.0% floor (DSR 0.874, n_trials 2).
+  **The gate worked and there was nothing beneath it**: same band,
+  same horizon, same fee model, −5.0% → +0.03%, so v1's named cause of
+  death is CONFIRMED — and the recovered market prices to break-even,
+  with fees taking 96.0% of band A's gross. Do not re-cite this as
+  "nearly passed": the +1.0% floor exists because Tier-1 fills assume
+  the ask is available.
+
 ## Rejected without testing (documented reasoning)
 
 Latency/oracle arb (infra race, fees designed against it); copy-trading
@@ -173,12 +191,14 @@ structure — see [venues](venues.md)).
    variable with an a-priori mechanism, not a re-reading of the dead
    result, so it goes to a NEW registration:
    `docs/hyxpredict/prereg_favlong_tight_backtest.md` (2026-08-22,
-   REGISTERED, NOT YET RUN) — taker entry gated on a one-tick book
+   RUN 2026-08-23, **BOTH BANDS FAIL — FAMILY CLOSED**) — taker entry gated on a one-tick book
    spread, bands A=[0.80,0.95] (v1's, like-for-like) and B=[0.95,0.99]
    (v1's untested complement) both fixed in advance. **Family size is
    now 2 and both members are exploratory**; the registration binds
    that if both bands FAIL the fav-long family is CLOSED and no third
-   variant is registered. Caveats carried by the measurement itself and
+   variant is registered. **That condition fired**: see the Dead list.
+   This queue item is CLOSED — no fav-long variant, taker or maker,
+   may be registered on this evidence or a re-reading of it. Caveats carried by the measurement itself and
    repeated in the pre-reg: settled positions are 82% of positions
    (77-85% by band, mildly declining with price), the net-PnL column is
    noisy at these n (the +49.1% on 45c+/n=62 is not a result — read the

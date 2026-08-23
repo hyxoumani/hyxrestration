@@ -129,4 +129,204 @@ queue-position bounds. It authorizes no capital, per the standing rule
 
 ## Results
 
-_Not yet run. Appended below, unmodified, after execution._
+### Executed 2026-08-23 17:02:15 UTC — run `20260823T170215_4c2fb295`
+
+Transient unit `favlong-tight-replay`, git rev `8496f7d`, 2h45m wall /
+7.9 GB peak over **9,491,893 candle-snapshots / 1,618,926 markets**
+(archive span 2024-04-12 13:00 → 2026-08-23 14:00). Both bands scored
+in one pass. Output below is the run's stdout, appended unmodified.
+
+```
+-- band A = [0.8, 0.95] --
+{
+ "band": [
+  0.8,
+  0.95
+ ],
+ "settled_fills": 4762,
+ "mean_entry_price": 0.8939,
+ "cost": 42566.1,
+ "fees": 329.96,
+ "payout": 42910.0,
+ "pnl": 13.94,
+ "roi": 0.0003,
+ "fee_share_of_gross": 0.9595,
+ "by_category": {
+  "Climate and Weather": {
+   "n": 2521,
+   "pnl": 253.24
+  },
+  "Commodities": {
+   "n": 1178,
+   "pnl": -129.79
+  },
+  "Crypto": {
+   "n": 94,
+   "pnl": -126.65
+  },
+  "Economics": {
+   "n": 216,
+   "pnl": 24.48
+  },
+  "Financials": {
+   "n": 366,
+   "pnl": -95.42
+  },
+  "Mentions": {
+   "n": 348,
+   "pnl": 59.1
+  },
+  "Science and Technology": {
+   "n": 39,
+   "pnl": 28.98
+  }
+ },
+ "halves_pnl": {
+  "H1": -14.74,
+  "H2": 28.68
+ },
+ "sub_bands": {
+  "low": {
+   "pnl": -49.34,
+   "roi": -0.0037
+  },
+  "high": {
+   "pnl": 63.28,
+   "roi": 0.0022
+  }
+ },
+ "thresholds": {
+  "roi_gt_1pct": false,
+  "n_ge_2000": true,
+  "cats_positive_ge_4": false,
+  "n_cats_ge_100_fills": 5,
+  "positive_cats": [
+   "Climate and Weather",
+   "Economics",
+   "Mentions"
+  ],
+  "both_halves_positive": false,
+  "both_sub_bands_positive": false
+ },
+ "psr_supplementary": {
+  "sr": 0.0004,
+  "sr0": 0.0075,
+  "dsr": 0.3115,
+  "n_returns": 4762,
+  "n_trials": 2,
+  "skew": -2.5646,
+  "kurt": 7.8513
+ },
+ "verdict": "FAIL (kill)"
+}
+-- band B = [0.95, 0.99] --
+{
+ "band": [
+  0.95,
+  0.99
+ ],
+ "settled_fills": 7514,
+ "mean_entry_price": 0.9777,
+ "cost": 73467.7,
+ "fees": 152.51,
+ "payout": 73820.0,
+ "pnl": 199.79,
+ "roi": 0.0027,
+ "fee_share_of_gross": 0.4329,
+ "by_category": {
+  "Climate and Weather": {
+   "n": 4250,
+   "pnl": 140.92
+  },
+  "Commodities": {
+   "n": 2001,
+   "pnl": 0.27
+  },
+  "Crypto": {
+   "n": 93,
+   "pnl": -70.34
+  },
+  "Economics": {
+   "n": 374,
+   "pnl": 55.02
+  },
+  "Financials": {
+   "n": 584,
+   "pnl": 46.98
+  },
+  "Mentions": {
+   "n": 81,
+   "pnl": 23.58
+  },
+  "Science and Technology": {
+   "n": 131,
+   "pnl": 3.36
+  }
+ },
+ "halves_pnl": {
+  "H1": 177.89,
+  "H2": 21.9
+ },
+ "sub_bands": {
+  "low": {
+   "pnl": 34.31,
+   "roi": 0.0024
+  },
+  "high": {
+   "pnl": 165.48,
+   "roi": 0.0028
+  }
+ },
+ "thresholds": {
+  "roi_gt_1pct": false,
+  "n_ge_2000": true,
+  "cats_positive_ge_4": true,
+  "n_cats_ge_100_fills": 5,
+  "positive_cats": [
+   "Climate and Weather",
+   "Commodities",
+   "Economics",
+   "Financials",
+   "Science and Technology"
+  ],
+  "both_halves_positive": true,
+  "both_sub_bands_positive": true
+ },
+ "psr_supplementary": {
+  "sr": 0.0202,
+  "sr0": 0.006,
+  "dsr": 0.874,
+  "n_returns": 7514,
+  "n_trials": 2,
+  "skew": -7.2431,
+  "kurt": 53.9769
+ },
+ "verdict": "FAIL (kill)"
+}
+BOTH BANDS FAIL -> the favorite-longshot family is CLOSED (binding).
+```
+
+**Verdict: BOTH BANDS FAIL. The favorite-longshot family is CLOSED.**
+Per the commitment fixed above ("If it FAILS, the fav-long family is
+closed for good and no third variant is registered"), this is binding:
+no third fav-long variant may be registered, on this evidence or any
+re-reading of it.
+
+What the test actually established, stated so it is not mis-cited
+later: **the spread gate did exactly what v1's post-mortem said it
+would, and it was not enough.** v1 bought [0.80, 0.95] ungated and
+returned **−5.0% ROI**; band A is the same band, same horizon, same
+fee model, gated to a one-tick spread, and returns **+0.03%**. The
+~5-point recovery is the ask-vs-mid gap being closed, so the named
+cause of death is CONFIRMED rather than explained away. What the
+recovery reveals is that there was nothing underneath it: net of the
+Kalshi parabolic fee the favorite side prices to break-even, and fees
+eat **96.0% of band A's gross** (+$344 gross → +$13.94 net on
+$42.6K). Band B, where the fee is smallest as a share of stake, is
+the better of the two on every axis — ROI +0.27%, 5/5 scored
+categories positive, both halves positive, both sub-bands positive —
+and still misses the +1.0% floor by a factor of four, with DSR 0.874
+under n_trials 2. The floor was set above zero precisely because
+Tier-1 fills are optimistic; a +0.27% Tier-1 result is not an edge
+that survives queue position.
+
