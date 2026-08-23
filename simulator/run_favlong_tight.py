@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict
-from statistics import median
+from statistics import median_low
 
 from hyxlab.store import open_retry
 from simulator.capabilities import candle_feed_caps
@@ -71,7 +71,11 @@ def _band_block(spec: dict, settled: list, categories: dict) -> dict:
         by_cat[cat]["n"] += 1
         by_cat[cat]["pnl"] += p - f.qty * f.price - f.fee
 
-    med_close = median(info.close_time for _, info, _ in settled)
+    # median_low, not median: the registered split is by close_time, and
+    # statistics.median averages the two middle values on an even n — which
+    # is a TypeError on datetimes, not a number. The low median is an actual
+    # close_time, so H1 is never empty and the split needs no arithmetic.
+    med_close = median_low(info.close_time for _, info, _ in settled)
     halves = {"H1": 0.0, "H2": 0.0}
     for f, info, p in settled:
         halves["H1" if info.close_time <= med_close else "H2"] += p - f.qty * f.price - f.fee
