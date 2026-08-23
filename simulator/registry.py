@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from simulator.strategy import Strategy
 from strategies.fav_long import FavoriteLongshot
+from strategies.fav_long_tight import FavLongTight
 from strategies.hylshi_fade import HylshiFade
 from strategies.probe import TightSpreadProbe
 from strategies.weather import WeatherNWS
@@ -23,6 +24,7 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "probe": TightSpreadProbe,
     "hylshi_fade": HylshiFade,
     "fav_long": FavoriteLongshot,
+    "fav_long_tight": FavLongTight,
     "weather_nws": WeatherNWS,
 }
 

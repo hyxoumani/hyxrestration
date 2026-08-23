@@ -37,6 +37,7 @@ ENTRYPOINTS = {
     "simulator/run_sim.py",
     "simulator/run_backtest.py",
     "simulator/run_favlong.py",
+    "simulator/run_favlong_tight.py",
     "simulator/run_l2.py",
     "simulator/registry.py",  # the shared name->Strategy map itself
     "simulator/shadow.py",
