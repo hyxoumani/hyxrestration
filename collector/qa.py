@@ -24,6 +24,8 @@ from pathlib import Path
 
 import duckdb
 
+from hyxlab.store import SCHEMA_VERSION
+
 ARCHIVE = "data/hyxlab.duckdb"
 STREAM = "data/hyxstream.duckdb"
 
@@ -441,6 +443,18 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
     ).fetchone()[0]
     check("sweep ran in last 36h", ok_sweeps > 0, f"{ok_sweeps} ok entries")
 
+    # promote.sh installs code; it does not migrate the archive, and nothing
+    # asserts the version at open — so a shipped migration can sit unapplied
+    # indefinitely while every read silently uses the pre-migration
+    # convention. Make that visible instead (2026-08-23, migration_2).
+    sv = conn.execute("SELECT max(version) FROM schema_meta").fetchone()[0] or 0
+    check(
+        "archive schema at current version",
+        sv >= SCHEMA_VERSION,
+        f"archive at v{sv}, code expects v{SCHEMA_VERSION}"
+        " — run `python -m hyxlab.migrate` when no writer holds the lock",
+    )
+
     mv = conn.execute(
         "SELECT count(*) FROM snapshots WHERE venue='kalshi' AND ("
         " (no_ask IS NOT NULL AND yes_bid IS NOT NULL AND abs(no_ask - (1-yes_bid)) > 0.005)"
@@ -459,29 +473,46 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
 
         # Enumeration-shrink tripwire: the 2026-07-08 Gamma offset cap
         # silently dropped the swept universe from ~4600 to ~2000 markets
-        # and was caught by a lucky dead probe, not by QA. Compare the
-        # last completed day's distinct swept markets against the prior
-        # week's peak; a sharp drop means upstream pagination broke.
-        yday, prior = conn.execute(
+        # and was caught by a lucky dead probe, not by QA.
+        #
+        # It reads poly_market_stats, NOT poly_prices. poly_prices.ts is a
+        # CLOB print time, so "distinct markets on day D" counts markets that
+        # TRADED that day and keeps growing for days afterwards as later
+        # sweeps backfill history — the newest complete day is always the
+        # least-filled one. That made the ratio decay to ~0.57 of the
+        # prior-week peak by construction (measured 2026-08-23: 10,984 nine
+        # days back against 6,302 yesterday, with nothing wrong), i.e. a
+        # check sitting just above its own floor for a structural reason and
+        # blind to the drop it was written for. poly_market_stats instead
+        # holds one row per market per sweep RUN stamped with that run's
+        # start, so a run is a `ts` group and the count is the enumeration.
+        # Grouping by the exact instant also needs no day alignment.
+        #
+        # RUN_SETTLE_H: the walk takes up to ~15h, so the newest group is
+        # normally still in flight and its partial count is not a datum.
+        # 20h clears it while leaving yesterday's run (~30h old at the 10:00Z
+        # QA) well inside.
+        RUN_SETTLE_H = 20
+        runs = conn.execute(
             """
-            WITH daily AS (
-              SELECT date_trunc('day', ts) AS d, count(DISTINCT market_id) AS cnt
-              FROM poly_prices WHERE ts > ? - INTERVAL 9 DAY GROUP BY 1
-            )
-            SELECT
-              (SELECT cnt FROM daily WHERE d = date_trunc('day', ? - INTERVAL 1 DAY)),
-              (SELECT max(cnt) FROM daily WHERE d < date_trunc('day', ? - INTERVAL 1 DAY))
+            SELECT ts, count(DISTINCT market_id) AS cnt
+            FROM poly_market_stats
+            WHERE ts > ? - INTERVAL 10 DAY AND ts <= ?
+            GROUP BY ts ORDER BY ts DESC
             """,
-            [now, now, now],
-        ).fetchone()
-        # 0.5: the swept universe declines organically ~5%/day as markets
-        # resolve (0.66 vs peak observed 2026-07-11, benign); the failure
-        # class is a step-function halving, not a drift.
-        if prior and prior > 500:
+            [now, now - timedelta(hours=RUN_SETTLE_H)],
+        ).fetchall()
+        # 0.75, not the old 0.5: on a clean enumeration signal the nine runs
+        # to 2026-08-22 spanned 16,391-16,952, a 3.4% band, so 0.5 could only
+        # ever catch a halving. 0.75 catches a quarter of the universe going
+        # missing and still sits far outside the observed spread.
+        if len(runs) >= 2 and (prior := max(c for _, c in runs[1:])) > 500:
+            last_ts, last = runs[0]
             check(
                 "poly swept universe not shrinking",
-                yday is not None and yday >= 0.5 * prior,
-                f"yesterday {yday or 0} distinct markets vs prior-week peak {prior}",
+                last >= 0.75 * prior,
+                f"last completed sweep {last_ts:%Y-%m-%d %H:%MZ} enumerated {last}"
+                f" markets vs prior-10d peak {prior}",
             )
 
     # Signal feeds (B4): once a feed has ever pulled, its cadence must

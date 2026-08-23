@@ -49,6 +49,40 @@ def test_migration_1_shifts_legacy_local_to_utc(tmp_path):
     store.close()
 
 
+def test_poly_stats_stores_naive_utc_not_box_local(tmp_path):
+    """DuckDB converts an aware datetime to the BOX's local time on insert.
+    poly_market_stats postdated migration_1 and shipped without _naive_utc,
+    so its whole ts column sat LEGACY_TZ behind the rest of the archive
+    (found 2026-08-23). Every writer that takes an aware ts needs this."""
+    store = Store(tmp_path / "t.duckdb")
+    store.insert_poly_stats([("pm1", TS, 1.0, 2.0)])
+    assert store.conn.execute("SELECT ts FROM poly_market_stats").fetchone()[0] == (
+        TS.replace(tzinfo=None)
+    )
+    store.close()
+
+
+def test_migration_2_shifts_poly_stats_local_to_utc(tmp_path):
+    store = Store(tmp_path / "t.duckdb")
+    store.set_schema_version(1)
+    legacy_local = datetime(2026, 7, 4, 10, 0)  # CDT, what the old path stored
+    store.conn.execute("INSERT INTO poly_market_stats VALUES ('pm1',?,1.0,2.0)", [legacy_local])
+    migrate(store)
+    assert store.schema_version() == SCHEMA_VERSION
+    assert store.conn.execute("SELECT ts FROM poly_market_stats").fetchone()[0] == (
+        datetime(2026, 7, 4, 15, 0)
+    )
+    store.close()
+
+
+def test_migration_2_is_safe_on_an_empty_table(tmp_path):
+    store = Store(tmp_path / "t.duckdb")
+    store.set_schema_version(1)
+    migrate(store)
+    assert store.schema_version() == SCHEMA_VERSION
+    store.close()
+
+
 def _snap(venue, yes_bid, yes_ask, no_bid, no_ask):
     return Snapshot(
         venue=venue,

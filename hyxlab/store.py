@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 """
 
 # Bump when adding a migration in hyxlab/migrate.py.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _naive_utc(dt: datetime | None) -> datetime | None:
@@ -478,7 +478,14 @@ class Store:
         return self.insert_new("poly_prices", rows, ["token_id", "ts"])
 
     def insert_poly_stats(self, rows: list[tuple]) -> None:
-        """(market_id, ts, volume, liquidity) — daily volume/liquidity series."""
+        """(market_id, ts, volume, liquidity) — one row per market per sweep
+        RUN, sharing that run's start instant, so `ts` doubles as the run id
+        and `count(DISTINCT market_id) GROUP BY ts` is the enumerated
+        universe. Normalized like every other write: the caller passes an
+        aware UTC `now`, and without _naive_utc DuckDB would silently store
+        the box's local time (this table shipped that way until 2026-08-23;
+        see migration_2)."""
+        rows = [(r[0], _naive_utc(r[1]), *r[2:]) for r in rows]
         self.conn.executemany("INSERT INTO poly_market_stats VALUES (?,?,?,?)", rows)
 
     def poly_price_watermarks(self) -> dict[str, datetime]:

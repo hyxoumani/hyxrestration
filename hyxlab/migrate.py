@@ -45,7 +45,23 @@ def migration_1(store: Store) -> None:
         print(f"[migrate] 1: {table}.{col}: rewrote {n} rows {LEGACY_TZ}->UTC")
 
 
-MIGRATIONS = {1: migration_1}
+def migration_2(store: Store) -> None:
+    """poly_market_stats.ts was written straight from an aware-UTC datetime,
+    which DuckDB converts to the box's local time on insert — the exact
+    convention migration_1 exists to undo. The table postdates that
+    migration, so it kept the bug while every other writer moved to
+    _naive_utc: its rows sat LEGACY_TZ behind the rest of the archive, and
+    any window comparing them against another table was silently skewed."""
+    n = store.conn.execute("SELECT count(*) FROM poly_market_stats").fetchone()[0]
+    if not n:
+        return
+    store.conn.execute(
+        f"UPDATE poly_market_stats SET ts = timezone('UTC', timezone('{LEGACY_TZ}', ts))"
+    )
+    print(f"[migrate] 2: poly_market_stats.ts: rewrote {n} rows {LEGACY_TZ}->UTC")
+
+
+MIGRATIONS = {1: migration_1, 2: migration_2}
 
 
 def migrate(store: Store) -> int:

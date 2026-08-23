@@ -349,25 +349,43 @@ def test_negative_levels_forgiven_when_gap_intersects(tmp_path):
     assert "reconstructed book levels non-negative" not in failed
 
 
-def _poly_days(store, markets_per_day):
-    """markets_per_day: {days_ago: distinct market count}. Seeds at NOON
-    of each target calendar day — an hour-offset from now drifts into
-    the wrong day bucket right after UTC midnight (flaked 2026-07-12)."""
-    rows = []
-    for days_ago, count in markets_per_day.items():
-        day = (NOW - timedelta(days=days_ago)).date()
-        ts = datetime(day.year, day.month, day.day, 12, 0)
-        rows += [(f"t{i}", f"pm{i}", "yes", ts, 0.5) for i in range(count)]
-    store.insert_poly_prices(rows)
+def test_unapplied_migration_is_reported(tmp_path):
+    """promote.sh ships code but never migrates, and nothing asserts the
+    version at open — so a pending migration must be visible in QA rather
+    than silently changing what every read means."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    store.set_schema_version(0)
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "archive schema at current version" in failed
+
+
+def test_migrated_archive_passes_the_schema_check(tmp_path):
+    db = tmp_path / "a.duckdb"
+    Store(db).close()  # fresh DBs are born current
+    failed = _run(None, tmp_path, archive=db)
+    assert "archive schema at current version" not in failed
+
+
+def _poly_runs(store, markets_per_run):
+    """markets_per_run: {hours_ago: distinct market count}. One sweep RUN
+    per entry — every row in a run shares the run's start instant, which is
+    how the archive stores it and how the tripwire regroups it. Seeded in
+    poly_prices too, since the check is gated on poly having ever swept."""
+    store.insert_poly_prices([("t0", "pm0", "yes", NOW - timedelta(hours=1), 0.5)])
+    for hours_ago, count in markets_per_run.items():
+        ts = NOW - timedelta(hours=hours_ago)
+        store.insert_poly_stats([(f"pm{i}", ts, 0.0, 0.0) for i in range(count)])
 
 
 def test_poly_universe_shrink_trips(tmp_path):
     """Regression class: 2026-07-08 Gamma offset cap halved the swept
-    universe and no check noticed. A sharp drop vs the prior week's
-    peak must trip."""
+    universe and no check noticed. A sharp drop vs the prior runs' peak
+    must trip."""
     db = tmp_path / "a.duckdb"
     store = Store(db)
-    _poly_days(store, {3: 700, 2: 720, 1: 100})  # yesterday collapsed
+    _poly_runs(store, {72: 700, 48: 720, 24: 100})  # last run collapsed
     store.close()
     failed = _run(None, tmp_path, archive=db)
     assert "poly swept universe not shrinking" in failed
@@ -376,7 +394,41 @@ def test_poly_universe_shrink_trips(tmp_path):
 def test_poly_universe_steady_passes(tmp_path):
     db = tmp_path / "a.duckdb"
     store = Store(db)
-    _poly_days(store, {3: 700, 2: 720, 1: 710})
+    _poly_runs(store, {72: 700, 48: 720, 24: 710})
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly swept universe not shrinking" not in failed
+
+
+def test_poly_universe_quarter_drop_trips(tmp_path):
+    """The old poly_prices-based check floored at 0.5 and could only see a
+    halving. On the enumeration signal a 26% loss is far outside the
+    observed 3.4% run-to-run spread and must trip."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _poly_runs(store, {72: 1000, 48: 1000, 24: 740})
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly swept universe not shrinking" in failed
+
+
+def test_in_flight_sweep_is_not_read_as_a_collapse(tmp_path):
+    """The walk takes up to ~15h, so at QA time the newest run is still
+    enumerating. Reading its partial count as 'yesterday' is a false red —
+    the failure mode that made the day-bucketed version unusable."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _poly_runs(store, {48: 700, 24: 710, 6: 90})  # 6h ago = mid-walk
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly swept universe not shrinking" not in failed
+
+
+def test_single_sweep_run_does_not_trip(tmp_path):
+    """Nothing to compare against on a fresh archive."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _poly_runs(store, {24: 700})
     store.close()
     failed = _run(None, tmp_path, archive=db)
     assert "poly swept universe not shrinking" not in failed
