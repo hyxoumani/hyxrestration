@@ -177,3 +177,102 @@ def test_loudest_hour_is_reported_and_need_not_be_the_lowest():
     assert r["quietest_hour_of_day"] == 2
     # Loudest is the HIGHEST-closing hour, not the lowest.
     assert _hod(run, 1)["mean_equity_end"] > _hod(run, 2)["mean_equity_end"]
+
+
+def _multiday(curves):
+    """curves: {day_offset: {hour_of_day: hour_end_level}}.
+
+    Emits enough points per hour to clear MIN_PTS_PER_HOUR, with the
+    LAST point of each hour at the requested level, plus a leading and
+    trailing partial hour so no published hour is a partial one.
+    """
+    eq = [("R", -30, 0.0)]  # partial opening hour, excluded
+    for day, hours in sorted(curves.items()):
+        for hod, level in sorted(hours.items()):
+            base = day * 1440 + hod * 60
+            for k in range(25):
+                eq.append(("R", base + k * 2, level - 1.0))
+            eq.append(("R", base + 59, level))
+    last = max(d * 1440 + max(h) * 60 for d, h in curves.items())
+    eq.append(("R", last + 61, 0.0))  # partial closing hour, excluded
+    return _ledger(eq)
+
+
+def _shape(curves):
+    return _run(build_diurnal(_multiday(curves)))
+
+
+#: 14 hours, enough to clear MIN_SHARED_HOURS on every pair.
+_HODS = list(range(4, 18))
+
+
+def test_by_day_publishes_each_days_hour_end_series_unaveraged():
+    """The mean profile cannot answer "does it repeat", so the per-day
+    curves are published beside it rather than reconstructed later."""
+    curves = {d: {h: float(h * 10 + d * 100) for h in _HODS} for d in range(3)}
+    run = _shape(curves)
+    assert [d["n_whole_hours"] for d in run["by_day"]] == [14, 14, 14]
+    first = run["by_day"][0]
+    assert first["hour_end"]["04"] == 40.0
+    assert first["hour_end"]["17"] == 170.0
+    # A day's own extremes, so a reader can see whether the trough MOVES.
+    assert (first["trough_hour"], first["peak_hour"]) == (4, 17)
+    assert first["amplitude"] == 130.0
+
+
+def test_identical_shapes_at_different_levels_read_as_repeating():
+    """Rank correlation is the statistic precisely so that a day's
+    equity OFFSET and amplitude are nuisance parameters: these three
+    days trace the same curve 500 apart and twice as tall."""
+    base = {h: float((h - 10) ** 2) for h in _HODS}
+    curves = {
+        0: base,
+        1: {h: v + 500 for h, v in base.items()},
+        2: {h: v * 2 - 300 for h, v in base.items()},
+    }
+    agree = _shape(curves)["shape_agreement"]
+    assert agree["shape_verdict"].startswith("REPEATS")
+    assert all(p["rho"] == 1.0 for p in agree["pairs"])
+
+
+def test_unlike_days_that_average_into_a_clean_cycle_read_as_not_repeating():
+    """LOAD-BEARING (bound 6, mistakes #24 family). Day 0 rises all day
+    and day 1 falls all day; the four-day MEAN is flat, and a mean-only report
+    would publish that flat line with no hint the days disagree."""
+    rising = {h: float(h * 20) for h in _HODS}
+    falling = {h: float(-h * 20) for h in _HODS}
+    run = _shape({0: rising, 1: falling, 2: rising, 3: falling})
+    # The mean profile is indeed featureless -- every hour averages to 0.
+    assert {p["mean_equity_end"] for p in run["by_hour_of_day"]} == {0.0}
+    agree = run["shape_agreement"]
+    assert agree["shape_verdict"].startswith("DOES NOT REPEAT")
+    assert min(p["rho"] for p in agree["pairs"]) == -1.0
+
+
+def test_a_pair_with_too_little_overlap_is_unscored_not_disagreeing():
+    """An UNSCORED pair must not be read as a pair that disagreed, and
+    it cannot be the evidence for a REPEATS verdict either."""
+    full = {h: float((h - 10) ** 2) for h in _HODS}
+    run = _shape({0: full, 1: full, 2: {h: full[h] for h in _HODS[:4]}})
+    pairs = {tuple(p["days"]): p for p in run["shape_agreement"]["pairs"]}
+    thin = [p for p in pairs.values() if p["n_shared_hours"] < 12]
+    assert thin and all(p["rho"] is None for p in thin)
+
+
+def test_shape_verdict_reads_underpowered_below_two_scorable_pairs():
+    """One agreeing pair is not evidence of a daily cycle, and the
+    report says so instead of publishing REPEATS off a single rho."""
+    full = {h: float((h - 10) ** 2) for h in _HODS}
+    agree = _shape({0: full, 1: full})["shape_agreement"]
+    assert agree["shape_verdict"].startswith("UNDERPOWERED")
+    assert len(agree["pairs"]) == 1
+
+
+def test_shape_agreement_survives_a_day_with_a_flat_hour_end_curve():
+    """A constant series has no ranks to correlate; rho is None (a
+    refusal), never 0.0 (a measured disagreement)."""
+    full = {h: float((h - 10) ** 2) for h in _HODS}
+    run = _shape({0: full, 1: full, 2: dict.fromkeys(_HODS, 7.0)})
+    flat_pairs = [p for p in run["shape_agreement"]["pairs"] if p["days"][1].endswith("03")]
+    assert flat_pairs and all(p["rho"] is None for p in flat_pairs)
+    assert run["shape_agreement"]["shape_verdict"].startswith("UNDERPOWERED")

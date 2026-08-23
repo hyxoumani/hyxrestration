@@ -73,6 +73,21 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      counted per hour so a contaminated hour is visible; on this run
      the big reval hours carry ZERO settlements, which is what makes
      them a marking result.
+  6. A MEAN OVER DAYS CANNOT SAY WHETHER A SHAPE REPEATS. The profile
+     above answers "what is the average hour-of-day level"; the
+     question it invites -- "does the +72/-247/+150 cycle recur
+     tomorrow" -- is a different one, and averaging is exactly the
+     operation that destroys the evidence for it. Three days that each
+     oscillate on their own schedule and three days that trace the same
+     curve produce the same mean. `by_day` therefore publishes each
+     day's hour-end series UNAVERAGED, plus pairwise Spearman rho
+     between days over the hours they share. Rank correlation is the
+     right statistic because a day's equity offset and amplitude are
+     nuisance parameters -- only the ORDER of hours within the day is
+     the claim. `shape_verdict` reads REPEATS only when every pair
+     clears `SHAPE_RHO` on at least `MIN_SHARED_HOURS` shared hours;
+     with fewer than two pairs it reads UNDERPOWERED and no shape claim
+     may be made from this report.
 """
 
 from __future__ import annotations
@@ -99,6 +114,16 @@ HALF_TICK = 0.005
 MIN_PTS_PER_HOUR = 20
 #: Fewer days than this and an hour-of-day mean is one or two draws.
 MIN_DAYS = 3
+#: Two days must overlap by at least this many whole hours before their
+#: rank correlation says anything about a DAILY shape -- a rho computed
+#: over six shared hours is a statement about a morning, not a cycle.
+MIN_SHARED_HOURS = 12
+#: Pairwise Spearman floor for "the shape repeats". At 12+ shared hours
+#: rho >= 0.7 is well outside what independent day-curves produce, and
+#: the bar is deliberately one a noisy-but-real cycle can still clear;
+#: it is a screen against "the mean is an average of unlike days", not
+#: a significance test.
+SHAPE_RHO = 0.7
 
 
 def _r(x: float | None, n: int = 1) -> float | None:
@@ -211,6 +236,113 @@ def _profile(hours: list[dict]) -> dict:
     return {"by_hour_of_day": table}
 
 
+def _spearman(xs: list[float], ys: list[float]) -> float | None:
+    """Rank correlation, ties averaged. None when a side is constant."""
+    n = len(xs)
+    if n < 2:
+        return None
+
+    def _ranks(vs: list[float]) -> list[float]:
+        order = sorted(range(n), key=lambda i: vs[i])
+        out = [0.0] * n
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and vs[order[j + 1]] == vs[order[i]]:
+                j += 1
+            avg = (i + j) / 2 + 1
+            for k in range(i, j + 1):
+                out[order[k]] = avg
+            i = j + 1
+        return out
+
+    rx, ry = _ranks(xs), _ranks(ys)
+    mx, my = sum(rx) / n, sum(ry) / n
+    num = sum((a - mx) * (b - my) for a, b in zip(rx, ry, strict=True))
+    dx = sum((a - mx) ** 2 for a in rx)
+    dy = sum((b - my) ** 2 for b in ry)
+    if dx <= 0 or dy <= 0:
+        return None
+    return num / (dx * dy) ** 0.5
+
+
+def _by_day(hours: list[dict]) -> dict:
+    """Each day's hour-end series unaveraged, and whether they agree.
+
+    Bound 6: this is the block that answers "does the cycle repeat",
+    which `by_hour_of_day` structurally cannot.
+    """
+    days: dict[str, dict[int, float]] = defaultdict(dict)
+    for h in hours:
+        if not h["partial"]:
+            days[h["day"]][h["hour_of_day"]] = h["equity_end"]
+
+    series = []
+    for day in sorted(days):
+        curve = days[day]
+        hods = sorted(curve)
+        peak = max(hods, key=lambda k: curve[k])
+        trough = min(hods, key=lambda k: curve[k])
+        series.append(
+            {
+                "day": day,
+                "n_whole_hours": len(hods),
+                "hour_end": {f"{k:02d}": _r(curve[k]) for k in hods},
+                "peak_hour": peak,
+                "peak": _r(curve[peak]),
+                "trough_hour": trough,
+                "trough": _r(curve[trough]),
+                "amplitude": _r(curve[peak] - curve[trough]),
+            }
+        )
+
+    pairs = []
+    for i in range(len(series)):
+        for j in range(i + 1, len(series)):
+            a, b = series[i], series[j]
+            shared = sorted(set(days[a["day"]]) & set(days[b["day"]]))
+            rho = (
+                _spearman([days[a["day"]][k] for k in shared], [days[b["day"]][k] for k in shared])
+                if len(shared) >= MIN_SHARED_HOURS
+                else None
+            )
+            pairs.append(
+                {
+                    "days": [a["day"], b["day"]],
+                    "n_shared_hours": len(shared),
+                    # None means the pair is UNSCORED (too little overlap),
+                    # which is not the same as a pair that disagreed.
+                    "rho": _r(rho, 3),
+                }
+            )
+
+    scored = [p for p in pairs if p["rho"] is not None]
+    if len(scored) < 2:
+        verdict = (
+            f"UNDERPOWERED ({len(scored)} scorable day-pair(s) at"
+            f" >= {MIN_SHARED_HOURS} shared hours; no shape claim)"
+        )
+    elif min(p["rho"] for p in scored) >= SHAPE_RHO:
+        verdict = (
+            f"REPEATS (all {len(scored)} day-pairs rho >="
+            f" {min(p['rho'] for p in scored)} >= {SHAPE_RHO})"
+        )
+    else:
+        verdict = (
+            f"DOES NOT REPEAT (weakest of {len(scored)} day-pairs rho"
+            f" {min(p['rho'] for p in scored)} < {SHAPE_RHO})"
+        )
+    return {
+        "by_day": series,
+        "shape_agreement": {
+            "pairs": pairs,
+            "min_shared_hours": MIN_SHARED_HOURS,
+            "shape_rho_floor": SHAPE_RHO,
+            "shape_verdict": verdict,
+        },
+    }
+
+
 def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) -> dict:
     """Hourly equity level, spread and move-split for each shadow run."""
     runs = [
@@ -231,6 +363,7 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
     for rid in runs:
         hours = _hours(ledger, rid)
         prof = _profile(hours)
+        daily = _by_day(hours)
         whole = [h for h in hours if not h["partial"]]
         # Days SPANNED is not draws per hour: a run covering three
         # calendar days can still give most hours-of-day only two
@@ -272,6 +405,7 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
                 },
                 "hours": hours,
                 **prof,
+                **daily,
             }
         )
     return report
@@ -321,6 +455,36 @@ def main(argv: list[str] | None = None) -> None:
             f" {r['quietest_hour_of_day']:02d}Z ({r['quietest_mean_range']}) —"
             " read the LEVEL off mean_end, never off mean_min."
         )
+
+        # Bound 6: the same hour-ends UNAVERAGED, because the column
+        # above cannot distinguish a repeating cycle from three unlike
+        # days that happen to average into one.
+        days = best["by_day"]
+        agree = best["shape_agreement"]
+        print(f"\n[shadow_diurnal] hour-end by day — shape {agree['shape_verdict']}")
+        print("| UTC | " + " | ".join(d["day"] for d in days) + " |")
+        print("|---" * (len(days) + 1) + "|")
+        for hod in range(24):
+            cells = [d["hour_end"].get(f"{hod:02d}") for d in days]
+            if all(c is None for c in cells):
+                continue
+            print(
+                f"| {hod:02d}Z | "
+                + " | ".join("—" if c is None else f"{c}" for c in cells)
+                + " |"
+            )
+        for d in days:
+            print(
+                f"    {d['day']}: peak {d['peak']} at {d['peak_hour']:02d}Z,"
+                f" trough {d['trough']} at {d['trough_hour']:02d}Z,"
+                f" amplitude {d['amplitude']} over {d['n_whole_hours']} whole hours"
+            )
+        for pr in agree["pairs"]:
+            rho = "UNSCORED" if pr["rho"] is None else f"rho {pr['rho']}"
+            print(
+                f"    {pr['days'][0]} vs {pr['days'][1]}: {rho}"
+                f" over {pr['n_shared_hours']} shared hours"
+            )
     print(f"\n[shadow_diurnal] written to {out}")
 
 
