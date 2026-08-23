@@ -54,6 +54,26 @@ markets/candles are unrecoverable. Streams are unrecoverable everywhere.
   same order/filter params plus server-side `volume_num_min`
   (`iter_markets_by_volume` does this; params from
   gamma-api.polymarket.com/openapi.json).
+- **Gamma 500s on the LAST page of a long keyset chain** instead of
+  returning `next_cursor: null`. Triggered by the walk's own volume
+  FLOOR, not by the clock and not by the page index — banded probes
+  failed at pages 70 / 65 / 38, each a row-group short of its own
+  bottom, while shallow bands terminated clean. Because `min_volume`
+  is the same every night, the failure looks like a nightly fault
+  window and is not one (mistakes #23). Fix (db1e214, live since
+  2026-08-23): `volume_num_max` is honoured, so a failed page drops
+  the cursor and re-opens a fresh chain ceilinged at the last row
+  collected; restarts must strictly LOWER the ceiling so the walk
+  cannot spin, boundary rows dedupe by id, and a walk with nothing
+  collected below which to restart still reports `INCOMPLETE`.
+  Confirmed on the first production walk: page 116 failed at 11,600
+  markets for the fifth consecutive night, then
+  `chain restart 1 below volume 10058.2` and the walk COMPLETED at
+  17,004 — no `INCOMPLETE`, and the enumeration phase dropped from
+  22m31s to **5m15s** because the ladder is 4 attempts (~65s), not 7
+  (~18 min). The old ladder was sized for the window that does not
+  exist; the tail fault is persistent, so waiting longer buys nothing.
+  Prior nightly totals (16,859–16,952) were a FLOOR, not a count.
 
 ## Fees (verified against schedules + /series metadata)
 
