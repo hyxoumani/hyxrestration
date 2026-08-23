@@ -276,3 +276,62 @@ def test_iter_markets_keyset_restart_requires_strict_progress(monkeypatch, capsy
     logged = capsys.readouterr().out
     assert "INCOMPLETE" in logged
     assert "restarts 1" in logged
+
+
+def test_iter_markets_keyset_page_budget_exhausted_logs_truncated(monkeypatch, capsys):
+    """`max_pages` is a truncation GUARD, not a budget. Exhausting it with
+    a live cursor means the caller silently got less than it asked for --
+    the Gamma-offset regression class -- so it must be loud by default."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    sess = _KeysetSession(
+        {
+            None: {"markets": [_mkt("1", 500.0)], "next_cursor": "C1"},
+            "C1": {"markets": [_mkt("2", 400.0)], "next_cursor": "C2"},
+        }
+    )
+    out = iter_markets_by_volume(100.0, session=sess, max_pages=1)
+    assert [m["id"] for m in out] == ["1"]
+    assert "TRUNCATED at 1 markets" in capsys.readouterr().out
+
+
+def test_iter_markets_keyset_want_top_n_silences_only_the_intended_truncation(
+    monkeypatch, capsys
+):
+    """streamd asks for the top page by volume on purpose, so its nightly
+    TRUNCATED line is noise that trains the reader to ignore a real one.
+    `want_top_n` declares that intent -- and must silence ONLY that line,
+    never the INCOMPLETE path, which is a different failure."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    sess = _KeysetSession(
+        {
+            None: {"markets": [_mkt("1", 500.0)], "next_cursor": "C1"},
+            "C1": {"markets": [_mkt("2", 400.0)], "next_cursor": "C2"},
+        }
+    )
+    out = iter_markets_by_volume(100.0, session=sess, max_pages=1, want_top_n=True)
+    assert [m["id"] for m in out] == ["1"]
+    assert "TRUNCATED" not in capsys.readouterr().out
+
+
+def test_want_top_n_does_not_silence_incomplete(monkeypatch, capsys):
+    """`want_top_n` declares "I asked for one page", which says nothing
+    about Gamma failing. A walk that dies on a persistent error must
+    still report INCOMPLETE even for the top-N caller -- otherwise the
+    intent flag would disarm the alarm it was carefully scoped around."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+
+    class _AlwaysError(_KeysetSession):
+        def get(self, url, params=None, timeout=None):
+            self.calls.append((url, dict(params)))
+
+            class R:
+                status_code = 500
+
+                def json(self):
+                    return {"type": "validation error"}
+
+            return R()
+
+    sess = _AlwaysError({})
+    assert iter_markets_by_volume(0.0, session=sess, max_pages=1, want_top_n=True) == []
+    assert "INCOMPLETE" in capsys.readouterr().out

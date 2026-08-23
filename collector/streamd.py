@@ -282,7 +282,9 @@ class Daemon:
         try:
             from collector.venues import polymarket as poly
 
-            top = poly.iter_markets_by_volume(0.0, max_pages=1)  # one page, vol-desc
+            top = poly.iter_markets_by_volume(
+                0.0, max_pages=1, want_top_n=True
+            )  # one page, vol-desc: truncation IS the request here
             for m in top[:POLY_TOP_MARKETS]:
                 tp = poly.token_pair(m)
                 if tp:

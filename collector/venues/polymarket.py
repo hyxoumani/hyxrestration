@@ -65,6 +65,7 @@ def iter_markets_by_volume(
     page_pause_s: float = 1.1,
     max_pages: int = 400,
     max_restarts: int = 20,
+    want_top_n: bool = False,
     **extra_params: Any,
 ) -> list[dict[str, Any]]:
     """Active (or closed) markets ordered volume-desc, down to min_volume.
@@ -97,6 +98,16 @@ def iter_markets_by_volume(
     died at $10,161.41 returned the missing 79-row tail this way and
     terminated cleanly. Restarts must strictly lower the ceiling, so the
     walk cannot spin; duplicates at the boundary are dropped by id.
+
+    `max_pages` is a TRUNCATION GUARD, not a budget (same contract as
+    `breadth.MAX_PAGES`): exhausting it with a live cursor means the
+    caller silently got less than it asked for, which is the
+    Gamma-offset regression class, so it prints a loud TRUNCATED line.
+    A caller that WANTS the first N by volume — streamd's top-volume
+    book refresh passes `max_pages=1` on purpose — sets `want_top_n`
+    to declare that, and the guard stays loud for everyone who did not.
+    Silencing the line globally instead would have disarmed the alarm
+    for every real caller to quiet one intentional truncation a day.
     """
     import time
 
@@ -193,7 +204,7 @@ def iter_markets_by_volume(
             break
         time.sleep(page_pause_s)
 
-    if truncated and cursor is not None:
+    if truncated and cursor is not None and not want_top_n:
         print(
             f"[poly] keyset walk TRUNCATED at {len(out)} markets"
             f" (max_pages={max_pages} exhausted, cursor live)",
