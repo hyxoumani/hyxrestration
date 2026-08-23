@@ -1,6 +1,110 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-22 20:15 UTC (RUNG-1 PASS — "SETTLE-AND-SLIDE"
+Updated: **2026-08-23 10:30 UTC (RUNG-1 PASS — THE AFTERNOON TROUGH WAS
+THE SAMPLING RULE, NOT THE MARKET. Six passes narrated the shadow
+equity curve with readings like "a NEW RUN LOW −301.3 (17Z)" and
+"08-21 traced the same 15-17Z dive to −296.9", and queued "does the
+trough repeat at 16-17Z a third time" as a specific question to chase.
+It does not repeat, because it was never there: the daemon persists
+~177 equity points an hour, so an hour's `min` is an extreme of that
+hour's mark NOISE, and comparing minima across hours measures
+volatility rather than level. `simulator/shadow_diurnal.py` (shipped
+this pass, EXP-1354) prices the artifact on run `20260821T015256`:
+mean intra-hour range is 29-64 overnight against **158.9 at 16Z, 253.2
+at 17Z and 301.8 at 20Z**. So **20Z is the LOUDEST hour of the day** —
+it reads −153.1 at its minimum and **+70.0 at its close**. The
+`min_gap` column (close minus low) is **225.5 at 17Z and 223.2 at 20Z
+against 12-27 overnight**, so ~225 points of the "trough" was the
+sampling rule and the rest is the loud window overlapping the day's
+declining leg. Read at the CLOSE there is no dive, just one clean
+daily oscillation: **+72 (03Z) → −247 (16Z) → +150 (22Z)**. The report
+also splits each hour as `d_equity = −entry_drag + reval` (a taker
+pays the ask and is marked at the mid, so new fills book (ask−mid)+fee
+on entry): drag runs **9-21/hr against reval swings of ±195**, so the
+daily shape is a MARKING story, not a transaction-cost one — and the
+two big reval hours carry **ZERO settlements**, which is what rules
+out settle-and-slide as their cause. Validity bounds are in the
+report, not in memory: the drag figure is a MODEL assuming
+`mid == ask − half a tick`, true by construction only under a one-tick
+spread gate, so a fill from an ungated strategy nulls `reval` rather
+than publishing a number built on an unmeasured spread; partial
+first/last hour buckets are excluded so a run's start time cannot leak
+into the shape; sparse hours are kept out of the range stats;
+settlements are counted per hour so a contaminated reval is visible;
+and power is judged on the WEAKEST hour's draw count, not days spanned
+— this run spans 3 days but most hours have 2 readings, so the profile
+reads **UNDERPOWERED** and says which. Logged as mistakes #24 and
+filed in simulation-honesty beside the matched-scope counting trap
+(same family: the statistic was fine, the denominators were not
+equal). Suite 704 green.**
+**(1) THE db1e214 VERDICT IS IN — THE HEADLINE OWED ITEM IS CLOSED.**
+The first production walk under the fix (08-23 04:15Z) hit page 116 at
+11,600 markets for the **FIFTH consecutive night** — same page, same
+position, which is the volume-floor model's prediction and not the
+fault-window model's — then logged
+`chain restart 1 below volume 10058.2` and **COMPLETED at 17,004
+markets with NO `INCOMPLETE`**. Two consequences now in venues.md
+rather than a journal: enumeration dropped **22m31s → 5m15s** (the
+ladder is 4 attempts/~65s, not 7/~18min — it was sized for a window
+that does not exist), and the prior nightly totals of 16,859-16,952
+were a **FLOOR, not a count**, so the enumeration series before
+tonight is not comparable to the series after it.
+**(2) THE REGISTERED FavLongTight BACKTEST IS RUNNING, NOT YET
+RESOLVED** — transient unit `favlong-tight-replay`, output
+`/tmp/favlong_tight_run.txt`, started 08:15Z, **2h10m elapsed and
+fully CPU-bound** (60min CPU/60min wall at the hour mark, memory flat
+at 7.8 GB) over 9,322,870 candle-snapshots / 1,578,184 markets, both
+bands in one pass. Last pass's attempt died with the session because
+it was a plain background job; it is a `systemd-run` transient unit
+this time, per the ops rule (mistakes #19). Thresholds are fixed in
+`docs/hyxpredict/prereg_favlong_tight_backtest.md` and the verdict
+block gets appended unmodified — **nothing about it is decided until
+it prints**.
+**(3) QA FIRED 10:00Z AND EXP-1351's FIX WORKED LIVE.** `batch units
+within measured run budget` now names both things correctly: the 08-21
+breach reads `14.64h (budget 12.5h) — catch-up after the 08-20 07:31Z
+abort, not a stale budget`, and the abort is reported separately as
+`ABORTED 1.36h in — its wall clock measures the abort, not the work`.
+Still FAIL rather than WATCH, exactly as predicted, because the 08-21
+breach is inside its window until 2026-08-28. `trade latency p99 sane`
+26.06s stays the one chronic red. All 14 other checks PASS.
+**(4) FILL-RATE 314/hr** (1,887 in 6h; 220,683 total) — back inside
+the 147-334 band, so last pass's 410/hr was ONE READING, not a regime
+step. **(5) dead_air ZERO in 48h**, last fire 08-20 08:54:58Z, streak
+now **~73.5h**. **(6) Shadow anon 137 MiB** (was 145 last pass) —
+flat-to-down, so the "re-climbing off the 126MiB post-reboot baseline"
+watch eases; daemon up since 08-20 20:52Z, still unrestarted, still
+holding the scarce settlement sample. **(7) Poly sweep mid-walk**,
+3,800/17,004 at 4h in, ~594 min projected → ~14h.
+NOT PROMOTED THIS PASS, AND ONE ITEM IS OWED BECAUSE OF IT.
+`f64c2ab` (poly `want_top_n`) IS collection-side — it moves
+`collector/venues/polymarket.py` and `collector/streamd.py` — so it
+normally promotes. It is deliberately held because **the poly sweep is
+running from the stable worktree right now** (PID 2061389, ~10h left,
+and it is the first walk ever to enumerate completely); swapping code
+under a live 14h sweep is the half-old/half-new hazard
+`scripts/daemon_imports.py` exists to warn about, and the change is
+log hygiene that loses nothing by waiting. **OWED: promote f64c2ab
+after the poly sweep finishes (~19:0xZ).** EXP-1354 is sim-side and
+not in `simulator.shadow`'s import closure (checked), so it needed no
+promote and no daemon restart either way.
+NEXT PASS: (1) **the FavLongTight verdict** — append both band blocks
+to the registration unmodified; if both FAIL the fav-long family is
+CLOSED and that is binding; (2) **promote f64c2ab** once the sweep is
+down; (3) `poly swept universe not shrinking` PASSED at **5,876
+distinct markets vs a prior-week peak of 10,240** — 57% of peak is a
+large gap for a green check, and the likely cause is that the 14h
+sweep straddles midnight so "yesterday" is always a partial window;
+worth deciding whether that tripwire can actually go red, since a
+check that cannot fail is the exact class of mistakes #14/#16;
+(4) does the hour-END curve repeat its +72/−247/+150 cycle on 08-23,
+now that there is a convention to compare against — and the profile
+needs a 3rd draw per hour to stop reading UNDERPOWERED; (5) the ~4h20m
+pre-reboot shadow silence on 08-20, still unexplained; (6) `trade
+latency p99 sane` 26.4s, the chronic red nobody has costed.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-22 20:15 UTC (RUNG-1 PASS — "SETTLE-AND-SLIDE"
 DECOMPOSED, AND IT IS A LONGSHOT BOOK BOOKING ITS LOSSES, NOT A
 MYSTERY. Six consecutive passes narrated the shadow equity curve as a
 SHAPE — a drop through the settlement cohort hour, watched for an
