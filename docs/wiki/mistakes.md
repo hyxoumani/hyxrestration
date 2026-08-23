@@ -346,6 +346,36 @@ Format: what happened → root cause → error type → prevention tier
     read as supporting the window; a single request is not the walk,
     and it discriminated nothing.
 
+24. **2026-08-23 — six status passes compared a curve across hours by
+    each hour's MINIMUM, and narrated the resulting artifact as a
+    market feature.** The shadow equity curve was reported with lines
+    like "a NEW RUN LOW −301.3 (17Z)" and "08-21 traced the same
+    15-17Z dive to −296.9", and a repeating afternoon "trough" was
+    entered in the next-pass queue three times as a specific question
+    to chase. But the daemon persists ~177 equity points an hour, so
+    an hour's `min` is an extreme of that hour's mark NOISE — and
+    min-sampling therefore manufactures depth in proportion to
+    volatility, not level. `simulator/shadow_diurnal.py` measured it:
+    mean intra-hour range is 29–64 overnight against 253.2 at 17Z and
+    301.8 at 20Z, and the close-minus-low gap is ~225 in exactly the
+    two hours being quoted against 12–27 overnight. 20Z — the loudest
+    hour of the day — reads −153.1 at its minimum and **+70.0 at its
+    close**. Read at the close there is no dive: one smooth daily
+    oscillation, +72 (03Z) → −247 (16Z) → +150 (22Z). Type:
+    `wrong-assumption` (a statistic compared across buckets with
+    unequal dispersion). Prevention: **fix the sampling convention
+    BEFORE comparing a curve across buckets, and publish the
+    dispersion in the same row as the level.** The failure mode is
+    that min/max feel like observations rather than order statistics,
+    so nobody asks what they are conditioned on. Note the near-miss
+    generality: the same passes also quoted whole-run `equity_min`
+    from `shadow_attribution`, which is legitimate (one bucket, no
+    cross-comparison) — it is the cross-hour comparison that was
+    invalid, which is why this recurs so easily. Same family as the
+    matched-scope trap (settled-subset payout vs whole-book cost) and
+    `flagged_day_weighted`: the statistic was fine, the denominators
+    were not equal.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

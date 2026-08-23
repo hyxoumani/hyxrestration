@@ -167,6 +167,41 @@ settled subset is only comparable to a cost summed over the same
 subset. Same class as `flagged_day_weighted` / `new_share_vs_all` /
 `tier_stability`.
 
+**A second counting trap, same family (2026-08-23).** Comparing
+equity across hours by each hour's MINIMUM measures volatility, not
+level. The shadow daemon persists ~177 equity points an hour, so
+`min(equity)` over an hour is an extreme of that hour's mark noise —
+and the deeper an hour's noise, the lower its minimum, regardless of
+where it opened or closed. Six status passes narrated an afternoon
+"trough" in run `20260821T015256` from readings like "a NEW RUN LOW
+−301.3 (17Z)". `simulator/shadow_diurnal.py` prices the artifact:
+mean intra-hour range is 29–64 overnight but 253.2 at 17Z and **301.8
+at 20Z** — 20Z is the loudest hour of the day, reading −153.1 at its
+minimum and **+70.0 at its close**. The `min_gap` column (close minus
+low) is 225.5 at 17Z and 223.2 at 20Z against 12–27 overnight, so
+roughly 225 points of the "trough" was the sampling rule. Read at the
+close the curve is one clean daily oscillation: +72 (03Z) → −247
+(16Z) → +150 (22Z).
+
+**Rule: pick a sampling convention before comparing a curve across
+buckets, and publish the dispersion beside the level.** Hour-end is
+the level series; the range belongs in the same row so the confound
+cannot be read without seeing the noise that produced it. Same class
+as `flagged_day_weighted` and the matched-scope trap above — the
+statistic was fine, the comparison across unequal denominators was
+not.
+
+Corollary the same report establishes: the daily shape is a MARKING
+story, not a transaction-cost one. Splitting each hour as `d_equity =
+−entry_drag + reval` (a taker pays the ask and is marked at the mid,
+so new fills book `(ask − mid) + fee` on entry) gives drag of 9–21/hr
+against reval swings of ±195 — and the two big reval hours carry ZERO
+settlements, so they are not `settle-and-slide`. The drag figure is a
+MODEL: it assumes `mid == ask − half a tick`, true by construction
+only under a one-tick spread gate, so a fill from an ungated strategy
+nulls `reval` rather than reporting a number built on an unmeasured
+spread.
+
 ## Replay-equivalence guarantee (2026-07-08)
 
 Feeding the sim incrementally (simui's `ReplaySession.advance` in
