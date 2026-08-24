@@ -406,16 +406,53 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     ).fetchone()[0]
     check("reconstructed book levels non-negative", neg == 0, f"{neg} negative levels")
 
-    p99 = conn.execute(
-        "SELECT quantile_cont(epoch(recv_ts - src_ts), 0.99) FROM stream_trades"
+    # `recv_ts - src_ts` is NOT latency: it is (box clock offset + transport
+    # latency), and the offset dominates by two orders of magnitude. Measured
+    # 2026-08-23 over 12.6M kalshi trades in 24h, p01 25.55s / p50 25.71s /
+    # p99 25.89s — the WHOLE distribution is a 0.34s band sitting at +25.7s.
+    # The old single check `-2 < p99 < 25` therefore watched the clock, not
+    # the stream, and went permanently red when the offset drifted past its
+    # own ceiling. A threshold cannot absorb an unbounded drift (mistakes
+    # #25-27), so the two quantities are separated and each gets the bound
+    # its own failure mode earns.
+    lat = conn.execute(
+        "SELECT quantile_cont(epoch(recv_ts - src_ts), 0.50),"
+        "       quantile_cont(epoch(recv_ts - src_ts), 0.99)"
+        " FROM stream_trades"
         " WHERE src_ts IS NOT NULL AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)",
         [now, int(hours)],
-    ).fetchone()[0]
-    # 25s allows for the known ~20s box-clock skew until NTP lands.
+    ).fetchone()
+    p50, p99 = lat if lat else (None, None)
+
+    # (a) Transport latency, offset-invariant: a constant clock error cancels
+    # in a difference of two quantiles of the same window, so this is the only
+    # part that actually watches the stream (backpressure, reconnect storms).
+    # Measured 0.03-0.18s; 5s is ~30x the observed spread.
+    disp = None if p50 is None or p99 is None else p99 - p50
     check(
-        "trade latency p99 sane",
-        p99 is not None and -2.0 < p99 < 25.0,
-        f"p99 {p99 if p99 is None else round(p99, 2)}s (incl. known clock skew)",
+        "trade latency dispersion sane",
+        disp is not None and disp < 5.0,
+        f"p99-p50 {disp if disp is None else round(disp, 3)}s"
+        + ("" if p99 is None else f" (p99 {round(p99, 2)}s raw)"),
+    )
+
+    # (b) The offset itself, named for what it is. The bound is ASYMMETRIC
+    # because the two directions cost different things. A FAST box clock is
+    # conservative: `sim._maker_check_and_expire` drops any snapshot with
+    # `snap.ts >= close_time`, so a fast clock only discards data near the
+    # close — and it currently discards none, measured 2026-08-23 over 7 days
+    # of kalshi snapshots: ZERO of 1,141,594 pre-close snapshots land in the
+    # final 26s, and only 1,061 in the final 5 min. That is the cost of the
+    # present +25.7s offset to the sim: zero. A SLOW clock is the dangerous
+    # side — it stamps post-close snapshots as pre-close and feeds the sim
+    # genuine lookahead — hence the tight floor. The 60s ceiling is a drift
+    # alarm well above today's offset and far below the ~300s where the
+    # discard cost first becomes measurable. NTP is the real fix (user-gated).
+    check(
+        "box clock offset within tolerance",
+        p50 is not None and -2.0 < p50 < 60.0,
+        f"median recv-src {p50 if p50 is None else round(p50, 2)}s"
+        " (box clock vs venue; NTP pending)",
     )
 
     size_gb = Path(path).stat().st_size / 1e9

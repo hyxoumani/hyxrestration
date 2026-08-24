@@ -473,6 +473,35 @@ Format: what happened → root cause → error type → prevention tier
     to every hour-of-day, per-category and per-band mean in the repo:
     a mean is a level, never a pattern.
 
+29. **2026-08-23 — a QA check bounded the SUM of a signal and an
+    unbounded drift, so it watched the drift.** `trade latency p99 sane`
+    asserted `-2 < p99(recv_ts - src_ts) < 25`, commented "25s allows
+    for the known ~20s box-clock skew until NTP lands". It had been red
+    for many passes and nobody had costed it. `recv_ts - src_ts` is not
+    latency: it is (box clock offset + transport latency). Measured
+    over 12.6M kalshi trades in 24h, p01 25.55s / p50 25.71s / p99
+    25.89s — the ENTIRE distribution is a 0.34s band sitting at +25.7s.
+    So the check tracked the clock, at ~150x the amplitude of the thing
+    it was named for, and once the offset ate the headroom a genuine
+    stream stall would have been invisible underneath it: the check was
+    not merely red, it was BLIND. Type: `wrong-statistic` + the #25-27
+    drift family. Prevention: **when a measured quantity is a sum of a
+    signal and a nuisance term, bound them separately — a difference of
+    two quantiles of the same window cancels any constant offset.**
+    Split into `trade latency dispersion sane` (p99-p50, offset-
+    invariant, measured 0.03-0.18s, bound 5s) and `box clock offset
+    within tolerance` (the offset, named for what it is). The second
+    bound is ASYMMETRIC because the directions cost different things,
+    and the cost was measured rather than assumed: a FAST clock only
+    makes `sim._maker_check_and_expire` discard snapshots near the
+    close, and ZERO of 1,141,594 pre-close kalshi snapshots over 7 days
+    land within 26s of close (1,061 within 5 min) — the +25.7s offset
+    costs the sim nothing. A SLOW clock is the dangerous side: it
+    stamps post-close snapshots as pre-close and feeds the sim real
+    lookahead. Hence floor -2s, ceiling 60s. Corollary worth carrying:
+    **"cost it or retire it" is the right demand of any permanent red,
+    and the cost has to be a measurement, not a paragraph.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

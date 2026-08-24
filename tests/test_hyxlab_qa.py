@@ -781,3 +781,70 @@ def test_stale_gdelt_news_trips_freshness(tmp_path):
     store.close()
     failed = _run(None, tmp_path, archive=db)
     assert "gdelt news fresh (< 30h)" in failed
+
+
+# --- clock offset vs transport latency (2026-08-23) -------------------
+# `recv_ts - src_ts` mixes a box-clock offset with transport latency. The
+# retired check `trade latency p99 sane` bounded the sum, so a drifting
+# clock pinned it red while a real stream stall would have been invisible
+# underneath the offset. These drive the two replacement checks apart.
+
+_LAT_DISP = "trade latency dispersion sane"
+_LAT_OFF = "box clock offset within tolerance"
+
+
+def _trades_with_offsets(path, offsets):
+    """Seed one trade per entry in `offsets` (seconds of recv_ts - src_ts)."""
+    store = StreamStore(path)
+    for i, off in enumerate(offsets):
+        src = NOW - timedelta(seconds=off)
+        frame = {
+            "type": "trade",
+            "sid": 1,
+            "seq": i + 1,
+            "msg": {
+                "market_ticker": "M1",
+                "yes_price_dollars": "0.4000",
+                "count_fp": "5.00",
+                "taker_side": "yes",
+                "ts_ms": int(src.timestamp() * 1000),
+            },
+        }
+        store.append_trades(parse_message(frame, NOW)[1])
+    store.flush()
+    return store
+
+
+def test_large_constant_offset_no_longer_trips_latency(tmp_path):
+    """The production condition: a uniform +30s offset, past the retired
+    check's 25s ceiling. Nothing about the STREAM is wrong, so neither
+    replacement check may fire."""
+    _trades_with_offsets(tmp_path / "s.duckdb", [30.0] * 50)
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert _LAT_DISP not in failed
+    assert _LAT_OFF not in failed
+
+
+def test_runaway_clock_offset_trips_only_the_offset_check(tmp_path):
+    _trades_with_offsets(tmp_path / "s.duckdb", [90.0] * 50)
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert _LAT_OFF in failed
+    assert _LAT_DISP not in failed  # a constant offset has zero dispersion
+
+
+def test_slow_box_clock_trips_the_offset_check(tmp_path):
+    """The lookahead-critical direction: a clock behind the venue stamps
+    post-close snapshots as pre-close."""
+    _trades_with_offsets(tmp_path / "s.duckdb", [-10.0] * 50)
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert _LAT_OFF in failed
+
+
+def test_latency_tail_trips_dispersion_under_a_healthy_offset(tmp_path):
+    """A real stream stall: the offset stays fine, the tail blows out. This
+    is exactly what the retired check could not see once the offset had
+    eaten its headroom."""
+    _trades_with_offsets(tmp_path / "s.duckdb", [1.0] * 90 + [40.0] * 10)
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert _LAT_DISP in failed
+    assert _LAT_OFF not in failed
