@@ -589,6 +589,60 @@ Format: what happened → root cause → error type → prevention tier
     promote, and nothing here recovers whether the four stale series
     were being fetched during the days they sat quiet.
 
+32. **2026-08-24 — a tier's headline count was a BOOLEAN over three
+    outcomes that mean opposite things, so "zero survivors" was read
+    five times as a measurement when it was mostly silence.** The
+    calibration atlas's strictest tier, `flagged_quoted`, re-runs the
+    day-weighted test on the subsample whose books were actually
+    two-sided. It has read **0** on every reading since it shipped
+    2026-08-02, across settled markets growing **165,814 -> 1,592,941
+    (9.6x)** and the day-weighted tier growing **6 -> 22**. A bucket
+    fails that boolean three ways: its gap **REVERSES** on quoted
+    books (evidence AGAINST the signature), its gap collapses inside
+    its own interval (weak evidence against), or it never had
+    `MIN_N=200` quoted observations to test (**no evidence either
+    way**). One bit cannot say which. Decomposed on the 08-24 archive:
+    **19 of 22 survivors are SILENT** (quoted_n 30–191 against the 200
+    bar) and only **3 were ever tested**, all three failing on the
+    interval after their gap shrank 3.1–4.1x. Six of the 19 untested
+    buckets **reverse sign** on their quoted point estimate — evidence
+    against, invisible under the boolean. Median gap retained on
+    quoted books across all 22 is **0.4215**, range [−1.0323,
+    +1.0684].
+    **The self-implicating part**: the 2026-08-02 pass DID separate
+    these three states, by hand, in prose, over six survivors, and
+    wrote down that MIN_N left most buckets silent. That decomposition
+    was never encoded, so the next five readings printed one number
+    and the log narrated "reads ZERO for the Nth consecutive reading"
+    while the untested share grew. **A finding that lives only in the
+    prose of the pass that found it does not survive its own author.**
+    Type: `wrong-statistic` (#24/#28/#31 family — here a tri-state
+    collapsed into a boolean rather than a pooled aggregate, but the
+    same failure: the output cannot distinguish members that mean
+    opposite things) + the `a-skipped-check-is-not-a-passed-one`
+    family (silence read as rejection).
+    Prevention (EXP-1361): every bucket carries `quoted_status`
+    (`confirmed` / `not_significant` / `refuted_sign` / `silent` /
+    `not_applicable`) plus `quoted_gap_dw` and `quoted_gap_retained`,
+    and the report carries `quoted_verdict`, whose counts **PARTITION**
+    the day-weighted tier by construction — the arithmetic is what
+    stops the zero being read as a measurement again, and a test
+    asserts the partition on a fixture holding all three outcomes at
+    once. `wilson_quoted_lo/hi` are `None` when the test did not run,
+    rather than the `(0.0, 1.0)` that printed as a test that ran and
+    found the implied comfortably inside its interval.
+    **NOT TUNED**: `MIN_N` stays 200 on the quoted subsample —
+    lowering it to reach a verdict would be fitting the threshold to
+    the answer. The point is to REPORT the silence, not abolish it.
+    Three mutations checked and each reddens: folding silent into
+    not_significant, restoring the (0.0, 1.0) interval, and folding
+    refuted_sign into not_significant.
+    **Honest limit**: this changes what the report SAYS, not what the
+    archive knows. The 19 silent buckets stay silent until quoted
+    observations accumulate; the conclusion's direction is unchanged
+    (no bucket with quoted evidence supports the longshot-fade
+    signature) and only its strength is corrected downward.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

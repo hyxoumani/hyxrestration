@@ -1,6 +1,93 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-24 14:45 UTC (RUNG-1 PASS — A FRESHNESS CHECK WAS
+Updated: **2026-08-24 20:25 UTC (RUNG-1 PASS — THE ATLAS QUOTED TIER'S
+"ZERO SURVIVORS", READ FIVE TIMES AS A MEASUREMENT, IS 19 SILENCES AND
+3 REJECTIONS.**
+**(1) THE THREE DATA-GATED ITEMS FROM LAST PASS ARE STILL IN THE
+FUTURE, SO THE LADDER WAS CLIMBED INSTEAD.** The 04:40Z sidecar row is
+2026-08-25, the shadow run reaches ~3d on 08-26, and `batch units`
+self-clears 08-28. QA re-read live at 20:15Z: **one FAIL, the known
+08-21 `hyxlab-sweep` catch-up breach**, everything else PASS —
+including `collection continuous over last 24h` at **5.0 min / 60 min**,
+`econ pull live` at **0d**, `econ series all fetched` **7/7 within 4d**,
+and a THIRD honest enumeration reading at **17,004 vs a prior-10d peak
+of 16,952**. Two WATCHes, both benign and self-describing (a draining
+tape tail; the poly sweep overlapping the fade window at zero cost).
+**(2) RUNG 1: THE CALIBRATION ATLAS RE-RUN ON 17 DAYS OF NEW DATA, AND
+IT DRIFTED HARD.** Settled markets **493,573 -> 1,592,941 (3.2x)**;
+tiers **110 -> 141 flagged, 79 -> 105 cluster-robust, 29 -> 35
+day-robust, 10 -> 22 day-weighted**. `flagged_quoted` read **0 for a
+fifth consecutive reading** — and that is the finding, because the
+headline it has carried each time is not what the data says.
+**(3) A BOOLEAN OVER THREE OUTCOMES THAT MEAN OPPOSITE THINGS
+(EXP-1361).** A bucket fails the quoted test three ways: its gap
+**REVERSES** on two-sided books (evidence AGAINST the signature), the
+gap collapses inside its own interval (weak evidence against), or there
+were never **MIN_N=200** quoted observations to test at all (**no
+evidence either way**). One bit cannot say which. Decomposed on the
+08-24 archive: **19 of 22 survivors are SILENT** (quoted_n 30–191
+against the 200 bar), and only **3 were ever tested** — all three
+failing on the interval after their gap shrank **3.1–4.1x**
+(Financials 1h d2 +0.1454 -> +0.0463, 6h d4 +0.1178 -> +0.0286, 6h d8
+−0.0932 -> −0.0457). **Six of the 19 untested buckets REVERSE sign** on
+their quoted point estimate — evidence against, and invisible under the
+boolean. Median gap retained across all 22 is **0.4215**, range
+**[−1.0323, +1.0684]**.
+**(4) THE SELF-IMPLICATING PART, WHICH IS THE PART WORTH CARRYING.**
+The 2026-08-02 pass DID separate these three states — by hand, in
+prose, over six survivors — and wrote down that MIN_N left most buckets
+silent. **That decomposition was never encoded**, so the next five
+readings printed one number and this log narrated "reads ZERO for the
+Nth consecutive reading" while the untested share grew. A finding that
+lives only in the prose of the pass that found it does not survive its
+own author. Logged as mistakes **#32** (`wrong-statistic`, the
+#24/#28/#31 family — a tri-state collapsed into a boolean rather than a
+pooled aggregate, but the same failure: the output cannot distinguish
+members that mean opposite things).
+**(5) STATED AT THE STRENGTH THE DATA SUPPORTS.** The 08-02
+conclusion's DIRECTION holds and its STRENGTH does not: **no bucket
+with quoted evidence supports the longshot-fade signature, and 19 of 22
+have no quoted evidence.** That is a far weaker claim than "zero
+survivors" sounds, and it is the honest one. Every bucket now carries
+`quoted_status` (confirmed / not_significant / refuted_sign / silent /
+not_applicable) plus `quoted_gap_dw` and `quoted_gap_retained`; the
+report carries `quoted_verdict`, whose counts **PARTITION** the
+day-weighted tier by construction — the arithmetic is what stops the
+zero being read as a measurement again. `wilson_quoted_lo/hi` are
+**None** when the test did not run, rather than the `(0.0, 1.0)` that
+printed as a test that ran and passed.
+**NOT TUNED**: MIN_N stays 200. Lowering it to reach a verdict would be
+fitting the threshold to the answer; the point is to REPORT the
+silence, not abolish it. `flagged_quoted` keeps its exact meaning for
+cross-report comparability, per the day-tier / overlap-tier /
+day-weighted precedent.
+**(6) DRIFT ALSO WORTH CARRYING: THE CONTAMINATION MORE THAN DOUBLED AT
+THE TOP.** Wide-book share still RISES with tier strictness —
+**17.66% flagged, 20.33% cluster-robust, 73.05% day-robust, 79.38%
+day-weighted**, against 4.6 / 5.3 / 18.1 / **34.2%** on 08-02. The
+strictest tier is now four-fifths wide-book observations. Three
+mutations checked, each reddens. Suite 751 -> **756 green**. **NO
+PROMOTE — verified rather than assumed**: `grep` over
+`scripts/systemd/` shows no unit references atlas, so no daemon moved
+and the shadow run started 08-23 20:17Z **survives** at ~24h.
+**HONEST LIMIT: THIS CHANGES WHAT THE REPORT SAYS, NOT WHAT THE ARCHIVE
+KNOWS.** The 19 silent buckets stay silent until quoted observations
+accumulate.
+NEXT PASS: (1) **Confirm the 2026-08-25 04:40Z TIMER writes a second
+`data/signals_fetch.jsonl` row.** The hand-run proved `record_fetch`
+works; it did not prove the scheduled unit reaches it. (2) **The 20:17Z
+shadow run reaches ~3 days around 08-26 — re-run `by_day` as a genuine
+OUT-OF-SAMPLE test of the only diurnal claim that survived: every day
+troughs in 16–18Z and peaks in 21–00Z.** Do not re-test the
++72/−247/+150 cycle; it is dead. (3) The `batch units` FAIL self-clears
+08-28 if no new breach lands — if it does not, the budget is stale and
+should be re-measured rather than re-excused. (4) The maker-bracket
+report has not run since 08-05 and the divergence report since 07-15 —
+both are stale standing reports on much newer data, same rung-1 shape
+that produced this pass.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-24 14:45 UTC (RUNG-1 PASS — A FRESHNESS CHECK WAS
 MEASURING A STAMP THAT IS DELIBERATELY IN THE FUTURE, AND POOLING SEVEN
 CADENCES INTO ONE MAX, SO IT PRINTED A NEGATIVE AGE AND PASSED WHILE
 FOUR OF ITS SEVEN SERIES SAT PAST ITS OWN BUDGET.**
@@ -83,7 +170,7 @@ survived: every day troughs in 16–18Z and peaks in 21–00Z.** Do not
 re-test the +72/−247/+150 cycle; it is dead. (3) The `batch units` FAIL
 self-clears 08-28 if no new breach lands — if it does not, the budget is
 stale and should be re-measured rather than re-excused.
-NOTHING IS USER-GATED THIS PASS.**
+NOTHING IS USER-GATED THIS PASS.**)
 
 (prior Updated: **2026-08-24 03:30 UTC (RUNG-1 PASS — THE "UNEXPLAINED SHADOW
 SILENCE" WAS A WHOLE-BOX OUTAGE, AND THE REASON IT SAT UNEXPLAINED FOR
