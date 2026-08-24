@@ -1,6 +1,66 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-23 22:00 UTC (RUNG-1 PASS — THE CHRONIC LATENCY RED
+Updated: **2026-08-24 03:30 UTC (RUNG-1 PASS — THE "UNEXPLAINED SHADOW
+SILENCE" WAS A WHOLE-BOX OUTAGE, AND THE REASON IT SAT UNEXPLAINED FOR
+FOUR PASSES IS THAT NO CHECK IN THE SUITE CAN SEE AN OUTAGE THAT HEALS.**
+**(1) THE 08-20 SILENCE IS EXPLAINED, AND THE FRAMING WAS BACKWARDS
+TWICE.** It was never shadow's: the number came from
+`shadow_runs.anchor`, which is `max(recv_ts)` in the STREAM db at
+shadow's first poll, so a 4h19m anchor lag reports how old the STREAM's
+head was, not how long shadow was quiet. And it was not "pre-reboot":
+the box **died at 21:33:37Z and returned at 01:52:51Z**, so the silence
+IS the downtime and the reboot is its END, not the event that followed
+it. Evidence, none of it needing a shadow-side story: kalshi books
+(21:33:37.133559) and kalshi trades (21:33:37.143198) stop **10ms
+apart** on two separate WS connections; polymarket `book_events` are
+**zero across 22/23/00Z**; and the collector — a different systemd
+timer writing a **different database** — takes its last cycle at 21:30Z
+and its next at 01:55Z. The stream even recorded the hole itself, as a
+`('*','*',...,'daemon_start')` gap row spanning it. Three independent
+writers stopping together and resuming together is not a process fault.
+**(2) THE FINDING WORTH KEEPING IS NOT THE OUTAGE — IT IS WHY IT TOOK
+FOUR PASSES TO NAME (EXP-1359).** `collector fresh (snapshots < 20 min
+old)` and `stream fresh (trades < 5 min old)` are **INSTANTANEOUS**;
+QA runs once daily at 10:00Z; this outage healed **8h before the next
+run**. So no check in the suite could ever have seen it, and a 4h19m
+whole-box outage entered the wiki as a vague adjective instead of an
+alarm. An instantaneous check on a daily monitor cannot detect anything
+shorter than its own sampling period — the retrospective form is a
+SEPARATE check, not a tuning of the same one. `collection continuous
+over last 24h` bounds the largest gap between consecutive collector
+cycles in the window, **anchored on the newest cycle BEFORE the window**
+so an outage straddling the left edge is measured rather than lost with
+its predecessor (the anchor is load-bearing: a mutation test drops
+exactly the straddle case). **Budget measured, not argued** — 21 days /
+6,040 cycles read p50 **300.0s** (the 5-min timer, exactly), p99
+314.0s, p99.9 600.0s, and the largest gap in those 21 days that is NOT
+the 08-20 outage is **25.0 min** against the outage's **264.8 min**.
+Bound 60 min = worst benign gap + 2.4x, and 4.4x under the event it
+exists to catch. Lock skips are **NOT subtracted** — subtracting them
+is how a lock-starved collector goes quiet forever and still reads
+green (#25-27); fewer than two cycles reads WATCH/UNMEASURED, never a
+free pass (#28). Logged as mistakes **#30**. Suite 731 → **736 green**.
+**(3) LIVE + PROMOTED CLEAN.** The new check reads **PASS at 10.0 min**
+against the 60 min budget on the real archive (the 08-23 08:20Z single
+dropped cycle) — a real signal with real headroom, not a formality.
+Promoted at `6c9618f`; the restart guard correctly moved **no daemon**,
+so the shadow run started 08-23 20:17Z **survives** and is now ~7h in.
+**(4) HONEST LIMIT: THIS CANNOT RETRO-DETECT 08-20.** The window is
+24h and the event is four days old, so the check earns its place going
+forward only. It is a detector, not a rescue.
+NEXT PASS: (1) **the 20:17Z shadow run reaches ~3 days around 08-26 —
+re-run `by_day` as a genuine OUT-OF-SAMPLE test of the only diurnal
+claim that survived: every day troughs in 16–18Z and peaks in 21–00Z.**
+Do not re-test the +72/−247/+150 cycle; it is dead. (2) The 10:00Z QA
+today is the first to carry `collection continuous over last 24h` in
+production — read what it prints. (3) Second honest enumeration reading
+lands next QA (first was 16,952 vs a prior-10d peak of 16,925, ratio
+1.002 against a 0.75 floor). (4) The `batch units` FAIL self-clears
+08-28 if no new breach lands — if it does not, the budget is stale and
+should be re-measured rather than re-excused.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-23 22:00 UTC (RUNG-1 PASS — THE CHRONIC LATENCY RED
 WAS WATCHING THE CLOCK, NOT THE STREAM, AND IT COSTS THE SIM NOTHING.**
 **(1) `trade latency p99 sane` IS RETIRED, COSTED RATHER THAN MOVED.**
 It asserted `-2 < p99(recv_ts - src_ts) < 25` with the comment "25s

@@ -502,6 +502,42 @@ Format: what happened → root cause → error type → prevention tier
     **"cost it or retire it" is the right demand of any permanent red,
     and the cost has to be a measurement, not a paragraph.**
 
+30. **2026-08-24 — every freshness check in the suite is
+    INSTANTANEOUS, so an outage that heals is invisible by
+    construction.** The wiki carried "the ~4h20m pre-reboot shadow
+    silence on 2026-08-20, still unexplained" as an open item for four
+    passes. Two things were wrong before anyone even looked at the
+    cause. (a) It was read as SHADOW's silence, but the number came
+    from `shadow_runs.anchor`, which is `max(recv_ts)` in the STREAM db
+    at shadow's first poll — it reports how old the stream's head was,
+    not how long shadow was quiet. (b) It was read as "pre-reboot",
+    but the box died AT 21:33:37Z and returned at 01:52:51Z: the
+    silence IS the downtime and the reboot is its END, not a
+    subsequent event. Three independent writers stop within 10ms and
+    resume within minutes of each other — two separate Kalshi WS
+    channels, the polymarket stream, and the collector timer writing a
+    different database — which no single-process fault produces.
+    Type: `wrong-attribution` (a derived quantity read as if it
+    measured the subsystem that stored it) + `missing-check`.
+    The deeper failure is (b)'s cause: `collector fresh (snapshots <
+    20 min old)` and `stream fresh (trades < 5 min old)` answer "is it
+    collecting NOW", QA runs once daily at 10:00Z, and this outage
+    healed 8h before the next run. **No check in the suite could ever
+    have seen it**, so a 4h19m whole-box outage was recorded as a
+    vague adjective instead of an alarm. Prevention: **an
+    instantaneous check on a periodically-sampled monitor cannot
+    detect anything shorter than its own sampling period; the
+    retrospective form is a separate check, not a tuning of the same
+    one.** `collection continuous over last 24h` (EXP-1359) bounds the
+    largest inter-cycle gap over the window, anchored on the newest
+    cycle BEFORE it so a straddling outage is not lost with its
+    predecessor. Budget measured, not argued: 21 days / 6,040 cycles
+    give p50 300.0s / p99 314.0s / p99.9 600.0s, worst benign gap
+    25.0 min against the outage's 264.8 min; bound 60 min. Corollary:
+    **before reading an unexplained number, check what the column that
+    produced it actually measures** — the same discipline #29 applied
+    to `recv_ts - src_ts`, one level up.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
