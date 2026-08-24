@@ -233,8 +233,10 @@ def test_reconnect_seq_restart_is_not_a_hole(tmp_path):
     runs into one min..max range: a window-truncated run at seq 50..52
     followed by a fresh run at 1..3 reads as 47 phantom holes. Both runs are
     internally contiguous, so the check must stay silent."""
-    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
-              ((50, 40), (51, 39), (52, 38), (1, 20), (2, 19), (3, 18))]
+    frames = [
+        (_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m))
+        for s, m in ((50, 40), (51, 39), (52, 38), (1, 20), (2, 19), (3, 18))
+    ]
     _stream_with_books(tmp_path / "s.duckdb", frames)
     failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
     assert "book seq contiguous or gap-marked" not in failed
@@ -244,8 +246,10 @@ def test_hole_not_excused_by_non_overlapping_gap_row(tmp_path):
     """A gap row excuses only the run it overlaps. The old check passed on
     ANY gap row in the window, which made it vacuous in production (392 gap
     rows in a 26h window would excuse every hole in it)."""
-    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
-              ((1, 20), (2, 19), (9, 18))]
+    frames = [
+        (_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m))
+        for s, m in ((1, 20), (2, 19), (9, 18))
+    ]
     store = _stream_with_books(tmp_path / "s.duckdb", frames)
     stale = NOW - timedelta(hours=10)
     store.append_gap("kalshi", "books", stale, stale, "unrelated")
@@ -257,8 +261,10 @@ def test_hole_not_excused_by_non_overlapping_gap_row(tmp_path):
 def test_hole_excused_by_overlapping_gap_row(tmp_path):
     """The mirror of the above: the tier must not kill everything — a gap
     row spanning the run's own interval still excuses its hole."""
-    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
-              ((1, 20), (2, 19), (9, 18))]
+    frames = [
+        (_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m))
+        for s, m in ((1, 20), (2, 19), (9, 18))
+    ]
     store = _stream_with_books(tmp_path / "s.duckdb", frames)
     store.append_gap(
         "kalshi", "books", NOW - timedelta(minutes=19), NOW - timedelta(minutes=18), "seq_gap"
@@ -274,8 +280,10 @@ def test_hole_not_excused_by_run_terminating_gap_row(tmp_path):
     endpoint — under run-scoped excusal that pardoned every hole in the run
     however far away (measured 2026-07-29: 22 holes at 17:55 pardoned by a
     21:29 reconnect), leaving only the still-open run able to fail."""
-    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
-              ((1, 200), (2, 199), (9, 198), (10, 30))]
+    frames = [
+        (_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m))
+        for s, m in ((1, 200), (2, 199), (9, 198), (10, 30))
+    ]
     store = _stream_with_books(tmp_path / "s.duckdb", frames)
     # the run's terminating reconnect, ~3h after the hole at minute 198
     store.append_gap(
@@ -290,11 +298,17 @@ def test_hole_not_excused_by_another_channels_gap_row(tmp_path):
     """A polymarket or kalshi-trades reconnect says nothing about the kalshi
     books connection these runs belong to. Production carried 3 such foreign
     gap rows out of 13 in the 2026-07-30 window."""
-    frames = [(_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m)) for s, m in
-              ((1, 20), (2, 19), (9, 18))]
+    frames = [
+        (_book_frame("delta", s, "0.40", "1.00"), NOW - timedelta(minutes=m))
+        for s, m in ((1, 20), (2, 19), (9, 18))
+    ]
     store = _stream_with_books(tmp_path / "s.duckdb", frames)
     store.append_gap(
-        "polymarket", "market", NOW - timedelta(minutes=19), NOW - timedelta(minutes=18), "reconnect"
+        "polymarket",
+        "market",
+        NOW - timedelta(minutes=19),
+        NOW - timedelta(minutes=18),
+        "reconnect",
     )
     store.flush()
     failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
@@ -736,9 +750,7 @@ def test_tape_dead_sweeper_fails_even_inside_grace(tmp_path, capsys):
     db = tmp_path / "a.duckdb"
     store = _tape_archive(db)
     stale = (NOW - timedelta(hours=qa.TAPE_SWEEP_STALL_H + 5)).replace(tzinfo=None)
-    store.conn.execute(
-        "INSERT INTO trades_swept VALUES (?,?,?,?)", ["OTHER", stale, 5, "ok"]
-    )
+    store.conn.execute("INSERT INTO trades_swept VALUES (?,?,?,?)", ["OTHER", stale, 5, "ok"])
     store.close()
     failed = _run(None, tmp_path, archive=db)
     assert "trade tape covers retention window" in failed
@@ -924,3 +936,194 @@ def test_one_cycle_is_unmeasured_not_healthy(tmp_path, capsys):
     failed = _run(None, tmp_path, archive=db)
     assert _CONT not in failed  # a single cycle cannot exhibit a gap
     assert f"WATCH {_CONT}" in capsys.readouterr().out
+
+
+# --- EXP-1360: econ-vintage ingest, split into pull-liveness and per-series
+# coverage. The retired `econ vintages fresh (< 8 days)` added a signal to a
+# nuisance term and pooled seven cadences into one max, and on 2026-08-24 it
+# printed "age -0.6d" and PASSED while four of seven series sat past its own
+# 8-day budget.
+
+
+def _vintages(store, per_series):
+    """per_series: {series_id: [vintage_date, ...]}. Stamped exactly the way
+    `alfred.pessimistic_knowable_at` does, so the tests exercise the real
+    nuisance term and not a convenient one."""
+    from collector.venues.alfred import pessimistic_knowable_at
+
+    rows = []
+    for sid, vds in per_series.items():
+        for i, vd in enumerate(vds):
+            rows.append(
+                (sid, NOW.date() - timedelta(days=400 + i), float(i), pessimistic_knowable_at(vd))
+            )
+    store.conn.executemany("INSERT INTO econ_vintages VALUES (?, ?, ?, ?)", rows)
+
+
+def test_pessimistic_stamp_cannot_make_a_stale_pull_read_fresh(tmp_path):
+    """The stamp is vintage_date 23:59 ET, i.e. up to ~28h in the FUTURE, so
+    `now - max(knowable_at)` is (staleness - pessimism) and goes negative on a
+    perfectly current archive. Measuring the vintage DATE cancels it exactly:
+    a pull that stopped 10 days ago must read 10 days, not 9."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _vintages(store, {"DFEDTARU": [NOW.date() - timedelta(days=10)]})
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "econ pull live (any series, last vintage date)" in failed
+
+
+def test_todays_vintage_passes_without_a_negative_age(tmp_path):
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _vintages(store, {"DFEDTARU": [NOW.date()]})
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "econ pull live (any series, last vintage date)" not in failed
+
+
+def test_pull_liveness_is_blind_to_a_dropped_series_by_construction(tmp_path):
+    """Not a defect in `econ pull live` — its stated scope. The daily pair
+    keeps the pooled max current while the monthly series are long dead, and
+    that is exactly why per-series coverage cannot live in the archive."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _vintages(
+        store,
+        {
+            "DFEDTARU": [NOW.date()],
+            "UNRATE": [NOW.date() - timedelta(days=200)],
+        },
+    )
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "econ pull live (any series, last vintage date)" not in failed
+
+
+def _fetch_log(tmp_path, runs):
+    """runs: [(days_ago, {series: ok_bool})]"""
+    p = tmp_path / "signals_fetch.jsonl"
+    with p.open("w") as fh:
+        for days_ago, outcomes in runs:
+            at = NOW - timedelta(days=days_ago)
+            fh.write(
+                json.dumps(
+                    {
+                        "at": at.isoformat(),
+                        "vintage_date": at.date().isoformat(),
+                        "series": {
+                            s: {
+                                "ok": ok,
+                                "rows": 5 if ok else 0,
+                                "error": None if ok else "HTTPError",
+                            }
+                            for s, ok in outcomes.items()
+                        },
+                    }
+                )
+                + "\n"
+            )
+    return str(p)
+
+
+def _run_fetch(pull_age_d, path, series):
+    qa._failures.clear()
+    qa.qa_signals_fetch(pull_age_d, path=path, series=series)
+    failed = set(qa._failures)
+    qa._failures.clear()
+    return failed
+
+
+NAME_FETCH = "econ series all fetched, not just the fast ones"
+SERIES3 = ["DFEDTARU", "ICSA", "UNRATE"]
+
+
+def test_dropped_monthly_series_trips_even_though_the_archive_looks_healthy(tmp_path):
+    """The whole point. UNRATE has not been fetched successfully for a week
+    while the daily series arrive every day — invisible to every archive-side
+    rule, because econ_vintages only gains a row when a value CHANGES and a
+    monthly series looks identical dead or alive for a month."""
+    path = _fetch_log(
+        tmp_path,
+        [(d, {"DFEDTARU": True, "ICSA": True, "UNRATE": d > 6}) for d in range(7, -1, -1)],
+    )
+    assert NAME_FETCH in _run_fetch(0, path, SERIES3)
+
+
+def test_all_series_fetched_passes(tmp_path):
+    path = _fetch_log(tmp_path, [(d, dict.fromkeys(SERIES3, True)) for d in range(7, -1, -1)])
+    assert NAME_FETCH not in _run_fetch(0, path, SERIES3)
+
+
+def test_a_series_never_seen_in_the_record_is_stale_not_absent(tmp_path):
+    """A series missing from every run is the ALFRED-dropped-the-id case;
+    treating "no row" as "nothing to check" is how it would hide."""
+    path = _fetch_log(tmp_path, [(0, {"DFEDTARU": True, "ICSA": True})])
+    assert NAME_FETCH in _run_fetch(0, path, SERIES3)
+
+
+def test_recent_success_survives_a_later_failed_attempt(tmp_path):
+    """A single failed fetch inside the budget is a transient, not a drop —
+    the check measures time since last SUCCESS, not the newest outcome."""
+    path = _fetch_log(
+        tmp_path,
+        [(1, dict.fromkeys(SERIES3, True)), (0, {**dict.fromkeys(SERIES3, True), "UNRATE": False})],
+    )
+    assert NAME_FETCH not in _run_fetch(0, path, SERIES3)
+
+
+def test_absent_sidecar_with_a_live_pull_is_a_bounded_skip_then_a_failure(tmp_path):
+    """An alarm whose producer is dead is worse than no alarm (EXP-943) — but
+    a never-written sidecar cannot be told from a just-shipped one on sight,
+    so the escalation is on a clock rather than immediate."""
+    absent = str(tmp_path / "nope.jsonl")
+    assert NAME_FETCH not in _run_fetch(0, absent, SERIES3)  # first sighting: SKIP
+    assert qa._skipped == ["signals-fetch"]
+    qa._skipped.clear()
+    # ... and once a pull cycle has provably had time to run, it is a failure
+    state = json.loads(qa.STATE.read_text())
+    state["signals-fetch"]["first_seen"] = (
+        NOW.replace(tzinfo=None) - timedelta(hours=qa.SKIP_MAX_AGE_H + 1)
+    ).isoformat()
+    qa.STATE.write_text(json.dumps(state))
+    assert NAME_FETCH in _run_fetch(0, absent, SERIES3)
+
+
+def test_absent_sidecar_with_a_dead_pull_is_unverified_not_a_failure(tmp_path):
+    """Neither witness saw anything, so nothing was measured. The pull's own
+    outage is already reported by `econ pull live`; re-reporting it here
+    would be two alarms for one fact."""
+    absent = str(tmp_path / "nope.jsonl")
+    assert NAME_FETCH not in _run_fetch(99, absent, SERIES3)
+    assert qa._skipped == ["signals-fetch"]
+
+
+def test_a_sidecar_that_produced_and_went_quiet_needs_no_grace(tmp_path):
+    """Distinct from the absent case: this producer demonstrably ran once, so
+    'it may not have shipped yet' is not available as an explanation."""
+    path = _fetch_log(tmp_path, [(30, dict.fromkeys(SERIES3, True))])
+    assert NAME_FETCH in _run_fetch(0, path, SERIES3)
+
+
+def test_malformed_rows_are_counted_not_swallowed(tmp_path):
+    path = _fetch_log(tmp_path, [(0, dict.fromkeys(SERIES3, True))])
+    with open(path, "a") as fh:
+        fh.write("{not json\n")
+    assert NAME_FETCH not in _run_fetch(0, path, SERIES3)
+
+
+def test_reported_age_is_the_true_day_gap_not_the_stamp_offset(tmp_path, capsys):
+    """Pins the nuisance removal itself rather than a threshold margin: a pull
+    that last landed 3 days ago must REPORT 3 days. Reading `knowable_at`
+    directly reports ~1.8 — the ~28h pessimism margin subtracted from the
+    staleness — which is the arithmetic that let the retired check print a
+    negative age on a healthy archive and would let a 5-day outage read
+    inside a 4-day budget."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    vd = NOW.date() - timedelta(days=3)
+    _vintages(store, {"DFEDTARU": [vd]})
+    store.close()
+    _run(None, tmp_path, archive=db)
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "econ pull live" in ln)
+    assert f"newest vintage date {vd:%Y-%m-%d}, 3d ago" in line

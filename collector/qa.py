@@ -24,6 +24,7 @@ from pathlib import Path
 
 import duckdb
 
+from collector.venues import alfred
 from hyxlab.store import SCHEMA_VERSION
 
 ARCHIVE = "data/hyxlab.duckdb"
@@ -63,6 +64,43 @@ COLLECT_SKIP_MAX_24H = 3
 # events at 12:54/12:59/13:04Z and three matching sidecar rows.
 COLLECT_UNIT = "hyxlab-collect.service"
 COLLECT_SKIP_EXIT = 75
+
+# EXP-1360 — econ-vintage ingest, split into the two questions the old
+# `econ vintages fresh (< 8 days)` was adding together and losing both.
+#
+# (a) THE NUISANCE TERM. `knowable_at` is not an ingest time: ALFRED
+# vintages are date-granular, so `alfred.pessimistic_knowable_at` stamps
+# the vintage date's 23:59 US/Eastern (= vintage_date+1 03:59 UTC), a
+# deliberately LATE stamp so no backtest can see a print before a live
+# trader could. It therefore leads the fetch by up to ~28h, and
+# `now - max(knowable_at)` is (ingest staleness − pessimism margin). On
+# 2026-08-24 that check printed "age -0.6d" and PASSED. A freshness
+# measure that can go negative is not measuring freshness. Recovering the
+# vintage DATE from the stamp cancels the nuisance exactly, because the
+# stamp is a deterministic function of it.
+KNOWABLE_AT_STAMP_OFFSET_H = 4  # 23:59 ET -> next-day 03:59 UTC; see alfred.py
+# (b) POOLING. A max over seven series whose print cadences run from daily
+# to monthly is set by the fastest one, always. The daily Fed-target pair
+# refreshes it every day, so CPIAUCSL/CPILFESL/PAYEMS/UNRATE could stop
+# arriving forever and this check would stay green — and on 2026-08-24 it
+# WAS green while four of the seven series sat 10.2d, 10.2d, 15.2d and
+# 15.2d stale, i.e. past the check's own 8-day budget. Pooling is right for
+# exactly one question ("did the pull bring anything home"), so that is the
+# only question this check now asks; per-series coverage moves to
+# `qa_signals_fetch`, which reads a witness that can tell "not published
+# yet" apart from "not fetched".
+#
+# Budget measured over the 44 distinct vintage dates ingested 2026-07-11 ..
+# 2026-08-24 (45 calendar days): the pull lands daily and the ONLY gap
+# above one day in that history is a single 2-day gap at 07-13. 4 days =
+# 2x the worst observed gap.
+ECON_PULL_GAP_BUDGET_D = 4
+
+# EXP-1360 — per-series ALFRED fetch outcomes (`collector.signals.record_fetch`).
+# The pull is daily, so a series not SUCCESSFULLY fetched within the same
+# budget as the pull itself has been dropped, whatever its print cadence.
+SIGNALS_FETCH_LOG = "data/signals_fetch.jsonl"
+_SIGNALS_FETCH_SECTION = "signals-fetch"
 
 # EXP-960 — the fade window, in UTC hours. Live trading reads the snapshot
 # tape 23:00-04:00Z (research/lowt-window-structure: KXLOWT candidates appear
@@ -337,9 +375,7 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         [now, int(hours)],
     ).fetchall()
     unexcused = [
-        (m, t0, t1)
-        for m, t0, t1 in holes
-        if not any(g0 <= t1 and g1 >= t0 for g0, g1 in gap_spans)
+        (m, t0, t1) for m, t0, t1 in holes if not any(g0 <= t1 and g1 >= t0 for g0, g1 in gap_spans)
     ]
     check(
         "book seq contiguous or gap-marked",
@@ -378,11 +414,7 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         not unknown,
         f"{sum(n for _, n in voids)} void frames"
         + (f" ({legacy} legacy unattributed)" if legacy else "")
-        + (
-            "; UNKNOWN " + ", ".join(f"{t}x{n}" for t, n in unknown)
-            if unknown
-            else "; all known"
-        ),
+        + ("; UNKNOWN " + ", ".join(f"{t}x{n}" for t, n in unknown) if unknown else "; all known"),
     )
 
     # Reconstruct each Kalshi book from its time-latest snapshot image
@@ -478,11 +510,14 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     _record_ok("stream", now)
 
 
-def qa_archive(hours: float, path: str = ARCHIVE) -> None:
+def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
+    """Returns the econ pull's age in days (see `qa_econ_pull_live`), or
+    None when the archive was unreachable or has never been pulled — the
+    witness `qa_signals_fetch` needs, and None means "cannot decide"."""
     conn = _connect_ro(path)
     now = datetime.now(UTC).replace(tzinfo=None)
     if not _reachable(conn, "main archive reachable", "archive", now):
-        return
+        return None
 
     age = conn.execute("SELECT epoch(? - max(ts)) FROM snapshots", [now]).fetchone()[0]
     check(
@@ -605,12 +640,7 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
 
     # Signal feeds (B4): once a feed has ever pulled, its cadence must
     # hold. Guarded on non-empty so pre-first-pull archives stay green.
-    n_vint = conn.execute("SELECT count(*) FROM econ_vintages").fetchone()[0]
-    if n_vint:
-        age_d = conn.execute(
-            "SELECT epoch(? - max(knowable_at)) / 86400 FROM econ_vintages", [now]
-        ).fetchone()[0]
-        check("econ vintages fresh (< 8 days)", age_d < 8, f"age {age_d:.1f}d")
+    pull_age_d = qa_econ_pull_live(conn, now)
     n_news = conn.execute("SELECT count(*) FROM news_items WHERE source='gdelt'").fetchone()[0]
     if n_news:
         age_h = conn.execute(
@@ -622,6 +652,184 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
     qa_tape_coverage(conn, now)
     conn.close()
     _record_ok("archive", now)
+    return pull_age_d
+
+
+def qa_econ_pull_live(conn, now: datetime) -> int | None:
+    """Is the ALFRED pull still bringing vintages home at all?
+
+    Returns the age in whole days of the newest ingested VINTAGE DATE, or
+    None if nothing has ever been ingested — `qa_signals_fetch` uses it as
+    the independent witness that decides an absent sidecar.
+
+    Two deliberate choices, both explained at ECON_PULL_GAP_BUDGET_D:
+    the age is measured on the vintage date recovered from `knowable_at`
+    rather than on `knowable_at` itself (the stamp is pessimistically in
+    the FUTURE, which is what made the old check print a negative age and
+    pass), and it pools all series ON PURPOSE, because "did anything
+    arrive" is the one question pooling answers honestly. It cannot see a
+    single series being dropped; nothing archive-side can, which is why
+    the sidecar exists.
+    """
+    name = "econ pull live (any series, last vintage date)"
+    if not conn.execute("SELECT count(*) FROM econ_vintages").fetchone()[0]:
+        return None  # pre-first-pull archive: nothing to hold to a cadence
+    # INTERVAL takes no placeholder in DuckDB; the offset is an int constant.
+    last_vd = conn.execute(
+        "SELECT max(cast(knowable_at - INTERVAL "
+        f"{KNOWABLE_AT_STAMP_OFFSET_H:d} HOUR AS DATE)) FROM econ_vintages"
+    ).fetchone()[0]
+    age_d = (now.date() - last_vd).days
+    check(
+        name,
+        age_d <= ECON_PULL_GAP_BUDGET_D,
+        f"newest vintage date {last_vd:%Y-%m-%d}, {age_d}d ago, budget {ECON_PULL_GAP_BUDGET_D}d",
+    )
+    return age_d
+
+
+def qa_signals_fetch(
+    pull_age_d: int | None,
+    path: str = SIGNALS_FETCH_LOG,
+    series: list[str] | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Fail when an individual econ series has stopped being fetched.
+
+    This is the question `econ pull live` structurally cannot reach.
+    `collector.signals.fetch_alfred` retries three times and then moves on
+    with the series simply absent from its result, so a series ALFRED has
+    dropped (or whose CSV header changed, which makes `parse_vintage_csv`
+    raise) produces no rows and no archive-visible trace. And no
+    archive-side rule can recover it, because `econ_vintages` only gains a
+    row when a value CHANGES: a monthly series that died and a monthly
+    series that has not printed yet are the same table for a month.
+
+    So the witness is the pull's own per-series outcome record, and an
+    absent record is DECIDED rather than trusted — the same shape as
+    `qa_collect_skips`, against a different witness:
+
+      sidecar absent/stale, archive says the pull IS running  -> FAIL
+                                                                (producer inert)
+      sidecar absent/stale, archive says the pull is NOT
+      running (or is unreadable)                              -> UNVERIFIED
+      sidecar current                                         -> the per-series
+                                                                 age check
+    """
+    now = now or datetime.now(UTC)
+    naive_now = now.replace(tzinfo=None)
+    name = "econ series all fetched, not just the fast ones"
+    expected = series if series is not None else list(alfred.SERIES)
+    # last successful fetch per series, over every run the sidecar holds
+    last_ok: dict[str, datetime] = {}
+    newest_run: datetime | None = None
+    malformed = 0
+    p = Path(path)
+    if p.exists():
+        for line in p.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                at = datetime.fromisoformat(row["at"])
+                outcomes = row["series"]
+                if not isinstance(outcomes, dict):
+                    raise ValueError("series")
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=UTC)
+            newest_run = at if newest_run is None else max(newest_run, at)
+            for sid, outcome in outcomes.items():
+                if isinstance(outcome, dict) and outcome.get("ok"):
+                    prev = last_ok.get(sid)
+                    if prev is None or at > prev:
+                        last_ok[sid] = at
+    tail = f", {malformed} malformed rows" if malformed else ""
+
+    run_age_d = None if newest_run is None else (now - newest_run).total_seconds() / 86400.0
+    producer_quiet = run_age_d is None or run_age_d > ECON_PULL_GAP_BUDGET_D
+    if producer_quiet:
+        # The archive is the independent witness: it is written by the same
+        # run, through a different path (the DuckDB insert), so the two
+        # disagree in exactly one case — the recorder is not running.
+        if pull_age_d is not None and pull_age_d <= ECON_PULL_GAP_BUDGET_D:
+            # A sidecar that has NEVER held a run is genuinely undecidable on
+            # sight: "record_fetch is dead" and "record_fetch shipped an hour
+            # ago and the 04:40Z pull has not fired yet" are the same file. So
+            # the never-produced case gets the bounded-SKIP treatment (clock
+            # starts at first observation, escalates once a pull cycle has
+            # provably had time to run) rather than a red that is guaranteed
+            # for the first day of its own life. A sidecar that HAS produced
+            # and then went quiet needs no such grace.
+            grace_h = _skip_age_h(_SIGNALS_FETCH_SECTION, naive_now)
+            if run_age_d is None and (grace_h is None or grace_h < SKIP_MAX_AGE_H):
+                _note_seen(_SIGNALS_FETCH_SECTION, naive_now)
+                print(
+                    f"SKIP  {name} — UNVERIFIED: {path} holds no run"
+                    + ("" if p.exists() else " and does not exist")
+                    + f"; the pull IS running (archive vintage {pull_age_d}d old), so this"
+                    f" escalates to FAIL if no run is recorded within {SKIP_MAX_AGE_H:g}h"
+                    + (f" (waiting {grace_h:.1f}h)" if grace_h is not None else "")
+                    + tail,
+                    flush=True,
+                )
+                _skipped.append(_SIGNALS_FETCH_SECTION)
+                return
+            check(
+                name,
+                False,
+                f"PRODUCER INERT: the archive holds a vintage from {pull_age_d}d ago so the"
+                f" pull IS running, but {path} holds"
+                + (" no run" if run_age_d is None else f" nothing newer than {run_age_d:.1f}d")
+                + ("" if p.exists() else " and does not exist")
+                + f". record_fetch() is not running, so this check reads a file nothing"
+                f" writes{tail}",
+            )
+            return
+        print(
+            f"SKIP  {name} — UNVERIFIED: {path} holds"
+            + (" no run" if run_age_d is None else f" nothing newer than {run_age_d:.1f}d")
+            + ("" if p.exists() else " (file absent)")
+            + (
+                " and the archive shows no econ vintages either, so the pull is neither"
+                " proven alive nor proven dead"
+                if pull_age_d is None
+                else f" and the archive's newest vintage is {pull_age_d}d old, so the pull"
+                " looks stopped too — nothing here is measured"
+            )
+            + tail,
+            flush=True,
+        )
+        _skipped.append(_SIGNALS_FETCH_SECTION)
+        return
+
+    stale = sorted(
+        (
+            (sid, None if sid not in last_ok else (now - last_ok[sid]).total_seconds() / 86400.0)
+            for sid in expected
+        ),
+        key=lambda t: (t[1] is not None, t[1]),
+    )
+    _record_ok(_SIGNALS_FETCH_SECTION, naive_now)
+    bad = [(sid, a) for sid, a in stale if a is None or a > ECON_PULL_GAP_BUDGET_D]
+    worst = "never" if stale[0][1] is None else f"{stale[0][1]:.1f}d"
+    check(
+        name,
+        not bad,
+        (
+            f"{len(expected) - len(bad)}/{len(expected)} series fetched within"
+            f" {ECON_PULL_GAP_BUDGET_D}d; oldest {stale[0][0]} {worst}"
+            + (
+                "; STALE "
+                + ", ".join(f"{s}={'never' if a is None else f'{a:.1f}d'}" for s, a in bad)
+                if bad
+                else ""
+            )
+            + tail
+        ),
+    )
 
 
 def qa_tape_coverage(conn, now: datetime) -> None:
@@ -714,10 +922,17 @@ def journal_skip_exits(hours: float = 24.0, unit: str = COLLECT_UNIT) -> int | N
     try:
         p = subprocess.run(
             [
-                "journalctl", "--user", "-u", unit,
-                "--since", f"{hours:g} hours ago",
-                "--grep", r"Main process exited",
-                "-o", "cat", "--output-fields=MESSAGE",
+                "journalctl",
+                "--user",
+                "-u",
+                unit,
+                "--since",
+                f"{hours:g} hours ago",
+                "--grep",
+                r"Main process exited",
+                "-o",
+                "cat",
+                "--output-fields=MESSAGE",
             ],
             capture_output=True,
             text=True,
@@ -791,18 +1006,15 @@ def qa_collect_skips(
                 recent += 1
     tail = f", {malformed} malformed rows" if malformed else ""
 
-    witness = (
-        journal_skip_exits(hours)
-        if journal_skips is _QUERY_JOURNAL
-        else journal_skips
-    )
+    witness = journal_skip_exits(hours) if journal_skips is _QUERY_JOURNAL else journal_skips
     if witness is not None and witness > recent:
         check(
             name,
             False,
             f"PRODUCER INERT: systemd journalled {witness} exit-{COLLECT_SKIP_EXIT} "
             f"(skipped) cycle(s) of {COLLECT_UNIT} in {hours:g}h but {path} holds "
-            f"{recent}" + ("" if p.exists() else " and does not exist")
+            f"{recent}"
+            + ("" if p.exists() else " and does not exist")
             + f". record_skip() is not running, so this check reads a file nothing "
             f"writes{tail}",
         )
@@ -834,8 +1046,12 @@ def qa_collect_skips(
         name,
         recent <= COLLECT_SKIP_MAX_24H,
         f"{recent} skipped cycles in {hours:g}h (max {COLLECT_SKIP_MAX_24H})"
-        + (f", producer proven alive against {witness} journalled exit-"
-           f"{COLLECT_SKIP_EXIT} cycle(s)" if witness is not None else "")
+        + (
+            f", producer proven alive against {witness} journalled exit-"
+            f"{COLLECT_SKIP_EXIT} cycle(s)"
+            if witness is not None
+            else ""
+        )
         + tail,
     )
     if recent <= COLLECT_SKIP_MAX_24H:
@@ -873,10 +1089,17 @@ def _journal(unit: str, since: datetime, until: datetime) -> str | None:
     try:
         p = subprocess.run(
             [
-                "journalctl", "--user", "-u", unit,
-                "--since", since.strftime("%Y-%m-%d %H:%M:%S UTC"),
-                "--until", until.strftime("%Y-%m-%d %H:%M:%S UTC"),
-                "-o", "short-iso", "--no-pager",
+                "journalctl",
+                "--user",
+                "-u",
+                unit,
+                "--since",
+                since.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "--until",
+                until.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "-o",
+                "short-iso",
+                "--no-pager",
             ],
             capture_output=True,
             text=True,
@@ -1034,15 +1257,11 @@ _DUR_UNIT_S = {"d": 86400.0, "h": 3600.0, "min": 60.0, "s": 1.0, "ms": 1e-3, "us
 #: " over " because the SAME line carries CPU time first, and CPU time is the
 #: smaller and wronger number: the 2026-08-03 sweep reads "Consumed 1h 12min
 #: CPU time over 10h 6min wall clock time".
-_CONSUMED_RE = re.compile(
-    r"^(\S+)\s.*?:\s*(\S+\.service): Consumed .*? over (.+?) wall clock time"
-)
+_CONSUMED_RE = re.compile(r"^(\S+)\s.*?:\s*(\S+\.service): Consumed .*? over (.+?) wall clock time")
 #: systemd's two ways of saying a run did not finish its work. The `status=`
 #: form is matched with an explicit non-zero test because `status=0/SUCCESS`
 #: rides the same sentence on a clean stop.
-_FAILED_RE = re.compile(
-    r"Failed with result|Main process exited, code=\w+, status=(?!0/)"
-)
+_FAILED_RE = re.compile(r"Failed with result|Main process exited, code=\w+, status=(?!0/)")
 
 
 def parse_systemd_duration(text: str) -> float | None:
@@ -1141,9 +1360,7 @@ def _catch_up_clause(run: BatchRun, siblings: list[BatchRun]) -> str:
     if not prior or max(prior, key=lambda r: r.end).ok:
         return ""
     last = max(prior, key=lambda r: r.end)
-    return (
-        f" — catch-up after the {last.end:%m-%d %H:%M}Z abort, not a stale budget"
-    )
+    return f" — catch-up after the {last.end:%m-%d %H:%M}Z abort, not a stale budget"
 
 
 def qa_batch_run_budget(
@@ -1201,12 +1418,7 @@ def qa_batch_run_budget(
     healthy = {u: [r for r in rs if r.ok] for u, rs in measured.items()}
     aborted = [r for rs in measured.values() for r in rs if not r.ok]
 
-    over = [
-        r
-        for rs in healthy.values()
-        for r in rs
-        if r.wall_h > BATCH_RUN_BUDGET_H[r.unit]
-    ]
+    over = [r for rs in healthy.values() for r in rs if r.wall_h > BATCH_RUN_BUDGET_H[r.unit]]
     # Overlap, unlike the budget, is about quota actually spent — a run that
     # died inside the fade window still spent it, so this reads every run.
     overlaps = [
@@ -1227,9 +1439,7 @@ def qa_batch_run_budget(
     _save_state(state)
 
     fresh_overlap = {k for k in fresh if not k.startswith("abort:")}
-    fresh_abort = [
-        r for r in aborted if f"abort:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh
-    ]
+    fresh_abort = [r for r in aborted if f"abort:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh]
 
     worst = {u: max(r.wall_h for r in rs) for u, rs in healthy.items() if rs}
     detail = (
@@ -1241,42 +1451,48 @@ def qa_batch_run_budget(
             f"{u} {worst[u]:.2f}h/{BATCH_RUN_BUDGET_H[u]:g}h" for u in sorted(worst)
         )
     if aborted:
-        detail += f"; {len(aborted)} aborted (" + ", ".join(
-            f"{r.unit} {r.end:%m-%d %H:%M}Z after {r.wall_h:.2f}h"
-            for r in sorted(aborted, key=lambda r: r.end)
-        ) + ")"
+        detail += (
+            f"; {len(aborted)} aborted ("
+            + ", ".join(
+                f"{r.unit} {r.end:%m-%d %H:%M}Z after {r.wall_h:.2f}h"
+                for r in sorted(aborted, key=lambda r: r.end)
+            )
+            + ")"
+        )
     starved = sorted(u for u, rs in healthy.items() if not rs)
     if starved:
         detail += (
-            f"; UNVERIFIED, every run aborted so the budget is unmeasured: "
-            f"{', '.join(starved)}"
+            f"; UNVERIFIED, every run aborted so the budget is unmeasured: {', '.join(starved)}"
         )
     unmeasured = sorted(u for u, r in runs.items() if not r)
     if unmeasured:
         detail += f"; UNMEASURED: {', '.join(unmeasured)}"
 
     if over or fresh_overlap or fresh_abort:
-        reasons = [
-            f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
-            f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z"
-            + _catch_up_clause(r, measured[r.unit])
-            for r in over
-        ] + [
-            f"{r.unit} spent {h:.2f}h inside the {FADE_WINDOW_START_H}:00Z fade window "
-            f"({r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z)"
-            for r, h in overlaps
-            if f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh_overlap
-        ] + [
-            f"{r.unit} ABORTED {r.wall_h:.2f}h in at {r.end:%m-%d %H:%M}Z — its wall "
-            f"clock measures the abort, not the work"
-            for r in sorted(fresh_abort, key=lambda r: r.end)
-        ]
+        reasons = (
+            [
+                f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
+                f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z"
+                + _catch_up_clause(r, measured[r.unit])
+                for r in over
+            ]
+            + [
+                f"{r.unit} spent {h:.2f}h inside the {FADE_WINDOW_START_H}:00Z fade window "
+                f"({r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z)"
+                for r, h in overlaps
+                if f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh_overlap
+            ]
+            + [
+                f"{r.unit} ABORTED {r.wall_h:.2f}h in at {r.end:%m-%d %H:%M}Z — its wall "
+                f"clock measures the abort, not the work"
+                for r in sorted(fresh_abort, key=lambda r: r.end)
+            ]
+        )
         check(name, False, detail + "; " + "; ".join(reasons))
         return
     if overlaps or aborted:
         past = [
-            f"{r.unit} overlapped the fade window by {h:.2f}h "
-            f"ending {r.end:%m-%d %H:%M}Z"
+            f"{r.unit} overlapped the fade window by {h:.2f}h ending {r.end:%m-%d %H:%M}Z"
             for r, h in overlaps
         ] + [
             f"{r.unit} aborted {r.wall_h:.2f}h in at {r.end:%m-%d %H:%M}Z"
@@ -1298,7 +1514,8 @@ def main() -> None:
 
     print(f"[qa] {datetime.now(UTC):%Y-%m-%d %H:%M} window={args.hours}h", flush=True)
     qa_stream(args.hours)
-    qa_archive(args.hours)
+    pull_age_d = qa_archive(args.hours)
+    qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
     qa_collect_skips()  # sidecar journal; never gated by the archive lock
     qa_fade_window_capture()  # journal-only, for the same reason
     qa_batch_run_budget()  # journal-only, for the same reason

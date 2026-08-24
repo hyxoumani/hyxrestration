@@ -538,6 +538,57 @@ Format: what happened → root cause → error type → prevention tier
     produced it actually measures** — the same discipline #29 applied
     to `recv_ts - src_ts`, one level up.
 
+31. **2026-08-24 — a freshness check measured a stamp that is
+    deliberately in the FUTURE, and pooled seven cadences into one
+    max, so it printed a negative age and passed while four of its
+    seven series sat past its own budget.** `econ vintages fresh
+    (< 8 days)` computed `now - max(knowable_at)` over all of
+    `econ_vintages` and read **age -0.6d — PASS**. Two independent
+    defects, both visible in that one number. (a) **The nuisance
+    term.** `knowable_at` is not an ingest time: ALFRED vintages are
+    date-granular, so `alfred.pessimistic_knowable_at` stamps the
+    vintage date's 23:59 US/Eastern (= vintage_date+1 03:59 UTC), a
+    deliberately LATE stamp so no backtest can see a print before a
+    live trader could. It therefore leads the fetch by up to ~28h, and
+    the check was measuring (ingest staleness − pessimism margin). **A
+    freshness measure that can go negative is not measuring
+    freshness** — and the margin is not cosmetic: a 5-day outage reads
+    inside a 4-day budget. (b) **Pooling.** A max over seven series
+    whose print cadences run daily (DFEDTARU/DFEDTARL) to monthly
+    (CPIAUCSL/CPILFESL/PAYEMS/UNRATE) is set by the fastest one,
+    always. On 2026-08-24 the daily pair read 0d while the other four
+    sat **10.2d, 10.2d, 15.2d and 15.2d** — every one of them past the
+    check's own 8-day bound, under a green line.
+    Type: `wrong-statistic` (#24/#28 family — a pooled aggregate over
+    heterogeneous members reports the healthiest member, never the
+    fleet) + `wrong-attribution` (#29 family — a stamp read as if it
+    were an ingest time).
+    Prevention (EXP-1360), and the split is the point: pooling is
+    honest for exactly one question, so `econ pull live (any series,
+    last vintage date)` asks only that one, on the vintage DATE
+    recovered from the stamp — which cancels the nuisance exactly,
+    because the stamp is a deterministic function of it. Budget
+    measured, not argued: 44 distinct vintage dates over 2026-07-11 ..
+    2026-08-24 (45 days), the only gap above one day being a single
+    2-day gap at 07-13; bound 4 days = 2x worst observed.
+    **The per-series question cannot be answered from the archive at
+    all**, and that is the finding worth carrying: `econ_vintages`
+    gains a row only when a value CHANGES, so a monthly series that
+    ALFRED dropped and a monthly series that has not printed yet are
+    the same table for a month — and `fetch_alfred` retries three
+    times, prints, and moves on with the series simply absent from its
+    result. So `collector.signals.record_fetch` now writes per-series
+    fetch outcomes to `data/signals_fetch.jsonl` and
+    `qa_signals_fetch` reads them, deciding an absent sidecar against
+    the archive as an independent witness (#EXP-943's shape) — with a
+    36h grace on the never-produced case, because "the recorder is
+    dead" and "the recorder shipped an hour ago" are the same empty
+    file until one pull cycle has had time to fire.
+    **Honest limit: this is a detector, not a rescue.** The sidecar
+    starts empty, so the first per-series verdict lands one pull after
+    promote, and nothing here recovers whether the four stale series
+    were being fetched during the days they sat quiet.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -6,6 +6,15 @@ Pattern: fetch everything over the network FIRST (no store open), then
 write in one brief flock+open_retry burst — a signals pull must never
 hold the archive lock across network I/O (review H1 discipline).
 
+PER-SERIES FETCH RECORD (EXP-1360). `fetch_alfred` swallows every
+per-series failure — three attempts, a print, and the series is simply
+absent from the returned dict. That is invisible downstream: a monthly
+series that ALFRED stopped serving looks exactly like a monthly series
+that has not printed yet, for a month. So each run now appends one JSON
+line per pull to `data/signals_fetch.jsonl` recording, per series,
+whether the fetch SUCCEEDED and how many observations it returned. It is
+the only witness that separates "not published yet" from "not fetched".
+
 ALFRED subtlety: the keyless vintage endpoint stamps knowable_at with
 the FETCH day's pessimistic 23:59 ET, so a naive daily insert would
 re-log the entire history as fake new vintages every day. The pull
@@ -22,8 +31,10 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import duckdb
 import requests
@@ -35,6 +46,11 @@ from hyxlab.store import Store, open_retry
 
 LOCK_FILE = "data/writer.lock"
 GKG_PAUSE_S = 0.2
+# Per-series ALFRED fetch outcomes, one JSON line per run. Deliberately a
+# sidecar and not an archive table: a fetch outcome must be recordable when
+# the archive is locked or unopenable, which is exactly when the pull is
+# most likely to be failing. Same rationale as `data/collect_skips.jsonl`.
+FETCH_LOG = "data/signals_fetch.jsonl"
 
 
 def fetch_alfred(session: requests.Session, today=None) -> dict[str, list[EconVintage]]:
@@ -45,19 +61,51 @@ def fetch_alfred(session: requests.Session, today=None) -> dict[str, list[EconVi
     The caller's session is deliberately not used here."""
     today = today or datetime.now(UTC).date()
     out: dict[str, list[EconVintage]] = {}
+    outcomes: dict[str, dict] = {}
     for series in alfred.SERIES:
+        last_err: str | None = None
         for attempt in range(3):
             try:
                 out[series] = alfred.get_vintage(series, today, session=requests.Session())
+                last_err = None
                 break
             except Exception as exc:
+                last_err = type(exc).__name__
                 print(
-                    f"[signals] alfred {series} attempt {attempt + 1}: {type(exc).__name__}",
+                    f"[signals] alfred {series} attempt {attempt + 1}: {last_err}",
                     flush=True,
                 )
                 time.sleep(10)
+        # rows is the OBSERVATION count returned, not the count inserted: the
+        # diff drops everything unrevised, so an insert count of 0 is the
+        # normal case and says nothing about whether the fetch worked.
+        outcomes[series] = (
+            {"ok": False, "rows": 0, "error": last_err}
+            if last_err is not None
+            else {"ok": True, "rows": len(out[series]), "error": None}
+        )
         time.sleep(2)
-    return out
+    return out, outcomes
+
+
+def record_fetch(
+    vintage_date: date, outcomes: dict[str, dict], at: datetime | None = None, path: str = FETCH_LOG
+) -> None:
+    """Append this run's per-series fetch outcomes. Never raises: losing the
+    record must not fail a pull that otherwise succeeded — QA decides an
+    absent sidecar against an independent witness rather than trusting it."""
+    row = {
+        "at": (at or datetime.now(UTC)).isoformat(),
+        "vintage_date": vintage_date.isoformat(),
+        "series": outcomes,
+    }
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as fh:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    except OSError as exc:
+        print(f"[signals] could not record fetch outcomes: {type(exc).__name__}: {exc}", flush=True)
 
 
 def diff_vintages(store: Store, fetched: dict[str, list[EconVintage]]) -> list[EconVintage]:
@@ -119,7 +167,9 @@ def main() -> None:
     finally:
         store.close()
 
-    fetched = fetch_alfred(sess)
+    vintage_date = now.date()
+    fetched, outcomes = fetch_alfred(sess, today=vintage_date)
+    record_fetch(vintage_date, outcomes, at=datetime.now(UTC))
     items: list[NewsItem] = []
     missing = 0
     if not args.skip_gdelt:
@@ -141,9 +191,12 @@ def main() -> None:
         finally:
             store.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
+    failed = sorted(k for k, v in outcomes.items() if not v["ok"])
     print(
         f"[signals] {now:%Y-%m-%d %H:%M} vintages+{nv}"
-        f" news+{nn} (of {len(items)} parsed; {missing} missing files)",
+        f" news+{nn} (of {len(items)} parsed; {missing} missing files)"
+        f" alfred {len(outcomes) - len(failed)}/{len(outcomes)} fetched"
+        + (f"; FAILED {', '.join(failed)}" if failed else ""),
         flush=True,
     )
 
