@@ -1,6 +1,74 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-23 20:30 UTC (RUNG-1 PASS — THE FAV-LONG FAMILY IS
+Updated: **2026-08-23 22:00 UTC (RUNG-1 PASS — THE CHRONIC LATENCY RED
+WAS WATCHING THE CLOCK, NOT THE STREAM, AND IT COSTS THE SIM NOTHING.**
+**(1) `trade latency p99 sane` IS RETIRED, COSTED RATHER THAN MOVED.**
+It asserted `-2 < p99(recv_ts - src_ts) < 25` with the comment "25s
+allows for the known ~20s box-clock skew until NTP lands", and had been
+red for many passes with nobody establishing what it cost. The demand
+was "cost it or retire it"; the answer is both, because the quantity
+was never latency. `recv_ts - src_ts` is **(box clock offset +
+transport latency)**, and measured over **12.6M kalshi trades in 24h**
+the distribution is **p01 25.55s / p50 25.71s / p99 25.89s** — the
+WHOLE thing is a **0.34s band sitting at +25.7s**. The check therefore
+tracked the clock at ~150x the amplitude of the thing it was named for,
+and the real damage was not the red: once the offset had eaten the
+headroom, **a genuine stream stall would have been invisible underneath
+it.** The check was not merely failing, it was BLIND.
+**(2) SPLIT INTO THE TWO QUANTITIES IT WAS ADDING (EXP-1358).**
+`trade latency dispersion sane` = **p99 − p50**, which is offset-
+invariant because a constant error cancels in a difference of two
+quantiles of the same window — the only part that watches the stream
+(backpressure, reconnect storms). Measured 0.03–0.18s, bound 5s.
+`box clock offset within tolerance` = the offset, named for what it is,
+and **ASYMMETRIC because the two directions cost different things**.
+**The cost is measured, not argued**: a FAST clock only makes
+`sim._maker_check_and_expire` (`snap.ts >= close_time`) discard
+snapshots near the close, and **ZERO of 1,141,594 pre-close kalshi
+snapshots over 7 days land within 26s of close** (1,061 within 5 min) —
+so the present +25.7s offset costs the sim **exactly nothing**. A SLOW
+clock is the dangerous side: it stamps post-close snapshots as
+pre-close and feeds the sim **genuine lookahead**. Hence floor −2s,
+ceiling 60s (a drift alarm far below the ~300s where the discard cost
+first becomes measurable). NTP remains the real fix and stays
+user-gated. The retired check had **zero tests**; four added, including
+**a real stall under a healthy offset — the case the old check
+structurally could not see**. Logged as mistakes **#29**: when a
+measured quantity is a sum of a signal and a nuisance term, bound them
+separately. Suite 727 → **731 green**.
+**(3) LIVE: QA IS DOWN TO ONE FAIL.** The 21:5xZ run reads
+`trade latency dispersion sane` **PASS at 0.165s** (p99 25.85s raw) and
+`box clock offset within tolerance` **PASS at 25.68s**. The only
+remaining FAIL is `batch units within measured run budget` — the 08-21
+`hyxlab-sweep` catch-up breach (14.64h/12.5h), which is inside its
+stated window until 2026-08-28. Promoted at `9a63f2e`; the restart
+guard correctly moved **no daemon** (qa.py is in neither daemon's
+import closure), so the shadow run started 20:17Z **survives** — which
+is what next pass's out-of-sample test needs.
+**(4) `promote.sh`'s SHADOW-RESTART RATIONALE RE-COSTED.** Its header
+justified the guard by calling an unbroken shadow run "the scarcest
+asset in the archive" because `shadow_settlements` was 0 rows. That
+premise is dead — **2,190 rows across 4 runs (509/112/1324/245)** — so
+quoting it would be paying a premium for something the archive already
+holds. The guard still earns its place for a **different** asset:
+**contiguous DURATION**. `shadow_diurnal` is judged on per-hour draw
+counts and pairwise day agreement and reads UNDERPOWERED below ~3
+spanned days, and a restart resets that clock regardless of banked
+settlements. So a needless restart costs **days of span, not settlement
+rows** — and that is precisely and only what the 08-23 promote lost.
+NEXT PASS: (1) **the 20:17Z shadow run reaches ~3 days around 08-26 —
+re-run `by_day` as a genuine OUT-OF-SAMPLE test of the only diurnal
+claim that survived last pass: every day troughs in 16–18Z and peaks in
+21–00Z.** Do not re-test the +72/−247/+150 cycle; it is dead. (2) The
+~4h20m pre-reboot shadow silence on 08-20, still unexplained. (3)
+Second honest enumeration reading lands next QA (first was 16,952 vs a
+prior-10d peak of 16,925, ratio 1.002 against a 0.75 floor). (4) The
+`batch units` FAIL self-clears 08-28 if no new breach lands — if it
+does not, the budget is stale and should be re-measured rather than
+re-excused.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-23 20:30 UTC (RUNG-1 PASS — THE FAV-LONG FAMILY IS
 CLOSED, AND THE DAILY SHAPE DOES NOT REPEAT. Every item owed by the
 last two passes is now discharged: the verdict, the promote, the
 migration.**

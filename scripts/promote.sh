@@ -9,14 +9,24 @@
 # suite is green in the dev tree.
 #
 # A PROMOTE IS NOT ONE INDIVISIBLE ACT (EXP-961). Restarting a daemon costs
-# whatever that daemon had accumulated, and for `hyxlab-shadow` that is the
-# scarcest asset in the archive: an unbroken run long enough to observe a
-# settlement (~16h, and `shadow_settlements` is still 0 rows archive-wide).
-# Two consecutive passes had to decompose this script by hand to avoid
-# killing a live run for changes that touched only timer-driven code, so the
-# rule is encoded here instead of re-derived each time: restart a daemon only
-# when the promotion actually moves code that daemon RUNS. `--restart-all`
-# forces the old behaviour.
+# whatever that daemon had accumulated. The rule: restart a daemon only when
+# the promotion actually moves code that daemon RUNS. `--restart-all` forces
+# the old behaviour.
+#
+# RE-COSTED 2026-08-23. The original rationale was that an unbroken
+# `hyxlab-shadow` run is "the scarcest asset in the archive" because
+# `shadow_settlements` was 0 rows. That premise is dead:
+# `shadow_settlements` now holds 2,190 rows across 4 runs (509/112/1324/245),
+# so settlements are no longer scarce and protecting the guard on those
+# grounds would be paying a premium for something the archive already has.
+# The guard still earns its place, for a DIFFERENT asset: contiguous
+# DURATION. The diurnal analyses (`simulator/shadow_diurnal.py`) are judged
+# on per-hour draw counts and pairwise day agreement, and read UNDERPOWERED
+# below ~3 spanned days with 3 draws per hour — a restart resets that clock
+# to zero no matter how many settlements are already banked. So the cost of
+# a needless restart is measured in DAYS OF SPAN, not in settlement rows,
+# and the 2026-08-23 promote that killed a 2d18h run lost exactly that and
+# nothing else. Re-derive this cost again if the analyses change shape.
 set -euo pipefail
 
 DEV=/home/devs/workspace/hyxrestration
