@@ -54,21 +54,29 @@ deciding an absent sidecar against the archive as an **independent
 witness** (EXP-943's shape) — with a **36h grace on the never-produced
 case**, because "the recorder is dead" and "the recorder shipped an
 hour ago" are the same empty file until one pull cycle has had time to
-fire. Live it reads **SKIP/UNVERIFIED with the escalation stated**,
-which is correct: the recorder ships this pass and the 04:40Z pull has
-not run yet.
-**(5) HONEST LIMIT: A DETECTOR, NOT A RESCUE.** The sidecar starts
-empty, so the first per-series verdict lands **2026-08-25 10:00Z QA**
-(after the 04:40Z pull), and nothing here recovers whether those four
-stale series were being fetched during the days they sat quiet.
+fire.
+**(5) VERIFIED IN PRODUCTION THIS PASS, NOT DEFERRED TO THE TIMER — AND
+THE ANSWER IS THAT NOTHING WAS BROKEN BEHIND THE BLIND CHECK.** Rather
+than let the sidecar sit empty until 08-25 04:40Z, one `collector.
+signals` pull was run by hand from the stable worktree: **alfred 7/7
+fetched**, and the follow-up QA reads `econ pull live` **PASS at 0d**
+and `econ series all fetched` **PASS, 7/7 within 4d, oldest CPIAUCSL
+0.0d**. So the four series sitting 10.2–15.2d stale are stale **because
+they have not printed** (monthly cadence), not because ALFRED dropped
+them. State that plainly: the retired check was blind, and this time
+there was nothing underneath it — the same shape as the fav-long gate.
+**HONEST LIMIT: A DETECTOR, NOT A RESCUE.** The sidecar begins at
+2026-08-24, so nothing here recovers whether those four series were
+being fetched during the days they sat quiet; only that they are now.
 Suite 736 → **751 green**. Promoted at `5f21c0d`; the restart guard
 correctly moved **no daemon** (neither daemon imports qa.py or
 signals.py), so the shadow run started 08-23 20:17Z **survives** and is
 now ~18h in — which is what 08-26's out-of-sample test needs.
-NEXT PASS: (1) **Read the 2026-08-25 10:00Z QA for the first per-series
-`econ series all fetched` verdict.** If it FAILs, a series really has
-been dropped and that is a data-integrity finding, not a check bug; if
-it SKIPs again, `record_fetch` did not run and the producer is inert.
+NEXT PASS: (1) **Confirm the 2026-08-25 04:40Z TIMER writes a second
+sidecar row.** The hand-run proved `record_fetch` works; it did not
+prove the scheduled unit reaches it, which is a different claim and the
+one production depends on. A second row dated 04:4xZ settles it; its
+absence means the FAIL branch is about to fire correctly.
 (2) **The 20:17Z shadow run reaches ~3 days around 08-26 — re-run
 `by_day` as a genuine OUT-OF-SAMPLE test of the only diurnal claim that
 survived: every day troughs in 16–18Z and peaks in 21–00Z.** Do not
