@@ -148,6 +148,34 @@ re-binned population would say. Every bucket also reports `median_spread`,
 `mean_spread` and `wide_share` unconditionally, so the contamination is
 readable even where the tier is not.
 
+A boolean over three outcomes (2026-08-24): `flagged_quoted` is one bit, and
+a bucket can fail it three ways that mean opposite things. Its gap can REVERSE
+on two-sided books (evidence AGAINST the signature), collapse inside its own
+interval (weak evidence against), or never reach MIN_N quoted observations at
+all (no evidence either way). The 2026-08-02 pass separated these by hand, in
+prose, over six survivors — and then the tier printed `0` for five consecutive
+readings while settled markets grew 165,814 -> 1,592,941 (9.6x) and the
+day-weighted tier grew 6 -> 22, with nobody redoing the decomposition. Read on
+the 08-24 archive, the zero is mostly silence: of 22 survivors, **19 are
+SILENT** (quoted_n 30-191 against the 200 bar) and only **3 were tested**, all
+three failing on the interval after the gap shrank 3.1-4.1x
+(Financials 1h d2 +0.1454 -> +0.0463, 6h d4 +0.1178 -> +0.0286,
+6h d8 -0.0932 -> -0.0457). So the honest statement is unchanged in direction
+and much weaker in strength than "zero survivors" sounds: no bucket with
+quoted evidence supports the signature, and 19 of 22 have no quoted evidence.
+Six of those 19 REVERSE sign on their quoted point estimate — which is
+evidence against, not silence, and was invisible under the boolean.
+
+Every bucket therefore carries `quoted_status` (`confirmed` /
+`not_significant` / `refuted_sign` / `silent` / `not_applicable`) and the
+report carries `quoted_verdict`, whose counts sum to the day-weighted tier
+size by construction. `wilson_quoted_lo/hi` are None when the test did not
+run, rather than the (0.0, 1.0) that printed as a test that ran and passed.
+MIN_N is UNCHANGED at 200 on the quoted subsample: lowering it to reach a
+verdict would be fitting the threshold to the answer, and the point here is
+to report the silence, not to abolish it. Same standing as every tier above —
+`flagged_quoted` keeps its exact meaning for cross-report comparability.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -599,19 +627,30 @@ def build_atlas(conn) -> dict:
         # the quoted subsample only. Surviving means the gap is carried by
         # books that were actually two-sided, and the sign must agree — a
         # quoted subsample that flips direction is not a confirmation.
-        qwlo, qwhi = (0.0, 1.0)
+        qwlo, qwhi = (None, None)
         flagged_quoted = False
-        if quoted_n >= MIN_N and quoted_days and quoted_implied_dw is not None:
+        gap_dw = implied_dw - realized_dw
+        quoted_gap_dw = (
+            quoted_implied_dw - quoted_realized_dw
+            if quoted_implied_dw is not None and quoted_realized_dw is not None
+            else None
+        )
+        # THE STATUS, NOT THE BOOLEAN (2026-08-24). `flagged_quoted` is one
+        # bit over three outcomes that mean opposite things, so the tier's
+        # headline zero cannot say which one it saw. See `quoted_status`.
+        if not flagged_day_weighted:
+            quoted_status = "not_applicable"
+        elif quoted_n < MIN_N or not quoted_days or quoted_implied_dw is None:
+            quoted_status = "silent"
+        else:
             qwlo, qwhi = wilson(quoted_realized_dw * quoted_days, quoted_days)
-            flagged_quoted = (
-                flagged_day_weighted
-                and not (qwlo <= quoted_implied_dw <= qwhi)
-                and (
-                    (quoted_implied_dw - quoted_realized_dw)
-                    * (implied_dw - realized_dw)
-                    > 0
-                )
-            )
+            if quoted_gap_dw * gap_dw <= 0:
+                quoted_status = "refuted_sign"
+            elif qwlo <= quoted_implied_dw <= qwhi:
+                quoted_status = "not_significant"
+            else:
+                quoted_status = "confirmed"
+            flagged_quoted = quoted_status == "confirmed"
         buckets.append(
             {
                 "category": category,
@@ -658,9 +697,26 @@ def build_atlas(conn) -> dict:
                     if quoted_realized_dw is not None
                     else None
                 ),
-                "wilson_quoted_lo": round(qwlo, 4),
-                "wilson_quoted_hi": round(qwhi, 4),
+                # None, not (0.0, 1.0), when the test did not run: a
+                # fabricated interval spanning the whole unit line prints as
+                # a test that ran and found the implied inside it, which is
+                # the one reading the data cannot support.
+                "wilson_quoted_lo": round(qwlo, 4) if qwlo is not None else None,
+                "wilson_quoted_hi": round(qwhi, 4) if qwhi is not None else None,
                 "flagged_quoted": flagged_quoted,
+                "quoted_status": quoted_status,
+                # tier-neutral and readable even where the tier is silent:
+                # how much of the day-weighted gap survives on two-sided
+                # books. > 1 means the gap GREW; a negative value means it
+                # reversed. This is a diagnostic, not a test.
+                "quoted_gap_dw": (
+                    round(quoted_gap_dw, 4) if quoted_gap_dw is not None else None
+                ),
+                "quoted_gap_retained": (
+                    round(quoted_gap_dw / gap_dw, 4)
+                    if quoted_gap_dw is not None and gap_dw
+                    else None
+                ),
             }
         )
     fingerprint = {
@@ -738,6 +794,66 @@ def build_atlas(conn) -> dict:
         "flagged_day_robust": [b for b in buckets if b["flagged_day_robust"]],
         "flagged_day_weighted": [b for b in buckets if b["flagged_day_weighted"]],
         "flagged_quoted": [b for b in buckets if b["flagged_quoted"]],
+        # THE DECOMPOSITION OF THE ZERO (2026-08-24). `flagged_quoted` has
+        # read 0 for five consecutive readings across a 9.6x growth in
+        # settled markets, and that single number cannot distinguish the
+        # three things it has been standing for. Every day-weighted survivor
+        # lands in exactly one status, so these counts sum to the
+        # day-weighted tier size — the arithmetic is the guard against
+        # reading a zero as a measurement again.
+        "quoted_verdict": _quoted_verdict(buckets),
+    }
+
+
+# The statuses a day-weighted survivor can hold under the quoted test,
+# ordered from "the gap survived two-sided books" to "the test never ran".
+QUOTED_STATUSES = ("confirmed", "not_significant", "refuted_sign", "silent")
+
+
+def _quoted_verdict(buckets: list[dict]) -> dict:
+    """Break the quoted tier's headline count into the statuses it pools.
+
+    A bare `flagged_quoted: 0` reads identically for a bucket whose gap
+    REVERSED on two-sided books (evidence against the signature), one whose
+    gap collapsed inside its own interval (weak evidence against), and one
+    that never had `MIN_N` quoted observations to test (no evidence at all).
+    The 2026-08-02 pass separated these by hand, in prose, on six survivors;
+    the population is larger now and nobody redid it. Encoded here so the
+    separation is a property of the report rather than of whoever read it.
+    """
+    survivors = [b for b in buckets if b["flagged_day_weighted"]]
+    by_status = {
+        s: [b for b in survivors if b["quoted_status"] == s] for s in QUOTED_STATUSES
+    }
+    retained = sorted(
+        b["quoted_gap_retained"]
+        for b in survivors
+        if b["quoted_gap_retained"] is not None
+    )
+    return {
+        "rule": (
+            "every flagged_day_weighted bucket holds exactly one status, so "
+            "these counts sum to the day-weighted tier size; `silent` is the "
+            "test not running, which is not the same reading as `refuted_sign` "
+            "or `not_significant` and must never be pooled with them"
+        ),
+        "day_weighted_survivors": len(survivors),
+        "counts": {s: len(v) for s, v in by_status.items()},
+        "buckets": {
+            s: [f"{b['category']}|{b['horizon']}|d{b['decile']}" for b in v]
+            for s, v in by_status.items()
+        },
+        # the share of the pooled gap that survives on two-sided books,
+        # over every survivor where a quoted gap exists at all (INCLUDING
+        # the silent ones — the point estimate is readable where the test
+        # is not, and it is the diagnostic the 08-02 pass actually used).
+        "gap_retained_measurable": len(retained),
+        "gap_retained_median": (
+            round(retained[len(retained) // 2], 4) if retained else None
+        ),
+        "gap_retained_min": round(retained[0], 4) if retained else None,
+        "gap_retained_max": round(retained[-1], 4) if retained else None,
+        "gap_reversed_on_quoted_books": sum(1 for r in retained if r < 0),
     }
 
 
@@ -785,6 +901,26 @@ def main() -> None:
         share = f"{wide / tot:.2%}" if tot else "-"
         survivors = sum(1 for b in rows if b["flagged_quoted"])
         print(f"| {tier} | {len(rows)} | {tot} | {share} | {survivors} |")
+    # the quoted tier's headline is a COUNT OF SURVIVORS, and a zero there
+    # has been read five times as "no bucket survives two-sided books" when
+    # most survivors were never tested at all. Print the decomposition next
+    # to the count so the two can never again be read as the same statement.
+    qv = atlas["quoted_verdict"]
+    c = qv["counts"]
+    print(
+        f"[atlas] quoted tier over {qv['day_weighted_survivors']} day-weighted"
+        f" survivors: {c['confirmed']} confirmed, {c['not_significant']}"
+        f" not-significant, {c['refuted_sign']} refuted-on-sign,"
+        f" {c['silent']} SILENT (< {MIN_N} quoted obs -- untested, not rejected)"
+    )
+    if qv["gap_retained_measurable"]:
+        print(
+            f"[atlas] gap retained on quoted books over"
+            f" {qv['gap_retained_measurable']} survivors: median"
+            f" {qv['gap_retained_median']}, range [{qv['gap_retained_min']},"
+            f" {qv['gap_retained_max']}], {qv['gap_reversed_on_quoted_books']}"
+            f" reversed sign"
+        )
     if flags:
         print("| category | horizon | decile | n | clusters | implied | realized | wilson | robust | med spr | quoted |")
         print("|---|---|---|---|---|---|---|---|---|---|---|")
@@ -795,7 +931,7 @@ def main() -> None:
                 f" | [{b['wilson_lo']}, {b['wilson_hi']}]"
                 f" | {'YES' if b['flagged_robust'] else 'no'}"
                 f" | {b['median_spread']}"
-                f" | {'YES' if b['flagged_quoted'] else 'no'} |"
+                f" | {b['quoted_status']} |"
             )
     print(f"[atlas] written to {out}")
 

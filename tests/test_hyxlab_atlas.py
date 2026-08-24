@@ -631,3 +631,154 @@ def test_every_bucket_reports_spread_and_the_quoted_tier_nests(tmp_path):
             assert b["quoted_implied"] is None
     assert "flagged_quoted" in atlas and "flag_rule_quoted" in atlas
     assert MAX_QUOTED_SPREAD == 0.20
+
+
+# --- the quoted tier's zero, decomposed (2026-08-24) -------------------
+# `flagged_quoted` is one bit over three outcomes that mean opposite things.
+# These pin that the report separates them, because the separation had been
+# done once by hand in prose and never again while the population grew 6->22.
+
+
+def test_silent_quoted_subsample_is_not_a_rejection(tmp_path):
+    # the 19-of-22 case on the live archive: the gap points the SAME way on
+    # quoted books and would clear its interval, but there are only 150 of
+    # them. That must read `silent` -- the test did not run -- and never the
+    # same value as a bucket the test ran on and rejected.
+    b = _spread_atlas(
+        tmp_path,
+        [[(17, 17, _EMPTY_BOOK), (3, 3, _QUOTED)]] * 42
+        + [[(17, 0, _EMPTY_BOOK), (3, 0, _QUOTED)]] * 8,
+    )
+    assert b["flagged_day_weighted"] and b["quoted_n"] == 150 < MIN_N
+    assert b["quoted_status"] == "silent"
+    assert not b["flagged_quoted"]
+    # and it must not fabricate the interval it never computed. (0.0, 1.0)
+    # prints as a test that ran and found the implied comfortably inside it,
+    # which is exactly the reading the data cannot support.
+    assert b["wilson_quoted_lo"] is None and b["wilson_quoted_hi"] is None
+    # the point estimate is still readable where the test is not -- this is
+    # the diagnostic the 08-02 pass used, and under the boolean it was lost
+    assert b["quoted_gap_retained"] is not None
+
+
+def test_reversed_and_silent_are_different_statuses(tmp_path):
+    # the discrimination this whole change exists for: a bucket whose gap
+    # REVERSES on two-sided books is evidence against the signature, and a
+    # bucket that was never tested is no evidence at all. Both read
+    # `flagged_quoted: false`.
+    reversed_ = _spread_atlas(
+        tmp_path / "rev", [[(16, 16, _EMPTY_BOOK), (4, 0, _QUOTED)]] * 50
+    )
+    silent = _spread_atlas(
+        tmp_path / "sil",
+        [[(17, 17, _EMPTY_BOOK), (3, 3, _QUOTED)]] * 42
+        + [[(17, 0, _EMPTY_BOOK), (3, 0, _QUOTED)]] * 8,
+    )
+    assert not reversed_["flagged_quoted"] and not silent["flagged_quoted"]
+    assert reversed_["quoted_status"] == "refuted_sign"
+    assert silent["quoted_status"] == "silent"
+    # the sign flip is visible in the retention diagnostic as a negative
+    assert reversed_["quoted_gap_retained"] < 0 < silent["quoted_gap_retained"]
+
+
+def test_confirmed_status_tracks_the_flag(tmp_path):
+    # the control: where the gap IS carried by quoted books, status and flag
+    # agree, so `quoted_status` cannot be a field that only ever says no.
+    tight = _spread_atlas(tmp_path, _uniform(_QUOTED))
+    assert tight["flagged_quoted"] and tight["quoted_status"] == "confirmed"
+    assert tight["wilson_quoted_lo"] is not None
+    # the whole gap survives, since every book was quoted
+    assert tight["quoted_gap_retained"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_untested_bucket_is_not_applicable_not_silent(tmp_path):
+    # a bucket no looser tier selected was never a candidate for the quoted
+    # test, so calling it `silent` would inflate the untested count with
+    # buckets that had nothing to test.
+    store = Store(tmp_path / "a.duckdb")
+    store.upsert_markets(
+        [MarketInfo(venue="kalshi", market_id="A", result="yes", close_time=CLOSE)]
+    )
+    store.insert_candles(
+        [_candle(0.50, "A", (CLOSE - timedelta(hours=2)).replace(tzinfo=None))]
+    )
+    atlas = build_atlas(store.conn)
+    store.close()
+    for b in atlas["buckets"]:
+        assert not b["flagged_day_weighted"]
+        assert b["quoted_status"] == "not_applicable"
+
+
+def test_quoted_verdict_counts_partition_the_day_weighted_tier(tmp_path):
+    # THE ARITHMETIC GUARD. The failure being fixed is a headline count that
+    # stood for three different things; the defence is that the statuses
+    # PARTITION the tier, so a zero in `flagged_quoted` must be accounted for
+    # bucket by bucket and can never again be read as a measurement.
+    #
+    # Three buckets in one report, one per outcome, separated by CATEGORY so
+    # every bucket keeps the mid 0.50 / +0.34 shape the other quoted tests
+    # use -- re-deciling them instead would change the gap size along with
+    # the outcome under test.
+    specs = {
+        "Confirmed": [[(20, 20, _QUOTED)]] * 42 + [[(20, 0, _QUOTED)]] * 8,
+        "Silent": (
+            [[(17, 17, _EMPTY_BOOK), (3, 3, _QUOTED)]] * 42
+            + [[(17, 0, _EMPTY_BOOK), (3, 0, _QUOTED)]] * 8
+        ),
+        "Refuted": [[(16, 16, _EMPTY_BOOK), (4, 0, _QUOTED)]] * 50,
+    }
+    store = Store(tmp_path / "a.duckdb")
+    series, infos, candles, i = [], [], [], 0
+    for category, day_specs in specs.items():
+        for day, groups in enumerate(day_specs):
+            close = CLOSE - timedelta(days=day)
+            for n, n_yes, spread in groups:
+                for k in range(n):
+                    mkt = f"Q{i}"
+                    # one series per market, so the cluster tier never
+                    # interferes; the category is what groups them
+                    series.append(("kalshi", f"T{i}", "s", category, None, None, None))
+                    infos.append(
+                        MarketInfo(
+                            venue="kalshi",
+                            market_id=mkt,
+                            series=f"T{i}",
+                            result="yes" if k < n_yes else "no",
+                            close_time=close,
+                        )
+                    )
+                    candles.append(
+                        _candle(
+                            0.50,
+                            mkt,
+                            (close - timedelta(hours=2)).replace(tzinfo=None),
+                            spread=spread,
+                        )
+                    )
+                    i += 1
+    store.upsert_series(series)
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    atlas = build_atlas(store.conn)
+    store.close()
+
+    qv = atlas["quoted_verdict"]
+    survivors = atlas["flagged_day_weighted"]
+    assert qv["day_weighted_survivors"] == len(survivors)
+    assert sum(qv["counts"].values()) == len(survivors)
+    # and the tier's own list is exactly the `confirmed` status, so the two
+    # numbers the report prints side by side cannot drift apart
+    assert qv["counts"]["confirmed"] == len(atlas["flagged_quoted"])
+    # all three outcomes are present, so the partition is exercised rather
+    # than trivially satisfied by every bucket landing in one bin
+    assert qv["counts"]["silent"] >= 1
+    assert qv["counts"]["refuted_sign"] >= 1
+    assert qv["counts"]["confirmed"] >= 1
+    assert qv["gap_reversed_on_quoted_books"] >= 1
+    # each named bucket landed where the fixture built it for
+    status = {
+        b["category"]: b["quoted_status"] for b in survivors if b["horizon"] == "1h"
+    }
+    assert status["Confirmed"] == "confirmed"
+    assert status["Silent"] == "silent"
+    assert status["Refuted"] == "refuted_sign"
