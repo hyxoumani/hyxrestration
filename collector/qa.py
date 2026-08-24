@@ -128,6 +128,23 @@ BATCH_RUN_BUDGET_H = {
 #: lookback, not a promise of one. Unreachable days read UNMEASURED.
 BATCH_RUN_LOOKBACK_DAYS = 7
 
+# EXP-1359 — the freshness checks are INSTANTANEOUS, so an outage that heals
+# before the next daily QA run is structurally invisible to them. The
+# 2026-08-20 box outage (21:33:37Z -> 2026-08-21 01:52:56Z, 4h19m, all three
+# writers down together) fell entirely between two 10:00Z runs and entered the
+# wiki as an "unexplained shadow silence" rather than an alarm. This bounds the
+# collector's cadence RETROSPECTIVELY over the window instead.
+#
+# Measured over 21 days / 6,040 collector cycles on the live archive:
+# p50 300.0s (the 5-min timer, exactly), p99 314.0s, p99.9 600.0s (one skipped
+# cycle). The largest gap in those 21 days that was NOT the 08-20 outage is
+# 25.0 min; the outage is 264.8 min, i.e. 10.6x the worst benign gap. 60 min is
+# that benign worst case plus 2.4x headroom, and still 4.4x under the event it
+# exists to catch. A gap here is (real downtime + writer-lock skips) — the skips
+# are NOT subtracted, because subtracting them is how a lock-starved collector
+# would go quiet forever and still read green (mistakes #25-27).
+COLLECTION_GAP_BUDGET_S = 3600.0
+
 # EXP-962 — a draining backfill is not rot. 2026-08-04: the tape-coverage
 # check reported "3 traded markets unswept" while collector.trades_backfill
 # was live and landing 1.4k-9.3k markets/hour; the count fell 3 -> 2 during
@@ -473,6 +490,40 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> None:
         age is not None and age < 1200,
         f"age {age:.0f}s" if age is not None else "no snapshots",
     )
+
+    # The freshness check above answers "is it collecting NOW". This answers
+    # "has it been collecting ALL DAY" — the question no instantaneous check
+    # can reach, because QA runs once and an outage that healed is over by the
+    # time it looks. See COLLECTION_GAP_BUDGET_S.
+    name = "collection continuous over last 24h"
+    lo = now - timedelta(hours=24)
+    # Anchor on the newest cycle at or BEFORE the window, so an outage
+    # straddling the left edge is measured rather than lost with its
+    # predecessor. Without it the first in-window cycle has no lag at all.
+    gap = conn.execute(
+        """
+        WITH cyc AS (
+            SELECT DISTINCT ts FROM snapshots WHERE ts >= ?
+            UNION ALL
+            SELECT max(ts) FROM snapshots WHERE ts < ? AND ts IS NOT NULL
+        ),
+        lagged AS (SELECT ts, ts - lag(ts) OVER (ORDER BY ts) AS d FROM cyc)
+        SELECT ts, epoch(d) FROM lagged WHERE d IS NOT NULL ORDER BY d DESC LIMIT 1
+        """,
+        [lo, lo],
+    ).fetchone()
+    if gap is None:
+        # One cycle cannot exhibit a gap. That is UNMEASURED, not healthy —
+        # say so out loud rather than banking a free pass (mistakes #28).
+        print(f"WATCH {name} — fewer than 2 collector cycles in window", flush=True)
+    else:
+        resumed, gap_s = gap
+        check(
+            name,
+            gap_s <= COLLECTION_GAP_BUDGET_S,
+            f"largest gap {gap_s / 60.0:.1f} min (resumed {resumed:%Y-%m-%d %H:%M}Z),"
+            f" budget {COLLECTION_GAP_BUDGET_S / 60.0:.0f} min",
+        )
 
     ok_sweeps = conn.execute(
         "SELECT count(*) FROM sweep_log WHERE status='ok' AND swept_at > ? - INTERVAL 36 HOUR",

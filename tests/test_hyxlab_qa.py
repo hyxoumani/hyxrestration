@@ -848,3 +848,79 @@ def test_latency_tail_trips_dispersion_under_a_healthy_offset(tmp_path):
     failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
     assert _LAT_DISP in failed
     assert _LAT_OFF not in failed
+
+
+# --- retrospective collection continuity (2026-08-24) -----------------
+# `collector fresh (snapshots < 20 min old)` is instantaneous, so the
+# 2026-08-20 4h19m box outage — which healed 8h before the next daily QA
+# run — was structurally invisible to it. These drive the replacement.
+
+_CONT = "collection continuous over last 24h"
+
+
+def _cycles(db, ages_min):
+    """Seed one collector cycle per entry, `ages_min` minutes before NOW."""
+    from hyxlab.models import Snapshot
+
+    store = Store(db)
+    store.insert_snapshots(
+        [
+            Snapshot(
+                venue="kalshi",
+                market_id="M1",
+                ts=NOW - timedelta(minutes=a),
+                yes_bid=0.44,
+                yes_ask=0.46,
+                no_bid=0.54,
+                no_ask=0.56,
+                yes_bid_size=1,
+                yes_ask_size=1,
+                no_bid_size=1,
+                no_ask_size=1,
+            )
+            for a in ages_min
+        ]
+    )
+    store.close()
+
+
+def test_steady_five_minute_cadence_passes_continuity(tmp_path):
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    assert _CONT not in _run(None, tmp_path, archive=db)
+
+
+def test_healed_outage_trips_continuity(tmp_path):
+    """The 08-20 shape: a multi-hour hole that is CLOSED by QA time, so the
+    freshness check reads green and only a retrospective check can see it."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24)] + [5 * i for i in range(60, 100)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _CONT in failed
+    assert "collector fresh (snapshots < 20 min old)" not in failed
+
+
+def test_single_skipped_cycle_stays_inside_budget(tmp_path):
+    """p99.9 of 21 days is one dropped cycle. Alarming on it would make the
+    check unreadable, which is how the retired latency check died."""
+    db = tmp_path / "a.duckdb"
+    ages = [5 * i for i in range(0, 24 * 12) if i != 40]
+    _cycles(db, ages)
+    assert _CONT not in _run(None, tmp_path, archive=db)
+
+
+def test_outage_straddling_the_window_edge_is_not_lost(tmp_path):
+    """An outage whose predecessor cycle sits OUTSIDE the 24h window. Without
+    the pre-window anchor the first in-window cycle has no lag and the hole
+    reads as if the day simply started late."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 12 * 20)] + [60 * 26])
+    assert _CONT in _run(None, tmp_path, archive=db)
+
+
+def test_one_cycle_is_unmeasured_not_healthy(tmp_path, capsys):
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [0])
+    failed = _run(None, tmp_path, archive=db)
+    assert _CONT not in failed  # a single cycle cannot exhibit a gap
+    assert f"WATCH {_CONT}" in capsys.readouterr().out
