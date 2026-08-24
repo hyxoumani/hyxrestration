@@ -183,15 +183,33 @@ migrate, watchlist, stations).
   intermediate write is idempotent and the watermark advances only in
   the final burst (`tests/test_hyxlab_writer_lock.py`). The QA FAIL was
   truthful; the budget (3 skips/24h) was not touched.
-- **A NEGATIVE econ-vintage age in QA is by design, not a timestamp
-  bug** (explained 2026-08-06): `alfred.pessimistic_knowable_at`
-  stamps vintages at 23:59 US/Eastern on the FETCH date, and the
-  signals timer fires 04:40Z — already the next ET date — so the
-  stamp lands ~04:00Z the following day, up to ~24h in the future of
-  a morning QA run (`age -0.7d` at the 10:00Z QA is the steady
-  state). Pessimism only DELAYS knowability, so it can never create
-  lookahead; chase it only if the age goes more negative than ~-1.0d
-  (would mean a stamp beyond end-of-fetch-day).
+- **The negative econ-vintage age was by design; the CHECK reading it
+  was not** (2026-08-06 explanation, corrected 2026-08-24 / EXP-1360).
+  The stamp is correct and stays: `alfred.pessimistic_knowable_at`
+  puts vintages at 23:59 US/Eastern on the FETCH date, the signals
+  timer fires 04:40Z (already the next ET date), so the stamp lands
+  ~04:00Z the following day — up to ~28h ahead of a morning QA run.
+  Pessimism only DELAYS knowability, so it can never create lookahead.
+  What the 08-06 note got wrong is the conclusion drawn from it: it
+  explained the number and left the check measuring it. `now -
+  max(knowable_at)` is (ingest staleness − pessimism margin), so
+  `econ vintages fresh (< 8 days)` read `age -0.6d` and PASSED, and a
+  5-day outage would have read inside a 4-day budget. **A freshness
+  measure that can go negative is not measuring freshness.** Replaced
+  by `econ pull live (any series, last vintage date)`, which measures
+  the vintage DATE recovered from the stamp — cancelling the nuisance
+  exactly, because the stamp is a deterministic function of it. See
+  mistakes #31.
+- **Per-series econ coverage is NOT visible in the archive.**
+  `econ_vintages` gains a row only when a value CHANGES, so a monthly
+  series ALFRED has dropped and one that simply has not printed yet
+  are the same table for a month; and `fetch_alfred` retries three
+  times, prints, and moves on with the series absent from its result.
+  On 2026-08-24 four of seven series sat 10.2–15.2d stale under a
+  green pooled check. The witness is `data/signals_fetch.jsonl`
+  (`collector.signals.record_fetch`, one JSON line per pull with each
+  series' fetch outcome), read by `qa_signals_fetch`, which decides an
+  absent sidecar against the archive rather than trusting it.
 
 ## Gotchas (stream)
 
@@ -227,7 +245,10 @@ ingestion behind a `FeatureView` as-of API.
   value-diffed daily — the keyless endpoint restamps knowable_at each
   fetch day, a naive insert would forge vintages) + GDELT bulk GKG
   (15-min grid from the news watermark; filter-and-discard against
-  collector/queries/gdelt.json). QA freshness checks guard both.
+  collector/queries/gdelt.json). QA guards the pull's liveness
+  (`econ pull live`) and its per-series coverage (`econ series all
+  fetched`) SEPARATELY — see the gotcha above for why one check
+  cannot do both.
 - ALFRED gotcha: a timed-out request wedges the shared keep-alive
   session; every later request on it times out. Fresh session per
   attempt (collector/signals.py).

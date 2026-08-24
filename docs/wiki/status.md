@@ -1,6 +1,83 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-24 03:30 UTC (RUNG-1 PASS — THE "UNEXPLAINED SHADOW
+Updated: **2026-08-24 14:45 UTC (RUNG-1 PASS — A FRESHNESS CHECK WAS
+MEASURING A STAMP THAT IS DELIBERATELY IN THE FUTURE, AND POOLING SEVEN
+CADENCES INTO ONE MAX, SO IT PRINTED A NEGATIVE AGE AND PASSED WHILE
+FOUR OF ITS SEVEN SERIES SAT PAST ITS OWN BUDGET.**
+**(1) THE QA IS CLEAN AND THE TWO ITEMS IT OWED ARE READ.**
+`collection continuous over last 24h` — the check EXP-1359 shipped to
+catch an outage that heals before anyone looks — reads **PASS at 5.0
+min against the 60 min budget** in its first production days. The
+second honest enumeration reading landed: **17,004 markets for the
+08-23 sweep vs a prior-10d peak of 16,952**, ratio 1.003 against a 0.75
+floor, i.e. the tripwire is holding on a real signal for a second
+consecutive run. `batch units` remains the only FAIL, still the 08-21
+`hyxlab-sweep` catch-up breach inside its window to 08-28.
+**(2) THE FINDING: `econ vintages fresh (< 8 days)` READ "age -0.6d"
+AND PASSED (EXP-1360).** Two independent defects visible in that one
+number. **(a) The nuisance term.** `knowable_at` is not an ingest time.
+ALFRED vintages are date-granular, so `pessimistic_knowable_at` stamps
+the vintage date's 23:59 US/Eastern (= vintage_date+1 03:59 UTC),
+deliberately LATE so no backtest can see a print before a live trader
+could — a correct no-lookahead choice that the check then read as a
+clock. It leads the fetch by up to ~28h, so the quantity was **(ingest
+staleness − pessimism margin)**, and **a freshness measure that can go
+negative is not measuring freshness**. The margin is not cosmetic: a
+5-day outage reads inside a 4-day budget. **(b) Pooling.** A max over
+seven series whose print cadences run daily to monthly is set by the
+fastest one, always. On 08-24 the daily Fed-target pair read 0d while
+**CPIAUCSL 10.2d, CPILFESL 10.2d, PAYEMS 15.2d, UNRATE 15.2d** — every
+one past the check's own 8-day bound, under a green line. Logged as
+mistakes **#31** (`wrong-statistic`, the #24/#28 family: a pooled
+aggregate over heterogeneous members reports the healthiest member,
+never the fleet; plus #29's `wrong-attribution`).
+**(3) SPLIT INTO THE TWO QUESTIONS IT WAS ADDING.** `econ pull live
+(any series, last vintage date)` pools **on purpose** — "did anything
+arrive" is the one question pooling answers honestly — and measures the
+vintage DATE recovered from the stamp, which cancels the nuisance
+**exactly**, the stamp being a deterministic function of it. **Budget
+measured, not argued**: 44 distinct vintage dates over 2026-07-11 ..
+2026-08-24 (45 days), the only gap above one day a single **2-day gap
+at 07-13**; bound **4 days = 2x worst observed**. Reads **PASS at 0d**
+live. A mutation test pins the nuisance removal itself rather than a
+threshold margin — reverting to `max(knowable_at)` turns a true 3-day
+gap into a reported 2d and the test fails.
+**(4) THE PER-SERIES QUESTION CANNOT BE ANSWERED FROM THE ARCHIVE AT
+ALL — THAT IS THE PART WORTH CARRYING.** `econ_vintages` gains a row
+only when a value CHANGES, so a monthly series ALFRED dropped and a
+monthly series that has not printed yet are **the same table for a
+month**; and `fetch_alfred` retries three times, prints, and moves on
+with the series simply absent from its result. So the pull now records
+per-series fetch outcomes to `data/signals_fetch.jsonl`
+(`collector.signals.record_fetch`) and `qa_signals_fetch` reads them,
+deciding an absent sidecar against the archive as an **independent
+witness** (EXP-943's shape) — with a **36h grace on the never-produced
+case**, because "the recorder is dead" and "the recorder shipped an
+hour ago" are the same empty file until one pull cycle has had time to
+fire. Live it reads **SKIP/UNVERIFIED with the escalation stated**,
+which is correct: the recorder ships this pass and the 04:40Z pull has
+not run yet.
+**(5) HONEST LIMIT: A DETECTOR, NOT A RESCUE.** The sidecar starts
+empty, so the first per-series verdict lands **2026-08-25 10:00Z QA**
+(after the 04:40Z pull), and nothing here recovers whether those four
+stale series were being fetched during the days they sat quiet.
+Suite 736 → **751 green**. Promoted at `5f21c0d`; the restart guard
+correctly moved **no daemon** (neither daemon imports qa.py or
+signals.py), so the shadow run started 08-23 20:17Z **survives** and is
+now ~18h in — which is what 08-26's out-of-sample test needs.
+NEXT PASS: (1) **Read the 2026-08-25 10:00Z QA for the first per-series
+`econ series all fetched` verdict.** If it FAILs, a series really has
+been dropped and that is a data-integrity finding, not a check bug; if
+it SKIPs again, `record_fetch` did not run and the producer is inert.
+(2) **The 20:17Z shadow run reaches ~3 days around 08-26 — re-run
+`by_day` as a genuine OUT-OF-SAMPLE test of the only diurnal claim that
+survived: every day troughs in 16–18Z and peaks in 21–00Z.** Do not
+re-test the +72/−247/+150 cycle; it is dead. (3) The `batch units` FAIL
+self-clears 08-28 if no new breach lands — if it does not, the budget is
+stale and should be re-measured rather than re-excused.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-24 03:30 UTC (RUNG-1 PASS — THE "UNEXPLAINED SHADOW
 SILENCE" WAS A WHOLE-BOX OUTAGE, AND THE REASON IT SAT UNEXPLAINED FOR
 FOUR PASSES IS THAT NO CHECK IN THE SUITE CAN SEE AN OUTAGE THAT HEALS.**
 **(1) THE 08-20 SILENCE IS EXPLAINED, AND THE FRAMING WAS BACKWARDS
@@ -58,7 +135,7 @@ lands next QA (first was 16,952 vs a prior-10d peak of 16,925, ratio
 1.002 against a 0.75 floor). (4) The `batch units` FAIL self-clears
 08-28 if no new breach lands — if it does not, the budget is stale and
 should be re-measured rather than re-excused.
-NOTHING IS USER-GATED THIS PASS.**
+NOTHING IS USER-GATED THIS PASS.**)
 
 (prior Updated: **2026-08-23 22:00 UTC (RUNG-1 PASS — THE CHRONIC LATENCY RED
 WAS WATCHING THE CLOCK, NOT THE STREAM, AND IT COSTS THE SIM NOTHING.**
