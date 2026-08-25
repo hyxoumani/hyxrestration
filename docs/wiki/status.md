@@ -1,6 +1,125 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-25 03:10 UTC (RUNG-1 PASS — THE MAKER BRACKET'S
+Updated: **2026-08-25 09:40 UTC (RUNG-1 PASS — THE STALE REPORT'S
+14.3 GB WAS FOUR DEFECTS, THREE OF THEM ALREADY FIXED SOMEWHERE ELSE IN
+THIS REPO.**
+**(1) THE TWO ITEMS LAST PASS LEFT READABLE ARE BOTH RESOLVED, AND ONE
+OF THEM WAS THE WHOLE POINT.** The 08-25 04:40Z timer DID write a second
+`data/signals_fetch.jsonl` row (7/7 series `ok`, vintage 2026-08-25) —
+item (1) closed. And the transient unit launched last pass COMPLETED, on
+attempt 2, in 35m56s at a **14.3 GB** memory peak: `simulator.
+divergence` is fresh for the first time since 08-03. **The reading is a
+clean null at the largest sample ever taken** — 54,007 fills over the
+10.5-day run `20260810T081931`, `match_rate` **1.0** on every tier, zero
+unmatched under every cause, `price_delta_abs_mean` **0.0**. So the
+fill-model calibration haircut is ZERO and backtest numbers need no
+adjustment. **Not unprecedented and not suspicious**: 07-22 also read
+1.0 (19,662 fills). The 08-03 run remains the only reading with
+divergence (0.9954), and 198 of its 229 unmatched fills were
+`reseed_twin` — the documented start-of-run settling signature — leaving
+31 `unexplained` that this run does NOT re-test, since the windows are
+disjoint.
+**(2) THE COST FIX WAS OWED, AND THE FIRST CAUSE WAS NOT "LONG RUN" — IT
+WAS ONE MATERIALISED SORT (EXP-1364).** `_events` issued a SINGLE cursor
+with `ORDER BY recv_ts, seq` over the whole window. DuckDB materialises
+that sort, so peak memory is LINEAR IN RUN LENGTH. Measured, not
+inferred: **3.14 GB for 18.5M rows** (a 2-day window), linear-scaling to
+~12.5 GB over the 73.1M rows of the 10.5-day target — which is the
+observed 14.3 GB. Walking the window in 6h slices, each sorted
+separately, gives **0.94 GB on the same rows at no wall-clock cost**
+(13.6s vs 12.6s).
+**(3) THE SECOND CAUSE WAS THIS REPO'S OWN OOM FIX, NEVER SWEPT
+(EXP-1365).** `sim.step` appends one equity point PER SNAPSHOT.
+`simulator/shadow.py` trims that curve every poll, with a comment naming
+the kernel-OOM kill it was written for (2026-07-18, ~800 MB in 2.3 days)
+and two tests pinning it. `replay_run` steps the SAME sim over the SAME
+stream for a window as long as the longest shadow run — ~24M points,
+~3.6 GB — and never got the trim. Pure ballast: divergence compares
+FILLS, never calls `finalize()`, never reads the curve.
+**(4) MEASURED END TO END ON THE REAL TARGET, TWICE, AND THE REPORT IS
+BYTE-IDENTICAL BOTH TIMES.** Baseline 08-24: **14.3 GB / 35m56s**.
+Sliced walk only: **6.2 GB / 35m05s**. Sliced + trim: **3.4 GB /
+36m20s**. Both re-runs printed REPORT IDENTICAL to the 08-24 baseline
+(`generated_at` aside) — so this is a **4.2x memory cut that changes no
+number the report produces**, verified on production data rather than
+argued from fixtures.
+**HONEST LIMIT, UNCHANGED: THIS BOUNDS MEMORY, NOT WALL CLOCK.** The
+~35 min is the sim stepping 73M events and all three runs took it. What
+IS now false is "the cost grows with the longest run recorded" *for
+memory*: both run-length-linear terms are gone, and the residual 3.4 GB
+is BookReplayer book state, which scales with distinct markets seen, not
+with elapsed events. **`--since` WAS CONSIDERED AND DELIBERATELY NOT
+SHIPPED**: the replay cannot reconstruct a strategy's carried state at
+an arbitrary cut, so a bounded reading would silently mean something
+different from a full one — the exact defect class of #32/#33. A sound
+version needs a declared warmup ≥ the strategy's state horizon, which is
+strategy-specific knowledge the report cannot assume.
+**(5) THE SWEEP I DECLARED COMPLETE HAD TWO MORE SITES, AND BOTH WERE
+FOUND AFTER I DECLARED IT (EXP-1366, EXP-1367).** EXP-1365's own commit
+asserted "exactly two callers, both now bounded." Wrong, twice over.
+**(a) `simulator/run_l2.py` carried a near-verbatim COPY of the walk**,
+so the sort defect was live at a second site the whole time — and the
+duplication is precisely why the fix reached only one. Patching twice
+would preserve the cause, so the walk is unified as `simulator.
+bookreplay.stream_events` and both copies deleted. Unifying surfaced a
+bug in NEITHER original: binding the `prefix` filter by positional slice
+(`params[2:]`) is correct only when `hi` is given — with an open `hi` an
+`--markets`-scoped backtest would have SILENTLY widened to every market
+on the venue. Two mutations redden it.
+**(b) A FOURTH DEFECT, ON A DIFFERENT LOCK, FOUND BY RUNNING THE
+VERIFICATION RATHER THAN READING THE CODE.** `replay_run` attached the
+LIVE archive with a bare `Store(archive_db, read_only=True)` — no retry,
+no degrade — and died at 08:58:26Z against `collector.poly_sweep` at
+4h43m of a ~7h write. This is the class the 2026-07-12 audit escalated
+to `connect_retry` after it fired three times in one day, and divergence
+was one of those three: fixed then for the STREAM attach, in this same
+function, two lines below the archive attach that was not. `run_l2`
+already used `open_retry`; the shadow daemon DEGRADES (`except
+duckdb.Error: return None`) and is therefore safe — the 08-23 20:17Z run
+is NOT at risk.
+**(6) THE STREAM RETRY BUDGET WAS CALIBRATED AGAINST THE WRONG READER.**
+`connect_retry`'s 15 x 2.0s = 30s was sized for "readers attach
+briefly"; `collector.streamd` never stops, and 4 of 5 real attempts died
+after 30s despite the lock sampling free 87% of the time — a flat period
+can beat against a flush period rather than sample it. Added
+`backoff`/`max_delay` with defaults 1.0/None so **every existing
+caller's budget is byte-identical (asserted)**; divergence's stream
+attach now gets ~10.5 min of growing-interval attempts.
+**LOGGED AS MISTAKES #34** — `fix-the-instance`, the same shape as
+#32/#33 in a new domain, with the corollary this pass earned the hard
+way: **a sweep is finished only when the enumeration is written down.**
+Two of the four sites were found after the sweep was called complete —
+one by grepping callers (a minute), one by running the thing (35 min).
+**NO PROMOTE, and the rule is promote.sh's own**: the diff touches
+`simulator/` and `hyxlab/`, which `needs_restart simulator.shadow`
+matches, so promoting would restart hyxlab-shadow and reset the 08-23
+20:17Z run — the run item (2) below needs at ~3 days span. Suite 764 ->
+**771 green**.
+NEXT PASS: (1) The 20:17Z shadow run reaches ~3 days on 08-26: re-run
+`by_day` as an OUT-OF-SAMPLE test of the one surviving diurnal claim
+(troughs 16-18Z, peaks 21-00Z). Do not re-test the +72/-247/+150 cycle;
+it is dead. (2) `batch units` self-clears 08-28 or the budget is stale
+and must be re-measured, not re-excused. (3) **`run_l2` still
+accumulates the full equity curve**, but unlike shadow and divergence it
+CONSUMES it — `equity.json` is a uniform stride over the finished curve
+(EQUITY_MAX_POINTS=10,000). Holding ~24M points to emit 10k is the same
+ballast, but bounding it means choosing a streaming downsample, which
+changes WHICH points are emitted: a behaviour change needing its own
+design, and run_l2's window is operator-chosen rather than "the longest
+run ever recorded", so it is far less acute. (4) **The 2026-07-12 rule
+"every raw read-only connect must use the helper" is STILL UNENFORCED**
+— there are ~25 raw-connect / bare-`Store` sites across the four
+packages, most legitimate (a writer owning its own file, a backup
+copying one, a CLI that is the sole writer), so a guard needs a real
+allowlist rather than a grep. That is the concrete next hardening task,
+and it is the only reason defect (b) above survived four instances.
+(5) The #32/#33/#34 lens sweeps are DONE for report summary fields and
+for the sim's unbounded loops; the standing job is that any NEW summary
+field ships its status decomposition, and any NEW caller of the sim over
+stream-length input bounds the curve.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-25 03:10 UTC (RUNG-1 PASS — THE MAKER BRACKET'S
 "NOT SIGNIFICANT" WAS, FIVE READINGS OUT OF SEVEN, "COULD NOT HAVE
 BEEN"; AND THE FIRST READING THAT COULD HAVE FOUND A DIRECTION FINDS
 NONE.**

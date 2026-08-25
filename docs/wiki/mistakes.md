@@ -726,10 +726,29 @@ Format: what happened → root cause → error type → prevention tier
     stream for a window as long as the longest shadow run — and never
     got the trim. It is pure ballast there: divergence compares fills,
     never calls `finalize()`, and never reads the curve.
+    **(c) AND THE SORT DEFECT WAS LIVE AT A SECOND SITE TOO.**
+    `simulator/run_l2.py` carried a near-verbatim COPY of the walk, so
+    fixing (a) in divergence reached only one of the two. Patching it
+    twice would have preserved the cause; the walk is now unified as
+    `simulator.bookreplay.stream_events` and both local copies deleted.
+    Unifying it surfaced a latent bug present in NEITHER original: the
+    merged version first bound the `prefix` filter by positional slice
+    (`params[2:]`), correct only when `hi` is given — with an open `hi`
+    an `--markets`-scoped backtest would have SILENTLY widened to every
+    market on the venue.
+    **(d) AND A FOURTH, ON A DIFFERENT LOCK, found by RUNNING the
+    verification rather than reading the code.** `replay_run` attached
+    the LIVE archive with a bare `Store(archive_db, read_only=True)` — no
+    retry, no degrade — and died at 08:58:26Z against `collector.
+    poly_sweep` at 4h43m of a ~7h write. This is the class the 2026-07-12
+    audit escalated to `connect_retry` after it fired three times in one
+    day, and divergence was one of those three sites: fixed then for the
+    STREAM attach, in this same function, two lines below the archive
+    attach that was not.
     **CLASSIFICATION: `fix-the-instance`, the same failure as #32/#33 in
-    a new domain.** The lens that finds it is one question — *"who ELSE
-    runs this unbounded loop?"* — and it has exactly two answers here,
-    both now bounded. That the same shape has now appeared three times
+    a new domain — and my own first attempt at the entry committed it
+    AGAIN, asserting "exactly two callers, both now bounded" while (c)
+    and (d) were live.** Stating the rule is not running it. That the same shape has now appeared three times
     in two passes, in two unrelated subsystems (report summary fields,
     unbounded accumulation), is the argument for the standing rule
     rather than for three separate patches.
@@ -740,6 +759,11 @@ Format: what happened → root cause → error type → prevention tier
     to happen to re-run queuescore; this one waited five weeks for a
     report to be declared stale. Neither was found by the fix that
     should have found it.
+    **AND THE COROLLARY THIS ENTRY EARNED THE HARD WAY: a sweep is only
+    finished when the enumeration is written down.** Two of the four
+    sites here were found AFTER the sweep was declared complete — one by
+    grepping the callers (which takes a minute), one by running the
+    thing (which takes 35). Prefer both to a confident sentence.
     **SECOND, SMALLER LESSON: a retry budget is calibrated against a
     reader, and the writer changed underneath it.** `connect_retry`'s
     15 x 2.0s = 30s was sized for "readers attach briefly". Against
