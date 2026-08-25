@@ -1,5 +1,97 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-25 20:30 UTC (RUNG-4 PASS — THE ENUMERATION LAST PASS
+BUILT COVERS WHO ATTACHES THE ARCHIVE; IT SAYS NOTHING ABOUT WHO HOLDS
+THE WRITER LOCK, AND THAT GAP HID A WRITER THAT TOOK NO LOCK AT ALL.**
+Last pass named this exact gap as the next hardening candidate ("the
+connect guard covers ATTACHES; it does not cover who holds the flock").
+It is done, and as with every rung below it, writing the enumeration
+down WAS the sweep.
+**(1) TWO ARCHIVE WRITERS TOOK NO WRITER LOCK, EVER (EXP-1370).**
+`collector.backfill` opened the live archive READ-WRITE and held it for
+its entire multi-hour run — 5 series x up to 50 pages, then a
+candlestick call per settled market 0.35 s apart, then IEM per
+station-year, every one of them with the archive held — and touched
+`data/writer.lock` at no point. That is H1 of the 2026-07-11 deep review
+verbatim, the rule written after `collector.sweep`'s hold dropped 421 of
+3,706 capture cycles, with the lock omitted on top.
+`hyxlab.migrate.main` had the same shape for schema writes.
+**OMITTING THE LOCK IS STRICTLY WORSE THAN HOLDING IT TOO LONG, AND IT
+HIDES**: the 08-02 outage dropped 421 cycles but COUNTED each one. A
+writer that takes no advisory lock lets `collect` WIN
+`acquire_writer_lock`, pass the skip-recording branch, and only then
+collide on DuckDB's file lock — same lost capture, no skip row. The
+instrument that measures lock contention cannot see a writer that never
+takes the lock.
+**(2) THE FIX, AND WHY IT NEEDED A KERNEL MOVE.** backfill now takes a
+PATH rather than a Store (an open Store IS a held file lock), fetches
+outside the lock, and flushes past `sweep.FLUSH_ROWS` so no single burst
+carries a whole series (the KXBTC ~21 min hold); its closing `db=`
+summary is a read and opens read-only. migrate cannot use
+`collector.sweep.writer_burst` — hyxlab imports nothing above it — so
+`lockid` MOVED to the kernel (a pure rename commit): the lock guards the
+ARCHIVE, which is kernel-owned, so its witness belongs there. migrate
+now uses `signals.py`'s shape line for line and joins `WRITER_MODULES`.
+Both writers drop OUT of `test_connect_discipline`'s `WRITE_ALLOWED`
+rather than into it — routing through the helpers makes them invisible
+to that guard by construction.
+**(3) THE GUARD: `tests/test_writer_lock_discipline.py`.** Every archive
+write enumerated with BURST / FLOCK / CALLER. BURST and FLOCK are
+VERIFIED against the AST, not trusted. CALLER is the only disposition
+the file cannot check locally, so it is fenced twice: the function must
+open nothing itself, and the caller its reason NAMES is resolved in the
+SOURCE and must hold the lock by one of the three mechanisms that exist
+here (`writer_burst`, `acquire_writer_lock`, raw flock) — resolving
+against the source rather than the allowlist is what lets `collect.main`
+and `migrate.main`, which hold the lock and write nothing, still be
+named. The mutator set is DERIVED from `hyxlab/store.py` (any method
+carrying INSERT/UPDATE/DELETE/CREATE or calling `insert_new`) and pinned,
+so a new writing method cannot enter invisible and a rename that empties
+the set reddens instead of matching nothing forever.
+**(4) MUTATION TESTING FOUND TWO DEFECTS IN MY OWN WORK, AND BOTH WERE
+THE AUDIT'S OWN FAILURE MODE.** First: the behavioural test reused
+`_FakeSession.observe`, which probes the ADVISORY lock — and it PASSED
+on the pre-fix source, because the lock backfill actually held was the
+FILE lock. `_ArchiveProbe` probes both. Second: the enumeration guard
+decided BURST per FUNCTION, ORing across its writes, so one
+burst-wrapped write laundered every unlocked write beside it — exactly
+backfill's shape, meaning the guard passed on the bug it was written
+for. It ANDs now, per write, and the laundering case is pinned in the
+classifier test. **A regression test that was never run red is a claim,
+not a check**, and **a guard whose unit of judgement is coarser than the
+defect's unit of occurrence is decorative.** Logged in `mistakes.md`.
+**NO PROMOTE, and the reason is unchanged and RE-MEASURED rather than
+remembered**: run `20260823T201714` is live at **2d00h11m (shadow_equity
+20260823T201714 spans 2026-08-23 20:17:29Z -> 2026-08-25 20:28:19Z,
+8,473 points)** and reaches 3 days at 2026-08-26 20:17Z;
+`needs_restart simulator.shadow` matches `^(simulator|strategies|
+hyxlab)/` and this pass touched `hyxlab/`, so promoting today would
+reset it. Four passes of collection-side fixes are now queued behind
+that clock — backfill and migrate among them, both manual CLIs, which
+is why the wait is still the cheaper loss. Suite 778 ->
+**790 green**.
+NEXT PASS: (1) **08-26 20:17Z the shadow run clears 3 days — then
+PROMOTE (four passes queued) and re-run `by_day` as an OUT-OF-SAMPLE
+test of the one surviving diurnal claim (troughs 16-18Z, peaks 21-00Z).**
+Do not re-test the +72/-247/+150 cycle; it is dead. (2) `batch units`
+self-clears 08-28 or the budget is stale and must be re-measured, not
+re-excused. (3) `run_l2` still accumulates the full equity curve and
+CONSUMES it, so bounding it is a behaviour change needing its own
+design; least acute of the three. (4) The next rung down is the one this
+guard does NOT cover: `sweep.acquire_sweep_lock` flocks
+`data/hyxlab.duckdb.lock` as a single-INSTANCE guard held for the whole
+multi-hour run. Its MECHANISM is tested (`test_hyxlab_store.py`: held ->
+refused -> re-acquirable) and it has exactly one caller, `sweep.main` —
+but nothing enumerates which entrypoints must take one, so two
+`poly_sweep` processes, or a `reconcile` racing a `sweep`, are guarded
+by nothing written down. Same shape of
+gap, one rung further out. (5) The #32/#33/#34 lens sweeps remain done
+for report summary fields and the sim's unbounded loops; the standing
+job is unchanged.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-25 15:05 UTC (RUNG-4 PASS — THE 2026-07-12 RULE WAS
 NEVER ENFORCED, AND THE SWEEP FOR IT FOUND TWO MORE INSTANCES PLUS A
 CLASS THE RULE'S OWN WORDING DOES NOT DESCRIBE.**

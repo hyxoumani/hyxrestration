@@ -842,3 +842,54 @@ sweep.** Writing down every site to build the allowlist is what exposed
 `bookreplay.load_stream_snapshots` — a third, dead copy of the walk
 carrying the EXP-1364 materialised sort, an EXP-1367 bare attach, and a
 full materialisation, with zero callers since BookReplayer landed.
+
+Recurrence audit (2026-08-25, EXP-1370): the lesson directly above —
+"when escalating a rule to a test, ask what the rule's wording
+excludes" — was applied the same day and found the next rung down.
+`tests/test_connect_discipline.py` enumerates who ATTACHES the archive.
+It says nothing about **who holds `data/writer.lock` while writing**,
+and that rule was, again, a sentence: H1 of the 2026-07-11 deep review
+("all writers touch the DB only in open -> write -> close bursts")
+lived in `collector.sweep.writer_burst`'s docstring with an informal
+roll call, "which poly_sweep, trades_backfill and signals already
+follow". **A roll call in prose is not an enumeration.**
+`collector.backfill` predates the rule, was never in the roll call, and
+held a read-write `Store` on the live archive across every REST call of
+a multi-hour run — 5 series x up to 50 pages, then a candlestick call
+per settled market at 0.35 s apart — while taking the flock at no
+point. `hyxlab.migrate.main` had the same shape for schema writes.
+
+Three things generalise.
+
+**(1) Omitting the lock is strictly worse than holding it too long, and
+it is worse in a way that hides.** The 08-02 outage held the lock for
+hours and dropped 421 of 3,706 capture cycles — but each drop was
+COUNTED. A writer that takes no advisory lock lets the collector WIN
+`acquire_writer_lock`, pass the skip-recording branch, and only then
+collide on DuckDB's file lock. Same lost capture, no skip row. **An
+instrument that measures contention on the advisory lock cannot see a
+writer that never takes it.**
+
+**(2) That blind spot was reproduced inside the test written to catch
+it.** The first behavioural test reused `_FakeSession.observe`, which
+probes the advisory lock — and it PASSED on the pre-fix source. Only
+mutation-testing against the original code exposed it; `_ArchiveProbe`
+now probes both locks. **Mutation-test the test against the actual
+defect, not against a plausible one** — a regression test that was
+never run red is a claim, not a check.
+
+**(3) An allowlist guard can launder the very shape it enumerates.**
+The first version of `tests/test_writer_lock_discipline.py` decided
+BURST per FUNCTION, ORing across its writes, so one burst-wrapped write
+made every unlocked write beside it read as compliant — exactly
+backfill's shape. It ANDs now, per write. Both this and (2) were caught
+only by mutating the source back to the defect and demanding red.
+Generalising: **when a guard's unit of judgement is coarser than the
+defect's unit of occurrence, the guard is decorative.**
+
+The artifact: every archive write is enumerated with BURST / FLOCK /
+CALLER; BURST and FLOCK are verified against the AST rather than
+trusted; CALLER (the only locally-unverifiable one) must open nothing
+and must NAME a caller that is resolved in the source and shown to hold
+the lock. The mutator set is derived from `hyxlab/store.py`, not
+listed, so a new writing method cannot enter invisible.
