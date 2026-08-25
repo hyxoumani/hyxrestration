@@ -1,6 +1,6 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-25 02:35 UTC (RUNG-1 PASS — THE MAKER BRACKET'S
+Updated: **2026-08-25 03:10 UTC (RUNG-1 PASS — THE MAKER BRACKET'S
 "NOT SIGNIFICANT" WAS, FIVE READINGS OUT OF SEVEN, "COULD NOT HAVE
 BEEN"; AND THE FIRST READING THAT COULD HAVE FOUND A DIRECTION FINDS
 NONE.**
@@ -71,16 +71,82 @@ maker_bracket, so no daemon moved and the shadow run started 08-23
 stream knows. It does not make the 5 underpowered readings
 informative. Widening `--markets` would, and that starts a NEW
 comparability series rather than extending this one.
+**(6) THE SWEEP THIS PASS'S OWN LESSON DEMANDED, RUN THE SAME PASS —
+AND IT FOUND A THIRD INSTANCE IN MINUTES (EXP-1363).** #32 was fixed as
+an instance; #33 is the same defect at a second site. So the lens
+("does this summary field distinguish members that mean opposite
+things?") was swept across the other report summary fields instead of
+being deferred. It hit immediately, in the ATLAS, one tier BELOW where
+#32 was fixed: the BASE tier's `flagged` is
+`n >= MIN_N and implied outside the Wilson interval`, so its False
+covers a bucket never tested and a bucket tested and found calibrated.
+**200 of 395 buckets on the 08-24 archive sit under MIN_N.** The
+standing headline "141 flagged of 395 buckets" is therefore **141 of
+195 tests** — the flagged rate is **72.3%, not 35.7%**, roughly
+doubling. Fixed the same way: `flag_status` per bucket, `flag_verdict`
+whose counts PARTITION the bucket set with `tested` as the honest
+denominator, printed next to the headline; `flagged` byte-identical,
+`flag_status` asserted a strict REFINEMENT of it; three mutations
+reddening. Suite 762 -> **764 green**. **THE SWEEP IS COMPLETE, NOT
+SAMPLED**, and everything else is CLEAN: `shadow_diurnal` already
+prints `profile_verdict` as an explicit UNDERPOWERED string with
+`min_draws_per_hour` and `sparse_hours` alongside; `shadow_coverage`
+and `shadow_attribution` carry no summary boolean at all (counts and
+rates only); `collector.signals` records per-series `ok`/`error` and
+never pools; and `collector.qa` is the exemplar the others are being
+brought up to — PASS / FAIL / WATCH / SKIP-UNVERIFIED, with "a skipped
+check is not a passed one" already load-bearing. The atlas non-base
+Wilson tiers are nested-monotone by design and always computable, so
+they carry no silence mode. **Three instances in two passes, and the
+population is now exhausted.**
+**(7) THE OTHER STALE REPORT DID NOT PRODUCE A READING, AND WHY IS THE
+FINDING.** `simulator.divergence` has not run since 08-03 and this pass
+established that is not a scheduling oversight — **the report cannot
+complete under current conditions**, for two independent and separately
+measured reasons.
+**(a) A LOCK RACE IT LOSES OFTEN, AGAINST A DAEMON THAT NEVER STOPS.**
+`replay_run` attaches `data/hyxstream.duckdb`, whose read-write lock is
+held by `collector.streamd` (PID 2701686, up 1d06h from the STABLE
+worktree). DuckDB excludes every other attach — including read-only —
+while a writer holds it, so `connect_retry`'s 15 x 2s = **30s** budget
+is racing the daemon's flush bursts. Measured directly, 355 probes over
+180s: the lock is **free 87% of the time**, longest LOCKED run **6.5s**,
+longest FREE run **15.0s**, 23 alternations. So the attach usually wins
+and sometimes does not — three attempts this pass, **two lost the race
+and died on a clean IOException after 30s**. The helper's docstring
+says "writers flush in bursts and readers attach briefly; colliding is
+normal, dying on it is not" — the budget behind that sentence was
+calibrated for brief readers, not for a 24/7 writer.
+**(b) THE COST GROWS WITH THE LONGEST SHADOW RUN EVER RECORDED.** The
+attempt that DID win the race ran **25 minutes without finishing**.
+`--run` defaults to "the run with the most fills", and that run is now
+`20260810T081931`, spanning **08-10 08:19Z -> 08-20 21:33Z = 10.5
+days** of replay. The default target is monotone in run length, so this
+report's cost only ever rises — it was ~2 minutes when the busiest run
+was a short probe. **This is why it is three weeks stale, and it will
+not un-stale itself.**
+**LAUNCHED, NOT ABANDONED**: relaunched as a `systemd-run --user`
+transient unit (`hyxlab-divergence-adhoc`, journald-captured,
+session-independent per the ops rule), wrapped in a 6-attempt retry
+with a 3h per-attempt budget, so the lock race is retried rather than
+raced once. Read `journalctl --user -u hyxlab-divergence-adhoc` next
+pass. **Do not report a divergence reading from this pass — there is
+none.**
 NEXT PASS: (1) **Confirm the 08-25 04:40Z TIMER writes a second
 `data/signals_fetch.jsonl` row** — now in the past, read it. (2) The
 20:17Z shadow run reaches ~3 days on 08-26: re-run `by_day` as an
 OUT-OF-SAMPLE test of the one surviving diurnal claim (troughs 16-18Z,
 peaks 21-00Z). Do not re-test the +72/-247/+150 cycle; it is dead.
 (3) `batch units` self-clears 08-28 or the budget is stale and must be
-re-measured, not re-excused. (4) Sweep the #32/#33 lens across the
-REMAINING report summary fields (atlas non-quoted tiers, shadow
-coverage/attribution/diurnal, QA verdicts) rather than waiting for the
-next re-run to surface the third instance.
+re-measured, not re-excused. (4) The #32/#33 lens sweep is DONE and the
+population exhausted — do not re-run it; the standing job it leaves is
+that any NEW summary field must ship its status decomposition with it.
+(5) **Fix `simulator.divergence` properly, and both halves are now
+scoped rather than mysterious**: give the replay a bounded window (or
+a `--since`) so the cost stops tracking the longest run ever recorded,
+and give the stream attach a retry budget matched to a 24/7 writer
+rather than to a brief reader. Read the transient unit's journal first
+— if it completed, the report is fresh and only the cost fix is owed.
 NOTHING IS USER-GATED THIS PASS.**
 
 (prior Updated: **2026-08-24 20:25 UTC (RUNG-1 PASS — THE ATLAS QUOTED TIER'S
