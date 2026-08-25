@@ -26,8 +26,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
 
-import duckdb
-
 from hyxlab.models import Snapshot
 from hyxlab.streamstore import BookEvent
 
@@ -305,35 +303,3 @@ def replay_snapshots(
         if snap is not None:
             yield snap
 
-
-def load_stream_snapshots(
-    db_path: str = "data/hyxstream.duckdb",
-    market_ids: list[str] | None = None,
-    start: datetime | None = None,
-    end: datetime | None = None,
-) -> list[Snapshot]:
-    """Read archived book events (read-only) and replay to Snapshots."""
-    conn = duckdb.connect(db_path, read_only=True)
-    try:
-        where, params = ["venue = 'kalshi'"], []
-        if market_ids:
-            where.append(f"market_id IN ({','.join('?' * len(market_ids))})")
-            params.extend(market_ids)
-        if start:
-            where.append("recv_ts >= ?")
-            params.append(start.replace(tzinfo=None) if start.tzinfo else start)
-        if end:
-            where.append("recv_ts < ?")
-            params.append(end.replace(tzinfo=None) if end.tzinfo else end)
-        rows = conn.execute(
-            "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
-            f" FROM book_events WHERE {' AND '.join(where)} ORDER BY recv_ts, seq",
-            params,
-        ).fetchall()
-        gaps = conn.execute(
-            f"SELECT started_at, ended_at FROM stream_gaps WHERE {BOOK_GAPS} ORDER BY started_at"
-        ).fetchall()
-    finally:
-        conn.close()
-    events = (BookEvent(*r) for r in rows)
-    return list(replay_snapshots(events, gaps=gaps))
