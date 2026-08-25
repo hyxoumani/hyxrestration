@@ -89,10 +89,14 @@ ALLOWED: dict[str, tuple[str, str]] = {
 #: archive while only ever calling readers — and `run_backtest` is one of
 #: the commands CLAUDE.md tells people to run, so the hazard was not
 #: ad-hoc at all. Every site below must OWN the file it opens.
+#: EXP-1370 removed two entries from here rather than adding any:
+#: `collector/backfill.py::main` and `hyxlab/migrate.py::main` both owned
+#: their read-write open on paper while holding it with no writer lock.
+#: Both now route through the helpers (a burst, a flock), which makes
+#: them invisible to THIS guard by construction — see
+#: tests/test_writer_lock_discipline.py, which owns that half.
 WRITE_ALLOWED: dict[str, str] = {
-    "collector/backfill.py::main": "the retro-pass writes what it fetches",
     "collector/streamd.py::main": "the stream daemon owns hyxstream.duckdb",
-    "hyxlab/migrate.py::main": "migration is a schema write by definition",
     "hyxlab/streamstore.py::StreamStore.__init__": "creates its own schema",
     "hyxlab/streamstore.py::StreamStore.flush": "the daemon's write path",
     "hyxlab/streamstore.py::StreamStore.last_recv_ts": "same connection discipline as flush",

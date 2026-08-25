@@ -39,6 +39,7 @@ WRITER_MODULES = [
     "collector/poly_sweep.py",
     "collector/trades_backfill.py",
     "collector/signals.py",
+    "hyxlab/migrate.py",  # EXP-1370: migrated from no lock at all
 ]
 
 REPO = Path(__file__).resolve().parents[1]

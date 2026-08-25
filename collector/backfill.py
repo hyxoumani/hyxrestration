@@ -9,6 +9,15 @@ Pulls into the same DuckDB file the live collector uses:
 Run:
     python -m collector.backfill --days 365
     python -m collector.backfill --days 365 --series KXHIGHNY --stations NYC
+
+WRITER DISCIPLINE (EXP-1370): this module held a read-write `Store` on
+the live archive for its ENTIRE multi-hour run, interleaving REST fetches
+with inserts, and took `data/writer.lock` at no point. That is the H1
+shape of the 2026-07-11 deep review verbatim — the one that dropped 421
+of 3,706 capture cycles from `collector.sweep` — with the lock omitted on
+top, so a concurrent `collect` cycle WINS the flock and then collides on
+DuckDB's file lock instead of recording an honest skip. HTTP now happens
+outside the lock and rows are flushed in bounded bursts.
 """
 
 from __future__ import annotations
@@ -19,8 +28,9 @@ from datetime import UTC, date, datetime, timedelta
 
 import requests
 
+from collector.sweep import FLUSH_ROWS, writer_burst
 from collector.venues import iem, kalshi
-from hyxlab.store import Store
+from hyxlab.store import open_retry
 
 WEATHER_SERIES = ["KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHAUS", "KXHIGHDEN"]
 
@@ -57,13 +67,17 @@ def _candles_with_backoff(
 
 
 def backfill_kalshi_series(
-    store: Store,
+    db: str,
     series: str,
     days: int,
     session: requests.Session,
     pause_s: float = 0.35,
 ) -> tuple[int, int]:
-    """Backfill settled markets + hourly candles for one series."""
+    """Backfill settled markets + hourly candles for one series.
+
+    Takes a PATH, not a Store: an open Store is a held file lock, and the
+    fetch loop below runs for hours. Each burst opens, writes and closes.
+    """
     min_close = int(time.time()) - days * 86400
     markets = kalshi.get_markets(
         series_ticker=series,
@@ -72,8 +86,10 @@ def backfill_kalshi_series(
         session=session,
         min_close_ts=min_close,
     )
-    store.upsert_markets([kalshi.to_market_info(m) for m in markets])
+    with writer_burst(db) as store:
+        store.upsert_markets([kalshi.to_market_info(m) for m in markets])
     n_candles = 0
+    buf: list[tuple] = []
     for i, m in enumerate(markets):
         open_ts = _parse_ts(m.get("open_time"))
         close_ts = _parse_ts(m.get("close_time"))
@@ -84,28 +100,37 @@ def backfill_kalshi_series(
         except requests.RequestException as e:
             print(f"[backfill] {series} {m['ticker']}: {e}")
             continue
-        rows = [kalshi.candle_row(series, m, c, 3600) for c in candles]
-        if rows:
-            store.insert_candles(rows)
-            n_candles += len(rows)
+        buf.extend(kalshi.candle_row(series, m, c, 3600) for c in candles)
+        # Flush mid-loop rather than once at the end: a single end-of-series
+        # burst is how KXBTC held the lock for ~21 min (sweep.FLUSH_ROWS).
+        if len(buf) >= FLUSH_ROWS:
+            with writer_burst(db) as store:
+                n_candles += store.insert_candles(buf)
+            buf.clear()
         if (i + 1) % 200 == 0:
             print(f"[backfill] {series}: {i + 1}/{len(markets)} markets, {n_candles} candles")
         time.sleep(pause_s)
+    if buf:
+        with writer_burst(db) as store:
+            n_candles += store.insert_candles(buf)
     return len(markets), n_candles
 
 
 def backfill_iem(
-    store: Store, stations: list[str], start: date, end: date, session: requests.Session
+    db: str, stations: list[str], start: date, end: date, session: requests.Session
 ) -> tuple[int, int]:
+    """One burst per station — the fetch is per-year and the write is not."""
     n_obs = n_fc = 0
     for station in stations:
+        obs: list[tuple[str, date, int | None]] = []
         for year in range(start.year, end.year + 1):
-            obs = iem.get_observed_highs(station, year, session=session)
-            obs = [o for o in obs if start <= o[1] <= end]
-            store.upsert_observations(obs)
-            n_obs += len(obs)
+            got = iem.get_observed_highs(station, year, session=session)
+            obs.extend(o for o in got if start <= o[1] <= end)
         fcs = iem.get_mos_forecasts(station, start, end, session=session)
-        store.insert_forecasts(fcs)
+        with writer_burst(db) as store:
+            store.upsert_observations(obs)
+            store.insert_forecasts(fcs)
+        n_obs += len(obs)
         n_fc += len(fcs)
         print(f"[backfill] IEM {station}: {n_obs} obs, {n_fc} forecasts so far")
     return n_obs, n_fc
@@ -121,18 +146,19 @@ def main() -> None:
     ap.add_argument("--skip-iem", action="store_true")
     args = ap.parse_args()
 
-    store = Store(args.db)
     sess = requests.Session()
     end = datetime.now(UTC).date()
     start = end - timedelta(days=args.days)
+    if not args.skip_iem:
+        n_obs, n_fc = backfill_iem(args.db, args.stations, start, end, sess)
+        print(f"[backfill] IEM done: {n_obs} observations, {n_fc} forecasts")
+    if not args.skip_kalshi:
+        for series in args.series:
+            n_m, n_c = backfill_kalshi_series(args.db, series, args.days, sess)
+            print(f"[backfill] {series} done: {n_m} settled markets, {n_c} candles")
+    # The closing summary is a READ; it must not re-take the writer lock.
+    store = open_retry(args.db, read_only=True)
     try:
-        if not args.skip_iem:
-            n_obs, n_fc = backfill_iem(store, args.stations, start, end, sess)
-            print(f"[backfill] IEM done: {n_obs} observations, {n_fc} forecasts")
-        if not args.skip_kalshi:
-            for series in args.series:
-                n_m, n_c = backfill_kalshi_series(store, series, args.days, sess)
-                print(f"[backfill] {series} done: {n_m} settled markets, {n_c} candles")
         print(f"[backfill] db={store.counts()}")
     finally:
         store.close()

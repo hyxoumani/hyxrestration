@@ -856,3 +856,158 @@ def test_pending_markets_waits_out_a_writer_instead_of_killing_the_pass(tmp_path
 
     assert tb.pending_markets(db) == []
     assert attempts["n"] == 3, "the query gave up instead of waiting the writer out"
+
+
+# --------------------------------------------------------------------------
+# 5. The historical backfill CLI, which never followed the rule at all.
+# --------------------------------------------------------------------------
+
+
+class _ArchiveProbe(_FakeSession):
+    """Records BOTH locks at each HTTP call, because backfill held the one
+    the flock probe cannot see.
+
+    `_FakeSession.observe` probes `data/writer.lock`, the ADVISORY lock.
+    The original `collector.backfill` never took that lock — it held a
+    read-write DuckDB connection, i.e. the FILE lock, for the whole run.
+    Mutation-testing this file against the pre-fix source proved the point
+    the hard way: the flock-only assertion passed on the defect.
+
+    An open connection is detected by trying to attach the same file
+    read-only. In-process that raises a configuration error rather than
+    the cross-process conflicting-lock error, but it discriminates on
+    exactly the property under test — is a connection open right now."""
+
+    def __init__(self, lock_path, markets, db):
+        super().__init__(lock_path, markets)
+        self.db = db
+        self.db_held_during_http = []
+
+    def observe(self):
+        super().observe()
+        import duckdb
+
+        try:
+            duckdb.connect(self.db, read_only=True).close()
+            self.db_held_during_http.append(False)
+        except Exception:
+            self.db_held_during_http.append(True)
+
+
+def _patch_backfill(monkeypatch, session, n_markets=4, n_candles=2):
+    """Kalshi + IEM reduced to fixtures that report lock state per call."""
+    import collector.backfill as bf
+
+    markets = [_market(f"KXB-{i}", 10 + i) for i in range(n_markets)]
+
+    def get_markets(**kwargs):
+        session.observe()
+        return markets
+
+    def get_candlesticks(series, ticker, *a, **kw):
+        session.observe()
+        # Real API shape, so the real `candle_row` flattens it — a fake
+        # row builder would only pin the fake's column count.
+        return [
+            {
+                "end_period_ts": int(datetime(2026, 7, 10, i, tzinfo=UTC).timestamp()),
+                "price": {"open_dollars": "0.5", "high_dollars": "0.5",
+                          "low_dollars": "0.5", "close_dollars": "0.5"},
+                "yes_bid": {"close_dollars": "0.49", "high_dollars": "0.49"},
+                "yes_ask": {"close_dollars": "0.51", "low_dollars": "0.51"},
+                "volume_fp": 1.0,
+                "open_interest_fp": 1.0,
+            }
+            for i in range(n_candles)
+        ]
+
+    monkeypatch.setattr(bf.kalshi, "get_markets", get_markets)
+    monkeypatch.setattr(bf.kalshi, "get_candlesticks", get_candlesticks)
+    monkeypatch.setattr(bf.kalshi, "to_market_info", _info)
+    monkeypatch.setattr(bf.time, "sleep", lambda s: None)
+    return bf, markets
+
+
+def test_backfill_releases_the_writer_lock_across_every_rest_call(tmp_path, monkeypatch):
+    """EXP-1370, the load-bearing one: `collector.backfill` held a
+    read-write `Store` on the live archive for its ENTIRE multi-hour run
+    and took `data/writer.lock` at no point. That is H1's shape with the
+    lock omitted — strictly worse, because a concurrent collect cycle wins
+    the advisory lock and then collides on DuckDB's file lock, losing a
+    5-min capture with no skip record to show for it."""
+    import collector.sweep as sweep_mod
+
+    lock_path = str(tmp_path / "writer.lock")
+    db = str(tmp_path / "t.duckdb")
+    monkeypatch.setattr(sweep_mod, "LOCK_FILE", lock_path)
+    Store(db).close()  # the file must exist for the read-only probe
+    session = _ArchiveProbe(lock_path, [], db)
+    bf, _ = _patch_backfill(monkeypatch, session)
+
+    bf.backfill_kalshi_series(db, "KXB", days=60, session=session)
+
+    assert session.held_during_http, "fixture made no HTTP calls"
+    assert not any(session.held_during_http), (
+        "the writer lock was held across a REST call — the fetch loop runs "
+        "for hours between writes"
+    )
+    assert not any(session.db_held_during_http), (
+        "an archive CONNECTION was open across a REST call. That is the lock "
+        "the old code actually held, and the one the flock probe above "
+        "cannot see: a concurrent collect cycle wins the advisory lock and "
+        "then collides here, losing a capture with no skip record"
+    )
+
+
+def test_backfill_still_persists_every_market_and_candle(tmp_path, monkeypatch):
+    """Discrimination control: a 'fix' that stopped writing would pass the
+    test above. Rows must survive being split across bursts."""
+    import collector.sweep as sweep_mod
+
+    lock_path = str(tmp_path / "writer.lock")
+    db = str(tmp_path / "t.duckdb")
+    monkeypatch.setattr(sweep_mod, "LOCK_FILE", lock_path)
+    Store(db).close()
+    session = _ArchiveProbe(lock_path, [], db)
+    bf, markets = _patch_backfill(monkeypatch, session)
+    # Force the mid-loop flush path: one burst must not carry the series.
+    monkeypatch.setattr(bf, "FLUSH_ROWS", 3)
+
+    n_markets, n_candles = bf.backfill_kalshi_series(db, "KXB", days=60, session=session)
+
+    assert (n_markets, n_candles) == (4, 8)
+    store = Store(db)
+    try:
+        ids = {r[0] for r in store.conn.execute("SELECT market_id FROM markets").fetchall()}
+        assert ids == {m["ticker"] for m in markets}
+        assert store.conn.execute("SELECT count(*) FROM candles").fetchone()[0] == 8
+    finally:
+        store.close()
+
+
+def test_backfill_flushes_mid_loop_rather_than_once_at_the_end(tmp_path, monkeypatch):
+    """The other half of the rule: releasing the lock is not enough if the
+    single burst at the end carries the whole series (the KXBTC ~21 min
+    hold). Past FLUSH_ROWS the buffer must go out mid-loop."""
+    import collector.sweep as sweep_mod
+
+    lock_path = str(tmp_path / "writer.lock")
+    db = str(tmp_path / "t.duckdb")
+    monkeypatch.setattr(sweep_mod, "LOCK_FILE", lock_path)
+    Store(db).close()
+    session = _ArchiveProbe(lock_path, [], db)
+    bf, _ = _patch_backfill(monkeypatch, session, n_markets=6, n_candles=2)
+    monkeypatch.setattr(bf, "FLUSH_ROWS", 3)
+
+    sizes = []
+    orig = Store.insert_candles
+
+    def spy(self, rows):
+        sizes.append(len(rows))
+        return orig(self, rows)
+
+    monkeypatch.setattr(Store, "insert_candles", spy)
+    bf.backfill_kalshi_series(db, "KXB", days=60, session=session)
+
+    assert len(sizes) > 1, f"the whole series went out in one burst: {sizes}"
+    assert max(sizes) <= 2 * 3, f"a burst carried far past FLUSH_ROWS: {sizes}"

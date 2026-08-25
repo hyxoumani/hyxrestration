@@ -15,10 +15,13 @@ Fresh databases are created at the current version and never migrate.
 from __future__ import annotations
 
 import argparse
+import fcntl
 
-from hyxlab.store import SCHEMA_VERSION, Store
+from hyxlab.lockid import note_holder
+from hyxlab.store import SCHEMA_VERSION, Store, open_retry
 
 LEGACY_TZ = "America/Chicago"
+LOCK_FILE = "data/writer.lock"
 
 _M1_COLUMNS = [
     ("markets", "close_time"),
@@ -75,13 +78,34 @@ def migrate(store: Store) -> int:
 
 
 def main() -> None:
+    """Migrate under `data/writer.lock`, like every other archive writer.
+
+    EXP-1370: this opened the live archive read-write with no flock, so a
+    concurrent `collect` cycle won the advisory lock and then collided on
+    DuckDB's file lock — a dropped capture cycle with no honest skip
+    record. A migration is the most exclusive write in the repo; it is
+    the last one that should have been taking the lock on trust.
+
+    Raw flock rather than `collector.sweep.writer_burst`: `hyxlab` is the
+    kernel and may import nothing above it (tests/test_boundaries.py).
+    `hyxlab.lockid` moved here for the same reason — the lock guards the
+    ARCHIVE, which is kernel-owned, so its witness belongs in the kernel.
+    The shape below is `collector.signals`'s, line for line.
+    """
     ap = argparse.ArgumentParser(description="hyxlab store migrations")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
+    ap.add_argument("--lock-file", default=LOCK_FILE)
     args = ap.parse_args()
-    store = Store(args.db)
-    v = migrate(store)
-    print(f"[migrate] schema at version {v}; counts={store.counts()}")
-    store.close()
+    with open(args.lock_file, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(args.lock_file)
+        store = open_retry(args.db)
+        try:
+            v = migrate(store)
+            print(f"[migrate] schema at version {v}; counts={store.counts()}")
+        finally:
+            store.close()
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 if __name__ == "__main__":
