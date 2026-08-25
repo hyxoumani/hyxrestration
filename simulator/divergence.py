@@ -27,8 +27,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from hyxlab.store import Store, connect_retry
-from hyxlab.streamstore import BookEvent
-from simulator.bookreplay import BOOK_GAPS, replay_snapshots
+from simulator.bookreplay import BOOK_GAPS, replay_snapshots, stream_events
 from simulator.registry import STRATEGIES
 from simulator.shadow import SHADOW_DB, STREAM_DB
 from simulator.sim import Simulator
@@ -36,8 +35,6 @@ from simulator.sim import Simulator
 MATCH_TOLERANCE = timedelta(seconds=60)
 NEAREST_WINDOW = timedelta(seconds=2)
 _QTY_EPS = 1e-9
-CHUNK = 200_000
-SLICE_HOURS = 6.0
 # The stream archive is held read-write by `collector.streamd`, which
 # never stops. `connect_retry`'s default 15 x 2.0s = 30s budget is for a
 # brief reader: measured against the daemon, FOUR OF FIVE attempts died
@@ -45,48 +42,6 @@ SLICE_HOURS = 6.0
 # of the time. These give ~10.5 min of growing-interval attempts, which
 # also detunes the retry from the daemon's flush period.
 STREAM_ATTACH = {"retries": 30, "delay": 1.0, "backoff": 1.4, "max_delay": 30.0}
-
-
-def _events(conn, lo: datetime, hi: datetime | None, slice_hours: float = SLICE_HOURS):
-    """Stream kalshi book events in (lo, hi] in replay order, chunked.
-
-    The window is walked in `slice_hours` time slices, each with its own
-    `ORDER BY recv_ts, seq`, rather than as one cursor over the whole
-    span. The yielded order is IDENTICAL either way — slice bounds are
-    half-open on `recv_ts` (`> lo AND <= hi`), so every row sharing a
-    `recv_ts` lands in exactly one slice and no tie can straddle a
-    boundary — but the peak memory is not. DuckDB materialises a sort,
-    so one cursor over a long run costs memory LINEAR IN RUN LENGTH:
-    measured 3.14 GB for a 2-day window (18.5M rows), and the 10.5-day
-    default target peaked at 14.3 GB. Slicing holds peak flat at one
-    slice regardless of how long the run is, at no wall-clock cost
-    (measured 13.6s sliced vs 12.6s single over the same 18.5M rows).
-    """
-    where = "venue='kalshi' AND recv_ts > ?" + (" AND recv_ts <= ?" if hi else "")
-    params = [lo, hi] if hi else [lo]
-    # Resolve the real extent first: `lo` may be datetime.min (no prior
-    # coverage break) and `hi` may be open, either of which would make a
-    # naive slice walk iterate over empty millennia.
-    first, last = conn.execute(
-        f"SELECT min(recv_ts), max(recv_ts) FROM book_events WHERE {where}", params
-    ).fetchone()
-    if first is None:
-        return
-    step = timedelta(hours=slice_hours)
-    # Start strictly below `first` so the first slice's `> lo` keeps it.
-    start = first - timedelta(microseconds=1)
-    while start < last:
-        stop = min(start + step, last)
-        cur = conn.execute(
-            "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
-            " FROM book_events WHERE venue='kalshi' AND recv_ts > ? AND recv_ts <= ?"
-            " ORDER BY recv_ts, seq",
-            [start, stop],
-        )
-        while rows := cur.fetchmany(CHUNK):
-            for r in rows:
-                yield BookEvent(*r)
-        start = stop
 
 
 def replay_run(
@@ -122,7 +77,7 @@ def replay_run(
         from simulator.bookreplay import BookReplayer
 
         replayer = BookReplayer()
-        seed = _events(conn, floor or datetime.min, anchor)
+        seed = stream_events(conn, floor or datetime.min, anchor)
         for _ in replay_snapshots(seed, replayer=replayer):
             pass
         # Trade the window with full gap honesty (including gap rows the
@@ -133,7 +88,7 @@ def replay_run(
             f" ORDER BY started_at",
             [anchor, end],
         ).fetchall()
-        for snap in replay_snapshots(_events(conn, anchor, end), gaps=gaps, replayer=replayer):
+        for snap in replay_snapshots(stream_events(conn, anchor, end), gaps=gaps, replayer=replayer):
             sim.step(snap)
             # Same bound the shadow daemon applies (simulator/shadow.py),
             # for the same reason, at the site that never got it: the sim

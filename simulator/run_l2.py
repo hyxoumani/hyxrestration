@@ -26,37 +26,18 @@ import json
 from datetime import UTC, datetime
 
 from hyxlab.store import open_retry
-from hyxlab.streamstore import BookEvent
-from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
+from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots, stream_events
 from simulator.harness import write_manifest
 from simulator.registry import STRATEGIES, build
 from simulator.shadow import STREAM_DB, stream_conn
 from simulator.sim import Simulator
 
-CHUNK = 200_000
 EQUITY_MAX_POINTS = 10_000
-
-_COLS = "venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
-
 
 def _naive(ts: str | datetime) -> datetime:
     dt = datetime.fromisoformat(ts) if isinstance(ts, str) else ts
     return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo else dt
 
-
-def _events(conn, lo: datetime, hi: datetime, prefix: str | None):
-    """Kalshi book events in (lo, hi] in replay order, chunked."""
-    where = "venue = 'kalshi' AND recv_ts > ? AND recv_ts <= ?"
-    params: list = [lo, hi]
-    if prefix:
-        where += " AND market_id LIKE ?"
-        params.append(prefix + "%")
-    cur = conn.execute(
-        f"SELECT {_COLS} FROM book_events WHERE {where} ORDER BY recv_ts, seq", params
-    )
-    while rows := cur.fetchmany(CHUNK):
-        for r in rows:
-            yield BookEvent(*r)
 
 
 def run_l2(
@@ -92,7 +73,7 @@ def run_l2(
         ).fetchone()[0]
         replayer = BookReplayer()
         for _ in replay_snapshots(
-            _events(conn, floor or datetime.min, start, prefix), replayer=replayer
+            stream_events(conn, floor or datetime.min, start, prefix=prefix), replayer=replayer
         ):
             pass
         gaps = conn.execute(
@@ -101,7 +82,7 @@ def run_l2(
             [start, end],
         ).fetchall()
         for snap in replay_snapshots(
-            _events(conn, start, end, prefix), gaps=gaps, replayer=replayer
+            stream_events(conn, start, end, prefix=prefix), gaps=gaps, replayer=replayer
         ):
             sim.step(snap)
             n_snaps += 1

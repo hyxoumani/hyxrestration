@@ -356,7 +356,7 @@ def test_sliced_event_walk_is_byte_identical_to_one_cursor(tmp_path):
     walk, including `recv_ts` ties that land on a slice boundary."""
     import duckdb
 
-    from simulator.divergence import _events
+    from simulator.bookreplay import stream_events as _events
 
     db, n = _seeded_stream(tmp_path)
     lo, hi = datetime(2026, 8, 9), datetime(2026, 8, 13)
@@ -378,7 +378,7 @@ def test_sliced_walk_handles_open_and_unbounded_edges(tmp_path):
     millennia or drop rows."""
     import duckdb
 
-    from simulator.divergence import _events
+    from simulator.bookreplay import stream_events as _events
 
     db, n = _seeded_stream(tmp_path)
     with duckdb.connect(str(db), read_only=True) as conn:
@@ -442,3 +442,38 @@ def test_replay_bounds_in_memory_equity_curve(tmp_path, monkeypatch):
     # That the trim changes no number the report reads is pinned by
     # `test_replay_reproduces_shadow_run_exactly`, which runs this same
     # path and asserts the fills match shadow's exactly.
+
+
+def test_sliced_walk_applies_market_prefix_on_every_slice(tmp_path):
+    """`run_l2` walks with `--markets PREFIX`. The filter must survive
+    into each slice's own query — and must not depend on `hi` being
+    given, which an earlier positional-slice of the params list did.
+    """
+    import duckdb
+
+    from hyxlab.streamstore import StreamStore
+    from simulator.bookreplay import stream_events
+
+    db = tmp_path / "prefixed.duckdb"
+    sstore = StreamStore(db)
+    base = datetime(2026, 8, 10, 0, 0, 0)
+    sstore.append_events(
+        [
+            _ev(m, seq, base + timedelta(hours=h), 0.40)
+            for h in range(24)
+            for seq, m in enumerate(("KXAAA-1", "KXBBB-1"))
+        ]
+    )
+    sstore.flush()
+
+    lo = datetime(2026, 8, 9)
+    with duckdb.connect(str(db), read_only=True) as conn:
+        bounded = list(stream_events(conn, lo, datetime(2026, 8, 12), prefix="KXAAA"))
+        unbounded = list(stream_events(conn, lo, None, prefix="KXAAA"))
+        everything = list(stream_events(conn, lo, None))
+
+    assert len(everything) == 48  # both markets present, so the filter is non-vacuous
+    assert len(bounded) == 24
+    assert {e.market_id for e in bounded} == {"KXAAA-1"}
+    # The open-`hi` form must filter identically, not fall back to "all".
+    assert unbounded == bounded

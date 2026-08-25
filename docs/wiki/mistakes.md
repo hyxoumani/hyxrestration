@@ -706,6 +706,49 @@ Format: what happened → root cause → error type → prevention tier
     off within minutes is the evidence for the rule: **fix the class,
     the same pass, or the next instance waits for an accident.**
 
+34. **2026-08-25 — a bounded-memory fix was applied as an INSTANCE, and
+    the second caller of the same unbounded loop OOM-grew for five
+    weeks.** `simulator.divergence` could not finish: its last completed
+    run peaked at **14.3 GB**. Two independent causes, and BOTH were
+    already-known classes applied at only one site.
+    **(a) One materialised sort.** `_events` issued a single cursor with
+    `ORDER BY recv_ts, seq` over the whole replay window. DuckDB
+    materialises that sort, so peak memory is LINEAR IN RUN LENGTH —
+    measured 3.14 GB for 18.5M rows, ~12.5 GB linear-scaled to the 73.1M
+    of the 10.5-day default target. Walking the window in 6h slices,
+    each sorted separately, holds the SORT's contribution flat (0.94 GB
+    on the same 18.5M rows) at no wall-clock cost.
+    **(b) The shadow OOM fix, never swept.** `sim.step` appends one
+    equity point PER SNAPSHOT. `simulator/shadow.py` trims that curve
+    after every poll, carrying a comment that names the mid-run kernel-
+    OOM kill it was written for (2026-07-18, ~800 MB in 2.3 days) and
+    two tests pinning it. `replay_run` steps the SAME sim over the SAME
+    stream for a window as long as the longest shadow run — and never
+    got the trim. It is pure ballast there: divergence compares fills,
+    never calls `finalize()`, and never reads the curve.
+    **CLASSIFICATION: `fix-the-instance`, the same failure as #32/#33 in
+    a new domain.** The lens that finds it is one question — *"who ELSE
+    runs this unbounded loop?"* — and it has exactly two answers here,
+    both now bounded. That the same shape has now appeared three times
+    in two passes, in two unrelated subsystems (report summary fields,
+    unbounded accumulation), is the argument for the standing rule
+    rather than for three separate patches.
+    **RULE (escalated from #32/#33's report-field scope to the general
+    one): a fix is not done at the site where it was found. Before
+    committing, enumerate every other caller/field/tier the same lens
+    applies to, and sweep them THE SAME PASS.** #33 waited for someone
+    to happen to re-run queuescore; this one waited five weeks for a
+    report to be declared stale. Neither was found by the fix that
+    should have found it.
+    **SECOND, SMALLER LESSON: a retry budget is calibrated against a
+    reader, and the writer changed underneath it.** `connect_retry`'s
+    15 x 2.0s = 30s was sized for "readers attach briefly". Against
+    `collector.streamd`, which never stops, **4 of 5 real attempts died
+    on a clean IOException after 30s** despite the lock sampling free
+    87% of the time — a flat period can beat against a flush period
+    rather than sample it. Budgets inherit an assumption about the other
+    side; when a 24/7 writer appears, re-derive them rather than reuse.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
