@@ -27,7 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from collector import collect, lockid
+from collector import collect
+from hyxlab import lockid
 
 # Every module that takes data/writer.lock. A new writer added here
 # without `note_holder` reintroduces exactly the 08-03 blind spot, which

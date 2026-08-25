@@ -32,8 +32,8 @@ from pathlib import Path
 import duckdb
 import requests
 
-from collector.lockid import note_holder
 from collector.venues import kalshi
+from hyxlab.lockid import note_holder
 from hyxlab.store import Store, open_retry
 
 LOCK_FILE = "data/writer.lock"

@@ -39,8 +39,8 @@ from pathlib import Path
 import duckdb
 import requests
 
-from collector.lockid import note_holder
 from collector.venues import alfred, gdelt
+from hyxlab.lockid import note_holder
 from hyxlab.models import EconVintage, NewsItem
 from hyxlab.store import Store, open_retry
 

@@ -29,8 +29,8 @@ from pathlib import Path
 
 import requests
 
-from collector.lockid import note_holder
 from collector.venues import polymarket as poly
+from hyxlab.lockid import note_holder
 from hyxlab.store import open_retry
 
 FLUSH_MARKETS = 25

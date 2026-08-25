@@ -21,8 +21,8 @@ from pathlib import Path
 
 import requests
 
-from collector.lockid import note_holder
 from collector.venues import kalshi
+from hyxlab.lockid import note_holder
 from hyxlab.store import open_retry
 
 FLUSH_MARKETS = 50

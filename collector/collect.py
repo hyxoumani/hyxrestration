@@ -29,8 +29,8 @@ from pathlib import Path
 
 import requests
 
-from collector.lockid import note_holder, read_holder
 from collector.venues import kalshi, nws, polymarket
+from hyxlab.lockid import note_holder, read_holder
 from hyxlab.models import Forecast, MarketInfo, Snapshot
 from hyxlab.store import Store, open_retry
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
@@ -104,7 +104,7 @@ def record_skip(
     because the 07-20..08-02 outage was invisible for 14 days exactly
     because a skip left no trace an archive-reading instrument could see.
 
-    EXP-944: `holder` names the blocker (see `collector.lockid`). The
+    EXP-944: `holder` names the blocker (see `hyxlab.lockid`). The
     2026-08-03 12:54/12:59/13:04Z skips recorded the WAIT but not the
     WAITED-ON, so a 15-minute tape hole was attributable only by
     inference. A count of holes tells you the tape is damaged; only the
