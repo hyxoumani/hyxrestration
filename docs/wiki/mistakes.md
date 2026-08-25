@@ -691,6 +691,20 @@ Format: what happened → root cause → error type → prevention tier
     informative; it stops them being read as null results. The one
     thing that WOULD widen them is a larger `--markets`, which is a
     configuration change with its own cost, not a restatement.
+    **The sweep this entry demanded, run the SAME pass — and it found a
+    THIRD instance immediately, in the atlas, one tier below where #32
+    was fixed.** The BASE tier's `flagged` is
+    `n >= MIN_N and implied outside the Wilson interval`, so its False
+    covers a bucket that was never tested and a bucket that was tested
+    and came back calibrated. On the 08-24 archive **200 of 395 buckets
+    sit under MIN_N**: the standing headline "141 flagged of 395
+    buckets" is 141 of **195** tests. Reported honestly the flagged rate
+    is **72.3%, not 35.7%** — the number roughly doubles. Fixed the same
+    way in the same pass (`flag_status` per bucket, `flag_verdict` with
+    counts that partition the bucket set and a `tested` denominator,
+    `flagged` untouched, three mutations reddening). That the sweep paid
+    off within minutes is the evidence for the rule: **fix the class,
+    the same pass, or the next instance waits for an accident.**
 
 ## Pattern analysis (Step 5)
 

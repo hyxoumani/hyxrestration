@@ -1,6 +1,89 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-24 20:25 UTC (RUNG-1 PASS — THE ATLAS QUOTED TIER'S
+Updated: **2026-08-25 02:35 UTC (RUNG-1 PASS — THE MAKER BRACKET'S
+"NOT SIGNIFICANT" WAS, FIVE READINGS OUT OF SEVEN, "COULD NOT HAVE
+BEEN"; AND THE FIRST READING THAT COULD HAVE FOUND A DIRECTION FINDS
+NONE.**
+**(1) THE THREE DATA-GATED ITEMS ARE STILL IN THE FUTURE AT 02:15Z, SO
+RUNG 1 AGAIN.** The 04:40Z sidecar row is ~2.4h out, the shadow run
+reaches ~3d on 08-26, `batch units` self-clears 08-28. Last pass named
+the two stale standing reports as the rung-1 target: maker bracket
+(last run 08-06) and divergence (last run 08-03/07-15). Both re-run
+this pass.
+**(2) THE MAKER BRACKET, RE-RUN ON ECON AT 336h — AND IT IS THE FIRST
+FULLY INDEPENDENT ECON READING EVER TAKEN.** The 19-day gap since 08-06
+exceeds the 336h window, so `new_share_vs_all = 1.00`: not one order
+re-scored from any of the 10 comparable priors. The
+reading-independence caveat that has qualified every prior econ
+sequence (11-26% new per re-run) does not apply to this one.
+**1,360 orders** over 8 markets / 5 underlyings (KXU3 616, KXCPIYOY
+367, KXFED 334, KXCPI 43); crossing **124**, queue-pess **122**,
+queue-opt **135**; the three-way split **54 / 1 / 53**
+(unambiguously invented / ambiguous / unambiguously forgone).
+`net_disagreement` **+2**, against **-71** on 08-06.
+**(3) THE FINDING: THE FIELD THE WIKI TOLD YOU TO READ WAS A BOOLEAN
+OVER OUTCOMES THAT MEAN OPPOSITE THINGS (EXP-1362).** `direction_*_
+significant` reads False both for a run that TESTED a fill-model
+direction and found none (evidence against a bias) and for a run whose
+power ceiling `min_sign_p = 2^-k` already exceeded 0.05, so no data
+could have produced a verdict (**no evidence either way**). The ceiling
+has been computed and printed since 07-31 and the docstring explains
+it — but the comparison against alpha was left to the reader, and
+`strategy-verdicts.md` named the collapsing boolean, third in a list of
+three, as the field to read. Derived over the 7 archived reports that
+carry the sign fields: **5 of 7 underlying-tier readings are
+UNDERPOWERED**, including both 08-03 runs that printed
+`significant_over` at the MARKET tier while the underlying tier could
+not have reached a verdict at all, and the 08-06 run whose **-71** has
+been carried in this log as an under-award lean. Logged as mistakes
+**#33** — same family as #32, at a second site, one pass later.
+**(4) THE PART WORTH CARRYING IS THE ESCALATION RULE, NOT THE
+STATISTIC.** #32 was fixed as an INSTANCE. The lens that found it
+("does this summary field distinguish members that mean opposite
+things?") was never swept across the other reports, so the identical
+defect sat in queuescore until someone happened to re-run it. A lens
+that finds a defect should be run against every comparable field the
+same pass.
+**(5) WHAT THE NEW READING ACTUALLY SAYS, STATED AT ITS STRENGTH.**
+This is also the first bracket with **all four** direction readings
+POWERED (5 underlyings -> `underlying_min_sign_p` 0.03125; 8 markets ->
+0.003906), and all four read **`not_significant`**. So: the crossing
+rule shows **no measurable directional bias against the queue bounds**
+on econ markets, from a run that had the power to detect one and 100%
+fresh orders. That is a real null, and it is the first one the bracket
+has produced. It does NOT retroactively make the 08-06 **-71** a
+refuted claim — that run was underpowered and its orders are disjoint
+from these; it was never evidence, and it is not counter-evidence now.
+**NOT TUNED**: `SIGN_ALPHA` stays 0.05 and `significant` is left
+byte-identical for cross-report comparability; `status` is a strict
+REFINEMENT of it, asserted as such in the tests. Every tier carries
+`direction_*_status`; the report carries `direction_verdict`, whose
+counts PARTITION the four tier x bound readings, with `powered` = how
+many could have rejected at all. Four mutations checked, each reddens;
+a fifth (`>` vs `>=` at the alpha boundary) is recorded as
+**UNREACHABLE** — `min_sign_p` is `2^-k` and never equals 0.05 —
+rather than pinned with a fixture that cannot exist. Suite 756 ->
+**762 green**. **NO PROMOTE — verified, not assumed**: `grep` over
+`scripts/systemd/` shows no unit references queuescore or
+maker_bracket, so no daemon moved and the shadow run started 08-23
+20:17Z survives.
+**HONEST LIMIT**: this changes what the report says, not what the
+stream knows. It does not make the 5 underpowered readings
+informative. Widening `--markets` would, and that starts a NEW
+comparability series rather than extending this one.
+NEXT PASS: (1) **Confirm the 08-25 04:40Z TIMER writes a second
+`data/signals_fetch.jsonl` row** — now in the past, read it. (2) The
+20:17Z shadow run reaches ~3 days on 08-26: re-run `by_day` as an
+OUT-OF-SAMPLE test of the one surviving diurnal claim (troughs 16-18Z,
+peaks 21-00Z). Do not re-test the +72/-247/+150 cycle; it is dead.
+(3) `batch units` self-clears 08-28 or the budget is stale and must be
+re-measured, not re-excused. (4) Sweep the #32/#33 lens across the
+REMAINING report summary fields (atlas non-quoted tiers, shadow
+coverage/attribution/diurnal, QA verdicts) rather than waiting for the
+next re-run to surface the third instance.
+NOTHING IS USER-GATED THIS PASS.**
+
+(prior Updated: **2026-08-24 20:25 UTC (RUNG-1 PASS — THE ATLAS QUOTED TIER'S
 "ZERO SURVIVORS", READ FIVE TIMES AS A MEASUREMENT, IS 19 SILENCES AND
 3 REJECTIONS.**
 **(1) THE THREE DATA-GATED ITEMS FROM LAST PASS ARE STILL IN THE

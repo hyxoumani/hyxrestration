@@ -176,6 +176,17 @@ verdict would be fitting the threshold to the answer, and the point here is
 to report the silence, not to abolish it. Same standing as every tier above —
 `flagged_quoted` keeps its exact meaning for cross-report comparability.
 
+The same defect one tier DOWN (2026-08-25, mistakes #33). The lens that found
+the quoted collapse was never swept across the report's other summary fields,
+and the BASE tier had it too: `flagged` is `n >= MIN_N and outside the
+interval`, so its False covers a bucket that was never tested and a bucket
+that was tested and came back calibrated. The headline is "N flagged of M
+buckets" and M is not the number of tests — on the 08-24 archive 200 of 395
+buckets sit under MIN_N, so 141 flagged is 141 of 195 tests, not of 395. Every
+bucket carries `flag_status` (`flagged` / `not_significant` / `silent`) and
+the report carries `flag_verdict`, whose counts PARTITION the bucket set and
+whose `tested` is the honest denominator. `flagged` is untouched.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -233,6 +244,10 @@ MAX_QUOTED_SPREAD = 0.20
 # subsample so the quoted tier is held to the same bar the base tier is.
 MIN_N = 200
 
+# Every value the base tier's `flag_status` can take. `flag_verdict` counts over
+# this list, so the counts PARTITION the bucket set by construction.
+FLAG_STATUSES = ("flagged", "not_significant", "silent")
+
 _OBSERVATIONS_CTE = """
 WITH settled AS (
   SELECT m.market_id, m.close_time, m.result, m.series,
@@ -261,7 +276,9 @@ WITH settled AS (
 """
 
 
-BUCKET_SQL = _OBSERVATIONS_CTE + f"""
+BUCKET_SQL = (
+    _OBSERVATIONS_CTE
+    + f"""
 , keyed AS (
   SELECT category, h_label, result, series, close_time, mid, spread,
          {_DECILE_EXPR} AS decile,
@@ -350,13 +367,16 @@ LEFT JOIN quoted q USING (category, h_label, decile)
 LEFT JOIN quoted_dw d USING (category, h_label, decile)
 ORDER BY 1, 2, 3
 """
+)
 
 
 # Shared markets between every pair of buckets. A market contributes one
 # observation per horizon it reaches, and its `result` is the SAME at every
 # horizon — so two buckets sharing markets are re-counting identical outcomes,
 # and the report's flag COUNTS overstate how many distinct findings exist.
-OVERLAP_SQL = _OBSERVATIONS_CTE + f"""
+OVERLAP_SQL = (
+    _OBSERVATIONS_CTE
+    + f"""
 , keyed AS (
   SELECT market_id, category, h_label, {_DECILE_EXPR} AS decile FROM pts
 )
@@ -371,6 +391,7 @@ WHERE a.category || '|' || a.h_label || '|' || CAST(a.decile AS VARCHAR)
     < b.category || '|' || b.h_label || '|' || CAST(b.decile AS VARCHAR)
 GROUP BY 1, 2, 3, 4, 5, 6
 """
+)
 
 
 SETTLED_BY_CATEGORY_SQL = """
@@ -476,7 +497,9 @@ def tier_stability(out_dir: Path, current: dict) -> dict:
         readings = [p for p in priors if tier in p]
         cur_members = {_key(b) for b in current.get(tier, [])}
         # membership + eligibility per reading, oldest first
-        seq = [({_key(b) for b in r[tier]}, {_key(b) for b in r.get("buckets", [])}) for r in readings]
+        seq = [
+            ({_key(b) for b in r[tier]}, {_key(b) for b in r.get("buckets", [])}) for r in readings
+        ]
 
         buckets = []
         for k in sorted(cur_members):
@@ -546,9 +569,7 @@ def _cross_bucket_groups(
     bucket entirely contained in a 3,000-market one is fully redundant even
     though it is only 8% of the larger.
     """
-    members = {
-        (b["category"], b["horizon"], b["decile"]): b for b in buckets if b[tier]
-    }
+    members = {(b["category"], b["horizon"], b["decile"]): b for b in buckets if b[tier]}
     parent = {k: k for k in members}
 
     def find(k):
@@ -595,14 +616,38 @@ def build_atlas(conn) -> dict:
     buckets = []
     for row in rows:
         (
-            category, h_label, decile, n, implied, realized, clusters, days,
-            top_day_n, implied_dw, realized_dw,
-            mean_spread, median_spread, wide_n,
-            quoted_n, quoted_days, quoted_implied, quoted_realized,
-            quoted_implied_dw, quoted_realized_dw,
+            category,
+            h_label,
+            decile,
+            n,
+            implied,
+            realized,
+            clusters,
+            days,
+            top_day_n,
+            implied_dw,
+            realized_dw,
+            mean_spread,
+            median_spread,
+            wide_n,
+            quoted_n,
+            quoted_days,
+            quoted_implied,
+            quoted_realized,
+            quoted_implied_dw,
+            quoted_realized_dw,
         ) = row
         lo, hi = wilson(realized * n, n)
         flagged = n >= MIN_N and not (lo <= implied <= hi)
+        # THE SAME DEFECT ONE TIER DOWN (2026-08-25, mistakes #33). The base
+        # `flagged` is a BOOLEAN over three outcomes: the bucket never reached
+        # MIN_N so no test ran (no evidence either way), the test ran and the
+        # implied sat inside the interval (evidence AGAINST a miscalibration),
+        # or the test ran and rejected. On the 08-24 archive 200 of 395 buckets
+        # are below MIN_N, so the headline "141 flagged of 395 buckets" implies
+        # a denominator of 395 tests when only 195 ran. `flag_status` partitions
+        # the buckets; `flagged` is untouched for cross-report comparability.
+        flag_status = "silent" if n < MIN_N else "flagged" if flagged else "not_significant"
         # worst case: every market in a (series, close_time) ladder settles
         # on one shared outcome, so at most `clusters` independent draws
         rlo, rhi = wilson(realized * clusters, clusters)
@@ -617,9 +662,7 @@ def build_atlas(conn) -> dict:
         # while counting as a single draw. Re-weight implied and realized so
         # each day contributes once, then apply the same n = days Wilson.
         dwlo, dwhi = wilson(realized_dw * days, days)
-        flagged_day_weighted = (
-            flagged_day_robust and not (dwlo <= implied_dw <= dwhi)
-        )
+        flagged_day_weighted = flagged_day_robust and not (dwlo <= implied_dw <= dwhi)
         # ...and the tier the four Wilson tiers above cannot reach, because
         # the artifact they admit is SYSTEMATIC rather than noisy: an empty
         # book is stably empty, so more days of it TIGHTEN the interval and
@@ -665,6 +708,7 @@ def build_atlas(conn) -> dict:
                 "wilson_lo": round(lo, 4),
                 "wilson_hi": round(hi, 4),
                 "flagged": flagged,
+                "flag_status": flag_status,
                 "wilson_robust_lo": round(rlo, 4),
                 "wilson_robust_hi": round(rhi, 4),
                 "flagged_robust": flagged_robust,
@@ -688,14 +732,10 @@ def build_atlas(conn) -> dict:
                     round(quoted_realized, 4) if quoted_realized is not None else None
                 ),
                 "quoted_implied_day_weighted": (
-                    round(quoted_implied_dw, 4)
-                    if quoted_implied_dw is not None
-                    else None
+                    round(quoted_implied_dw, 4) if quoted_implied_dw is not None else None
                 ),
                 "quoted_realized_day_weighted": (
-                    round(quoted_realized_dw, 4)
-                    if quoted_realized_dw is not None
-                    else None
+                    round(quoted_realized_dw, 4) if quoted_realized_dw is not None else None
                 ),
                 # None, not (0.0, 1.0), when the test did not run: a
                 # fabricated interval spanning the whole unit line prints as
@@ -709,9 +749,7 @@ def build_atlas(conn) -> dict:
                 # how much of the day-weighted gap survives on two-sided
                 # books. > 1 means the gap GREW; a negative value means it
                 # reversed. This is a diagnostic, not a test.
-                "quoted_gap_dw": (
-                    round(quoted_gap_dw, 4) if quoted_gap_dw is not None else None
-                ),
+                "quoted_gap_dw": (round(quoted_gap_dw, 4) if quoted_gap_dw is not None else None),
                 "quoted_gap_retained": (
                     round(quoted_gap_dw / gap_dw, 4)
                     if quoted_gap_dw is not None and gap_dw
@@ -729,9 +767,7 @@ def build_atlas(conn) -> dict:
         # the prior run. Index-ladder categories (Financials) gain nothing
         # over a weekend, so consecutive "flat" readings there can be the
         # same data re-measured rather than new evidence.
-        "settled_by_category": dict(
-            conn.execute(SETTLED_BY_CATEGORY_SQL).fetchall()
-        ),
+        "settled_by_category": dict(conn.execute(SETTLED_BY_CATEGORY_SQL).fetchall()),
         # one level finer, and the granularity that actually matters: the
         # bucket key is (category, HORIZON, decile), and a market only enters
         # the horizon-h bucket if it carries a candle h before its close.
@@ -740,9 +776,7 @@ def build_atlas(conn) -> dict:
         # settled_by_category can read "+1113 new evidence" over buckets that
         # are bit-identical. Summed from `buckets` rather than re-queried, so
         # it describes exactly the population the buckets are built from.
-        "observations_by_category_horizon": _observations_by_category_horizon(
-            buckets
-        ),
+        "observations_by_category_horizon": _observations_by_category_horizon(buckets),
     }
     overlaps = conn.execute(OVERLAP_SQL).fetchall()
     return {
@@ -759,10 +793,7 @@ def build_atlas(conn) -> dict:
                 "honest count of distinct findings in the tier"
             ),
             "threshold_share_of_smaller": OVERLAP_THRESHOLD,
-            "tiers": {
-                tier: _cross_bucket_groups(buckets, overlaps, tier)
-                for tier in TIERS
-            },
+            "tiers": {tier: _cross_bucket_groups(buckets, overlaps, tier) for tier in TIERS},
         },
         "flag_rule": "n >= 200 and implied outside Wilson 95% of realized",
         "flag_rule_robust": (
@@ -801,6 +832,7 @@ def build_atlas(conn) -> dict:
         # lands in exactly one status, so these counts sum to the
         # day-weighted tier size — the arithmetic is the guard against
         # reading a zero as a measurement again.
+        "flag_verdict": _flag_verdict(buckets),
         "quoted_verdict": _quoted_verdict(buckets),
     }
 
@@ -808,6 +840,28 @@ def build_atlas(conn) -> dict:
 # The statuses a day-weighted survivor can hold under the quoted test,
 # ordered from "the gap survived two-sided books" to "the test never ran".
 QUOTED_STATUSES = ("confirmed", "not_significant", "refuted_sign", "silent")
+
+
+def _flag_verdict(buckets: list[dict]) -> dict:
+    """Counts that PARTITION the bucket set over the base tier's three outcomes.
+
+    The atlas headline has always been "N flagged of M buckets", and M is not
+    the number of tests that ran: a bucket below `MIN_N` is never tested, so its
+    `flagged is False` says nothing, while a bucket above it that was tested and
+    came back inside its Wilson interval says something quite definite in the
+    opposite direction. `tested` is the honest denominator. Same construction as
+    `_quoted_verdict` one tier up (mistakes #32/#33).
+    """
+    counts = dict.fromkeys(FLAG_STATUSES, 0)
+    for b in buckets:
+        counts[b["flag_status"]] += 1
+    tested = counts["flagged"] + counts["not_significant"]
+    return {
+        "buckets": len(buckets),
+        "counts": counts,
+        "tested": tested,
+        "flagged_share_of_tested": (round(counts["flagged"] / tested, 4) if tested else None),
+    }
 
 
 def _quoted_verdict(buckets: list[dict]) -> dict:
@@ -822,13 +876,9 @@ def _quoted_verdict(buckets: list[dict]) -> dict:
     separation is a property of the report rather than of whoever read it.
     """
     survivors = [b for b in buckets if b["flagged_day_weighted"]]
-    by_status = {
-        s: [b for b in survivors if b["quoted_status"] == s] for s in QUOTED_STATUSES
-    }
+    by_status = {s: [b for b in survivors if b["quoted_status"] == s] for s in QUOTED_STATUSES}
     retained = sorted(
-        b["quoted_gap_retained"]
-        for b in survivors
-        if b["quoted_gap_retained"] is not None
+        b["quoted_gap_retained"] for b in survivors if b["quoted_gap_retained"] is not None
     )
     return {
         "rule": (
@@ -848,9 +898,7 @@ def _quoted_verdict(buckets: list[dict]) -> dict:
         # the silent ones — the point estimate is readable where the test
         # is not, and it is the diagnostic the 08-02 pass actually used).
         "gap_retained_measurable": len(retained),
-        "gap_retained_median": (
-            round(retained[len(retained) // 2], 4) if retained else None
-        ),
+        "gap_retained_median": (round(retained[len(retained) // 2], 4) if retained else None),
         "gap_retained_min": round(retained[0], 4) if retained else None,
         "gap_retained_max": round(retained[-1], 4) if retained else None,
         "gap_reversed_on_quoted_books": sum(1 for r in retained if r < 0),
@@ -885,9 +933,19 @@ def main() -> None:
     out.write_text(json.dumps(atlas, indent=1) + "\n")
 
     flags = atlas["flagged"]
+    fv = atlas["flag_verdict"]
     print(
         f"[atlas] {len(atlas['buckets'])} buckets, {len(flags)} flagged"
         f" ({len(atlas['flagged_robust'])} cluster-robust)"
+    )
+    # the denominator, printed next to the count: "N of M buckets" reads as M
+    # tests, and it never was. See mistakes #33.
+    print(
+        f"[atlas] base tier: {fv['tested']} of {fv['buckets']} buckets were"
+        f" TESTED ({fv['counts']['silent']} silent, < {MIN_N} obs) --"
+        f" {fv['counts']['flagged']} flagged,"
+        f" {fv['counts']['not_significant']} not-significant;"
+        f" flagged share of tested {fv['flagged_share_of_tested']}"
     )
     # printed per TIER rather than only for the survivors: the whole point is
     # that wide-book contamination RISES with tier strictness, and that is
@@ -922,7 +980,9 @@ def main() -> None:
             f" reversed sign"
         )
     if flags:
-        print("| category | horizon | decile | n | clusters | implied | realized | wilson | robust | med spr | quoted |")
+        print(
+            "| category | horizon | decile | n | clusters | implied | realized | wilson | robust | med spr | quoted |"
+        )
         print("|---|---|---|---|---|---|---|---|---|---|---|")
         for b in sorted(flags, key=lambda b: -b["n"]):
             print(

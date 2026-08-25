@@ -9,6 +9,7 @@ from hyxlab.models import MarketInfo
 from hyxlab.store import Store
 from simulator.atlas import (
     BUCKET_SQL,
+    FLAG_STATUSES,
     MAX_QUOTED_SPREAD,
     MIN_N,
     build_atlas,
@@ -223,9 +224,7 @@ def _day_weighted_atlas(tmp_path, day_specs):
                     close_time=close,
                 )
             )
-            candles.append(
-                _candle(mid, mid_, (close - timedelta(hours=2)).replace(tzinfo=None))
-            )
+            candles.append(_candle(mid, mid_, (close - timedelta(hours=2)).replace(tzinfo=None)))
             i += 1
     store.upsert_markets(infos)
     store.insert_candles(candles)
@@ -251,9 +250,7 @@ def test_day_tier_mean_is_dominated_by_one_large_day(tmp_path):
     assert b["flagged_day_robust"]
     assert b["realized"] - b["implied"] == pytest.approx(0.24, abs=1e-3)
     # ...but that gap is one day's outcome; re-weighted it all but vanishes
-    assert b["realized_day_weighted"] - b["implied_day_weighted"] == pytest.approx(
-        0.0098, abs=1e-3
-    )
+    assert b["realized_day_weighted"] - b["implied_day_weighted"] == pytest.approx(0.0098, abs=1e-3)
     assert not b["flagged_day_weighted"]
 
 
@@ -301,7 +298,11 @@ def test_same_markets_at_two_horizons_are_one_finding(tmp_path):
     infos, candles = [], []
     t = (CLOSE - timedelta(hours=7)).replace(tzinfo=None)
     for i in range(250):
-        infos.append(MarketInfo(venue="kalshi", market_id=f"F{i}", series=f"S{i}", result="yes", close_time=CLOSE))
+        infos.append(
+            MarketInfo(
+                venue="kalshi", market_id=f"F{i}", series=f"S{i}", result="yes", close_time=CLOSE
+            )
+        )
         candles.append(_candle(0.90, f"F{i}", t))
     store.upsert_markets(infos)
     store.insert_candles(candles)
@@ -321,10 +322,18 @@ def test_disjoint_flagged_buckets_stay_separate(tmp_path):
     infos, candles = [], []
     t = (CLOSE - timedelta(hours=2)).replace(tzinfo=None)
     for i in range(250):
-        infos.append(MarketInfo(venue="kalshi", market_id=f"H{i}", series=f"S{i}", result="yes", close_time=CLOSE))
+        infos.append(
+            MarketInfo(
+                venue="kalshi", market_id=f"H{i}", series=f"S{i}", result="yes", close_time=CLOSE
+            )
+        )
         candles.append(_candle(0.90, f"H{i}", t))
         # a second, disjoint population landing in decile 1 and also flagging
-        infos.append(MarketInfo(venue="kalshi", market_id=f"L{i}", series=f"T{i}", result="yes", close_time=CLOSE))
+        infos.append(
+            MarketInfo(
+                venue="kalshi", market_id=f"L{i}", series=f"T{i}", result="yes", close_time=CLOSE
+            )
+        )
         candles.append(_candle(0.10, f"L{i}", t))
     store.upsert_markets(infos)
     store.insert_candles(candles)
@@ -348,7 +357,15 @@ def test_overlap_share_is_measured_against_the_smaller_bucket(tmp_path):
     def add(mid_6h, mid_1h, tag, count):
         for i in range(count):
             mid = f"{tag}{i}"
-            infos.append(MarketInfo(venue="kalshi", market_id=mid, series=f"S{tag}{i}", result="yes", close_time=CLOSE))
+            infos.append(
+                MarketInfo(
+                    venue="kalshi",
+                    market_id=mid,
+                    series=f"S{tag}{i}",
+                    result="yes",
+                    close_time=CLOSE,
+                )
+            )
             if mid_6h is not None:
                 candles.append(_candle(mid_6h, mid, seven))
             if mid_1h is not None:
@@ -360,10 +377,7 @@ def test_overlap_share_is_measured_against_the_smaller_bucket(tmp_path):
     store.upsert_markets(infos)
     store.insert_candles(candles)
     tierinfo = _overlap_tier(store)
-    pair = [
-        p for p in tierinfo["linked_pairs"]
-        if {p["a"], p["b"]} == {"?|1h|d9", "?|6h|d9"}
-    ]
+    pair = [p for p in tierinfo["linked_pairs"] if {p["a"], p["b"]} == {"?|1h|d9", "?|6h|d9"}]
     assert len(pair) == 1, tierinfo["linked_pairs"]
     assert pair[0]["shared_markets"] == 100
     assert pair[0]["share_of_smaller"] == pytest.approx(0.4)
@@ -384,9 +398,15 @@ def test_fingerprint_counts_settled_markets_per_category(tmp_path):
     )
     store.upsert_markets(
         [
-            MarketInfo(venue="kalshi", market_id="F1", series="KXDJI", result="yes", close_time=CLOSE),
-            MarketInfo(venue="kalshi", market_id="W1", series="KXHIGHNY", result="yes", close_time=CLOSE),
-            MarketInfo(venue="kalshi", market_id="W2", series="KXHIGHNY", result="no", close_time=CLOSE),
+            MarketInfo(
+                venue="kalshi", market_id="F1", series="KXDJI", result="yes", close_time=CLOSE
+            ),
+            MarketInfo(
+                venue="kalshi", market_id="W1", series="KXHIGHNY", result="yes", close_time=CLOSE
+            ),
+            MarketInfo(
+                venue="kalshi", market_id="W2", series="KXHIGHNY", result="no", close_time=CLOSE
+            ),
             # unsettled markets never count toward the fingerprint
             MarketInfo(venue="kalshi", market_id="W3", series="KXHIGHNY", close_time=CLOSE),
         ]
@@ -405,8 +425,12 @@ def _financials_store(tmp_path):
     store.upsert_series([("kalshi", "KXDJI", "Dow", "Financials", None, None, None)])
     store.upsert_markets(
         [
-            MarketInfo(venue="kalshi", market_id="F_SHORT", series="KXDJI", result="yes", close_time=CLOSE),
-            MarketInfo(venue="kalshi", market_id="F_LONG", series="KXDJI", result="no", close_time=CLOSE),
+            MarketInfo(
+                venue="kalshi", market_id="F_SHORT", series="KXDJI", result="yes", close_time=CLOSE
+            ),
+            MarketInfo(
+                venue="kalshi", market_id="F_LONG", series="KXDJI", result="no", close_time=CLOSE
+            ),
         ]
     )
     store.insert_candles(
@@ -461,6 +485,7 @@ def test_fingerprint_horizon_counts_match_bucket_population(tmp_path):
 # strictness, because an empty book is stably empty and more days of it
 # TIGHTEN the Wilson interval rather than widen it.
 
+
 def _spread_atlas(tmp_path, day_specs):
     """1h / decile-5 bucket at mid 0.50, built from `day_specs` = one entry
     per settlement day, each a list of (n_markets, n_yes, spread). Every
@@ -494,9 +519,7 @@ def _spread_atlas(tmp_path, day_specs):
     store.insert_candles(candles)
     atlas = build_atlas(store.conn)
     store.close()
-    return [
-        b for b in atlas["buckets"] if b["horizon"] == "1h" and b["decile"] == 5
-    ][0]
+    return [b for b in atlas["buckets"] if b["horizon"] == "1h" and b["decile"] == 5][0]
 
 
 def _uniform(spread, n=10):
@@ -539,9 +562,7 @@ def test_empty_books_clear_every_wilson_tier_and_fail_the_quoted_tier(tmp_path):
     # rejects everything at the strictest tier.
     assert tight["flagged_day_weighted"] and tight["flagged_quoted"]
     assert tight["quoted_n"] == 500 and tight["wide_share"] == 0.0
-    assert tight["realized_day_weighted"] == pytest.approx(
-        wide["realized_day_weighted"], abs=1e-9
-    )
+    assert tight["realized_day_weighted"] == pytest.approx(wide["realized_day_weighted"], abs=1e-9)
 
 
 def test_quoted_subsample_that_flips_sign_is_not_a_confirmation(tmp_path):
@@ -549,19 +570,13 @@ def test_quoted_subsample_that_flips_sign_is_not_a_confirmation(tmp_path):
     # runs ABOVE implied and every tier flags; on the quoted books alone it
     # runs BELOW. Both exclusions are individually significant, so this must
     # fail on DIRECTION rather than on lack of evidence.
-    b = _spread_atlas(
-        tmp_path, [[(16, 16, _EMPTY_BOOK), (4, 0, _QUOTED)]] * 50
-    )
+    b = _spread_atlas(tmp_path, [[(16, 16, _EMPTY_BOOK), (4, 0, _QUOTED)]] * 50)
     assert b["flagged_day_weighted"]
     assert b["realized_day_weighted"] > b["implied_day_weighted"]
     # the quoted subsample cleared the evidence bar and the interval on its
     # own -- it is rejected purely for pointing the other way
     assert b["quoted_n"] == MIN_N
-    assert not (
-        b["wilson_quoted_lo"]
-        <= b["quoted_implied_day_weighted"]
-        <= b["wilson_quoted_hi"]
-    )
+    assert not (b["wilson_quoted_lo"] <= b["quoted_implied_day_weighted"] <= b["wilson_quoted_hi"])
     assert b["quoted_realized_day_weighted"] < b["quoted_implied_day_weighted"]
     assert not b["flagged_quoted"]
 
@@ -597,9 +612,7 @@ def test_spread_is_read_from_the_mid_s_own_candle(tmp_path):
         ]
     )
     b = [
-        x
-        for x in build_atlas(store.conn)["buckets"]
-        if x["horizon"] == "24h" and x["decile"] == 5
+        x for x in build_atlas(store.conn)["buckets"] if x["horizon"] == "24h" and x["decile"] == 5
     ][0]
     store.close()
     assert b["n"] == 1
@@ -616,9 +629,7 @@ def test_every_bucket_reports_spread_and_the_quoted_tier_nests(tmp_path):
     store.upsert_markets(
         [MarketInfo(venue="kalshi", market_id="A", result="yes", close_time=CLOSE)]
     )
-    store.insert_candles(
-        [_candle(0.50, "A", (CLOSE - timedelta(hours=2)).replace(tzinfo=None))]
-    )
+    store.insert_candles([_candle(0.50, "A", (CLOSE - timedelta(hours=2)).replace(tzinfo=None))])
     atlas = build_atlas(store.conn)
     store.close()
     for b in atlas["buckets"]:
@@ -666,9 +677,7 @@ def test_reversed_and_silent_are_different_statuses(tmp_path):
     # REVERSES on two-sided books is evidence against the signature, and a
     # bucket that was never tested is no evidence at all. Both read
     # `flagged_quoted: false`.
-    reversed_ = _spread_atlas(
-        tmp_path / "rev", [[(16, 16, _EMPTY_BOOK), (4, 0, _QUOTED)]] * 50
-    )
+    reversed_ = _spread_atlas(tmp_path / "rev", [[(16, 16, _EMPTY_BOOK), (4, 0, _QUOTED)]] * 50)
     silent = _spread_atlas(
         tmp_path / "sil",
         [[(17, 17, _EMPTY_BOOK), (3, 3, _QUOTED)]] * 42
@@ -699,9 +708,7 @@ def test_untested_bucket_is_not_applicable_not_silent(tmp_path):
     store.upsert_markets(
         [MarketInfo(venue="kalshi", market_id="A", result="yes", close_time=CLOSE)]
     )
-    store.insert_candles(
-        [_candle(0.50, "A", (CLOSE - timedelta(hours=2)).replace(tzinfo=None))]
-    )
+    store.insert_candles([_candle(0.50, "A", (CLOSE - timedelta(hours=2)).replace(tzinfo=None))])
     atlas = build_atlas(store.conn)
     store.close()
     for b in atlas["buckets"]:
@@ -776,9 +783,105 @@ def test_quoted_verdict_counts_partition_the_day_weighted_tier(tmp_path):
     assert qv["counts"]["confirmed"] >= 1
     assert qv["gap_reversed_on_quoted_books"] >= 1
     # each named bucket landed where the fixture built it for
-    status = {
-        b["category"]: b["quoted_status"] for b in survivors if b["horizon"] == "1h"
-    }
+    status = {b["category"]: b["quoted_status"] for b in survivors if b["horizon"] == "1h"}
     assert status["Confirmed"] == "confirmed"
     assert status["Silent"] == "silent"
     assert status["Refuted"] == "refuted_sign"
+
+
+def test_flag_verdict_partitions_the_buckets_and_names_the_real_denominator(tmp_path):
+    # mistakes #33, one tier below #32. The atlas headline is "N flagged of M
+    # buckets" and M has never been the number of tests that ran: a bucket
+    # under MIN_N is not tested, so its `flagged is False` is silence, while a
+    # bucket over it that came back inside its Wilson interval is a genuine
+    # negative. This fixture holds all three outcomes at once so the partition
+    # is exercised rather than trivially satisfied.
+    specs = {
+        # >= MIN_N, realized far from the 0.50 implied -> tested and flagged
+        "Flagged": [(50, 50)] * 6,
+        # >= MIN_N, realized at the implied -> tested, interval covers it
+        "Calibrated": [(50, 25)] * 6,
+        # under MIN_N however it settles -> never tested
+        "Silent": [(10, 5)] * 6,
+    }
+    store = Store(tmp_path / "a.duckdb")
+    series, infos, candles, i = [], [], [], 0
+    for category, day_specs in specs.items():
+        for day, (n, n_yes) in enumerate(day_specs):
+            close = CLOSE - timedelta(days=day)
+            for k in range(n):
+                mkt = f"F{i}"
+                series.append(("kalshi", f"S{i}", "s", category, None, None, None))
+                infos.append(
+                    MarketInfo(
+                        venue="kalshi",
+                        market_id=mkt,
+                        series=f"S{i}",
+                        result="yes" if k < n_yes else "no",
+                        close_time=close,
+                    )
+                )
+                candles.append(
+                    _candle(0.50, mkt, (close - timedelta(hours=2)).replace(tzinfo=None))
+                )
+                i += 1
+    store.upsert_series(series)
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    atlas = build_atlas(store.conn)
+    store.close()
+
+    fv = atlas["flag_verdict"]
+    buckets = atlas["buckets"]
+    assert fv["buckets"] == len(buckets)
+    assert sum(fv["counts"].values()) == len(buckets)  # the arithmetic guard
+    assert fv["tested"] == fv["counts"]["flagged"] + fv["counts"]["not_significant"]
+    assert fv["tested"] < fv["buckets"]  # a silent bucket is NOT a denominator
+    assert fv["counts"]["flagged"] == len(atlas["flagged"])
+    for name in ("flagged", "not_significant", "silent"):
+        assert fv["counts"][name] >= 1
+    by_cat = {b["category"]: b["flag_status"] for b in buckets if b["horizon"] == "1h"}
+    assert by_cat["Flagged"] == "flagged"
+    assert by_cat["Calibrated"] == "not_significant"
+    assert by_cat["Silent"] == "silent"
+    # the share the headline should have been quoting all along
+    assert fv["flagged_share_of_tested"] == round(fv["counts"]["flagged"] / fv["tested"], 4)
+
+
+def test_flag_status_is_a_strict_refinement_of_the_preserved_boolean(tmp_path):
+    # `flagged` is frozen for cross-report comparability, so `flag_status` must
+    # refine it and never disagree: exactly the `flagged` status implies the
+    # boolean, and a silent bucket must never be counted as a tested negative.
+    store = Store(tmp_path / "a.duckdb")
+    series, infos, candles = [], [], []
+    for i, (n, n_yes) in enumerate([(50, 50), (50, 25), (10, 5)]):
+        for day in range(6):
+            close = CLOSE - timedelta(days=day)
+            for k in range(n):
+                mkt = f"R{i}_{day}_{k}"
+                series.append(("kalshi", mkt, "s", f"C{i}", None, None, None))
+                infos.append(
+                    MarketInfo(
+                        venue="kalshi",
+                        market_id=mkt,
+                        series=mkt,
+                        result="yes" if k < n_yes else "no",
+                        close_time=close,
+                    )
+                )
+                candles.append(
+                    _candle(0.50, mkt, (close - timedelta(hours=2)).replace(tzinfo=None))
+                )
+    store.upsert_series(series)
+    store.upsert_markets(infos)
+    store.insert_candles(candles)
+    atlas = build_atlas(store.conn)
+    store.close()
+
+    for b in atlas["buckets"]:
+        assert b["flag_status"] in FLAG_STATUSES
+        assert (b["flag_status"] == "flagged") is b["flagged"]
+        if b["n"] < MIN_N:
+            assert b["flag_status"] == "silent"
+        else:
+            assert b["flag_status"] != "silent"
