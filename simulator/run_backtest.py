@@ -16,7 +16,7 @@ import json
 from collections import defaultdict
 from datetime import timedelta
 
-from hyxlab.store import Store
+from hyxlab.store import Store, open_retry
 from simulator.capabilities import candle_feed_caps
 from simulator.sim import Simulator
 from strategies import WeatherNWS
@@ -60,7 +60,11 @@ def main() -> None:
     ap.add_argument("--max-qty", type=float, default=20.0)
     args = ap.parse_args()
 
-    store = Store(args.db)
+    # read_only + retry: this backtest only READS. A read-write open takes
+    # the archive's writer lock, which is what crashed the shadow daemon
+    # mid-persist on 2026-07-12 (mistakes #20) — and this one is a
+    # DOCUMENTED command, so the hazard is not ad-hoc.
+    store = open_retry(args.db, read_only=True)
     markets = store.markets()
     snapshots = store.candles_as_snapshots()
     forecasts = store.forecasts()

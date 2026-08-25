@@ -23,7 +23,7 @@ import requests
 
 from collector.lockid import note_holder
 from collector.venues import kalshi
-from hyxlab.store import Store, open_retry
+from hyxlab.store import open_retry
 
 FLUSH_MARKETS = 50
 LOCK_FILE = "data/writer.lock"
@@ -61,7 +61,13 @@ def _flush(db: str, batch: list[tuple[str, list[tuple], str]]) -> int:
 def pending_markets(db: str) -> list[str]:
     """Settled markets without a trades sweep, oldest close first (the
     retention clock eats oldest-settled markets first)."""
-    store = Store(db, read_only=True)
+    # open_retry, not a bare Store, and for the mirror-image reason to
+    # _flush's: this read runs OUTSIDE the flock, so a writer (poly_sweep
+    # holds the archive for ~7h) can take the file in the gap after the
+    # schema burst above closes. DuckDB refuses a read-only open against
+    # a read-write holder, and a bare open here kills the whole pass at
+    # its first statement.
+    store = open_retry(db, read_only=True)
     try:
         rows = store.conn.execute(
             "SELECT m.market_id FROM markets m"

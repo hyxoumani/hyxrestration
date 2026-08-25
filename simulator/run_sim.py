@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from hyxlab.store import Store
+from hyxlab.store import open_retry
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 from simulator.capabilities import live_feed_caps, partition_runnable
 from simulator.sim import Simulator
@@ -25,7 +25,11 @@ def main() -> None:
     ap.add_argument("--watchlist", default=str(DEFAULT_WATCHLIST))
     args = ap.parse_args()
 
-    store = Store(args.db)
+    # read_only + retry: this replay only READS. A read-write open takes
+    # the archive's writer lock, which is what crashed the shadow daemon
+    # mid-persist on 2026-07-12 (mistakes #20) — and this one is a
+    # DOCUMENTED command, so the hazard is not ad-hoc.
+    store = open_retry(args.db, read_only=True)
     markets = store.markets()
     snapshots = store.iter_snapshots()
     forecasts = store.forecasts()

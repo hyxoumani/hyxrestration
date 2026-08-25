@@ -27,6 +27,7 @@ import pytest
 import collector.collect as collect
 import collector.qa as qa
 import collector.sweep as sweep
+from hyxlab.store import Store
 
 UNIT_DIR = Path(__file__).resolve().parent.parent / "scripts" / "systemd"
 
@@ -816,3 +817,42 @@ def test_cycle_print_carries_the_phase_decomposition(tmp_path, monkeypatch, caps
     assert t["fetch_s"] >= 0.6, t  # 0.3s x 2 get_markets calls land in fetch_s
     assert t["wait_s"] + t["write_s"] < 0.6, t  # ...and nowhere else
     assert t["total_s"] >= t["fetch_s"]
+
+
+# --------------------------------------------------------------------------
+# 5. The reads OUTSIDE the flock (EXP-1368, 2026-08-25).
+# --------------------------------------------------------------------------
+
+
+def test_pending_markets_waits_out_a_writer_instead_of_killing_the_pass(tmp_path, monkeypatch):
+    """`trades_backfill` takes the flock for its schema burst, RELEASES it,
+    and only then queries the worklist. A writer (poly_sweep holds the
+    archive for ~7h) can take the file in that gap, and DuckDB refuses a
+    read-only open against a read-write holder — so a bare `Store` here
+    kills the whole pass at its first statement, before a single market is
+    swept. This is the same lock class the 2026-07-12 audit escalated to
+    the helpers, missed at this site in the very file whose `_flush`
+    comment records the lesson."""
+    import duckdb
+
+    import collector.trades_backfill as tb
+    from hyxlab import store as store_mod
+
+    db = str(tmp_path / "a.duckdb")
+    Store(db).close()  # schema, as main()'s flocked burst does
+
+    real_connect = duckdb.connect
+    attempts = {"n": 0}
+
+    def flaky_connect(path, **kw):
+        # Two conflicting-lock refusals, then the writer lets go.
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise duckdb.IOException("Conflicting lock is held in poly_sweep (PID 1)")
+        return real_connect(path, **kw)
+
+    monkeypatch.setattr(store_mod.duckdb, "connect", flaky_connect)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    assert tb.pending_markets(db) == []
+    assert attempts["n"] == 3, "the query gave up instead of waiting the writer out"
