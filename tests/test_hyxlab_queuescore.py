@@ -9,8 +9,10 @@ import duckdb
 from collector.venues.kalshi_ws import parse_message
 from hyxlab.streamstore import StreamStore
 from simulator.queuescore import (
+    DIRECTION_STATUSES,
     VirtualOrder,
     concentration_by_market,
+    direction_verdict,
     event_ticker,
     independence_vs_prior,
     over_award,
@@ -646,3 +648,145 @@ def test_a_forgone_fill_is_never_counted_as_inside_the_bracket():
     assert s["pess_but_not_crossing"] == 5
     assert s["inside_bracket"] == 0
     assert s["crossing_but_not_pess"] == s["crossing_but_not_opt"] + s["inside_bracket"] == 0
+
+
+def test_underpowered_and_tested_null_are_not_the_same_status():
+    """The finding of the 2026-08-25 pass, and the reason `significant` alone
+    could not carry it. Two runs, both `direction_underlying_significant ==
+    False`, meaning opposite things: the first is 3 city-days where the best
+    attainable p is 0.125, so no data could have produced a verdict (NO
+    evidence either way); the second is 6 city-days splitting 4/2, a test that
+    genuinely ran with the power to reject and did not (evidence AGAINST a
+    fill-model direction). Asserted on one fixture pair so a regression that
+    re-collapses them fails here rather than in a report six passes later."""
+    blind = [
+        _disagreeing(f"KXHIGH{city}-26JUL30-B80.5", "pess", c0 * 10 + i)
+        for c0, city in enumerate(("NY", "MIA", "CHI"))
+        for i in range(4)
+    ]
+    tested = [
+        _disagreeing(f"KXHIGH{city}-26JUL30-B80.5", kind, c0 * 10 + i)
+        for c0, (city, kind) in enumerate(
+            (
+                ("NY", "cross"),
+                ("MIA", "cross"),
+                ("CHI", "cross"),
+                ("DEN", "cross"),
+                ("AUS", "pess"),
+                ("PHIL", "pess"),
+            )
+        )
+        for i in range(3)
+    ]
+
+    b = concentration_by_market(blind)
+    t = concentration_by_market(tested)
+
+    assert b["direction_underlying_significant"] is False
+    assert t["direction_underlying_significant"] is False  # the collapsed bit
+    assert b["underlying_min_sign_p"] == 0.125 and b["underlying_sign_p"] == 0.125
+    assert t["underlying_min_sign_p"] == 0.015625 and t["underlying_sign_p"] == 0.34375
+    assert b["direction_underlying_status"] == "underpowered"
+    assert t["direction_underlying_status"] == "not_significant"
+
+
+def test_status_names_the_direction_when_the_sign_test_clears():
+    """The discrimination control: a status that can only ever say `nothing
+    here` is not a verdict. Six city-days unanimous over is p=0.015625, and the
+    status must carry the SIGN, since `significant_over` and
+    `significant_under` are opposite findings about the crossing rule."""
+    over = [
+        _disagreeing(f"KXHIGH{city}-26JUL30-B80.5", "cross", c0 * 10 + i)
+        for c0, city in enumerate(("NY", "MIA", "CHI", "DEN", "AUS", "PHIL"))
+        for i in range(3)
+    ]
+    under = [
+        _disagreeing(f"KXHIGH{city}-26JUL30-B80.5", "pess", c0 * 10 + i)
+        for c0, city in enumerate(("NY", "MIA", "CHI", "DEN", "AUS", "PHIL"))
+        for i in range(3)
+    ]
+
+    assert concentration_by_market(over)["direction_underlying_status"] == "significant_over"
+    assert concentration_by_market(under)["direction_underlying_status"] == "significant_under"
+
+
+def test_a_cancelling_split_has_no_direction_rather_than_a_failed_test():
+    """A zero aggregate is a third thing again: there is no sign to test, so
+    calling it `not_significant` would report a test that never ran. Same
+    fixture as `test_concentration_calls_a_cancelling_split_undirected`."""
+    orders = [_disagreeing("KXHIGHNY-26JUL27-B83.5", "cross", i) for i in range(7)]
+    orders += [_disagreeing("KXHIGHMIA-26JUL27-B90.5", "pess", 20 + i) for i in range(7)]
+
+    c = concentration_by_market(orders)
+
+    assert c["net_disagreement"] == 0
+    assert c["direction_market_status"] == "no_direction"
+    assert c["direction_underlying_status"] == "no_direction"
+
+
+def test_direction_verdict_counts_partition_the_four_readings():
+    """The arithmetic is the guard, exactly as with the atlas `quoted_verdict`:
+    the counts sum to the number of readings, so a status can neither be
+    dropped nor double-counted, and `powered` cannot silently include a
+    reading that carried no evidence."""
+    orders = [
+        _disagreeing(f"KXHIGH{city}-26JUL30-B80.5", "pess", c0 * 10 + i)
+        for c0, city in enumerate(("NY", "MIA", "CHI"))
+        for i in range(4)
+    ]
+    conc = concentration_by_market(orders)
+    strict = concentration_by_market(orders, bound="opt")
+
+    v = direction_verdict(conc, strict)
+
+    assert set(v["counts"]) == set(DIRECTION_STATUSES)
+    assert sum(v["counts"].values()) == v["readings_total"] == len(v["readings"]) == 4
+    assert v["counts"]["underpowered"] == 4  # 3 underlyings, 3 markets, both bounds
+    assert v["powered"] == 0 and v["significant"] == 0
+
+
+def test_direction_verdict_separates_a_powered_reading_from_a_blind_one():
+    """The mixed case, which is the one the report actually hits: the market
+    tier can reach significance at a width where the underlying tier still
+    cannot, because strike ladders collapse into city-days. `powered` must
+    count only the readings that could have rejected."""
+    orders = [
+        _disagreeing(f"KXHIGHNY-26JUL30-B{80 + c0}.5", "cross", c0 * 10 + i)
+        for c0 in range(6)
+        for i in range(3)
+    ]
+
+    v = direction_verdict(
+        concentration_by_market(orders), concentration_by_market(orders, bound="opt")
+    )
+
+    assert v["readings"]["market_pess"] == "significant_over"
+    assert v["readings"]["underlying_pess"] == "underpowered"  # 6 strikes, 1 city-day
+    assert v["powered"] == 2 and v["significant"] == 2
+    assert sum(v["counts"].values()) == 4
+
+
+def test_status_never_contradicts_the_preserved_boolean():
+    """`significant` is frozen for cross-report comparability, so the new
+    status must be a refinement of it and not a second opinion — every
+    `significant_*` implies the boolean, and no other status may."""
+    fixtures = [
+        [_disagreeing("KXHIGHNY-26JUL27-B83.5", "cross", i) for i in range(7)],
+        [
+            _disagreeing(f"KXHIGH{c}-26JUL30-B80.5", "pess", j * 10 + i)
+            for j, c in enumerate(("NY", "MIA", "CHI"))
+            for i in range(4)
+        ],
+        [
+            _disagreeing(f"KXHIGH{c}-26JUL30-B80.5", "cross", j * 10 + i)
+            for j, c in enumerate(("NY", "MIA", "CHI", "DEN", "AUS", "PHIL"))
+            for i in range(3)
+        ],
+    ]
+    for orders in fixtures:
+        for bound in ("pess", "opt"):
+            c = concentration_by_market(orders, bound=bound)
+            for tier in ("market", "underlying"):
+                status = c[f"direction_{tier}_status"]
+                assert status in DIRECTION_STATUSES
+                assert (status.startswith("significant_")) is c[f"direction_{tier}_significant"]

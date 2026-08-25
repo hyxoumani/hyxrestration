@@ -97,6 +97,17 @@ structure — see [venues](venues.md)).
    it before treating a re-run as a confirming reading. To get an
    independent econ reading, space re-runs by at least `--hours` or
    shorten the window.
+   **First fully independent econ reading (2026-08-25):** the 19-day
+   gap since 08-06 exceeded the 336h window, so this run is the first
+   econ bracket at `new_share_vs_all = 1.00` — no order re-scored from
+   any prior run. It is also the first with all four direction readings
+   POWERED (5 underlyings, `underlying_min_sign_p` 0.03125; 8 markets,
+   0.003906), and it reads a clean null: `net_disagreement` **+2** on
+   1,360 orders (crossing 124, queue-pess 122, queue-opt 135), all four
+   readings `not_significant`. The 08-06 reading's **-71** under-award
+   lean does not survive as evidence — that run was underpowered at the
+   underlying tier, and its orders are disjoint from these.
+   `reports/maker_bracket/20260825T022029.json`.
    **Power caveat (2026-07-31) — this one bounds every directional claim
    the bracket has ever made.** `direction_market_robust` /
    `direction_underlying_robust` are strict-MAJORITY tests over the
@@ -112,6 +123,15 @@ structure — see [venues](venues.md)).
    before any data was read. Every report from 2026-07-31 carries
    `underlying_sign_p`, `underlying_min_sign_p` and
    `direction_underlying_significant`; **read those, not `robust`.**
+   **Correction (2026-08-25, mistakes #33):** the third of those three
+   is itself a boolean over outcomes that mean opposite things — its
+   `False` covers "tested and found no direction" and "could not have
+   found one". Read **`direction_verdict`** instead: its counts
+   partition the four tier x bound readings over
+   `significant_over` / `significant_under` / `not_significant` /
+   `underpowered` / `no_direction`, and `powered` is how many readings
+   could have rejected at all. Of the 7 archived reports carrying the
+   sign fields, **5 are underpowered at the underlying tier**.
    Consequence for the standing data gate: pooling the leaning
    underlyings across the four certified-independent weather runs
    (07-27, 07-29, 07-30, 07-31) gives **5 over / 7 under, k=12,

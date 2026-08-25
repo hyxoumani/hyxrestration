@@ -643,6 +643,55 @@ Format: what happened → root cause → error type → prevention tier
     (no bucket with quoted evidence supports the longshot-fade
     signature) and only its strength is corrected downward.
 
+33. **2026-08-25 — the SAME boolean-over-a-tri-state defect was live at a
+    second site, and #32's fix was applied only where #32 was found.**
+    The maker bracket's `direction_market_significant` /
+    `direction_underlying_significant` are booleans whose `False`
+    covers two opposite readings: a run that TESTED a fill-model
+    direction and found none (evidence against a bias), and a run whose
+    power ceiling `min_sign_p = 2^-k` already exceeded `SIGN_ALPHA`, so
+    no data could have produced a verdict (**no evidence either way**).
+    The ceiling had been computed and reported since 2026-07-31 and the
+    docstring explained how to read it — but the comparison against
+    alpha was left to the reader, and the summary field collapsed it.
+    The sharpest form of the miss: `strategy-verdicts.md` tells the
+    reader "read `underlying_sign_p`, `underlying_min_sign_p` and
+    `direction_underlying_significant`, **not** `robust`" — and the
+    third of those three is the field that collapses the tri-state. The
+    07-31 pass even measured the retrospective damage (31 of 34 runs
+    underpowered by construction) and still shipped the boolean as the
+    thing to read.
+    Measured across the 7 archived reports that carry the sign fields:
+    **5 of 7 underlying-tier readings were UNDERPOWERED**, including
+    both 08-03 runs that read `significant_over` at the market tier
+    while the underlying tier could not have reached a verdict at all,
+    and the 08-06 run whose `net_disagreement = -71` has been carried
+    in the log as an under-award lean.
+    Type: `wrong-statistic`, #32's family at a second site.
+    Root cause is the escalation rule, not the statistic: **#32 was
+    fixed as an instance rather than as a class.** A defect found by a
+    lens ("does this summary field distinguish members that mean
+    opposite things?") should be swept against every other summary
+    field in the repo the same pass, or it is only rediscovered when
+    someone happens to re-run the other report.
+    Prevention: both tiers carry `direction_*_status`
+    (`significant_over` / `significant_under` / `not_significant` /
+    `underpowered` / `no_direction`), and the report carries
+    `direction_verdict`, whose counts **PARTITION** the four
+    tier x bound readings by construction, with `powered` = the number
+    of readings that could have rejected at all. `significant` is left
+    byte-identical for cross-report comparability, and a test asserts
+    `status` is a strict REFINEMENT of it rather than a second opinion.
+    Four mutations checked and each reddens; a fifth (`>` vs `>=` at
+    the alpha boundary) is recorded as **unreachable** — `min_sign_p`
+    is `2^-k` and never equals 0.05 — rather than pinned with a fixture
+    that cannot exist.
+    **Honest limit**: this changes what the report says, not what the
+    stream knows. It does not make the 5 underpowered readings
+    informative; it stops them being read as null results. The one
+    thing that WOULD widen them is a larger `--markets`, which is a
+    configuration change with its own cost, not a restatement.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

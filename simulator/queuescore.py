@@ -163,6 +163,18 @@ def event_ticker(market_id: str) -> str:
 
 SIGN_ALPHA = 0.05
 
+# Every value `_direction_tier` can return for `status`. Exhaustive on purpose:
+# `direction_verdict` counts over this list, so the counts partition the four
+# tier x bound readings by construction and a new status cannot be added
+# without the partition test noticing.
+DIRECTION_STATUSES = (
+    "significant_over",
+    "significant_under",
+    "not_significant",
+    "underpowered",
+    "no_direction",
+)
+
 
 def sign_test_p(agreeing: int, decisive: int) -> float:
     """One-sided binomial sign test: P(X >= agreeing | X ~ Bin(decisive, 0.5)).
@@ -191,6 +203,29 @@ def _direction_tier(nets: dict[str, int], agg: int) -> dict:
     power ceiling. When `min_sign_p` > SIGN_ALPHA the run could not have
     produced a significant direction whatever the data did, which is a property
     of the bracket's configuration (top-N markets) and not of the fill models.
+
+    `significant` is a BOOLEAN over outcomes that mean opposite things, which is
+    the failure the atlas quoted tier hit (mistakes #32). It reads False for a
+    run that tested a direction and found none (evidence AGAINST a fill-model
+    bias) and for a run that could not have found one whatever the data did (NO
+    evidence either way) — and the econ bracket has printed both: 2026-08-06 at
+    4 underlyings, min_sign_p 0.0625 > 0.05, was structurally incapable of a
+    verdict, while 2026-08-25 at 5 underlyings, min_sign_p 0.03125, genuinely
+    tested and found nothing. `status` separates them and PARTITIONS the tier:
+
+    - `no_direction`   — the aggregate is zero, so there is no sign to test;
+    - `underpowered`   — `min_sign_p` > SIGN_ALPHA: no evidence either way;
+    - `significant_over` / `significant_under` — tested, p <= SIGN_ALPHA;
+    - `not_significant` — tested with the power to reject, and did not.
+
+    `significant` itself is left exactly as it was, for cross-report
+    comparability, per the day-tier / overlap-tier / quoted-tier precedent;
+    `status` is a strict refinement of it, asserted as such in the tests.
+
+    The `min_sign_p > SIGN_ALPHA` boundary is checked and UNREACHABLE: min_sign_p
+    is 2^-k for integer k, which never equals 0.05, so `>` and `>=` are the same
+    predicate here and a mutation between them survives the suite. Recorded
+    rather than pinned with a fixture that cannot exist.
     """
     over = sum(1 for v in nets.values() if v > 0)
     under = sum(1 for v in nets.values() if v < 0)
@@ -199,6 +234,14 @@ def _direction_tier(nets: dict[str, int], agg: int) -> dict:
     abs_total = sum(abs(v) for v in nets.values())
     sign_p = sign_test_p(agreeing, decisive) if agg != 0 else 1.0
     min_sign_p = sign_test_p(decisive, decisive) if decisive else None
+    if agg == 0 or min_sign_p is None:
+        status = "no_direction"
+    elif min_sign_p > SIGN_ALPHA:
+        status = "underpowered"
+    elif sign_p <= SIGN_ALPHA:
+        status = "significant_over" if agg > 0 else "significant_under"
+    else:
+        status = "not_significant"
     return {
         "units": len(nets),
         "abs_net": abs_total,
@@ -212,6 +255,43 @@ def _direction_tier(nets: dict[str, int], agg: int) -> dict:
         "sign_p": round(sign_p, 6),
         "min_sign_p": None if min_sign_p is None else round(min_sign_p, 6),
         "significant": agg != 0 and sign_p <= SIGN_ALPHA,
+        "status": status,
+    }
+
+
+def direction_verdict(concentration: dict, strict: dict) -> dict:
+    """Collect the four direction readings into counts that PARTITION them.
+
+    The bracket produces four direction readings — market and underlying, each
+    against the pessimistic floor and the optimistic ceiling — and each of them
+    used to be summarised by one boolean whose False collapsed "tested, no
+    direction" into "could not have found one". Counting the tri-state statuses
+    over `DIRECTION_STATUSES` makes the arithmetic itself the guard: the counts
+    sum to 4, so a reading that carries no evidence can no longer be read as a
+    measurement that came back empty. Same construction as the atlas
+    `quoted_verdict` (mistakes #32).
+
+    `powered` is the number of readings that could have rejected the coin-flip
+    null at all. When it is 0, this run says nothing about fill-model direction
+    however large `net_disagreement` looks — that is a property of the top-N
+    market selection, not of the data.
+    """
+    readings = {
+        "market_pess": concentration["direction_market_status"],
+        "market_opt": strict["direction_market_status"],
+        "underlying_pess": concentration["direction_underlying_status"],
+        "underlying_opt": strict["direction_underlying_status"],
+    }
+    counts = dict.fromkeys(DIRECTION_STATUSES, 0)
+    for status in readings.values():
+        counts[status] += 1
+    powered = sum(1 for v in readings.values() if v not in ("underpowered", "no_direction"))
+    return {
+        "readings": readings,
+        "counts": counts,
+        "readings_total": len(readings),
+        "powered": powered,
+        "significant": counts["significant_over"] + counts["significant_under"],
     }
 
 
@@ -351,6 +431,7 @@ def concentration_by_market(orders: list[VirtualOrder], bound: str = "pess") -> 
         "market_sign_p": mkt["sign_p"],
         "market_min_sign_p": mkt["min_sign_p"],
         "direction_market_significant": mkt["significant"],
+        "direction_market_status": mkt["status"],
         "underlyings": und["units"],
         "abs_net_by_underlying": und["abs_net"],
         "top_underlying_net_share": und["top_net_share"],
@@ -361,6 +442,7 @@ def concentration_by_market(orders: list[VirtualOrder], bound: str = "pess") -> 
         "underlying_sign_p": und["sign_p"],
         "underlying_min_sign_p": und["min_sign_p"],
         "direction_underlying_significant": und["significant"],
+        "direction_underlying_status": und["status"],
         "per_underlying": [
             {"event_ticker": u, "net": und_nets[u]}
             for u in sorted(und_nets, key=lambda u: -abs(und_nets[u]))
@@ -511,6 +593,8 @@ def main() -> None:
     opt = [o for o in all_orders if o.tracker.filled_opt > 0]
     split = over_award_split(all_orders)
     composition = series_composition(all_orders)
+    conc = concentration_by_market(all_orders)
+    conc_strict = concentration_by_market(all_orders, bound="opt")
     out_dir = Path(args.out)
     report = {
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None, microsecond=0)),
@@ -521,8 +605,9 @@ def main() -> None:
         "queue_opt_filled": len(opt),
         **split,
         "market_composition": composition,
-        "concentration": concentration_by_market(all_orders),
-        "concentration_strict": concentration_by_market(all_orders, bound="opt"),
+        "concentration": conc,
+        "concentration_strict": conc_strict,
+        "direction_verdict": direction_verdict(conc, conc_strict),
         "independence": independence_vs_prior(out_dir, all_orders, composition),
         "note": (
             "crossing rule = what backtests award today; queue bounds ="
@@ -568,6 +653,13 @@ def main() -> None:
             " run could not have shown a direction whatever the data did. The"
             " default --markets 8 reaches only ~3 city-days (min_sign_p 0.125),"
             " so a directional verdict needs a wider top-N, not more runs."
+            " direction_*_status is that comparison made for you, because"
+            " direction_*_significant is a boolean over outcomes that mean"
+            " opposite things: False covers both a run that tested and found no"
+            " direction and a run that could not have found one. Read"
+            " direction_verdict — its counts PARTITION the four tier x bound"
+            " readings, and powered=0 means this run says nothing about"
+            " fill-model direction however large net_disagreement looks."
         ),
         "orders_detail": [o.summary() for o in all_orders],
     }
