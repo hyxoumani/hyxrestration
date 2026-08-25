@@ -111,9 +111,14 @@ worktree). DuckDB excludes every other attach — including read-only —
 while a writer holds it, so `connect_retry`'s 15 x 2s = **30s** budget
 is racing the daemon's flush bursts. Measured directly, 355 probes over
 180s: the lock is **free 87% of the time**, longest LOCKED run **6.5s**,
-longest FREE run **15.0s**, 23 alternations. So the attach usually wins
-and sometimes does not — three attempts this pass, **two lost the race
-and died on a clean IOException after 30s**. The helper's docstring
+longest FREE run **15.0s**, 23 alternations. So a single 30s window usually
+wins — and the observed rate is much worse than 87% says: of the FIVE
+attempts made this pass, **four lost the race and died on a clean
+IOException after 30s** (including the transient unit's own first
+attempt). Either the probe's 0.5s sampling understates the hold time a
+sustained attach needs, or a 2s fixed retry beats against the flush
+period; the wrapper's journal is the standing measurement of the true
+rate. The helper's docstring
 says "writers flush in bursts and readers attach briefly; colliding is
 normal, dying on it is not" — the budget behind that sentence was
 calibrated for brief readers, not for a 24/7 writer.
