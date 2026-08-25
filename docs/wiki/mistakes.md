@@ -800,3 +800,45 @@ it. Item 12's lesson ("a log line describing a recovery guarantee is a
 claim — test it like one") held: the flush-retry fix was regression-
 tested and later converted a would-be data loss into clean
 backpressure during heavy replay reads.
+
+Recurrence audit (2026-08-25, EXP-1368/1369): the 2026-07-12 escalation
+above — "every raw read-only connect must use it" — **was written as a
+sentence and never enforced, and it cost five instances.** Three surfaced
+2026-08-25 (mistakes #34); a deliberate sweep the same day found two
+more: `collector.trades_backfill.pending_markets` queries the worklist
+with a bare read-only `Store` AFTER releasing the flock, so a ~7h
+`poly_sweep` taking the file in that gap kills the pass at its first
+statement — in the very file whose `_flush` comment, 18 lines below,
+records the lesson for the WRITE open.
+
+Two things generalise past this instance.
+
+**(1) A rule stated as a sentence is a gotcha wearing a rule's clothes.**
+The 07-08 audit above already concluded that gotchas do not survive
+sessions and anything recurring must jump to rule/test/hook. The 07-12
+escalation stopped at "rule" and skipped the test, and six weeks of
+recurrence followed. It is now `tests/test_connect_discipline.py`: an
+AST enumeration of every attach site in the four packages, each carrying
+RETRY / DEGRADE / OWNER and a written reason, asserted as set EQUALITY
+so neither a new site nor a stale entry can pass. The reason a grep
+never sufficed is the reason the rule was hard to enforce: **most raw
+connects here are legitimate**, so the enforceable artifact is an
+allowlist with reasons, not a ban.
+
+**(2) The rule as stated described the wrong half of the hazard.**
+`simulator.run_sim` and `simulator.run_backtest` opened the live archive
+READ-WRITE while only ever calling readers. That violates no wording of
+the read-only rule, yet it is strictly worse: a read-write open takes
+the exclusive lock and excludes the collector, streamd and the shadow
+daemon — mistakes #20 exactly, which was logged as an *ad-hoc query*
+hazard when in fact `python -m simulator.run_backtest` is a command
+CLAUDE.md tells people to run. **When escalating a rule to a test, ask
+what the rule's wording excludes**; the guard enforces both directions
+(ro sites need a disposition, rw sites must OWN the file), and the write
+half is the half that would have caught this.
+
+Corollary to #34's corollary, earned here: **the enumeration is also the
+sweep.** Writing down every site to build the allowlist is what exposed
+`bookreplay.load_stream_snapshots` — a third, dead copy of the walk
+carrying the EXP-1364 materialised sort, an EXP-1367 bare attach, and a
+full materialisation, with zero callers since BookReplayer landed.

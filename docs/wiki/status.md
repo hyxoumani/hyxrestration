@@ -1,5 +1,103 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-25 15:05 UTC (RUNG-4 PASS — THE 2026-07-12 RULE WAS
+NEVER ENFORCED, AND THE SWEEP FOR IT FOUND TWO MORE INSTANCES PLUS A
+CLASS THE RULE'S OWN WORDING DOES NOT DESCRIBE.**
+Last pass named this the concrete next hardening task; it is done, and
+it was not bookkeeping — writing the enumeration down was itself the
+sweep, and it found live defects.
+**(1) A FIFTH INSTANCE, SAME SHAPE AS YESTERDAY'S, IN A FILE THAT
+ALREADY KNEW BETTER (EXP-1368a).** `collector.trades_backfill.
+pending_markets` queries the worklist with a bare read-only `Store`.
+main() takes the flock for its schema burst, RELEASES it, and only then
+runs this — so `collector.poly_sweep` (~7h on the archive) taking the
+file in that gap kills the whole pass at its first statement, before one
+market is swept. `_flush`, 18 lines below, carries a comment recording
+exactly this lesson, applied to the WRITE open and not to this read.
+**(2) THE RULE AS WRITTEN DESCRIBES THE WRONG HALF OF THE HAZARD
+(EXP-1368b/c).** `simulator.run_sim` and `simulator.run_backtest` opened
+the live archive **READ-WRITE** while only ever calling readers
+(`markets`, `candles_as_snapshots`, `forecasts`, `iter_snapshots`). That
+violates no wording of "every raw read-only connect must use the
+helper", yet it is strictly worse: a read-write open takes the exclusive
+lock and excludes the collector, streamd and the shadow daemon —
+**mistakes #20 exactly**, which was logged as an *ad-hoc query* hazard
+when `python -m simulator.run_backtest` is a command CLAUDE.md tells
+people to run. The hazard was never ad-hoc; it was documented. All three
+sites become `open_retry(..., read_only=True)`.
+**VERIFIED ON PRODUCTION DATA, NOT ARGUED FROM FIXTURES**: the full
+reader path both modules use runs read-only against the live archive —
+open 6.0s, `markets` 1,731,982 rows / 4.2s, `forecasts` 479,596 / 0.8s,
+`observations` 1,826, `candles_as_snapshots` 10,036,074 / 20.8s,
+`iter_snapshots` 6,489,714 / 17.3s. `run_backtest`'s runtime (>280s) is
+downstream of the change, not in the open.
+**(3) THE RULE IS NOW A TEST, AND THE REASON IT COULD NOT BE A GREP IS
+THE REASON IT WENT UNENFORCED (EXP-1369).** Most raw connects here are
+LEGITIMATE — a daemon owning its file, a backup copying one, a CLI that
+is the sole writer — so the enforceable artifact is an allowlist with
+reasons, not a ban. `tests/test_connect_discipline.py` AST-classifies
+every `duckdb.connect`/`Store`/`StreamStore` call in the four packages
+as ro / rw / forward; helper calls are invisible to it, which is the
+incentive. Nine ro sites each carry RETRY, DEGRADE or OWNER with a
+written reason; eleven rw sites must OWN the file they open. **Both
+assertions are set EQUALITY, so a removed site reddens too** and the
+allowlist cannot rot. **Mutation-verified both halves**: restoring the
+bare `Store` in `pending_markets` and the read-write open in
+`run_backtest` each redden, and the classifier itself is pinned on
+twelve shapes (eight it must catch, four it must ignore) because a guard
+that matches nothing passes forever.
+**KNOWN LIMIT, PINNED RATHER THAN LEFT SILENT**: the classifier reads a
+LITERAL `read_only=True`, so a site forwarding a variable escapes it. A
+test asserts the only three such sites in the repo are inside
+`hyxlab/store.py`, where forwarding IS the job; if a caller learns to
+hide, that test reddens.
+**(4) THE ENUMERATION WAS THE SWEEP.** Writing down every site exposed
+`bookreplay.load_stream_snapshots`: a THIRD copy of the book-event walk,
+carrying the EXP-1364 materialised sort, an EXP-1367 bare unretried
+attach, and a `list(...)` materialising every Snapshot on top — with
+zero callers in the four packages or in tests since BookReplayer landed.
+EXP-1366 unified two copies and missed this one because it was dead.
+Deleted; `duckdb` and `timedelta` drop from the module's imports with
+it, which is the check that the unified walk takes a connection rather
+than opening one.
+**LOGGED AS A RECURRENCE AUDIT IN `mistakes.md`** with the lesson that
+generalises: **a rule stated as a sentence is a gotcha wearing a rule's
+clothes.** The 07-08 audit already concluded anything recurring must
+jump to rule/test/hook; the 07-12 escalation stopped at "rule" and
+skipped the test, and six weeks of recurrence followed. Second lesson:
+**when escalating a rule to a test, ask what the rule's wording
+excludes** — the write half is the half that caught (2).
+**NO PROMOTE, same reason as last pass and re-verified from data rather
+than memory**: `needs_restart simulator.shadow` matches `^(simulator|
+strategies|hyxlab)/`, and the 08-23 20:17Z shadow run is live at **1d18h
+(shadow_equity max ts 2026-08-25 14:24Z, 7,402 points)** — it reaches
+3 days at 2026-08-26 20:17Z. Promoting today would reset it. The cost is
+that `trades_backfill`'s fix does not reach the stable worktree until
+then; that is the cheaper of the two losses. Suite 771 -> **778 green**.
+NEXT PASS: (1) **08-26 20:17Z the shadow run clears 3 days — then
+PROMOTE (three passes of collection-side fixes are now queued behind it)
+and re-run `by_day` as an OUT-OF-SAMPLE test of the one surviving
+diurnal claim (troughs 16-18Z, peaks 21-00Z).** Do not re-test the
++72/-247/+150 cycle; it is dead. (2) `batch units` self-clears 08-28 or
+the budget is stale and must be re-measured, not re-excused. (3)
+`run_l2` still accumulates the full equity curve, and unlike shadow and
+divergence it CONSUMES it (`equity.json` is a uniform stride over the
+finished curve, EQUITY_MAX_POINTS=10,000) — bounding it means choosing a
+streaming downsample, a behaviour change needing its own design, and
+run_l2's window is operator-chosen rather than "the longest run ever
+recorded", so it stays the least acute of the three. (4) The connect
+guard covers ATTACHES. It does not cover **who holds the flock** —
+`data/writer.lock` discipline is still enforced only by
+`tests/test_hyxlab_writer_lock.py`'s per-writer tests, with no
+enumeration of which code paths must take it. That is the same shape of
+gap this pass just closed one rung down, and it is the next hardening
+candidate. (5) The #32/#33/#34 lens sweeps remain done for report
+summary fields and the sim's unbounded loops; the standing job is
+unchanged.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-25 09:40 UTC (RUNG-1 PASS — THE STALE REPORT'S
 14.3 GB WAS FOUR DEFECTS, THREE OF THEM ALREADY FIXED SOMEWHERE ELSE IN
 THIS REPO.**
