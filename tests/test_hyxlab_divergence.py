@@ -477,3 +477,54 @@ def test_sliced_walk_applies_market_prefix_on_every_slice(tmp_path):
     assert {e.market_id for e in bounded} == {"KXAAA-1"}
     # The open-`hi` form must filter identically, not fall back to "all".
     assert unbounded == bounded
+
+
+def test_replay_survives_a_transient_archive_lock(tmp_path, monkeypatch):
+    """Regression (2026-08-25 08:58Z): `replay_run` attached the LIVE
+    archive with a bare read-only `Store` and died on the first collision
+    with a writer — the report was killed by `collector.poly_sweep`
+    holding the lock. The attach must ride out a transient collision."""
+    import hyxlab.store as store_mod
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    # One-tick spreads past the probe cooldown, prices moving so the
+    # replayer cannot collapse them: the probe must actually trade, or
+    # "the replay survived" would be vacuous.
+    for seq, bid, ask_no, minutes in [(2, 44, 55, 11), (3, 45, 54, 22)]:
+        sstore.append_events(
+            _snapshot_frame("M1", seq, bid, ask_no, T0 + timedelta(minutes=minutes))
+        )
+    sstore.flush()
+
+    real_connect, attempts = store_mod.duckdb.connect, []
+
+    def flaky(path, **kw):
+        # Only the archive collides; the stream attach is a separate lock.
+        if "archive" in str(path):
+            attempts.append(path)
+            if len(attempts) <= 2:
+                raise store_mod.duckdb.Error("Conflicting lock is held")
+        return real_connect(path, **kw)
+
+    monkeypatch.setattr(store_mod.duckdb, "connect", flaky)
+    monkeypatch.setattr("time.sleep", lambda _s: None)  # no wall-clock cost
+
+    fills = replay_run(
+        "R1",
+        T0.replace(tzinfo=None),
+        (T0 + timedelta(hours=2)).replace(tzinfo=None),
+        latency=0.0,
+        strategy_names=["probe"],
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+    )
+    assert len(attempts) == 3, "the attach must have been retried, not merely lucky"
+    assert len(fills) > 0

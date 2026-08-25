@@ -26,7 +26,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from hyxlab.store import Store, connect_retry
+from hyxlab.store import connect_retry, open_retry
 from simulator.bookreplay import BOOK_GAPS, replay_snapshots, stream_events
 from simulator.registry import STRATEGIES
 from simulator.shadow import SHADOW_DB, STREAM_DB
@@ -60,7 +60,16 @@ def replay_run(
     classify unmatched fills against the same coverage breaks the replay
     traded through.
     """
-    store = Store(archive_db, read_only=True)
+    # `open_retry`, not a bare `Store`: this attaches the LIVE archive,
+    # whose write lock is taken by the 5-minute collector and held for
+    # ~7h by the poly sweep. A bare read-only attach dies instantly on
+    # the collision -- which is exactly how this report failed on
+    # 2026-08-25 08:58Z, against poly_sweep at 4h43m. `run_l2` (the
+    # module that copied this function's seeding discipline) already used
+    # the retrying helper; this site never got it. The shadow daemon
+    # takes the third valid option and DEGRADES (`except duckdb.Error:
+    # return None`), which a one-shot report cannot do.
+    store = open_retry(archive_db, read_only=True)
     try:
         markets = store.markets()
     finally:
