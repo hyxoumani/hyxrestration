@@ -196,20 +196,36 @@ def connect_retry(
     read_only: bool = True,
     retries: int = 15,
     delay: float = 2.0,
+    backoff: float = 1.0,
+    max_delay: float | None = None,
 ):
     """Raw duckdb.connect with lock-retry — for non-Store databases
     (stream archive, shadow ledger). Same rationale as open_retry:
     writers flush in bursts and readers attach briefly; colliding is
-    normal, dying on it is not."""
+    normal, dying on it is not.
+
+    The defaults (15 x 2.0s = 30s, flat) were calibrated for that brief
+    reader. They are NOT adequate against a 24/7 writer: `collector.
+    streamd` holds `hyxstream.duckdb` continuously, and a flat 2s period
+    can beat against its flush period rather than sample it. Callers
+    attaching a daemon-held database should pass a larger budget and
+    `backoff > 1.0`, which both lengthens the budget and detunes it from
+    any fixed flush period. `max_delay` caps the per-attempt sleep so a
+    long budget stays responsive once the writer lets go.
+    """
     import time
 
+    wait = delay
     for attempt in range(retries):
         try:
             return duckdb.connect(str(path), read_only=read_only)
         except duckdb.Error:
             if attempt == retries - 1:
                 raise
-            time.sleep(delay)
+            time.sleep(wait)
+            wait *= backoff
+            if max_delay is not None:
+                wait = min(wait, max_delay)
     raise AssertionError("unreachable")
 
 

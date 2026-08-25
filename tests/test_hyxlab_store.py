@@ -2,6 +2,8 @@
 
 from datetime import UTC, date, datetime
 
+import pytest
+
 from hyxlab.migrate import migrate
 from hyxlab.models import Forecast, Snapshot
 from hyxlab.store import SCHEMA_VERSION, Store
@@ -175,6 +177,7 @@ def test_trades_swept_tracks_progress(tmp_path):
 def test_open_retry_waits_out_transient_lock(tmp_path, monkeypatch):
     """Writers that must not die (poly sweep flush) wait out readers
     holding the file lock instead of crashing mid-run."""
+
     import duckdb
 
     from hyxlab import store as store_mod
@@ -392,3 +395,49 @@ def test_markets_filters_by_venue_and_liveness_and_pins_included_keys(tmp_path):
     )
     assert {k[1] for k in pinned} == {"LIVE", "OLD_OPEN", "FRESH_DONE", "OLD_DONE", "NO_CLOSE_DONE"}
     store.close()
+
+
+def test_connect_retry_defaults_stay_a_flat_30s_budget(monkeypatch):
+    """Every existing caller must keep the exact budget it was calibrated
+    with: 15 attempts, flat 2s apart."""
+    import time
+
+    import duckdb
+
+    from hyxlab import store as store_mod
+
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        store_mod.duckdb, "connect", lambda *a, **k: (_ for _ in ()).throw(duckdb.Error("locked"))
+    )
+    with pytest.raises(duckdb.Error):
+        store_mod.connect_retry("nope.duckdb")
+    assert sleeps == [2.0] * 14
+    assert sum(sleeps) == 28.0
+
+
+def test_connect_retry_backoff_lengthens_and_detunes_the_budget(monkeypatch):
+    """The stream archive is held by a 24/7 writer, so its caller passes
+    a growing interval: it must both extend the total budget well past
+    30s and stop sampling the writer at one fixed period."""
+    import time
+
+    import duckdb
+
+    from hyxlab import store as store_mod
+    from simulator.divergence import STREAM_ATTACH
+
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+    monkeypatch.setattr(
+        store_mod.duckdb, "connect", lambda *a, **k: (_ for _ in ()).throw(duckdb.Error("locked"))
+    )
+    with pytest.raises(duckdb.Error):
+        store_mod.connect_retry("nope.duckdb", **STREAM_ATTACH)
+
+    assert len(sleeps) == STREAM_ATTACH["retries"] - 1
+    assert sum(sleeps) > 8 * 60  # the 30s default lost 4 of 5 real races
+    assert len(set(sleeps)) > 1  # not one period to beat against
+    assert sleeps == sorted(sleeps)  # monotone
+    assert max(sleeps) == STREAM_ATTACH["max_delay"]  # and capped

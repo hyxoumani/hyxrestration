@@ -305,3 +305,84 @@ def test_shuffled_input_order_produces_identical_report():
         rng.shuffle(s)
         rng.shuffle(r)
         assert compare(s, r) == baseline
+
+
+def _ev(market_id, seq, recv_ts, price):
+    from hyxlab.streamstore import BookEvent
+
+    return BookEvent(
+        venue="kalshi",
+        market_id=market_id,
+        recv_ts=recv_ts,
+        src_ts=None,
+        sid=1,
+        seq=seq,
+        kind="snap",
+        side="yes",
+        price=price,
+        qty=10.0,
+    )
+
+
+def _seeded_stream(tmp_path):
+    """A stream spanning many slice widths, with recv_ts ties that would
+    straddle a slice boundary if the walk were not half-open."""
+    from hyxlab.streamstore import StreamStore
+
+    db = tmp_path / "slices.duckdb"
+    sstore = StreamStore(db)
+    events, base = [], datetime(2026, 8, 10, 0, 0, 0)
+    stamps = [base + timedelta(hours=h) for h in range(48)]
+    # The walk starts at `first - 1us`, so its 6h boundaries land on
+    # `base + k*6h - 1us`. Put a tie group on each of those instants:
+    # without a half-open bound those rows appear in BOTH neighbouring
+    # slices, and nothing else in this fixture would notice.
+    stamps += [base + timedelta(hours=6 * k) - timedelta(microseconds=1) for k in range(1, 8)]
+    for i, ts in enumerate(sorted(stamps)):
+        # DESCENDING seq within each tie group: insertion order is the
+        # reverse of replay order, so a walk that forgets `ORDER BY seq`
+        # cannot pass by accident.
+        for seq in (2, 1, 0):
+            events.append(_ev("M1", i * 10 + seq, ts, 0.40 + seq / 100))
+    sstore.append_events(events)
+    sstore.flush()
+    return db, len(stamps) * 3
+
+
+def test_sliced_event_walk_is_byte_identical_to_one_cursor(tmp_path):
+    """Slicing the replay window is a memory fix, not a semantic one:
+    the event sequence must be indistinguishable from the single-cursor
+    walk, including `recv_ts` ties that land on a slice boundary."""
+    import duckdb
+
+    from simulator.divergence import _events
+
+    db, n = _seeded_stream(tmp_path)
+    lo, hi = datetime(2026, 8, 9), datetime(2026, 8, 13)
+    with duckdb.connect(str(db), read_only=True) as conn:
+        one = list(_events(conn, lo, hi, slice_hours=10_000))  # one slice
+        many = list(_events(conn, lo, hi, slice_hours=6.0))
+        finer = list(_events(conn, lo, hi, slice_hours=0.25))
+
+    assert len(one) == n
+    assert many == one
+    assert finer == one
+    # The ordering the replay depends on is actually exercised.
+    assert [(e.recv_ts, e.seq) for e in one] == sorted((e.recv_ts, e.seq) for e in one)
+
+
+def test_sliced_walk_handles_open_and_unbounded_edges(tmp_path):
+    """`lo` is `datetime.min` when no coverage break precedes the anchor
+    and `hi` may be open; neither may make the walk iterate empty
+    millennia or drop rows."""
+    import duckdb
+
+    from simulator.divergence import _events
+
+    db, n = _seeded_stream(tmp_path)
+    with duckdb.connect(str(db), read_only=True) as conn:
+        from_min = list(_events(conn, datetime.min, None, slice_hours=6.0))
+        empty = list(_events(conn, datetime(2027, 1, 1), None, slice_hours=6.0))
+
+    assert len(from_min) == n
+    assert empty == []
