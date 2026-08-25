@@ -135,6 +135,15 @@ def replay_run(
         ).fetchall()
         for snap in replay_snapshots(_events(conn, anchor, end), gaps=gaps, replayer=replayer):
             sim.step(snap)
+            # Same bound the shadow daemon applies (simulator/shadow.py),
+            # for the same reason, at the site that never got it: the sim
+            # appends one equity point PER SNAPSHOT (~2.3M/day at stream
+            # rates), and this replay covers whatever the longest run was
+            # -- ~24M points over the 10.5-day default target. Divergence
+            # compares FILLS and never calls `finalize()`, so it never
+            # reads the curve at all; max_drawdown is a running stat, so
+            # trimming cannot change any number this report prints.
+            del sim.result.equity_curve[:-1]
     fills = [f for f in sim.result.fills if f.ts <= end]
     return (fills, gaps) if return_gaps else fills
 

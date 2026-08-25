@@ -12,6 +12,7 @@ from hyxlab.store import Store
 from hyxlab.streamstore import StreamStore
 from simulator.divergence import compare, replay_run
 from simulator.shadow import ShadowLedger, ShadowRunner
+from simulator.sim import Simulator
 from strategies.probe import TightSpreadProbe
 from tests.test_hyxlab_shadow import T0, _snapshot_frame
 
@@ -386,3 +387,58 @@ def test_sliced_walk_handles_open_and_unbounded_edges(tmp_path):
 
     assert len(from_min) == n
     assert empty == []
+
+
+def test_replay_bounds_in_memory_equity_curve(tmp_path, monkeypatch):
+    """The offline replay is the SECOND site of the shadow OOM fix
+    (simulator/shadow.py, mid-run kill 2026-07-18): one equity point per
+    snapshot, over a window as long as the longest shadow run. Divergence
+    compares fills and never calls `finalize()`, so the curve is pure
+    ballast — at most one point may survive, and the fills must not move.
+    """
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    # Prices must MOVE: the replayer emits a snapshot only when the book
+    # changes, so a repeated quote would collapse to one step and make
+    # the bound vacuous.
+    for seq, minutes in enumerate([11, 22, 33, 44, 55], start=2):
+        sstore.append_events(
+            _snapshot_frame("M1", seq, 40 + seq, 55, T0 + timedelta(minutes=minutes))
+        )
+    sstore.flush()
+
+    carried, real_step = [], Simulator.step
+
+    def spy(self, snap):
+        # Length the sim CARRIED INTO this step — i.e. what survived the
+        # previous step's trim. Unbounded growth shows up here.
+        carried.append(len(self.result.equity_curve))
+        real_step(self, snap)
+
+    monkeypatch.setattr(Simulator, "step", spy)
+
+    def run():
+        return replay_run(
+            "R1",
+            T0.replace(tzinfo=None),
+            (T0 + timedelta(hours=2)).replace(tzinfo=None),
+            latency=0.0,
+            strategy_names=["probe"],
+            stream_db=str(stream_db),
+            archive_db=str(archive_db),
+        )
+
+    fills = run()
+    assert len(carried) > 3, "replay must actually step the sim, or the bound is vacuous"
+    assert max(carried) <= 1
+    assert len(fills) > 0  # the comparison the report makes still happens
+    # That the trim changes no number the report reads is pinned by
+    # `test_replay_reproduces_shadow_run_exactly`, which runs this same
+    # path and asserts the fills match shadow's exactly.
