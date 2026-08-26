@@ -1,5 +1,73 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-26 20:45 UTC (RUNG-8 PASS — THE PROMOTE LANDED, AND
+THE CLAIM IT WAS WAITING FOR IS FALSIFIED: THE 21-00Z PEAK WAS 97%
+COMPOSITION.**
+**(1) PROMOTED, on the clock the last seven passes queued behind.** Run
+`20260823T201714` cleared 3 days at 20:17:29Z (12,636 points, 71 whole
+hours over 4 spanned days); `scripts/promote.sh` shipped seven passes at
+20:19:42Z and restarted both daemons, which is what the clock was for.
+**VERIFIED LIVE IN THE STABLE TREE**: `hyxstream.duckdb.owner.lock` and
+`hyxshadow.duckdb.owner.lock` are held with `.holder` naming the unit,
+and each daemon spills into its own `<db>.tmp/pid-N` — rung-6 and rung-7
+are now production behaviour, not test behaviour.
+**(2) THE PROMOTE GATE CAUGHT A FLAKE THE SUITE NEVER SHOWED.**
+`scripts/promote.sh` reran the suite and reddened
+`test_the_file_lock_excludes_nothing_between_bursts` at 3 of 6 flushes,
+minutes after 833 green standalone. The guard asserted the newcomer
+landed ALL SIX flushes; the hazard is that it lands ONE. Reproduced red
+at 3/6 and 5/6 under eight busy cores, green 5/5 idle. Now `>= 1` with
+cycles accounted; `b_ok == 0` still reddens, and that is still the
+finding that would retire the owner lock. Mistake #36.
+**(3) THE OUT-OF-SAMPLE TEST: THE DIURNAL CLAIM IS DEAD, TWICE OVER.**
+`by_day` on the completed run reads **DOES NOT REPEAT** — pairwise
+Spearman 08-24 vs 08-25 **-0.392**, 08-24 vs 08-26 **-0.107**, 08-25 vs
+08-26 +0.941 (two days that both slid monotonically, which rank
+correlation calls agreement whether or not a cycle exists). 08-24 PEAKS
+at 17Z, inside the claimed trough window. **And the column that produced
+the claim cannot support it**: `mean_equity_end` averages whatever DAYS
+that hour had, 19Z had three and 20Z two, and daily level slid -50 ->
+-1800 across the run. **MEASURED: the +433.6 step from 19Z to 20Z is
+-14.6 on the two days both hours share — 97% composition.** On the
+balanced panel the level declines monotonically 00Z (-2.0) -> 23Z
+(-520.5): there is no 21-00Z peak. Do not re-open it. This is the same
+defect class as #24 one layer down, and it survived because six passes
+deferred a 20-minute test behind a clock (mistake #35).
+**(4) THE GUARD: BOUND 7.** `level_panel` names the days common to every
+published hour, `mean_equity_end_balanced` averages only those, the
+printed table LEADS with it and stars every ragged raw cell, and the
+narration line now points at `mean_end_bal`. The raw column stays — it
+is the wider sample for reading ONE hour; it is comparisons ACROSS hours
+it cannot support. Three tests, mutation-verified three ways (panel as
+union, balanced mean ignoring the panel, balanced flag pinned true),
+each reddening a different one; the BALANCED control matters as much as
+the finding. Suite 833 -> **836 green**, promoted and pushed.
+**(5) UNPLANNED PRODUCTION VERIFICATION OF THE RUNG-7 REAPER.**
+`hyxlab-stream` was **OOM-killed 17s after the restart** (`MemoryMax=2G`,
+cgroup oom-kill, SIGKILL, no atexit) and came back 10s later. Its
+abandoned `pid-3998347` scratch directory was **gone** — reaped by the
+successor that won its lock, which is the exact case the reaper was
+built for and it was tested by an accident nobody staged.
+NEXT PASS: (1) **THE NEW TOP RUNG — streamd balloons to its 2 GiB
+ceiling AT STARTUP and only sometimes survives.** The kill landed one
+second after `kalshi-books: 614 open tickers across 31 series`, i.e. in
+the subscribe-snapshot burst; the successor also records a 2 GiB
+`MemoryPeak` for its current start and now sits at 217 MB. So every
+restart is a coin flip against the cap, and a promote is what forces
+restarts. Measure the burst (is the ws receive queue unbounded across
+614 snapshots?), then bound it — do not raise `MemoryMax` to hide it.
+(2) Rung-7's leftover: `max_temp_directory_size` is unset everywhere, so
+DuckDB may spill up to 90% of the disk the collector writes to. (3)
+`batch units` self-clears 08-28 or the budget is stale and must be
+re-measured, not re-excused. (4) `run_l2` still accumulates and consumes
+the full equity curve; bounding it is a behaviour change needing its own
+design. (5) The #32/#33/#34 lens sweeps remain the standing job. The new
+shadow run `20260826T201942` starts the duration clock again from
+20:19Z.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-26 14:35 UTC (RUNG-7 PASS — THE SIDECAR THE LAST RUNG
 NAMED IS NOT THE ONE THAT MATTERED, BECAUSE THE BIGGEST FILE WRITTEN NEXT
 TO A DATABASE IS NOT WRITTEN BY US.**

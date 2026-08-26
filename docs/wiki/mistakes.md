@@ -773,6 +773,58 @@ Format: what happened → root cause → error type → prevention tier
     rather than sample it. Budgets inherit an assumption about the other
     side; when a 24/7 writer appears, re-derive them rather than reuse.
 
+35. **2026-08-26 — the fix for #24 replaced a bad statistic with one
+    that carried a DIFFERENT composition defect, and the surviving
+    diurnal claim was an artefact of it for three more days.** #24
+    killed min-sampling and told every reader to take the LEVEL off
+    `mean_equity_end`. That column is a mean over whatever DAYS that
+    hour-of-day happened to have — and a run does not begin or end on
+    an hour-of-day boundary, so on run `20260823T201714` 19Z had three
+    readings and 20Z had two. Harmless if level were stationary; the
+    daily level slid from -50 to -1800 across the run. **MEASURED:
+    `mean_end` steps +433.6 from 19Z to 20Z, which reads as a nightly
+    recovery; on the two days both hours SHARE it is -14.6. The step
+    was 97% composition.** The "peaks 21-00Z" half of the surviving
+    claim was made of exactly this — those hours silently included the
+    run's opening day, when equity was still near zero. On the balanced
+    panel the level declines monotonically all day and no peak exists.
+    **The generalisation is not about equity.** Any panel mean compared
+    ACROSS cells must hold its population fixed; when the cells draw
+    from different populations, a difference between them is partly a
+    difference of WHO, and nothing in the number says which part.
+    **RULE: a report that publishes a mean per bucket must publish the
+    bucket's population too, and any cross-bucket comparison must be
+    made on the intersection.** Encoded, not remembered:
+    `level_panel` + `mean_equity_end_balanced` + `balanced`, three
+    tests, mutation-verified three ways. The raw column is kept —
+    it is the wider sample for reading ONE hour — but the printed
+    table leads with the balanced one and stars every ragged cell.
+    **AND THE PROCEDURAL LESSON: the claim was queued as "re-run
+    out-of-sample" for six passes and each pass deferred it behind a
+    clock.** It took 20 minutes once run. A claim cheap to test and
+    repeatedly deferred is a claim being protected; test it the pass
+    you notice it.
+
+36. **2026-08-26 — a guard asserted MORE than the hazard it defended,
+    and reddened at the promote gate on a busy box.**
+    `test_the_file_lock_excludes_nothing_between_bursts` (EXP-1372)
+    proves a second stream writer is NOT excluded between flushes. It
+    asserted the newcomer landed **all six** flushes with zero declines.
+    But the hazard is that the newcomer gets IN — one landed flush is
+    already a duplicated book in a table with no key. The extra clause
+    measured whether the newcomer's flush ever collided with the
+    incumbent's OPEN burst, which is scheduling luck: green 5/5 idle,
+    red at 3/6 and 5/6 with eight cores busy. It failed inside
+    `scripts/promote.sh`, minutes after passing standalone — i.e. at
+    the one moment the suite is a gate rather than a report.
+    **RULE: assert the hazard's threshold, not the comfortable margin
+    you happened to measure.** A guard that encodes the sample instead
+    of the claim is a flake with a good docstring, and it spends its
+    credibility exactly when the suite is load-bearing. Before pinning
+    an `==`, ask what value would falsify the CLAIM: here it is zero
+    landed flushes, so `>= 1` is the assertion. Cheap check: run the
+    new guard once under load.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
