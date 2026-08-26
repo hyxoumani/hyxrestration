@@ -26,3 +26,15 @@
   copies interleave duplicate rows into tables with no key and no dedupe
   (EXP-1372, measured). Never start a second copy by hand to "check"
   something — the archive is unrecoverable.
+- Never attach DuckDB with a bare `duckdb.connect` outside
+  `hyxlab/store.py`. Use `connect_retry`/`open_retry`/`Store`, or
+  `hyxlab.store.duck_connect` when the site hand-rolls a retry budget,
+  degrades on error, or owns the file. A bare attach inherits DuckDB's
+  DEFAULT spill directory, `<db>.tmp`, which is shared by every process
+  that opens the file and whose temp files carry no pid: two spilling
+  processes there SIGSEGV or read each other's blocks as their own data
+  (EXP-1373, measured — the same pair with separate directories is
+  clean, every time). Two readers of one archive are legitimate and take
+  no lock, so no lock covers this; the kernel gives each connection
+  `<db>.tmp/pid-<pid>` instead. Never pin `temp_directory` to a constant
+  path — that is the bug with a name on it.

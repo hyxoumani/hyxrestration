@@ -12,7 +12,10 @@ a written-down reason per site, not a ban.
 
 That is what this file is. A site is invisible to the guard if it goes
 through `connect_retry`/`open_retry`; otherwise it must appear below
-with a disposition. Two dispositions are acceptable:
+with a disposition. `hyxlab.store.duck_connect` — the raw attach every
+non-helper site now uses, so that its spill directory is process-private
+(EXP-1373) — counts as bare here ON PURPOSE: it fixes where a query
+spills and says nothing about who else holds the file. Two dispositions are acceptable:
 
   RETRY   — hand-rolled wait loop, because the site needs a budget or a
             diagnostic the helper does not offer.
@@ -128,6 +131,8 @@ def _attach_mode(node: ast.Call) -> str | None:
     if name == "connect":
         if not (isinstance(f, ast.Attribute) and getattr(f.value, "id", "") == "duckdb"):
             return None
+    elif name == "duck_connect":
+        pass  # the kernel's raw attach: private spill, but no retry/degrade
     elif name in ("Store", "StreamStore"):
         if len(node.args) > 1:
             return "ro" if _is_true(node.args[1]) else "rw"

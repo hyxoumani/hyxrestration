@@ -120,6 +120,12 @@ def _is_rw_open(call: ast.Call) -> bool:
     name = _called_name(call)
     ro = _kw(call, "read_only")
     literal_true = isinstance(ro, ast.Constant) and ro.value is True
+    if name == "duck_connect":
+        # The kernel's raw attach (EXP-1373). It defaults read_only=False
+        # exactly as `duckdb.connect` does, so it opens a writer under the
+        # same rule — routing spill privately changed where temp blocks
+        # go, not who is allowed to write the file.
+        return not literal_true
     if name == "connect":
         f = call.func
         if not (isinstance(f, ast.Attribute) and getattr(f.value, "id", "") == "duckdb"):

@@ -2,6 +2,7 @@
 ledger persistence — all against synthetic archives, no network."""
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import duckdb
@@ -92,7 +93,12 @@ def test_stream_reads_bound_duckdb_engine_below_cgroup_cap(tmp_path):
         read_only = conn.execute("SELECT current_setting('access_mode')").fetchone()[0]
     assert settings["memory_limit"] == "512.0 MiB"  # far below MemoryMax=1G
     assert settings["threads"] == "2"
-    assert settings["temp_directory"] == "data/duckspill-shadow"  # spill, don't die
+    # Spill, don't die — but into THIS process's own directory. The old
+    # constant `data/duckspill-shadow` was shared by every process that
+    # came through stream_conn, including by-hand `run_l2` runs against
+    # the live daemon's archive; two DuckDB processes spilling into one
+    # directory crash or misread each other's blocks (EXP-1373).
+    assert settings["temp_directory"] == f"{db}.tmp/pid-{os.getpid()}"
     assert read_only.lower() == "read_only"  # still connect_retry's read-only mode
 
 
