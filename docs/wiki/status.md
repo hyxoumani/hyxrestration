@@ -1,5 +1,82 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-26 08:30 UTC (RUNG-6 PASS — THE THREE LOCK
+ENUMERATIONS ALL STOP AT THE ARCHIVE, AND THE TWO SIM-SIDE DATABASES
+WERE "OWNED" BY A FILE LOCK THAT EXCLUDES NOBODY BETWEEN BURSTS.**
+Last pass named this exact rung ("each has a daemon that owns it by
+DuckDB file lock alone, which is a guard nobody wrote down and no test
+asserts"). It is done, and the enumeration found the guard did not
+exist at all.
+**(1) "THE DAEMON OWNS IT" WAS A CLAIM, AND IT WAS FALSE (EXP-1372).**
+`test_connect_discipline` records "the stream daemon owns
+hyxstream.duckdb" and "the daemon owns hyxshadow.duckdb". Both writers
+OPEN, write and CLOSE their file — `StreamStore.flush` every ~15 s,
+`ShadowLedger.persist` once per ~20 s poll — so DuckDB's exclusive file
+lock exists only for those milliseconds. **MEASURED 08-26: two
+StreamStore writers on one file completed 20 and 15 flushes with ZERO
+declines.** A second `streamd` is not refused; it INTERLEAVES.
+**WHY THAT IS WORSE THAN THE ARCHIVE CASE**: the archive anti-joins on
+natural keys, so a duplicate run costs rate budget. `book_events` and
+`stream_trades` have NO key, NO anti-join and no dedupe anywhere in the
+store — and a duplicated `delta` is not a wasted row, it is a book that
+replays wrong for every consumer downstream (shadow, divergence,
+run_l2), in data neither venue will serve again. systemd is not the
+guard for the fourth rung running: both are plain CLIs an operator or
+an agent can start by hand from either worktree.
+**(2) THE LOCK IS FILE-SCOPED, WHICH IS THE OPPOSITE OF LAST RUNG ON
+PURPOSE.** `hyxlab.lockid.acquire_owner_lock` -> `<db>.owner.lock`.
+Instance locks are JOB-scoped because two archive jobs share one archive
+and must not exclude each other; here the resource IS the file, so two
+writers of one database must exclude each other and a run pointed at a
+tmpdir or a copied ledger must not be blocked by the daemon
+(`test_two_databases_do_not_exclude_each_other`). Same witness: a
+refusal names pid, unit and acquire time. **VERIFIED LIVE**: with the
+lock held, streamd exits 75 before the database file is even created,
+shadow exits 75 before it trades, and the free path still runs (8 s
+smoke: 6,208 book_events, 369 trades).
+**(3) THE GUARD: `tests/test_owned_db_discipline.py`.** DERIVED half —
+a module writes an owned database when it opens a non-archive DuckDB
+read-write, by AST. BOTH ENDS are enumerated, because either alone
+leaves the question open: **streamd opens nothing itself, it constructs
+a StreamStore**, so a guard that only followed `duckdb.connect` would
+have declared the stream archive covered while its daemon took no lock.
+CLAIMED half — an OWNER's `main` must lock a PATH (never a bare job
+name) and leave 75, verified by RUNNING main rather than reading it, and
+streamd is held to locking the very expression it hands StreamStore.
+**The premise is a test, not a memory**: the two-writers-zero-declines
+measurement is reproduced by
+`test_the_file_lock_excludes_nothing_between_bursts`, so if DuckDB ever
+does exclude the newcomer, this enumeration reddens instead of outliving
+its reason. Mutation-verified five ways, each reddening a DIFFERENT
+test: dropping streamd's lock, dropping its exit code, locking the
+default path while opening `--db`, dropping shadow's lock, and adding an
+unenumerated owned-db writer.
+**NO PROMOTE, RE-MEASURED RATHER THAN REMEMBERED**: run
+`20260823T201714` is live at **2d12h09m (2026-08-23 20:17:29Z ->
+2026-08-26 08:26:51Z, 10,551 points)** and reaches 3 days at 2026-08-26
+20:17Z; this pass touched `hyxlab/` and `simulator/shadow.py`, so
+promoting now resets it. SIX passes of fixes are queued behind that
+clock — every one of them a manual CLI or timer job whose hazard needs a
+human racing it, which is why the wait remains the cheaper loss. Suite
+806 -> **820 green**.
+NEXT PASS: (1) **08-26 20:17Z the shadow run clears 3 days — then
+PROMOTE (six passes queued; note the promoted shadow/stream daemons will
+take `<db>.owner.lock` on restart) and re-run `by_day` as an
+OUT-OF-SAMPLE test of the one surviving diurnal claim (troughs 16-18Z,
+peaks 21-00Z).** Do not re-test the +72/-247/+150 cycle; it is dead.
+(2) `batch units` self-clears 08-28 or the budget is stale and must be
+re-measured, not re-excused. (3) `run_l2` still accumulates the full
+equity curve and CONSUMES it; bounding it is a behaviour change needing
+its own design. (4) The rung below this one: ownership is now enforced
+for the two sim-side DBs, but **nothing enumerates the SIDECARS** —
+`data/duckspill-shadow`, the streamstore spill JSONL and the `.holder`
+records are all written next to a database by whoever happens to be
+running, and a second process writing one is a hazard no lock covers.
+(5) The #32/#33/#34 lens sweeps remain the standing job.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-26 02:25 UTC (RUNG-5 PASS — THE WRITER-LOCK
 ENUMERATION SAYS WHO HOLDS THE LOCK WHILE WRITING; IT SAYS NOTHING ABOUT
 WHICH JOBS MUST NOT RUN TWICE, AND FOUR MULTI-HOUR WRITERS RAN WITH NO

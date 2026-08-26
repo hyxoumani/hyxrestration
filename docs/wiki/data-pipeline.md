@@ -40,6 +40,19 @@ the next snapshot re-seeds).
   2026-07-08 walking 4k+ markets). Sim-side readers must degrade
   gracefully and retry lazily (simui's `ensure_metadata` pattern),
   never block on it.
+- **The sim-side databases are owned by a LOCK, not by DuckDB**
+  (EXP-1372, 2026-08-26). `hyxstream.duckdb` and `hyxshadow.duckdb` are
+  each written by one daemon, and "the daemon owns it" was a claim with
+  nothing behind it: both writers open the file, write, and CLOSE it
+  (`StreamStore.flush` every ~15s, `ShadowLedger.persist` per ~20s poll),
+  so DuckDB's exclusive file lock exists only for those milliseconds.
+  **Measured: two StreamStore writers on one file, 20 and 15 flushes,
+  ZERO declines** — a second `streamd` is not refused, it INTERLEAVES,
+  and `book_events`/`stream_trades` have no key and no dedupe anywhere,
+  so a duplicated delta replays as a wrong book in data neither venue
+  will serve again. `streamd` and `shadow` now hold `<db>.owner.lock`
+  (file-scoped, `hyxlab.lockid`) for their whole life and exit 75 naming
+  the holder; enumerated in `tests/test_owned_db_discipline.py`.
 - **Collector cycle profile, measured (2026-08-05, 213 `timings=`
   cycles spanning 0–2 concurrent Kalshi-API writers)**: fetch is a
   ~29s pagination floor (median with NO other consumer; the watchlist's
