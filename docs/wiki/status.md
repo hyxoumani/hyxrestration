@@ -1,5 +1,77 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-26 02:25 UTC (RUNG-5 PASS — THE WRITER-LOCK
+ENUMERATION SAYS WHO HOLDS THE LOCK WHILE WRITING; IT SAYS NOTHING ABOUT
+WHICH JOBS MUST NOT RUN TWICE, AND FOUR MULTI-HOUR WRITERS RAN WITH NO
+SUCH GUARD AT ALL.**
+Last pass named this exact rung ("nothing enumerates which entrypoints
+must take a single-instance lock"). It is done, and as at every rung
+below it, writing the enumeration down WAS the sweep.
+**(1) ONE JOB IN FIVE GUARDED ITSELF (EXP-1371).** `collector.sweep`
+flocked `<db>.lock` before its multi-hour run and aborted EX_TEMPFAIL if
+another sweep held it. `poly_sweep` (~7h of paced HTTP over per-token
+watermarks), `trades_backfill` (15h06m on 2026-08-03), `backfill` (5
+series x 50 pages plus a candle call per settled market) and `reconcile`
+took NOTHING.
+**WHY IT LOOKED SAFE, AND WHY THAT IS THE HAZARD**: systemd will not
+start a second copy of an already-active `.service`, so the timers read
+as the guard — but every one of these is a CLI CLAUDE.md tells an
+operator to run BY HAND, and an ad-hoc run racing the timer's run is
+outside that guarantee entirely. Two copies re-walk the same watermarks,
+spend the venue rate budget twice for rows the anti-join then discards,
+and double writer-lock contention against the 5-min collector: the
+2026-08-02 starvation shape, arriving by a route the writer-lock
+enumeration cannot see.
+**(2) THE FIX IS JOB-SCOPED ON PURPOSE.** The guard moved to the kernel
+as `hyxlab.lockid.instance_lock_or_reason` -> `data/<job>.instance.lock`.
+Had a second job simply adopted sweep's archive-scoped `<db>.lock`, the
+04:15Z poly sweep would have excluded the 06:10Z incremental sweep EVERY
+DAY — a starvation bug wearing a safety fix's clothes, and it is pinned
+by `test_no_two_jobs_share_an_instance_lock`. The acquire records its
+holder through the EXISTING witness and `describe_holder` is now shared
+with the writer lock's waiter: `another sweep holds the lock; aborting`
+named no pid, no unit and no start time, which is the 08-03 blind spot
+in miniature. `reconcile` takes it late, just above the repair loop, so
+`--dry-run`/`--probe-horizon` stay lock-free.
+**VERIFIED LIVE, NOT ARGUED**: with the lock held, all four abort at
+exit 75 before a single request, each naming the holding pid, unit
+(`hyxlab-autoloop.service`) and acquire time.
+**(3) THE GUARD: `tests/test_instance_lock_discipline.py`.** The derived
+half is DERIVED — a module is a multi-burst archive job when a function
+that writes the archive is reachable from inside a loop, by AST fixpoint
+— so a new such job reddens on entry. The claimed half is CHECKED: SELF
+must take a lock with a LITERAL job name AND leave 75 when refused (**a
+job that logs the refusal and runs anyway is unguarded WITH a reassuring
+line in the journal**); POLLER must really have a `while True` cycle
+loop and `--once`; SHORT must import no fetching client, because "short"
+is the claim a multi-hour fetcher would most like to make. Mutation-
+verified three ways: dropping poly_sweep's lock, dropping its exit code,
+and pointing trades_backfill at the sweep's lock name each redden a
+DIFFERENT test.
+**NO PROMOTE, RE-MEASURED RATHER THAN REMEMBERED**: run
+`20260823T201714` is live at **2d06h05m (2026-08-23 20:17:29Z ->
+2026-08-26 02:22:45Z, 9,517 points)** and reaches 3 days at 2026-08-26
+20:17Z; this pass touched `hyxlab/`, which `needs_restart
+simulator.shadow` matches, so promoting now resets it. FIVE passes of
+collection-side fixes are queued behind that clock — all manual CLIs or
+timer jobs whose duplicate-run hazard needs a human racing them, which
+is why the wait remains the cheaper loss. Suite 790 -> **806 green**.
+NEXT PASS: (1) **08-26 20:17Z the shadow run clears 3 days — then
+PROMOTE (five passes queued) and re-run `by_day` as an OUT-OF-SAMPLE
+test of the one surviving diurnal claim (troughs 16-18Z, peaks 21-00Z).**
+Do not re-test the +72/-247/+150 cycle; it is dead. (2) `batch units`
+self-clears 08-28 or the budget is stale and must be re-measured, not
+re-excused. (3) `run_l2` still accumulates the full equity curve and
+CONSUMES it; bounding it is a behaviour change needing its own design.
+(4) The rung below this one: the three lock enumerations now cover the
+ARCHIVE, and nothing equivalent covers `data/hyxstream.duckdb` /
+`data/hyxshadow.duckdb` — each has a daemon that owns it by DuckDB file
+lock alone, which is a guard nobody wrote down and no test asserts.
+(5) The #32/#33/#34 lens sweeps remain the standing job.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-25 20:30 UTC (RUNG-4 PASS — THE ENUMERATION LAST PASS
 BUILT COVERS WHO ATTACHES THE ARCHIVE; IT SAYS NOTHING ABOUT WHO HOLDS
 THE WRITER LOCK, AND THAT GAP HID A WRITER THAT TOOK NO LOCK AT ALL.**
