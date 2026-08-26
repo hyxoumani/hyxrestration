@@ -1,5 +1,93 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-26 14:35 UTC (RUNG-7 PASS — THE SIDECAR THE LAST RUNG
+NAMED IS NOT THE ONE THAT MATTERED, BECAUSE THE BIGGEST FILE WRITTEN NEXT
+TO A DATABASE IS NOT WRITTEN BY US.**
+Last pass named this rung ("nothing enumerates the SIDECARS —
+`data/duckspill-shadow`, the streamstore spill JSONL and the `.holder`
+records"). Two of those three turned out to be already safe by
+construction, and the third was a symptom of something larger.
+**(1) DUCKDB'S DEFAULT SPILL DIRECTORY IS SHARED, AND SHARING IT IS NOT
+CONTENTION — IT IS CORRUPTION (EXP-1373).** With no `temp_directory`
+set, an on-disk database spills to `<db>.tmp`, one directory for every
+process that opens the file, holding temp files whose names carry NO PID
+(`duckdb_temp_storage_DEFAULT-0.tmp`). **MEASURED 08-26: two processes
+sorting past `memory_limit` into ONE directory failed in every trial —
+SIGSEGV with core, and `InvalidInputException: Invalid unicode (byte
+sequence mismatch) detected in segment statistics update`, which is one
+process reading the other's blocks AS ITS OWN DATA. The identical pair
+pointed at two directories succeeded, both, every time.**
+**WHY THIS BEATS THE ENUMERATED SIDECAR**: `<db>.spill.jsonl` is derived
+from its database path and written only by `StreamStore`, whose writer
+now holds the owner lock; `.holder` is written by whoever just won the
+lock it describes, serialised by that lock. Both were already answerable.
+`data/duckspill-shadow` was NOT — and the reason is worse than one bad
+constant: **every OTHER attach in the repo was bare, so it took the
+shared default instead.** Same hazard, reached by not choosing rather
+than by choosing.
+**(2) NO LOCK COVERED IT AND NONE COULD.** The owner lock is file-scoped
+on purpose so a side run against a copied database is not blocked, and a
+READER takes no owner lock at all. `simulator.run_l2` — a by-hand CLI —
+reads the stream archive through the very same `stream_conn` as the live
+shadow daemon, so an L2 replay during a shadow run pointed two spilling
+processes at one directory BY DESIGN. Two readers of one archive are
+legitimate and always will be; what must not be shared is their scratch.
+**THE FIX IS MECHANICAL, NOT A JUDGEMENT**: `hyxlab.scratch` hands each
+process `<db>.tmp/pid-<pid>`, applied at the kernel connect chokepoint
+for EVERY connection, because "this query is too small to spill" is a
+claim about a query plan and the plan is the thing that changes. The 14
+sites that cannot use the retry helpers (hand-rolled budget, degrade-on-
+error, file owner) go through `hyxlab.store.duck_connect`, the same
+attach with private spill. Reaping is by flock, never by a pid check: a
+reaper that WINS `<dir>.owner.lock` has PROVED the owner is gone.
+**VERIFIED LIVE**: two spilling readers of one 1.8 GB archive through
+`connect_retry` both completed, in `pid-3694794` and `pid-3694795`, and
+both directories were gone at exit.
+**(3) THE GUARD: `tests/test_sidecar_discipline.py`.** DERIVED half —
+nothing outside `hyxlab/store.py` calls `duckdb.connect`, and no module
+anywhere names a spill directory, by AST. **BOTH ARE NEEDED: a guard
+that only banned the constant would have passed a repo where every
+attach silently took the shared default.** Docstrings are excluded
+deliberately — prose that names the hazard is how the hazard stays
+understood. CLAIMED half, verified by RUNNING: two processes on ONE
+database report two directories, a clean exit leaves nothing behind, and
+the reaper spares a live owner while taking one that was SIGKILLed.
+**The premise is a test, not a memory**: the corruption measurement runs
+WITH ITS CONTROL, so a shared-pair failure on a sick machine proves
+nothing and a DuckDB that ever isolates temp files reddens this file
+instead of letting it outlive its reason. Mutation-verified five ways,
+each reddening a DIFFERENT test: repinning the constant, attaching
+duckdb directly, sharing one scratch directory, dropping the reaper's
+lock check, and making the setting a no-op.
+**NO PROMOTE, RE-MEASURED RATHER THAN REMEMBERED**: run
+`20260823T201714` is live at **2d18h11m (2026-08-23 20:17:29Z ->
+2026-08-26 14:29:14Z, 11,620 points)** and reaches 3 days at 2026-08-26
+20:17Z; this pass touched `hyxlab/` and `simulator/shadow.py`, so
+promoting now resets it. SEVEN passes of fixes are queued behind that
+clock. Note the two empty run_ids `20260826T082431` / `20260826T082452`
+in `shadow_runs` — last pass's live owner-lock check, no equity rows;
+they are artefacts of a verification, not runs. Suite 820 -> **833
+green**.
+NEXT PASS: (1) **08-26 20:17Z the shadow run clears 3 days — then
+PROMOTE (seven passes queued; the promoted daemons take
+`<db>.owner.lock` on restart and their spill moves to `<db>.tmp/pid-N`)
+and re-run `by_day` as an OUT-OF-SAMPLE test of the one surviving
+diurnal claim (troughs 16-18Z, peaks 21-00Z).** Do not re-test the
++72/-247/+150 cycle; it is dead. (2) `batch units` self-clears 08-28 or
+the budget is stale and must be re-measured, not re-excused. (3)
+`run_l2` still accumulates the full equity curve and CONSUMES it;
+bounding it is a behaviour change needing its own design. (4) The rung
+below this one: spill is now private per process, but **nothing bounds
+how much of it any one process may write** — `max_temp_directory_size`
+is unset everywhere, so DuckDB's default is 90% of the disk holding a
+13 GB archive and a 15 GB stream archive on the SAME volume the
+collector writes to. A runaway sort does not crash itself first; it
+fills the disk under the 5-min collector. (5) The #32/#33/#34 lens
+sweeps remain the standing job.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-26 08:30 UTC (RUNG-6 PASS — THE THREE LOCK
 ENUMERATIONS ALL STOP AT THE ARCHIVE, AND THE TWO SIM-SIDE DATABASES
 WERE "OWNED" BY A FILE LOCK THAT EXCLUDES NOBODY BETWEEN BURSTS.**
