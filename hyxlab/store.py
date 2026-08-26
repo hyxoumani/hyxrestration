@@ -18,6 +18,7 @@ from pathlib import Path
 import duckdb
 
 from hyxlab.models import EconVintage, Forecast, MarketInfo, NewsItem, Snapshot
+from hyxlab.scratch import duck_scratch_dir
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS markets (
@@ -190,6 +191,52 @@ def _naive_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None)
 
 
+def private_spill(conn, path: str | Path) -> None:
+    """Point `conn`'s spill at this process's own directory.
+
+    Every connection, not just the ones known to spill: DuckDB's default
+    `temp_directory` is `<db>.tmp`, shared by every process that opens
+    the file, and its temp files carry no pid. Two spilling processes
+    there crash or misread each other's blocks (measured — see
+    `hyxlab.scratch`). Applied at the connect chokepoint because "this
+    query is small" is a claim about a plan, and the plan is the thing
+    that changes.
+
+    Never fatal, and the catch is deliberately total: this is hardening
+    bolted onto every connect in the repo, so any way it can fail is a
+    way it can take the archive down for a spill that may never happen.
+    Same rule as `lockid.note_holder` — an instrument that can abort the
+    work it observes trades a small loss for a bigger one.
+    """
+    try:
+        d = duck_scratch_dir(path)
+        if d is not None:
+            conn.execute("SET temp_directory = ?", [d])
+    except Exception:  # noqa: BLE001 — see above
+        pass
+
+
+def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
+    """`duckdb.connect` plus private spill — the ONLY attach in the repo.
+
+    A bare `duckdb.connect` gets DuckDB's default `temp_directory`,
+    `<db>.tmp`, which is shared by every process that opens the file and
+    whose temp files carry no pid; two spilling processes there crash or
+    misread each other (EXP-1373, measured). The sites that cannot use
+    `connect_retry`/`open_retry` — they hand-roll a retry budget, degrade
+    on error, or own the file outright — still need that fix, and
+    "this query is too small to spill" is a claim about a query plan.
+
+    So the rule is mechanical instead: nothing outside this module calls
+    `duckdb.connect`, enforced by `tests/test_sidecar_discipline.py`.
+    Read-only discipline is unchanged and still enumerated by
+    `tests/test_connect_discipline.py`, which counts this as an attach.
+    """
+    conn = duckdb.connect(str(path), read_only=read_only, **kw)
+    private_spill(conn, path)
+    return conn
+
+
 def connect_retry(
     path: str | Path,
     *,
@@ -218,7 +265,9 @@ def connect_retry(
     wait = delay
     for attempt in range(retries):
         try:
-            return duckdb.connect(str(path), read_only=read_only)
+            conn = duckdb.connect(str(path), read_only=read_only)
+            private_spill(conn, path)
+            return conn
         except duckdb.Error:
             if attempt == retries - 1:
                 raise
@@ -262,6 +311,7 @@ class Store:
         if p.parent != Path(".") and not read_only:
             p.parent.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(str(p), read_only=read_only)
+        private_spill(self.conn, p)
         if not read_only:
             self.conn.execute(_SCHEMA)
             if fresh:
