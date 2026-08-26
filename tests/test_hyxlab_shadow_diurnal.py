@@ -276,3 +276,97 @@ def test_shape_agreement_survives_a_day_with_a_flat_hour_end_curve():
     flat_pairs = [p for p in run["shape_agreement"]["pairs"] if p["days"][1].endswith("03")]
     assert flat_pairs and all(p["rho"] is None for p in flat_pairs)
     assert run["shape_agreement"]["shape_verdict"].startswith("UNDERPOWERED")
+
+
+# ---------------------------------------------------------------------------
+# Bound 7: an hour-of-day mean averages whatever DAYS that hour had
+# ---------------------------------------------------------------------------
+
+# Every fixture below pads with a throwaway 00Z and a throwaway 04Z so
+# that bound 2's partial-hour trim lands on the padding and not on an
+# hour under test — otherwise the trim, not the fixture, decides the
+# day sets.
+PAD_LO, PAD_HI = 0, 4
+
+
+def _panel_ledger(spec, level):
+    """spec: {day_index: (hours_of_day, ...)}. level(day, hod) -> equity."""
+    eq = [("R", PAD_LO * 60, level(0, PAD_LO))]
+    for d in sorted(spec):
+        for hod in spec[d]:
+            for m in (0, 30, 59):
+                eq.append(("R", d * 1440 + hod * 60 + m, level(d, hod)))
+    last = max(spec)
+    eq.append(("R", last * 1440 + PAD_HI * 60, level(last, PAD_HI)))
+    return _ledger(sorted(eq, key=lambda r: r[1]))
+
+
+def test_a_step_between_hours_can_be_a_change_of_days_and_the_panel_says_so():
+    """LOAD-BEARING (falsified the 21-00Z peak, 2026-08-26).
+
+    Three days, equity FLAT within each day and sliding hard between
+    them: 0, -1000, -2000. 03Z is missing from the last day, so its
+    unbalanced mean averages the two better days and reads as a +500
+    recovery that no day ever traded. On the two days both hours share,
+    the step is zero — which is what the data says.
+    """
+    run = _run(
+        build_diurnal(
+            _panel_ledger(
+                {0: (1, 2, 3), 1: (1, 2, 3), 2: (1, 2)},
+                lambda d, hod: -1000.0 * d,
+            )
+        )
+    )
+
+    h2, h3 = _hod(run, 2), _hod(run, 3)
+    assert h2["n_days"] == 3 and h3["n_days"] == 2
+    assert h2["mean_equity_end"] == -1000.0
+    assert h3["mean_equity_end"] == -500.0  # the artefact, still published
+    # Same two days, no step at all: the +500 was entirely composition.
+    assert h2["mean_equity_end_balanced"] == h3["mean_equity_end_balanced"] == -500.0
+
+    panel = run["level_panel"]
+    assert panel["days"] == ["2026-08-01", "2026-08-02"]
+    assert h2["balanced"] is False and h3["balanced"] is True
+    assert 2 in panel["ragged_hours"] and 3 not in panel["ragged_hours"]
+    assert panel["level_verdict"].startswith("RAGGED")
+    assert "mean_end_bal" in panel["level_verdict"]
+
+
+def test_an_even_run_reads_balanced_and_the_two_level_columns_agree():
+    """The control. Without it, RAGGED could be what this report always
+    says, and the flag would carry no information."""
+    run = _run(
+        build_diurnal(
+            _panel_ledger(
+                {0: (1, 2, 3), 1: (1, 2, 3), 2: (1, 2, 3)},
+                lambda d, hod: -100.0 * d - hod,
+            )
+        )
+    )
+    panel = run["level_panel"]
+    assert panel["ragged_hours"] == []
+    assert panel["level_verdict"].startswith("BALANCED")
+    assert [p["hour_of_day"] for p in run["by_hour_of_day"]] == [1, 2, 3]
+    for p in run["by_hour_of_day"]:
+        assert p["balanced"] is True
+        assert p["mean_equity_end_balanced"] == p["mean_equity_end"]
+
+
+def test_the_panel_is_an_intersection_not_the_days_spanned():
+    """A day that contributes one corner of the clock does not join the
+    panel — three days are SPANNED and two are comparable. The hour that
+    day does cover is the ragged one, because it has a day the others
+    lack."""
+    run = _run(
+        build_diurnal(
+            _panel_ledger({0: (3,), 1: (1, 2, 3), 2: (1, 2, 3)}, lambda d, hod: -1.0 * hod)
+        )
+    )
+    assert run["n_days"] == 3
+    panel = run["level_panel"]
+    assert panel["days"] == ["2026-08-02", "2026-08-03"]
+    assert panel["ragged_hours"] == [3]
+    assert _hod(run, 3)["n_days"] == 3 and _hod(run, 3)["balanced"] is False
+    assert _hod(run, 1)["balanced"] is True

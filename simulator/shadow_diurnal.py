@@ -88,6 +88,21 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      clears `SHAPE_RHO` on at least `MIN_SHARED_HOURS` shared hours;
      with fewer than two pairs it reads UNDERPOWERED and no shape claim
      may be made from this report.
+  7. AN HOUR-OF-DAY MEAN IS A MEAN OVER WHATEVER DAYS THAT HOUR HAD,
+     AND RUNS DO NOT START OR END ON THE HOUR-OF-DAY BOUNDARY. A run
+     from 20Z Sunday to 19Z Wednesday gives 19Z three readings and 20Z
+     two, so the two cells average DIFFERENT DAYS. That would be a
+     rounding detail if equity level were stationary; it is not --
+     across run `20260823T201714` the daily level slid from -50 to
+     -1800, so dropping the worst day from one hour moves that hour's
+     mean by hundreds. MEASURED 2026-08-26: mean_end steps +433.6 from
+     19Z to 20Z, which reads as a nightly recovery; on the two days
+     BOTH hours share it is -14.6. The step was 97% composition.
+     `level_panel` therefore names the days common to every published
+     hour and `mean_equity_end_balanced` averages only those, so the
+     level column can be read DOWN. `mean_equity_end` is kept beside
+     it because it is the wider sample for reading any single hour --
+     it is comparisons ACROSS hours that it cannot support.
 """
 
 from __future__ import annotations
@@ -203,7 +218,7 @@ def _hours(conn: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
 
 
 def _profile(hours: list[dict]) -> dict:
-    """Hour-of-day means over whole hours only (bounds 2, 3, 4)."""
+    """Hour-of-day means over whole hours only (bounds 2, 3, 4, 7)."""
     buckets: dict[int, list[dict]] = defaultdict(list)
     for h in hours:
         if not h["partial"]:
@@ -213,14 +228,26 @@ def _profile(hours: list[dict]) -> dict:
         vals = [v for v in vals if v is not None]
         return sum(vals) / len(vals) if vals else None
 
+    # Bound 7: the days present in EVERY published hour. A run that ends
+    # at 19Z gives 20Z one fewer day than 19Z, and equity LEVEL trends
+    # across days by hundreds, so a mean over "whatever days this hour
+    # had" is not comparable to the hour beside it.
+    panel = sorted(set.intersection(*({r["day"] for r in rows} for rows in buckets.values())))
+
     table = []
     for hod in sorted(buckets):
         rows = buckets[hod]
         dense = [r for r in rows if r["pts"] >= MIN_PTS_PER_HOUR]
+        on_panel = [r for r in rows if r["day"] in panel]
         table.append(
             {
                 "hour_of_day": hod,
                 "n_days": len({r["day"] for r in rows}),
+                "days": sorted({r["day"] for r in rows}),
+                # Bound 7: same days in every row, so the COLUMN can be
+                # read down. Null only when the panel is empty.
+                "balanced": {r["day"] for r in rows} == set(panel),
+                "mean_equity_end_balanced": _r(_mean([r["equity_end"] for r in on_panel])),
                 "mean_equity_end": _r(_mean([r["equity_end"] for r in rows])),
                 "mean_equity_min": _r(_mean([r["equity_min"] for r in rows])),
                 # Bound 3: range/min_gap only over densely sampled hours.
@@ -233,7 +260,25 @@ def _profile(hours: list[dict]) -> dict:
                 "settlement_hours": sum(1 for r in rows if r["n_settlements"]),
             }
         )
-    return {"by_hour_of_day": table}
+    ragged = [p["hour_of_day"] for p in table if not p["balanced"]]
+    return {
+        "by_hour_of_day": table,
+        "level_panel": {
+            "days": panel,
+            "ragged_hours": ragged,
+            # The one sentence a reader of the level column needs.
+            "level_verdict": (
+                f"BALANCED (every hour averages the same {len(panel)} day(s))"
+                if not ragged
+                else (
+                    f"RAGGED ({len(ragged)} hour(s) average a different day set:"
+                    f" {', '.join(f'{h:02d}Z' for h in ragged)}) — read LEVEL off"
+                    f" mean_end_bal, which is the {len(panel)}-day panel, never off"
+                    " mean_end, where a step between hours can be a change of days"
+                )
+            ),
+        },
+    }
 
 
 def _spearman(xs: list[float], ys: list[float]) -> float | None:
@@ -440,11 +485,17 @@ def main(argv: list[str] | None = None) -> None:
             f" profile {v['profile_verdict']}, drag model"
             f" {'VALID' if v['drag_model_valid'] else 'INVALID'} ({', '.join(v['strategies'])})"
         )
-        print("| UTC | mean_end | mean_min | min_gap | range | reval | drag | fills | days |")
-        print("|---|---|---|---|---|---|---|---|---|")
+        print(f"[shadow_diurnal] level panel — {best['level_panel']['level_verdict']}")
+        print(
+            "| UTC | mean_end_bal | mean_end | mean_min | min_gap | range"
+            " | reval | drag | fills | days |"
+        )
+        print("|---|---|---|---|---|---|---|---|---|---|")
         for p in best["by_hour_of_day"]:
             print(
-                f"| {p['hour_of_day']:02d}Z | {p['mean_equity_end']} | {p['mean_equity_min']}"
+                f"| {p['hour_of_day']:02d}Z | {p['mean_equity_end_balanced']}"
+                f" | {p['mean_equity_end']}{'' if p['balanced'] else ' *'}"
+                f" | {p['mean_equity_min']}"
                 f" | {p['mean_min_gap']} | {p['mean_range']} | {p['mean_reval']}"
                 f" | {p['mean_drag']} | {p['mean_fills']} | {p['n_days']} |"
             )
@@ -453,7 +504,8 @@ def main(argv: list[str] | None = None) -> None:
             f"\n[shadow_diurnal] loudest hour {r['loudest_hour_of_day']:02d}Z"
             f" (mean range {r['loudest_mean_range']}) vs quietest"
             f" {r['quietest_hour_of_day']:02d}Z ({r['quietest_mean_range']}) —"
-            " read the LEVEL off mean_end, never off mean_min."
+            " read the LEVEL off mean_end_bal, never off mean_min and never"
+            " off a ragged mean_end."
         )
 
         # Bound 6: the same hour-ends UNAVERAGED, because the column
@@ -469,9 +521,7 @@ def main(argv: list[str] | None = None) -> None:
             if all(c is None for c in cells):
                 continue
             print(
-                f"| {hod:02d}Z | "
-                + " | ".join("—" if c is None else f"{c}" for c in cells)
-                + " |"
+                f"| {hod:02d}Z | " + " | ".join("—" if c is None else f"{c}" for c in cells) + " |"
             )
         for d in days:
             print(
