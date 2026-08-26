@@ -388,9 +388,19 @@ def test_the_file_lock_excludes_nothing_between_bursts(tmp_path):
         first.communicate(timeout=120)
     assert second.returncode == 0, second.stderr
     b_ok, b_declined = (int(x) for x in second.stdout.split())
-    assert b_ok == 6 and b_declined == 0, (
-        "a second stream daemon was refused by the file lock — if this is"
-        " now true the guard changed underneath this enumeration"
+    assert b_ok + b_declined == 6, f"probe lost cycles: {second.stdout!r}"
+    # ADMITTED >=1, NOT ==6 (2026-08-26). The hazard is that the newcomer
+    # gets IN, and one landed flush is a duplicated book. Demanding all six
+    # measured something else: whether B's flush ever collided with A's
+    # OPEN burst, which is a scheduling coincidence — reproduced red at
+    # 3/6 and 5/6 with the box under load, green every trial idle. A test
+    # that reddens on load reddens during a promote, which is when the
+    # suite is the gate. b_ok == 0 still means the lock excluded the second
+    # writer outright, and that is the finding that would retire the owner
+    # lock.
+    assert b_ok >= 1, (
+        "a second stream daemon was refused by the file lock on EVERY flush"
+        " — if this is now true the guard changed underneath this enumeration"
     )
     with duckdb.connect(str(db), read_only=True) as conn:
         rows = dict(
