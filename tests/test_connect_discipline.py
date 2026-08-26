@@ -95,6 +95,11 @@ ALLOWED: dict[str, tuple[str, str]] = {
 #: Both now route through the helpers (a burst, a flock), which makes
 #: them invisible to THIS guard by construction — see
 #: tests/test_writer_lock_discipline.py, which owns that half.
+#: EXP-1372: "owns" was a CLAIM here, not a guarantee — both daemons open
+#: their file in BURSTS, so DuckDB's file lock excluded no second copy
+#: between them (measured: two StreamStore writers, 35 flushes, zero
+#: declines). Each entrypoint now holds `<db>.owner.lock` for its whole
+#: life; tests/test_owned_db_discipline.py enumerates and enforces it.
 WRITE_ALLOWED: dict[str, str] = {
     "collector/streamd.py::main": "the stream daemon owns hyxstream.duckdb",
     "hyxlab/streamstore.py::StreamStore.__init__": "creates its own schema",

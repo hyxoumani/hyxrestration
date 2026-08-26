@@ -19,3 +19,10 @@
   or `read_only=True`). A default read-write connect takes the writer
   lock and made the shadow daemon crash mid-persist, ending a 1d20h
   run (mistakes #20).
+- A daemon that OWNS a DuckDB file (streamd -> hyxstream.duckdb, shadow
+  -> hyxshadow.duckdb) must take `hyxlab.lockid.db_owner_lock_or_reason`
+  and exit 75 when refused. DuckDB's own file lock is held only for the
+  duration of each write burst, so it excludes nothing between them: two
+  copies interleave duplicate rows into tables with no key and no dedupe
+  (EXP-1372, measured). Never start a second copy by hand to "check"
+  something — the archive is unrecoverable.
