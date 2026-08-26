@@ -32,6 +32,7 @@ from pathlib import Path
 
 import duckdb
 
+from hyxlab.lockid import db_owner_lock_or_reason
 from hyxlab.store import Store, connect_retry
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
@@ -419,6 +420,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+
+    # Own the ledger before trading into it. ShadowLedger opens the file
+    # per write (~one per poll) and closes it again, so DuckDB's file lock
+    # excludes a second runner only during those milliseconds: two shadow
+    # processes coexist, each anchoring its own run_id off the same stream
+    # head, doubling the read-attach rate on hyxstream.duckdb that the
+    # stream daemon has to flush around.
+    lock, why = db_owner_lock_or_reason(SHADOW_DB)
+    if lock is None:
+        print(f"[shadow] {why}; not starting", flush=True)
+        raise SystemExit(75)
 
     strategies = build_strategies(args.strategy.split(","))
     runner = ShadowRunner(strategies, latency=args.latency)

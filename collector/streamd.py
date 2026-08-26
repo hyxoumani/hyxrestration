@@ -41,6 +41,7 @@ from pathlib import Path
 import websockets
 
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
+from hyxlab.lockid import db_owner_lock_or_reason
 from hyxlab.streamstore import StreamStore
 
 FLUSH_SECS = 15.0
@@ -406,6 +407,18 @@ def main() -> None:
     ap.add_argument("--watchlist", default=None)
     ap.add_argument("--smoke", type=float, default=None, help="run N seconds, then exit")
     args = ap.parse_args()
+
+    # Own the stream archive before opening it. DuckDB's file lock is held
+    # only for the duration of each flush, so between flushes it excludes
+    # nothing: two daemons on one file interleave duplicate book_events and
+    # stream_trades into tables that have no key and never dedupe, and a
+    # duplicated DELTA corrupts every book replay downstream of it. The
+    # data is unrecoverable — neither venue serves historical books — so
+    # the second copy must never start.
+    lock, why = db_owner_lock_or_reason(args.db)
+    if lock is None:
+        print(f"[streamd] {why}; not starting", flush=True)
+        raise SystemExit(75)
 
     load_env()
     from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
