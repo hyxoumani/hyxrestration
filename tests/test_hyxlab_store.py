@@ -214,14 +214,19 @@ def test_open_retry_raises_after_exhaustion(tmp_path, monkeypatch):
 
 
 def test_sweep_lock_excludes_second_holder_and_releases(tmp_path):
-    from collector.sweep import acquire_sweep_lock
+    from hyxlab.lockid import acquire_instance_lock
 
-    path = str(tmp_path / "sweep.lock")
-    first = acquire_sweep_lock(path)
+    d = str(tmp_path)
+    first = acquire_instance_lock("sweep", d)
     assert first is not None
-    assert acquire_sweep_lock(path) is None  # held -> refused
+    assert acquire_instance_lock("sweep", d) is None  # held -> refused
+    # Job-scoped: a DIFFERENT job is not excluded. One shared file would
+    # make the ~7h poly sweep starve the 06:10 incremental sweep daily.
+    other = acquire_instance_lock("poly_sweep", d)
+    assert other is not None
+    other.close()
     first.close()  # release (also happens on process death)
-    third = acquire_sweep_lock(path)
+    third = acquire_instance_lock("sweep", d)
     assert third is not None
     third.close()
 

@@ -26,6 +26,13 @@ question it answers is "who holds it NOW", the file stays one line
 forever, and an append-only history here would be a second unbounded
 journal for a question nobody asks retrospectively.
 
+The same witness serves the other lock in this repo, the single-INSTANCE
+guard (`acquire_instance_lock`): "another sweep holds the lock; aborting"
+names nothing, and an operator who cannot see which pid, unit and start
+time is blocking them has the 08-03 problem in miniature. Instance locks
+are job-scoped ON PURPOSE — one shared file would make the ~7h poly sweep
+exclude the 06:10 incremental sweep every single day.
+
 `read_holder` reports `alive`, because a stale record from a crashed
 holder is the one way this instrument could lie. flock releases on
 process death but the sidecar does not, so liveness is re-derived from
@@ -34,14 +41,28 @@ process death but the sidecar does not, so liveness is re-derived from
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-__all__ = ["HOLDER_SUFFIX", "holder_path", "note_holder", "read_holder", "self_ident"]
+__all__ = [
+    "HOLDER_SUFFIX",
+    "INSTANCE_SUFFIX",
+    "acquire_instance_lock",
+    "describe_holder",
+    "instance_lock_or_reason",
+    "holder_path",
+    "instance_lock_path",
+    "note_holder",
+    "read_holder",
+    "self_ident",
+]
 
 HOLDER_SUFFIX = ".holder"
+INSTANCE_SUFFIX = ".instance.lock"
+DATA_DIR = "data"
 
 
 def holder_path(lock_file: str) -> str:
@@ -122,3 +143,71 @@ def read_holder(lock_file: str) -> dict | None:
         return None
     rec["alive"] = bool(rec.get("cmd")) and _read_proc(int(rec["pid"]), "cmdline") == rec["cmd"]
     return rec
+
+
+def instance_lock_path(job: str, data_dir: str = DATA_DIR) -> str:
+    """Lock file for the single-instance guard of `job`.
+
+    Job-scoped, not archive-scoped. The sweep's original lock was
+    `<db>.lock`, so any second job adopting that path would have made the
+    ~7h `poly_sweep` (04:15Z) exclude the incremental `sweep` (06:10Z)
+    every day — a starvation bug wearing a safety fix's clothes.
+    """
+    return str(Path(data_dir) / f"{job}{INSTANCE_SUFFIX}")
+
+
+def acquire_instance_lock(job: str, data_dir: str = DATA_DIR):
+    """Exclusive non-blocking flock for `job`; None if one already runs.
+
+    flock releases on process death — no stale-file failure mode (the old
+    touch()/exists() lock survived SIGKILL and blocked every later sweep
+    until removed by hand). The handle must outlive this call: closing it
+    releases the lock, so callers hold it for the run.
+
+    This lock blocks no collector. It is held for the whole multi-hour
+    run and guards a job against ITSELF — a second copy of a fetch-paced
+    worklist pass duplicates hours of HTTP, doubles writer-lock
+    contention and re-walks the same watermarks.
+    """
+    path = instance_lock_path(job, data_dir)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "a")  # noqa: SIM115 — handle must outlive this call
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    note_holder(path)
+    return f
+
+
+def describe_holder(lock_file: str) -> str:
+    """One line naming who holds `lock_file`, for an abort message.
+
+    Shared by the waiter that times out on the writer lock and the job
+    that finds its instance lock taken: both are asking the same question
+    ("who is blocking me"), and both used to answer it with prose that
+    named nobody.
+    """
+    rec = read_holder(lock_file)
+    if not rec:
+        return "holder unrecorded"
+    stale = "" if rec.get("alive") else " (DEAD/stale record)"
+    return f"{rec.get('unit') or 'no unit'} pid={rec['pid']} since {rec.get('at')}{stale}"
+
+
+def instance_lock_or_reason(job: str, data_dir: str = DATA_DIR) -> tuple[object | None, str]:
+    """`(lock, "")` when `job` is free, `(None, why)` when it is not.
+
+    The refusal path is the whole point of pairing these two calls: every
+    caller of this helper is a job that has just decided not to run, and
+    "another sweep holds the lock" told the operator nothing about which
+    one, since when, or whether the holder is even alive.
+    """
+    lock = acquire_instance_lock(job, data_dir)
+    if lock is not None:
+        return lock, ""
+    return None, (
+        f"another {job} holds the instance lock:"
+        f" {describe_holder(instance_lock_path(job, data_dir))}"
+    )

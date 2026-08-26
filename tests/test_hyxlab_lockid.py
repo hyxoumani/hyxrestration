@@ -153,12 +153,14 @@ def test_every_writer_names_itself_when_it_takes_the_lock(module):
     an outage nobody is watching.
 
     Scoped to acquires whose `open()` names LOCK_FILE/lock_file, because
-    `sweep.acquire_sweep_lock` flocks `data/hyxlab.duckdb.lock` — a
-    single-INSTANCE guard held for the sweep's whole multi-hour run. That
-    one is deliberately long-held and blocks no collector, so requiring a
-    holder record there would be noise. (Its long hold is also why
-    `fuser` on data/ shows a many-hour handle that is NOT the writer
-    lock — the exact confusion this experiment exists to end.)
+    the other lock in this repo is the single-INSTANCE guard
+    (`lockid.acquire_instance_lock`, `data/<job>.instance.lock`), which
+    is deliberately held for a job's whole multi-hour run and blocks no
+    collector. It records its holder too — but from inside the helper,
+    not at its call sites, so it is out of this test's scope.
+    (Its long hold is also why `fuser` on data/ shows a many-hour handle
+    that is NOT the writer lock — the exact confusion this experiment
+    exists to end.)
     """
     src = (REPO / module).read_text()
     lines = src.splitlines()
@@ -193,3 +195,46 @@ def test_every_writer_names_itself_when_it_takes_the_lock(module):
             f"12:47-13:07Z outage: 15 minutes of lost snapshots, four "
             f"candidate writers, and no way to tell which."
         )
+
+
+# ---------------------------------------------------------------------------
+# The single-INSTANCE guard (EXP-1371) — same witness, other lock
+# ---------------------------------------------------------------------------
+
+
+def test_instance_lock_is_job_scoped_not_archive_scoped(tmp_path):
+    """The sweep's original lock was `<db>.lock`. Had poly_sweep adopted
+    it, the 04:15Z ~7h sweep would have excluded the 06:10Z incremental
+    sweep every day — so the path is keyed by JOB and the two never
+    collide."""
+    a = lockid.instance_lock_path("sweep", str(tmp_path))
+    b = lockid.instance_lock_path("poly_sweep", str(tmp_path))
+    assert a != b
+    assert a.endswith("sweep.instance.lock")
+
+
+def test_a_refused_instance_lock_names_its_blocker(tmp_path):
+    """`another sweep holds the lock; aborting` named nobody: not the
+    pid, not the unit, not since when. A refusal an operator cannot act
+    on is the 08-03 blind spot in miniature."""
+    held, why = lockid.instance_lock_or_reason("sweep", str(tmp_path))
+    assert held is not None and why == ""
+
+    refused, why = lockid.instance_lock_or_reason("sweep", str(tmp_path))
+    assert refused is None
+    assert f"pid={os.getpid()}" in why
+    assert "since" in why and "sweep" in why
+    held.close()
+
+
+def test_describe_holder_says_so_when_the_record_is_missing(tmp_path):
+    """An unrecorded holder must read as unrecorded, never as an empty
+    accusation — naming an innocent is the failure mode this module was
+    written against."""
+    assert lockid.describe_holder(str(tmp_path / "nothing.lock")) == "holder unrecorded"
+
+
+def test_a_dead_holder_of_the_instance_lock_reads_as_stale(tmp_path):
+    lock = str(tmp_path / "sweep.instance.lock")
+    lockid.note_holder(lock, pid=999_999)  # no such process
+    assert "DEAD/stale record" in lockid.describe_holder(lock)
