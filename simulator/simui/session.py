@@ -29,7 +29,7 @@ from datetime import UTC, datetime, timedelta
 import duckdb
 
 from hyxlab.models import Cancel, MarketInfo, Order
-from hyxlab.store import Store
+from hyxlab.store import Store, duck_connect
 from hyxlab.streamstore import BookEvent, StreamTrade
 from simulator.bookreplay import BookReplayer, replay_snapshots
 from simulator.capabilities import LIVE_VENUE_CAPS
@@ -79,7 +79,7 @@ def _connect_ro(path: str, attempts: int = 8, wait: float = 0.75):
     last: duckdb.Error | None = None
     for _ in range(attempts):
         try:
-            return duckdb.connect(path, read_only=True)
+            return duck_connect(path, read_only=True)
         except duckdb.Error as e:  # pragma: no cover - timing dependent
             last = e
             time.sleep(wait)

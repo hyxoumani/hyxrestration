@@ -201,6 +201,8 @@ from pathlib import Path
 
 import duckdb
 
+from hyxlab.store import duck_connect
+
 HORIZONS = [("1h", 1), ("6h", 6), ("24h", 24), ("72h", 72), ("7d", 168)]
 Z95 = 1.959963985
 
@@ -914,7 +916,7 @@ def main() -> None:
     conn = None
     for attempt in range(15):
         try:
-            conn = duckdb.connect(args.db, read_only=True)
+            conn = duck_connect(args.db, read_only=True)
             break
         except duckdb.IOException:
             if attempt == 14:

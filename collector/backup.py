@@ -25,6 +25,8 @@ from pathlib import Path
 
 import duckdb
 
+from hyxlab.store import duck_connect
+
 DBS = ["data/hyxlab.duckdb", "data/hyxstream.duckdb", "data/hyxshadow.duckdb"]
 
 
@@ -35,7 +37,7 @@ def backup_one(src: str | Path, dest_dir: Path, retries: int = 30) -> Path | Non
     conn = None
     for attempt in range(retries):
         try:
-            conn = duckdb.connect(str(src), read_only=True)
+            conn = duck_connect(str(src), read_only=True)
             break
         except duckdb.Error:
             if attempt == retries - 1:

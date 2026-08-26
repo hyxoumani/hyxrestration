@@ -34,7 +34,7 @@ import requests
 
 from collector.venues import kalshi
 from hyxlab.lockid import instance_lock_or_reason, note_holder
-from hyxlab.store import Store, open_retry
+from hyxlab.store import Store, duck_connect, open_retry
 
 LOCK_FILE = "data/writer.lock"
 
@@ -532,7 +532,7 @@ def doctor(store: Store) -> None:
     if stream_db.exists():
         size_mb = stream_db.stat().st_size / 1e6
         try:
-            with duckdb.connect(str(stream_db), read_only=True) as sconn:
+            with duck_connect(str(stream_db), read_only=True) as sconn:
                 counts = {
                     t: sconn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
                     for t in ("book_events", "stream_trades", "stream_gaps")

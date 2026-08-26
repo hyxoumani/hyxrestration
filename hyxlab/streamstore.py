@@ -33,6 +33,8 @@ from pathlib import Path
 
 import duckdb
 
+from hyxlab.store import duck_connect
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS book_events (
     venue     VARCHAR NOT NULL,
@@ -167,7 +169,7 @@ class StreamStore:
         # drains, and the operator needs to see it after the fact.
         self.spill_corrupt = 0
         # Create schema up front so readers see the tables immediately.
-        with duckdb.connect(str(self.path)) as conn:
+        with duck_connect(str(self.path)) as conn:
             conn.execute(_SCHEMA)
 
     # -- buffering --------------------------------------------------------
@@ -230,7 +232,7 @@ class StreamStore:
         trades, self._trades = self._trades, []
         gaps, self._gaps = self._gaps, []
         try:
-            with duckdb.connect(str(self.path)) as conn:
+            with duck_connect(str(self.path)) as conn:
                 # Parse the sidecar only once the write lock is held: in
                 # a wedge it can hold hours of rows, and a flush that is
                 # about to fail on connect must not pay to load it.
@@ -398,7 +400,7 @@ class StreamStore:
         so the channel that died earlier keeps an uncovered tail without
         this (S-188 loss class 3). Returns naive UTC (as stored)."""
         table = "stream_trades" if channel == "trades" else "book_events"
-        with duckdb.connect(str(self.path)) as conn:
+        with duck_connect(str(self.path)) as conn:
             return conn.execute(
                 f"SELECT max(recv_ts) FROM {table} WHERE venue = ?", [venue]
             ).fetchone()[0]
@@ -408,7 +410,7 @@ class StreamStore:
         event and this start is unknown coverage. No-op on an empty DB
         (nothing was being covered yet)."""
         now = now or datetime.now(UTC)
-        with duckdb.connect(str(self.path)) as conn:
+        with duck_connect(str(self.path)) as conn:
             last = conn.execute(
                 "SELECT max(ts) FROM (SELECT max(recv_ts) AS ts FROM book_events"
                 " UNION ALL SELECT max(recv_ts) FROM stream_trades)"
@@ -418,7 +420,7 @@ class StreamStore:
         self.append_gap("*", "*", last, now, "daemon_start")
 
     def counts(self) -> dict[str, int]:
-        with duckdb.connect(str(self.path), read_only=True) as conn:
+        with duck_connect(str(self.path), read_only=True) as conn:
             return {
                 t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
                 for t in ("book_events", "stream_trades", "stream_gaps")

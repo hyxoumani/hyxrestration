@@ -33,7 +33,7 @@ from pathlib import Path
 import duckdb
 
 from hyxlab.lockid import db_owner_lock_or_reason
-from hyxlab.store import Store, connect_retry
+from hyxlab.store import Store, connect_retry, duck_connect
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
 from simulator.registry import build as build_strategies
@@ -48,7 +48,13 @@ SHADOW_DB = "data/hyxshadow.duckdb"
 # Bound the engine well under the cap and let it spill to disk instead.
 DUCK_MEM = "512MiB"
 DUCK_THREADS = 2
-DUCK_TMP = "data/duckspill-shadow"
+# Spill LOCATION is not set here. It was one constant directory shared by
+# every process that came through `stream_conn` — including
+# `simulator.run_l2`, a by-hand CLI reading the same archive while this
+# daemon is live. Two DuckDB processes spilling into one directory crash
+# or misread each other's blocks (measured 2026-08-26, EXP-1373).
+# `hyxlab.store` now gives every connection a process-private directory,
+# so the override that made them share is gone rather than repointed.
 # Rows pulled per fetchmany() when seeding books from the archive. Bounds
 # the Python-side result list, which DUCK_MEM does not (see _read_new).
 SEED_BATCH = 10_000
@@ -78,7 +84,6 @@ def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
     conn = connect_retry(path)
     conn.execute(f"SET memory_limit = '{DUCK_MEM}'")
     conn.execute(f"SET threads = {DUCK_THREADS}")
-    conn.execute(f"SET temp_directory = '{DUCK_TMP}'")
     return conn
 
 
@@ -129,13 +134,13 @@ class ShadowLedger:
     def __init__(self, path: str | Path = SHADOW_DB) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with duckdb.connect(str(self.path)) as conn:
+        with duck_connect(str(self.path)) as conn:
             conn.execute(_SCHEMA)
             # pre-anchor DBs: add the column in place
             conn.execute("ALTER TABLE shadow_runs ADD COLUMN IF NOT EXISTS anchor TIMESTAMP")
 
     def start_run(self, run_id: str, latency: float, strategies: list[str]) -> None:
-        with duckdb.connect(str(self.path)) as conn:
+        with duck_connect(str(self.path)) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO shadow_runs VALUES (?,?,?,?,NULL)",
                 [run_id, datetime.now(UTC).replace(tzinfo=None), latency, ",".join(strategies)],
@@ -144,7 +149,7 @@ class ShadowLedger:
     def set_anchor(self, run_id: str, anchor: datetime) -> None:
         """Record where trading actually starts (cursor at first poll) —
         the divergence replay needs it to reproduce the exact window."""
-        with duckdb.connect(str(self.path)) as conn:
+        with duck_connect(str(self.path)) as conn:
             conn.execute("UPDATE shadow_runs SET anchor=? WHERE run_id=?", [_naive(anchor), run_id])
 
     def persist(
@@ -156,7 +161,7 @@ class ShadowLedger:
     ) -> None:
         if not fills and equity is None and not settlements:
             return
-        with duckdb.connect(str(self.path)) as conn:
+        with duck_connect(str(self.path)) as conn:
             if fills:
                 conn.executemany(
                     "INSERT INTO shadow_fills VALUES (?,?,?,?,?,?,?,?,?,?)",
