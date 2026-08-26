@@ -50,11 +50,15 @@ from pathlib import Path
 __all__ = [
     "HOLDER_SUFFIX",
     "INSTANCE_SUFFIX",
+    "OWNER_SUFFIX",
     "acquire_instance_lock",
+    "acquire_owner_lock",
+    "db_owner_lock_or_reason",
     "describe_holder",
     "instance_lock_or_reason",
     "holder_path",
     "instance_lock_path",
+    "owner_lock_path",
     "note_holder",
     "read_holder",
     "self_ident",
@@ -62,6 +66,7 @@ __all__ = [
 
 HOLDER_SUFFIX = ".holder"
 INSTANCE_SUFFIX = ".instance.lock"
+OWNER_SUFFIX = ".owner.lock"
 DATA_DIR = "data"
 
 
@@ -169,7 +174,14 @@ def acquire_instance_lock(job: str, data_dir: str = DATA_DIR):
     worklist pass duplicates hours of HTTP, doubles writer-lock
     contention and re-walks the same watermarks.
     """
-    path = instance_lock_path(job, data_dir)
+    return _flock_or_none(instance_lock_path(job, data_dir))
+
+
+def _flock_or_none(path: str):
+    """Win `path`'s exclusive flock and record the holder, or return None.
+
+    The handle must outlive this call: closing it releases the lock.
+    """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     f = open(path, "a")  # noqa: SIM115 — handle must outlive this call
     try:
@@ -179,6 +191,34 @@ def acquire_instance_lock(job: str, data_dir: str = DATA_DIR):
         return None
     note_holder(path)
     return f
+
+
+def owner_lock_path(db_path: str) -> str:
+    """Ownership lock for the database at `db_path` (`<db>.owner.lock`).
+
+    Named after the FILE, not after a job. The instance lock is job-scoped
+    because two archive jobs share one archive and must not exclude each
+    other; here the resource IS the file, so two writers of the same file
+    must exclude each other and two runs pointing at different files
+    (a test tmpdir, a side experiment) must not.
+    """
+    return str(db_path) + OWNER_SUFFIX
+
+
+def acquire_owner_lock(db_path: str):
+    """Exclusive non-blocking flock on `<db_path>.owner.lock`; None if held.
+
+    For a database owned by a single long-lived writer that opens it in
+    BURSTS — `collector.streamd` (flush every ~15 s) and the shadow
+    ledger (a write per ~20 s poll). DuckDB's file lock is held only for
+    the duration of each burst, so it excludes nothing between them:
+    measured 2026-08-26, two StreamStore writers on one file completed 20
+    and 15 flushes with ZERO declines, interleaving duplicate rows into an
+    append-only archive that never dedupes. This lock is held for the
+    whole process lifetime, which is the guard the file lock only looked
+    like.
+    """
+    return _flock_or_none(owner_lock_path(db_path))
 
 
 def describe_holder(lock_file: str) -> str:
@@ -210,4 +250,20 @@ def instance_lock_or_reason(job: str, data_dir: str = DATA_DIR) -> tuple[object 
     return None, (
         f"another {job} holds the instance lock:"
         f" {describe_holder(instance_lock_path(job, data_dir))}"
+    )
+
+
+def db_owner_lock_or_reason(db_path: str) -> tuple[object | None, str]:
+    """`(lock, "")` when nothing owns `db_path`, `(None, why)` when it is.
+
+    Paired like `instance_lock_or_reason`, for the same reason: the caller
+    is a daemon that has just decided not to run, and an operator who
+    started it by hand needs to know which pid, which unit and since when
+    — not that "it is already running".
+    """
+    lock = acquire_owner_lock(db_path)
+    if lock is not None:
+        return lock, ""
+    return None, (
+        f"another writer owns {db_path}: {describe_holder(owner_lock_path(db_path))}"
     )
