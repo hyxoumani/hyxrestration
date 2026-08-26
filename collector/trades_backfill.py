@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import sys
 import time
 from pathlib import Path
 
 import requests
 
 from collector.venues import kalshi
-from hyxlab.lockid import note_holder
+from hyxlab.lockid import instance_lock_or_reason, note_holder
 from hyxlab.store import open_retry
 
 FLUSH_MARKETS = 50
@@ -94,6 +95,13 @@ def main() -> None:
     args = ap.parse_args()
 
     Path(LOCK_FILE).parent.mkdir(exist_ok=True)
+    # Single-INSTANCE guard: the worklist is unbounded (the 08-03 crypto
+    # pass ran 15h06m), resumable per market, and paced at --rps. Two
+    # copies fetch the same oldest-first tapes twice at twice the rate.
+    lock, why = instance_lock_or_reason("trades_backfill")
+    if lock is None:
+        print(f"[tradepass] {why}; aborting", flush=True)
+        sys.exit(75)  # EX_TEMPFAIL — the next timer firing resumes
     # Brief write-open under flock so the new trades tables exist before
     # the read-only pending query (read-only connects skip schema DDL).
     with open(LOCK_FILE, "a") as lock:
@@ -165,6 +173,7 @@ def main() -> None:
     if batch:
         _flush(args.db, batch)
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
+    lock.close()  # a crash releases it too: flock dies with the process
     print(f"[tradepass] done: {totals}", flush=True)
 
 

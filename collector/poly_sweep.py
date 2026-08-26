@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,7 +31,7 @@ from pathlib import Path
 import requests
 
 from collector.venues import polymarket as poly
-from hyxlab.lockid import note_holder
+from hyxlab.lockid import instance_lock_or_reason, note_holder
 from hyxlab.store import open_retry
 
 FLUSH_MARKETS = 25
@@ -157,7 +158,17 @@ def main() -> None:
     ap.add_argument("--closed-days", type=int, default=7, help="recently-closed lookback")
     args = ap.parse_args()
     Path(LOCK_FILE).parent.mkdir(exist_ok=True)
-    totals = sweep(args.db, args.min_volume, args.limit, args.closed_days)
+    # ~7h of paced HTTP against per-token watermarks: a second instance
+    # re-walks the same worklist, doubles writer-lock contention against
+    # the 5-min collector, and spends the venue rate budget twice.
+    lock, why = instance_lock_or_reason("poly_sweep")
+    if lock is None:
+        print(f"[poly] {why}; aborting", flush=True)
+        sys.exit(75)  # EX_TEMPFAIL — the next timer firing resumes
+    try:
+        totals = sweep(args.db, args.min_volume, args.limit, args.closed_days)
+    finally:
+        lock.close()
     print(f"[poly] done: {json.dumps(totals)}", flush=True)
 
 

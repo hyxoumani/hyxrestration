@@ -127,6 +127,7 @@ from collector.sweep import (
     writer_burst,
 )
 from collector.venues import kalshi
+from hyxlab.lockid import instance_lock_or_reason
 from hyxlab.store import connect_retry
 
 __all__ = [
@@ -824,11 +825,23 @@ def main(argv: list[str] | None = None) -> int:
         print("  DRY RUN — no requests made, nothing written.")
         return 2 if census["missing_total"] else 0
 
-    summary = reconcile(
-        order, db=args.db, metadata_only=args.metadata_only,
-        max_markets=args.max_markets, max_requests=args.max_requests,
-        max_minutes=args.max_minutes, ledger_state=args.ledger_state, now=now,
-    )
+    # Single-INSTANCE guard, taken here rather than at startup: the
+    # census above is a read, and --dry-run/--probe-horizon never reach
+    # this line. Below it a second copy would re-repair the same work
+    # order — the same markets, the same requests, against a ledger
+    # neither copy can see the other advancing.
+    lock, why = instance_lock_or_reason("reconcile")
+    if lock is None:
+        print(f"[reconcile] {why}; aborting")
+        return 75  # EX_TEMPFAIL
+    try:
+        summary = reconcile(
+            order, db=args.db, metadata_only=args.metadata_only,
+            max_markets=args.max_markets, max_requests=args.max_requests,
+            max_minutes=args.max_minutes, ledger_state=args.ledger_state, now=now,
+        )
+    finally:
+        lock.close()
     summary["census"] = census
     summary["deferred_by_series_cap"] = len(deferred)
     summary["dropped_by_max_markets"] = dropped

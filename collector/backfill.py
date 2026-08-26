@@ -23,6 +23,7 @@ outside the lock and rows are flushed in bounded bursts.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from datetime import UTC, date, datetime, timedelta
 
@@ -30,6 +31,7 @@ import requests
 
 from collector.sweep import FLUSH_ROWS, writer_burst
 from collector.venues import iem, kalshi
+from hyxlab.lockid import instance_lock_or_reason
 from hyxlab.store import open_retry
 
 WEATHER_SERIES = ["KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHAUS", "KXHIGHDEN"]
@@ -146,16 +148,27 @@ def main() -> None:
     ap.add_argument("--skip-iem", action="store_true")
     args = ap.parse_args()
 
+    # Single-INSTANCE guard: a --days 365 pass is 5 series x up to 50
+    # pages plus a candle call per settled market at 0.35 s apart, hours
+    # long. Two copies interleave identical fetches and identical
+    # anti-join inserts — twice the rate budget for the same rows.
+    lock, why = instance_lock_or_reason("backfill")
+    if lock is None:
+        print(f"[backfill] {why}; aborting")
+        sys.exit(75)  # EX_TEMPFAIL
     sess = requests.Session()
     end = datetime.now(UTC).date()
     start = end - timedelta(days=args.days)
-    if not args.skip_iem:
-        n_obs, n_fc = backfill_iem(args.db, args.stations, start, end, sess)
-        print(f"[backfill] IEM done: {n_obs} observations, {n_fc} forecasts")
-    if not args.skip_kalshi:
-        for series in args.series:
-            n_m, n_c = backfill_kalshi_series(args.db, series, args.days, sess)
-            print(f"[backfill] {series} done: {n_m} settled markets, {n_c} candles")
+    try:
+        if not args.skip_iem:
+            n_obs, n_fc = backfill_iem(args.db, args.stations, start, end, sess)
+            print(f"[backfill] IEM done: {n_obs} observations, {n_fc} forecasts")
+        if not args.skip_kalshi:
+            for series in args.series:
+                n_m, n_c = backfill_kalshi_series(args.db, series, args.days, sess)
+                print(f"[backfill] {series} done: {n_m} settled markets, {n_c} candles")
+    finally:
+        lock.close()
     # The closing summary is a READ; it must not re-take the writer lock.
     store = open_retry(args.db, read_only=True)
     try:

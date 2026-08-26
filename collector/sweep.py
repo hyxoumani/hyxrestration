@@ -33,7 +33,7 @@ import duckdb
 import requests
 
 from collector.venues import kalshi
-from hyxlab.lockid import note_holder
+from hyxlab.lockid import instance_lock_or_reason, note_holder
 from hyxlab.store import Store, open_retry
 
 LOCK_FILE = "data/writer.lock"
@@ -555,20 +555,6 @@ def doctor(store: Store) -> None:
         print(f"  {cat or '?'}: {n}")
 
 
-def acquire_sweep_lock(path: str) -> object | None:
-    """Exclusive non-blocking flock; None if another sweep holds it.
-    flock releases on process death — no stale-file failure mode (the
-    old touch()/exists() lock survived SIGKILL and blocked every later
-    sweep until removed by hand)."""
-    f = open(path, "a")  # noqa: SIM115 — handle must outlive this call
-    try:
-        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        f.close()
-        return None
-    return f
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab exchange-wide archival sweep")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
@@ -624,9 +610,13 @@ def main() -> None:
 
     # The sweep itself never holds a connection between bursts, so there
     # is nothing to open here — `writer_burst` opens and closes per write.
-    lock = acquire_sweep_lock(args.db + ".lock")
+    # Single-INSTANCE guard (`hyxlab.lockid`), job-scoped and NOT the
+    # writer lock: it is held for the whole multi-hour run and blocks no
+    # collector. Was `<db>.lock`, which only stayed correct while the
+    # sweep was the one job that took it.
+    lock, why = instance_lock_or_reason("sweep")
     if lock is None:
-        print("[sweep] another sweep holds the lock; aborting")
+        print(f"[sweep] {why}; aborting")
         sys.exit(75)
     try:
         totals = run_sweep(
