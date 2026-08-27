@@ -102,6 +102,37 @@ def test_stream_reads_bound_duckdb_engine_below_cgroup_cap(tmp_path):
     assert read_only.lower() == "read_only"  # still connect_retry's read-only mode
 
 
+def test_stream_reads_bound_spill_by_the_limit_they_actually_run_at(tmp_path):
+    """`connect_retry` derives `max_temp_directory_size` from
+    `current_setting('memory_limit')` at the chokepoint — one statement
+    before `stream_conn` lowers that limit to DUCK_MEM. So the cap this
+    connection would carry is a multiple of a limit it no longer has:
+    measured 2026-08-27 outside a cgroup, 344.1 GiB (the free-disk term,
+    from the host-RAM default) against the 4.0 GiB DUCK_MEM earns. Shadow
+    is the one site that moves the limit after passing the chokepoint, so
+    it re-derives.
+
+    The bound is `SPILL_MULTIPLE x DUCK_MEM` unless free disk binds first
+    — on a small volume the disk term is legitimately tighter, so assert
+    `<=`, and assert it is BELOW the free-disk-only cap so a green cannot
+    come from a connection that never re-derived at all."""
+    from hyxlab.spillcap import SPILL_MULTIPLE, parse_size
+    from simulator.shadow import DUCK_MEM, stream_conn
+
+    db = tmp_path / "stream.duckdb"
+    StreamStore(db)
+    with stream_conn(str(db)) as conn:
+        cap = parse_size(conn.execute("SELECT current_setting('max_temp_directory_size')").fetchone()[0])
+        default_limit = duckdb.connect(":memory:").execute(
+            "SELECT current_setting('memory_limit')"
+        ).fetchone()[0]
+    assert cap is not None
+    assert cap <= SPILL_MULTIPLE * parse_size(DUCK_MEM)
+    # Non-vacuous: the pre-fix cap was a multiple of the DEFAULT limit
+    # (or the disk share), both strictly larger than what DUCK_MEM earns.
+    assert cap < SPILL_MULTIPLE * parse_size(default_limit)
+
+
 def test_shadow_tails_only_the_future_and_persists_fills(tmp_path):
     stream_db = tmp_path / "stream.duckdb"
     archive_db = tmp_path / "archive.duckdb"
@@ -424,7 +455,9 @@ class _SqlLog:
         return self._inner.__exit__(*exc)
 
 
-def _seed_runner(tmp_path, n_events, monkeypatch=None, gap_after=None, sql_log=None):
+def _seed_runner(
+    tmp_path, n_events, monkeypatch=None, gap_after=None, sql_log=None, spacing=None, wrap=None
+):
     from hyxlab.store import Store
 
     stream_db = tmp_path / "stream.duckdb"
@@ -437,6 +470,7 @@ def _seed_runner(tmp_path, n_events, monkeypatch=None, gap_after=None, sql_log=N
     # make every row but the last irrelevant, so a batch that silently
     # dropped rows would seed an identical book and the boundary control
     # below would be vacuous.
+    step = spacing or timedelta(seconds=1)
     for i in range(n_events):  # all pre-anchor history -> all seeded
         sstore.append_events(
             _snapshot_frame(
@@ -444,20 +478,22 @@ def _seed_runner(tmp_path, n_events, monkeypatch=None, gap_after=None, sql_log=N
                 i + 1,
                 40 + (i % 5),
                 59 - (i % 5),
-                T0 + timedelta(seconds=i),
+                T0 + i * step,
             )
         )
     if gap_after is not None:
         # A book gap `gap_after` events in: the seed floor is the gap's end,
         # so only the events at or after it are replayed.
-        end = T0 + timedelta(seconds=gap_after)
-        sstore.append_gap("kalshi", "books", end - timedelta(seconds=1), end, "reconnect")
+        end = T0 + gap_after * step
+        sstore.append_gap("kalshi", "books", end - step, end, "reconnect")
     sstore.flush()
     if monkeypatch is not None:
         import simulator.shadow as shadow_mod
 
         real = shadow_mod.stream_conn
-        if sql_log is not None:
+        if wrap is not None:
+            monkeypatch.setattr(shadow_mod, "stream_conn", lambda p: wrap(real(p)))
+        elif sql_log is not None:
             monkeypatch.setattr(
                 shadow_mod, "stream_conn", lambda p: sql_log.append(_SqlLog(real(p))) or sql_log[-1]
             )
@@ -487,14 +523,14 @@ def test_seed_does_not_materialize_the_whole_result_set(tmp_path, monkeypatch):
 
 def test_seed_is_identical_across_batch_boundaries(tmp_path, monkeypatch):
     """Discrimination control: streaming must not drop or duplicate rows
-    at a fetchmany() boundary. A batch size that does not divide the row
+    at a fetchmany() boundary. A chunk size that does not divide the row
     count must seed the same book as one that swallows it whole."""
-    import simulator.shadow as shadow_mod
+    import simulator.bookreplay as br
 
-    monkeypatch.setattr(shadow_mod, "SEED_BATCH", 10_000)
+    monkeypatch.setattr(br, "EVENT_CHUNK", 10_000)
     whole = _seed_runner(tmp_path / "a", 12)
     whole.poll_once()
-    monkeypatch.setattr(shadow_mod, "SEED_BATCH", 5)  # 12 rows -> 5 + 5 + 2
+    monkeypatch.setattr(br, "EVENT_CHUNK", 5)  # 24 rows -> 5 + 5 + 5 + 5 + 4
     split = _seed_runner(tmp_path / "b", 12)
     split.poll_once()
     assert {m: split.replayer.depth(m) for m in SEED_MARKETS} == {
@@ -511,6 +547,8 @@ def test_seed_floor_is_a_plain_range_predicate(tmp_path, monkeypatch):
     an identical 9,387-row result: 685MB / 0.8s with the coalesce against
     157MB / 0.16s with a plain `>=` — a constant cost, invariant to the
     window, and the boot peak that left ~9% headroom under the 1G cap.
+    `stream_events` keeps the plain range; `lo_inclusive` is a shifted
+    BOUND, never a predicate that reads the column.
 
     Asserts the mechanism (the memory effect needs 170M rows) and the
     semantics: with a book gap 9 events in, only the events at or after it
@@ -520,24 +558,165 @@ def test_seed_floor_is_a_plain_range_predicate(tmp_path, monkeypatch):
     runner = _seed_runner(tmp_path, 12, monkeypatch=monkeypatch, gap_after=9, sql_log=log)
     assert runner.poll_once() == 0
     seed_sql = [s for s in log[0].sql if "book_events" in s and "ORDER BY" in s]
-    assert seed_sql and "recv_ts >= ?" in seed_sql[0]
+    assert seed_sql and "recv_ts > ?" in seed_sql[0]
     assert "coalesce" not in seed_sql[0].lower()
     assert runner.replayer.depth("M1") is None  # pre-floor history NOT replayed
     assert all(runner.replayer.depth(m) is not None for m in ("M2", "M3", "M4"))
 
 
+def test_seed_floor_includes_the_row_at_the_gap_end(tmp_path, monkeypatch):
+    """Load-bearing, and the reason `lo_inclusive` exists: `streamd`
+    stamps a seq_reset gap's `ended_at` with the recv_ts of the FIRST
+    post-reset frame, and on the books channel that frame is the
+    reconnect's full orderbook image. `stream_events` is half-open
+    `(lo, hi]`, so seeding from a raw floor would drop every row of that
+    image — they share one recv_ts — and leave the book unseeded until
+    the NEXT connect, hours away on Kalshi.
+
+    M2's history is at T0+1s, +5s and +9s; the gap ends at exactly +9s.
+    An exclusive floor leaves M2 unseeded, which is what this reddens on
+    — while M1 (all history pre-floor) stays unseeded either way, so a
+    green cannot come from a seed that simply ignored the floor."""
+    runner = _seed_runner(tmp_path, 12, monkeypatch=monkeypatch, gap_after=9)
+    assert runner.poll_once() == 0
+    assert runner.replayer.depth("M2") is not None  # the row AT the floor seeded it
+    assert runner.replayer.depth("M1") is None  # control: the floor still bounds
+
+
 def test_seed_with_no_gap_row_reads_the_whole_archive(tmp_path, monkeypatch):
     """Discrimination control: with no book gap the floor is NULL and the
-    seed must read EVERYTHING — `recv_ts` is NOT NULL, so dropping the
-    predicate is exactly equivalent to the coalesce it replaces. Binding a
-    NULL floor into a plain `recv_ts >= ?` instead returns zero rows and
-    leaves every book unseeded, which is what this test reddens on."""
+    seed must read EVERYTHING. `datetime.min` is the sentinel that says
+    so; binding a NULL floor into the range predicate instead returns
+    zero rows and leaves every book unseeded, which is what this test
+    reddens on. (`lo_inclusive` must also leave the sentinel alone —
+    `datetime.min` has no predecessor and stepping it back raises.)"""
     log: list = []
     runner = _seed_runner(tmp_path, 12, monkeypatch=monkeypatch, gap_after=None, sql_log=log)
     assert runner.poll_once() == 0
     seed_sql = [s for s in log[0].sql if "book_events" in s and "ORDER BY" in s]
-    assert seed_sql and "recv_ts" not in seed_sql[0].split("WHERE", 1)[1].split("ORDER BY")[0]
+    assert seed_sql and "coalesce" not in seed_sql[0].lower()
     assert all(runner.replayer.depth(m) is not None for m in SEED_MARKETS)
+
+
+def test_seed_walks_the_window_in_slices(tmp_path, monkeypatch):
+    """The rung: the seed must go through `bookreplay.stream_events`, THE
+    ONE walk over book_events, not a fourth hand-rolled `ORDER BY` over
+    the whole window. Measured 2026-08-27 (EXP-1375) on the live archive:
+    an unsliced sort of this shape DIES at a 24h window (10.4M rows)
+    under shadow's 512MiB engine limit, while the sliced walk covers 72h
+    / 26.0M rows spilling 45 MiB. The seed window is set by a race
+    (measured once at 2.08M rows, which still fits), so this is a tail
+    risk — and slicing removes the tail.
+
+    The memory effect needs millions of rows; the MECHANISM does not. A
+    window spanning 11h at the 6h slice must issue more than one ORDER BY,
+    and must seed the identical book a 11-second window does."""
+    log: list = []
+    sliced = _seed_runner(
+        tmp_path / "a",
+        12,
+        monkeypatch=monkeypatch,
+        sql_log=log,
+        spacing=timedelta(hours=1),
+    )
+    assert sliced.poll_once() == 0
+    seed_sql = [s for s in log[0].sql if "book_events" in s and "ORDER BY" in s]
+    assert len(seed_sql) > 1, "the seed sorted the whole window in one cursor"
+    dense = _seed_runner(tmp_path / "b", 12, spacing=timedelta(seconds=1))
+    dense.poll_once()
+    assert {m: sliced.replayer.depth(m) for m in SEED_MARKETS} == {
+        m: dense.replayer.depth(m) for m in SEED_MARKETS
+    }
+    assert all(dense.replayer.depth(m) is not None for m in SEED_MARKETS)  # non-vacuous
+
+
+class _ForcedAnchor:
+    """Connection proxy answering the anchor query with a FIXED timestamp
+    instead of the archive's true max(recv_ts).
+
+    That is the live race made deterministic: shadow reads the anchor from
+    an archive `streamd` is still writing, so rows can land between the
+    read and the seed walk that follows it."""
+
+    def __init__(self, inner, anchor):
+        self._inner = inner
+        self._anchor = anchor
+
+    class _Fixed:
+        def __init__(self, value):
+            self._value = value
+
+        def fetchone(self):
+            return (self._value,)
+
+    def execute(self, sql, *a, **k):
+        if sql.strip() == "SELECT max(recv_ts) FROM book_events":  # the anchor, exactly
+            return self._Fixed(self._anchor)
+        return self._inner.execute(sql, *a, **k)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._inner.__exit__(*exc)
+
+
+def test_seed_stops_at_the_anchor_so_no_event_is_applied_twice(tmp_path, monkeypatch):
+    """Load-bearing: the seed is bounded ABOVE at the anchor, which the
+    hand-rolled query was not. Rows landing between the anchor read and
+    the seed walk were applied by the seed AND again by the first real
+    poll (`recv_ts > cursor`) — and a delta counted twice is a book state
+    that never existed.
+
+    A +10 delta lands after the anchor: the book must read 110, not 120.
+    The pre-anchor snapshot alone reads 100, so a seed that skipped the
+    delta entirely reddens the same test from the other side."""
+    from hyxlab.store import Store
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    t1 = T0 + timedelta(seconds=30)
+    sstore.append_events(
+        parse_message(
+            {
+                "type": "orderbook_delta",
+                "sid": 1,
+                "seq": 2,
+                "msg": {
+                    "market_ticker": "M1",
+                    "price_dollars": "0.4000",
+                    "delta_fp": "10.00",
+                    "side": "yes",
+                    "ts_ms": int(t1.timestamp() * 1000),
+                },
+            },
+            t1,
+        )[0]
+    )
+    sstore.flush()
+
+    import simulator.shadow as shadow_mod
+
+    real = shadow_mod.stream_conn
+    monkeypatch.setattr(
+        shadow_mod, "stream_conn", lambda p: _ForcedAnchor(real(p), T0.replace(tzinfo=None))
+    )
+    runner = ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ShadowLedger(tmp_path / "shadow.duckdb"),
+    )
+    runner.poll_once()  # anchors at T0 and seeds (lo, T0] only
+    assert runner.replayer.depth("M1")["yes"] == [(0.40, 100.0)]  # delta NOT pre-applied
+    runner.poll_once()  # the post-anchor delta, applied exactly once
+    assert runner.replayer.depth("M1")["yes"] == [(0.40, 110.0)]
 
 
 # -- settlement is reachable in the daemon ---------------------------------

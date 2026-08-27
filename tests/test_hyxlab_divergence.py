@@ -389,6 +389,59 @@ def test_sliced_walk_handles_open_and_unbounded_edges(tmp_path):
     assert empty == []
 
 
+def test_lo_inclusive_keeps_the_row_at_the_bound(tmp_path):
+    """`lo_inclusive` is for SEED callers: the floor they pass is a gap's
+    `ended_at`, and `streamd` stamps a seq_reset gap's end with the
+    recv_ts of the first post-reset frame — the reconnect image that
+    re-seeds the book. The default half-open `(lo, hi]` drops every row of
+    that image (they share one recv_ts), so a seed from a raw floor
+    replays a hole the daemon never had.
+
+    The fixture's tie groups are three rows deep, so the shift must
+    recover the WHOLE group, not just one row. `datetime.min` — the
+    no-prior-break sentinel — has no predecessor and must be left alone
+    rather than stepped back into an OverflowError."""
+    import duckdb
+
+    from simulator.bookreplay import stream_events as _events
+
+    db, n = _seeded_stream(tmp_path)
+    with duckdb.connect(str(db), read_only=True) as conn:
+        first = conn.execute("SELECT min(recv_ts) FROM book_events").fetchone()[0]
+        excl = list(_events(conn, first, None))
+        incl = list(_events(conn, first, None, lo_inclusive=True))
+        sentinel = list(_events(conn, datetime.min, None, lo_inclusive=True))
+
+    assert len(excl) == n - 3  # the bound's whole tie group is dropped
+    assert len(incl) == n
+    assert incl[0].recv_ts == first
+    assert excl == incl[3:]  # nothing else moved
+    assert len(sentinel) == n  # the sentinel is already inclusive of everything
+
+
+def test_both_seed_sites_ask_for_an_inclusive_floor(tmp_path):
+    """Coupling guard. `simulator.divergence` documents its seed as
+    replaying history "exactly as shadow does", and the two drifting apart
+    at the boundary is exactly the class of bug that made
+    `stream_events` THE ONE walk in the first place. Each module seeds
+    once, and each seed passes `lo_inclusive=True`; the report walks that
+    follow it must NOT (a report's `lo` is an anchor, not a gap end)."""
+    import ast
+    from pathlib import Path
+
+    for module in ("simulator/shadow.py", "simulator/divergence.py"):
+        tree = ast.parse(Path(module).read_text())
+        calls = [
+            c
+            for c in ast.walk(tree)
+            if isinstance(c, ast.Call)
+            and getattr(c.func, "id", getattr(c.func, "attr", None)) == "stream_events"
+        ]
+        inclusive = [c for c in calls if any(k.arg == "lo_inclusive" for k in c.keywords)]
+        assert calls, f"{module} no longer calls the one walk"
+        assert len(inclusive) == 1, f"{module} seeds {len(inclusive)} times, expected 1"
+
+
 def test_replay_bounds_in_memory_equity_curve(tmp_path, monkeypatch):
     """The offline replay is the SECOND site of the shadow OOM fix
     (simulator/shadow.py, mid-run kill 2026-07-18): one equity point per
