@@ -855,6 +855,23 @@ Format: what happened → root cause → error type → prevention tier
     suite rather than a discovery. Sweep by ROLE ("who seeds a book from
     the archive?"), then pin the answer.
 
+38. **2026-08-27 — a "prepend" to the living status page split on the
+    entry separator and OVERWROTE the entry it meant to push down.** The
+    rung-12 write did `head, rest = s.split('\n\n---\n', 1)` and then
+    wrote `new + '---' + rest`, discarding `head` — which was the whole
+    rung-11 pass. Caught immediately by `git diff --stat` reading
+    **50 insertions, 76 deletions** on what could only be an append, and
+    restored from `eaaeb36`; nothing reached origin unrecoverably,
+    because the log is in git and the check was run before moving on.
+    **RULE: a write that can only ADD must be verified to have only
+    added.** For an append-to-top, the deletion count is the whole test
+    and it costs one command. More generally, splitting a document on a
+    separator to insert BEFORE the first section leaves the first section
+    in a variable you then have to remember to re-emit — prefer
+    `open(p,'w').write(new + old)` on the untouched original, which has
+    no way to lose anything, over a split/rejoin that has one.
+
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
