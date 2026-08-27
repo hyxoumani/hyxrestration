@@ -54,6 +54,86 @@ NOTHING IS USER-GATED THIS PASS.**
 
 ---
 
+Updated: **2026-08-27 14:40 UTC (RUNG-11 PASS — "BOTH LOCAL COPIES
+DELETED" WAS TWO OF THREE, AND THE THIRD WAS THE DAEMON.**
+Last pass named this rung: "the unsliced seed sort in
+`simulator/shadow.py:311` is a THIRD copy of the walk
+`bookreplay.stream_events` exists to be the only one of." Routed, and
+unifying it surfaced two bugs present at neither other site.
+**(1) MEASURED FIRST, EXP-1376**, on the live 15.7 GB stream archive at
+shadow's 512 MiB engine limit, 72 h / 23.4M rows, both walks returning
+IDENTICAL rows: the hand-rolled sort peaks at **1826 MiB of spill**, the
+sliced walk spills **0.0 MiB**, at the same wall clock (22.3 s vs
+20.3 s). Spill grows with window length, so what it runs into is
+whatever bound is in force — under the 1 GiB service cgroup of EXP-1375
+that was an `OutOfMemoryException` at 24 h. A correction to how the last
+pass read that: at 24 h / 6.7M rows and 48 h / 14.2M rows the unsliced
+form does NOT die outside a cgroup with a large temp cap, so the death
+is a property of the REGIME, not of the row count. What is invariant is
+the spill, and slicing takes it to zero.
+**(2) THE SEED HAD NO UPPER BOUND.** `self.cursor` is read from an
+archive a daemon is still writing, so rows land between that read and
+the walk. The old query APPLIED them, and the first real poll
+(`recv_ts > cursor`) applied them AGAIN — a delta counted twice is a
+book state that never existed. `stream_events` is half-open `(lo, hi]`
+and the poll is `> cursor`, so the row at exactly the anchor now belongs
+to the seed and to nothing else.
+**(3) AND THE SEED FLOOR MUST BE INCLUSIVE — `divergence` HAD THE SAME
+HOLE.** A seed's `lo` is a gap's `ended_at`, and `streamd` stamps a
+seq_reset gap's end with the recv_ts of the FIRST post-reset frame: on
+the books channel, the reconnect image that RE-SEEDS the book. The
+half-open bound drops every row of it (they share one recv_ts), leaving
+the book unseeded until the next connect — hours, on Kalshi. New
+`lo_inclusive`, which steps the bound back one microsecond so the
+predicate stays the pushable plain range the 685MB-coalesce note is
+about; `datetime.min` is exempt and that exemption is load-bearing
+(removing it reds four tests with an OverflowError).
+**(4) THE GUARDS: six, mutation-verified eight ways.** The seed is
+SLICED (an 11 h window at the 6 h slice must issue more than one ORDER
+BY, and must seed the identical book an 11-second window does); it STOPS
+AT THE ANCHOR (a +10 delta landing post-anchor leaves the book at 110,
+not 120 — and not 100, so a seed that skipped it reds from the other
+side; the race is made deterministic by a proxy that answers the anchor
+query with a fixed timestamp, which is exactly what a live writer does);
+the floor INCLUDES the row at the gap end, with a market whose history
+is entirely pre-floor as the control; and **both seed sites are
+enumerated by AST**, so a fourth copy is a red suite rather than a
+discovery in two days' time (mistake #37 — sweep by ROLE, then pin the
+answer).
+**(5) A FOURTH THING THE MEASUREMENT FOUND: shadow's spill cap was
+derived from a limit it no longer had.** `connect_retry` runs
+`spill_cap` at the chokepoint reading `current_setting('memory_limit')`
+— one statement before `stream_conn` lowers it to DUCK_MEM. Measured
+outside a cgroup: `max_temp_directory_size` **344.1 GiB** (rung-10's
+free-disk term, off the host-RAM default) against the 4.0 GiB DUCK_MEM
+earns. Rung-10's ORDER rule is the same rule; shadow is the one site
+that moves the limit AFTER passing the chokepoint, so it re-derives.
+**(6) PROMOTED WITH THE RESTART, AS THE LAST PASS REQUIRED.** Shadow was
+deferred once and not twice: run `20260827T022238` closed at **12h05m**
+(1,730 fills, 415.4M memory peak), and `20260827T142740` seeded
+**358,018 archived events into 151,017 top states in ~1 s** through the
+new path. VERIFIED LIVE from the stable tree under the real
+`MemoryMax=1G`: `memory_limit` 512.0 MiB, `max_temp_directory_size`
+**4.0 GiB**, spill dir `data/hyxstream.duckdb.tmp/pid-N`. Suite 857 ->
+**863 green**, pushed.
+NEXT PASS: (1) **THE NEW TOP RUNG — the chokepoint's order rule is
+enforced by AST INSIDE `hyxlab/`, and shadow proved code outside it can
+invalidate the cap with one `SET`.** `tests/test_spillcap_discipline.py`
+checks that every kernel attach calls `spill_cap` after
+`cgroup_memory_limit`; it cannot see a caller that lowers `memory_limit`
+afterwards. Today that caller is unique and fixed, but the guard for it
+is a shadow-specific assertion, not the class. Sweep for `SET
+memory_limit` outside `hyxlab/` and pin the RULE. (2) `run_l2` still
+accumulates and consumes the full equity curve; bounding it is a
+behaviour change needing its own design. (3) `batch units` self-clears
+08-28 or the budget is stale and must be re-measured, not re-excused.
+(4) The #32/#33/#34 lens sweeps remain the standing job. (5) Shadow's
+clock restarted 14:27:40Z — the diurnal analyses need ~3 spanned days,
+so the next promote that moves shadow code pays that again.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-27 08:40 UTC (RUNG-10 PASS — THE SPILL BOUND NOBODY
 SET IS THE DISK, AND WHAT A REPLAY ACTUALLY SPILLS IS 45 MiB.**
 Last pass named this rung: "`max_temp_directory_size` is still unset
