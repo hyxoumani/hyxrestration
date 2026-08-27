@@ -20,6 +20,7 @@ import duckdb
 from hyxlab.memcap import duck_memory_limit
 from hyxlab.models import EconVintage, Forecast, MarketInfo, NewsItem, Snapshot
 from hyxlab.scratch import duck_scratch_dir
+from hyxlab.spillcap import duck_spill_limit, parse_size
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS markets (
@@ -245,6 +246,42 @@ def cgroup_memory_limit(conn) -> None:
         pass
 
 
+def spill_cap(conn, path: str | Path) -> None:
+    """Bound `conn`'s spill by the limit in force, not by the disk.
+
+    DuckDB's `max_temp_directory_size` defaults to "90% of available disk
+    space" — 1.26 TB of the volume the archive, the collector and the
+    stream daemon share. Spill is the buffer manager's overflow, so the
+    bound is derived from `memory_limit` as it stands AFTER
+    `cgroup_memory_limit` has had its say, and clamped by a share of free
+    space for the uncapped case (EXP-1375, measured — see
+    `hyxlab.spillcap`). Nothing measured comes near it: the largest spill
+    by a query that SUCCEEDED was 266 MiB, and the big ones die in memory
+    without spilling at all.
+
+    Third at the chokepoint, and the order against `cgroup_memory_limit`
+    is load-bearing: this is a multiple of the limit that one sets. Free
+    space is measured on the DATABASE's filesystem, not by asking the
+    connection where it spills — the spill root is `<db>.tmp` by
+    construction (`hyxlab.scratch.scratch_root`), so it is the same
+    filesystem either way, and naming a spill directory anywhere but
+    `private_spill` is what `test_sidecar_discipline.py` forbids.
+
+    Never fatal, and the catch is deliberately total — same rule as the
+    two rungs below: hardening bolted onto every connect in the repo must
+    not be a new way to lose the archive.
+    """
+    try:
+        raw = conn.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        mem = parse_size(str(raw))
+        if mem is None:
+            return
+        n = duck_spill_limit(mem, path)
+        conn.execute("SET max_temp_directory_size = ?", [f"{n}B"])
+    except Exception:  # noqa: BLE001 — see above
+        pass
+
+
 def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
     """`duckdb.connect` plus private spill — the ONLY attach in the repo.
 
@@ -264,6 +301,7 @@ def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
     conn = duckdb.connect(str(path), read_only=read_only, **kw)
     private_spill(conn, path)
     cgroup_memory_limit(conn)
+    spill_cap(conn, path)
     return conn
 
 
@@ -298,6 +336,7 @@ def connect_retry(
             conn = duckdb.connect(str(path), read_only=read_only)
             private_spill(conn, path)
             cgroup_memory_limit(conn)
+            spill_cap(conn, path)
             return conn
         except duckdb.Error:
             if attempt == retries - 1:
@@ -344,6 +383,7 @@ class Store:
         self.conn = duckdb.connect(str(p), read_only=read_only)
         private_spill(self.conn, p)
         cgroup_memory_limit(self.conn)
+        spill_cap(self.conn, p)
         if not read_only:
             self.conn.execute(_SCHEMA)
             if fresh:
