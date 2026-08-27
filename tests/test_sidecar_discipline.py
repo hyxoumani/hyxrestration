@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -170,8 +171,22 @@ def _strings_naming(tree: ast.AST, rel: str, needle: str) -> dict[str, str]:
     }
 
 
+#: `temp_directory` as a WORD. The sibling setting
+#: `max_temp_directory_size` contains it as a substring and names a SIZE,
+#: not a directory (`hyxlab/store.py::spill_cap`, EXP-1375) — matching it
+#: here would report the disk bound as a hard-coded spill path. The
+#: boundary is what keeps the scan tight; a directory still cannot be
+#: named anywhere, because naming one requires this word.
+_TEMP_DIR_RE = re.compile(r"(?<![A-Za-z0-9_])temp_directory")
+
+
 def _temp_dir_sites(tree: ast.AST, rel: str) -> dict[str, str]:
-    return _strings_naming(tree, rel, "temp_directory")
+    return {
+        k: t
+        for k, texts in _code_strings(tree, rel).items()
+        for t in texts
+        if _TEMP_DIR_RE.search(t)
+    }
 
 
 def _walk(fn) -> dict:
