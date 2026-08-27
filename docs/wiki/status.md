@@ -1,70 +1,84 @@
 # Status & next steps (living page)
 
-Updated: **2026-08-27 02:30 UTC (RUNG-9 PASS — THE DAEMON WAS SIZING
-ITSELF FROM A MACHINE IT WAS NOT ALLOWED TO USE.**
-Last pass named this rung: "streamd balloons to its 2 GiB ceiling AT
-STARTUP and only sometimes survives; measure the burst, then bound it —
-do not raise `MemoryMax` to hide it." It was not the subscribe burst.
-**(1) THE CULPRIT IS ONE QUERY, AND IT IS OURS (EXP-1374).** DuckDB
-derives `memory_limit` from PHYSICAL memory — 80% of `/proc/meminfo` —
-and a capped systemd service does not have physical memory.
-`hyxlab-stream.service` declares `MemoryMax=2G` on a 60 GiB box, so
-DuckDB opened the 15.7 GB stream archive believing it had **48.2 GiB**.
-There is no spill and no back-pressure at the boundary it actually has:
-the cgroup answers with SIGKILL. **MEASURED: the daemon's own startup
-query — `SELECT max(recv_ts) FROM book_events WHERE venue='kalshi'`, the
-`last_recv_ts` read that bounds a `seq_reset` gap — peaks at 2899 MB RSS
-in 1.55 s against a 2048 MB cap.** That is why the kill landed one second
-after `kalshi-books: 614 open tickers`: that log line is immediately
-before `_kalshi_loop` runs the read. The subscribe burst was innocent.
-**(2) THE FIX COSTS NOTHING AND IS FASTER.** The same query under a
-pinned limit returns the identical answer, bounded — 1 GiB -> 1126 MB in
-**0.27 s** (vs 1.55 s), 512 MB -> 654 MB, 256 MB -> 415 MB — and
-`duckdb_temporary_files()` reports **ZERO bytes spilled at every one**.
-Nothing needed 2.8 GB: a streaming aggregate keeps whatever the buffer
-manager is told it may keep, so the limit is not a budget the work fits
-into, it IS the footprint. **This therefore does NOT make
-`max_temp_directory_size` more urgent** — that stays its own rung,
-honestly, rather than being smuggled in behind this one.
-**(3) `hyxlab/memcap.py`, applied at the connect chokepoint.**
-`cgroup_memory_max()` walks `/proc/self/cgroup` and takes the TIGHTEST
-`memory.max` over the cgroup AND every ancestor (a service with no cap of
-its own still inherits its slice's, and the kernel kills against the
-tightest). Half the cap, not 80%: DuckDB shares a cgroup with its host
-process, its buffers, and the page cache `memory.max` charges to us —
-measured overhead above the limit was ~155 MB, and the live unit holds
-133 MB of file cache. **NO CAP MEANS NO CHANGE** — an ad-hoc query in a
-login shell keeps DuckDB's own default, deliberately; this tightens only
-where a cap was declared and DuckDB could not see it.
-**(4) THE GUARD: `tests/test_memcap_discipline.py`.** DERIVED — every
-function in the kernel that calls `duckdb.connect` also calls
-`cgroup_memory_limit`, by AST, so a fourth attach that forgets it reddens
-on entry. CLAIMED — verified by RUNNING under a REAL cgroup:
-`systemd-run --scope -p MemoryMax=512M` reports **256 MiB, not 48.2
-GiB**. **The premise is a test, not a memory**: the default limit is
-asserted to be ~80% of `MemTotal`, so the day DuckDB reads `memory.max`
-itself this reddens and `memcap.py` can go instead of outliving its
-reason. Mutation-verified five ways, each reddening a different test.
-**(5) VERIFIED LIVE, ON THE PROMOTE RESTART ITSELF** — the exact event
-that killed it last pass. Promoted 02:22:38Z; the OUTGOING activation
-logged `2G memory peak`, the incoming one reports **MemoryPeak 1.13 GiB,
-NRestarts=0**, no OOM, and `kalshi-books: connected` one second after the
-ticker line. Shadow (cap 1G) peaks at 414 MB. Suite 836 -> **844 green**,
-promoted and pushed.
-NEXT PASS: (1) **`max_temp_directory_size` is still unset everywhere** —
-DuckDB may spill up to 90% of the 1.9T disk the archive lives on. Now
-that spill is private per-pid and measured at zero for the daemon paths,
-the open question is what a REPLAY (`run_l2`, atlas) actually spills;
-measure before picking a number. (2) `run_l2` still accumulates and
-consumes the full equity curve; bounding it is a behaviour change needing
-its own design. (3) `batch units` self-clears 08-28 or the budget is
-stale and must be re-measured, not re-excused. (4) The #32/#33/#34 lens
-sweeps remain the standing job. (5) The shadow run duration clock
-restarts from 2026-08-27 02:22Z (run `20260827T022238`, confirmed in
-`shadow_equity`); the previous run `20260826T201942` reached **6h01m**
-(20:20:44Z -> 02:22:09Z, 1066 points) before this promote spent it. That
-is the price, named rather than rounded down — and it buys the thing the
-duration clock kept losing to, since restarts are no longer a coin flip.
+Updated: **2026-08-27 08:40 UTC (RUNG-10 PASS — THE SPILL BOUND NOBODY
+SET IS THE DISK, AND WHAT A REPLAY ACTUALLY SPILLS IS 45 MiB.**
+Last pass named this rung: "`max_temp_directory_size` is still unset
+everywhere — DuckDB may spill up to 90% of the 1.9T disk; measure what a
+REPLAY actually spills before picking a number." Measured, then bounded.
+**(1) MEASURED FIRST, EXP-1375**, on the live 15.7 GB stream archive and
+the 13.3 GB market archive, at the 512 MiB limit a 1 GiB service cgroup
+now yields: the sliced walk (`bookreplay.stream_events`) over 72 h /
+26.0M rows spills **45 MiB** and completes in 22.5 s; an unsliced sort
+spills 53 MiB at 12 h and completes, **275 MiB at 24 h and DIES**,
+712 MiB at 48 h and DIES; `atlas` BUCKET_SQL **dies at 0.1 s having
+spilled NOTHING**, and at a 1 GiB limit spills 266 MiB and completes.
+**(2) SO SPILL IS NOT THE SAFETY NET THE CAP WOULD BE SIZED FOR.** The
+largest spill by a query that SUCCEEDED is 266 MiB; the big ones exceed
+the limit in memory the buffer manager cannot offload and raise
+`OutOfMemoryException` first. This cap rescues nothing — nothing measured
+is near it. It exists because the number DuckDB picks in its place is
+"90% of available disk space", 1.26 TB of the volume the archive, the
+stream daemon and the collector share.
+**(3) `hyxlab/spillcap.py`, third at the connect chokepoint.** The
+tighter of two terms that bind in different regimes: **8x `memory_limit`**
+(spill IS the buffer manager's overflow, and 8x is ~6x the worst
+spill/limit ratio observed, failures included) and **25% of free space**
+(which binds where the limit is an uncapped host-RAM default and 8x of it
+is 385 GiB). The disk term's promise is honestly smaller — not "the spill
+is small" but "three quarters of the free space stays free", which is
+what the collector needs. Input is `current_setting('memory_limit')` read
+AFTER `cgroup_memory_limit`, so it composes with rung-9 instead of
+duplicating it, and covers the case rung-9 leaves alone: an ad-hoc query
+keeps its host-RAM limit and would otherwise get no disk bound at all.
+**(4) THE GUARD: `tests/test_spillcap_discipline.py`.** DERIVED — every
+kernel attach calls `spill_cap`, AND calls it AFTER `cgroup_memory_limit`,
+by AST; the ORDER is load-bearing, since a cap set first is derived from
+the limit it is about to replace. CLAIMED — verified by RUNNING: a GROUP
+BY that spills 121 MiB is refused under a 32 MiB cap, the error names the
+failed offload, and the bytes ON DISK never exceed it — **with its
+control**, the same query uncapped succeeds and spills past that cap, so
+a green cannot come from a query that never spilled. **The premise is a
+test, not a memory**: the default is asserted to be the un-parseable
+prose string, so the day DuckDB ships a real bound this reddens and
+`spillcap.py` goes. Mutation-verified six ways, each reddening a
+different test. The sidecar guard's needle was too loose to sit next to
+this — it matched `temp_directory` as a SUBSTRING, so
+`max_temp_directory_size` read as a hard-coded spill path; now a word
+boundary, re-verified against an interpolated directory.
+**(5) PROMOTED WITH SHADOW DEFERRED, AND THE COST NAMED RATHER THAN
+PAID.** `--defer=hyxlab-shadow.service`: the guard is right that shadow's
+code moved, but shadow only READS through it, this cap has zero measured
+urgency there (largest successful spill 266 MiB against a 3.8 GiB bound),
+and the duration clock had been reset three times in four days. Run
+`20260827T022238` keeps running — 6h04m at promote time. `hyxlab-stream`
+restarted 08:28:39Z and reports **`memory_limit` 1.0 GiB,
+`max_temp_directory_size` 8.0 GiB** under its real `MemoryMax=2G` cgroup,
+verified from the stable tree. Suite 844 -> **857 green**, pushed.
+**(6) A CORRECTION TO HOW RUNG-9 READ `MemoryPeak`.** The restarted
+stream daemon reports `MemoryPeak` = 2,147,500,032 — exactly its cap —
+while `MemoryCurrent` is 1.08 GiB. That is NOT the process growing:
+`memory.events` reads **`max 8812, oom 0, oom_kill 0`** and `memory.stat`
+reads **anon 68 MiB, file 839 MiB**. The cgroup charges page cache, and
+the kernel RECLAIMS it rather than killing, thousands of times an hour.
+So `MemoryPeak` against a cap that charges page cache is not a footprint,
+and the healthy signature is `oom_kill 0` in `memory.events`, not a
+`MemoryPeak` below the cap. Rung-9's fix stands — its 1.13 GiB reading
+was just an early sample of a number that always reaches the cap.
+NEXT PASS: (1) **THE NEW TOP RUNG, and it is measured, not suspected —
+the unsliced seed sort in `simulator/shadow.py:311` is a THIRD copy of
+the walk `bookreplay.stream_events` exists to be the only one of.** Its
+docstring says the duplication "is exactly why the memory fix below
+reached only one of them", and it is now measured to DIE at a 24 h window
+(10.4M rows) under shadow's 512 MiB limit while the sliced walk does 72 h
+/ 26.0M rows on 45 MiB. The seed window is decided by a documented RACE
+(measured once at 2.08M rows, which still fits), so this is a tail risk,
+not a live crash — route the seed through `stream_events` and the tail
+goes. (2) `run_l2` still accumulates and consumes the full equity curve;
+bounding it is a behaviour change needing its own design. (3) `batch
+units` self-clears 08-28 or the budget is stale and must be re-measured,
+not re-excused. (4) The #32/#33/#34 lens sweeps remain the standing job.
+(5) Shadow is deferred one promote — its next restart picks up rungs 9
+and 10 together; do not defer it twice.
 NOTHING IS USER-GATED THIS PASS.**
 
 ---

@@ -38,3 +38,12 @@
   no lock, so no lock covers this; the kernel gives each connection
   `<db>.tmp/pid-<pid>` instead. Never pin `temp_directory` to a constant
   path — that is the bug with a name on it.
+- `MemoryPeak` on a cgroup-capped unit is NOT the process's footprint.
+  `memory.max` charges the PAGE CACHE the unit's own reads pull in, and
+  the kernel reclaims that rather than killing, so a healthy daemon doing
+  heavy file I/O reports `MemoryPeak` == its cap forever. Measured
+  2026-08-27 on `hyxlab-stream` (cap 2G): `MemoryPeak` 2,147,500,032,
+  `MemoryCurrent` 1.08 GiB, `memory.stat` anon 68 MiB / file 839 MiB. The
+  health signal is `memory.events` — `oom_kill 0` with a large `max`
+  count is reclaim, not death; `oom_kill > 0` is the kill. Read the
+  cgroup, never `MemoryPeak` alone.

@@ -36,14 +36,25 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   candles_as_snapshots (with crossed-candle gate), mirror tripwire. Also
   the repo's ONLY `duckdb.connect` (`test_sidecar_discipline.py`), which
   makes it the chokepoint where every attach gets a private spill
-  directory (`private_spill`) and a cgroup-derived buffer budget
-  (`cgroup_memory_limit`).
+  directory (`private_spill`), a cgroup-derived buffer budget
+  (`cgroup_memory_limit`) and a bounded spill (`spill_cap`) — in that
+  ORDER, since the spill bound is a multiple of the memory limit.
 - `hyxlab/memcap.py` — DuckDB's `memory_limit` taken from the cgroup, not
   from host RAM (EXP-1374). DuckDB defaults to 80% of `/proc/meminfo`,
   which a `MemoryMax=`-capped service does not have; streamd's own
   startup `last_recv_ts` read peaked at 2899 MB against a 2048 MB cap and
   was OOM-killed. Half the cap, spills nothing, and a no-op where no
   cgroup cap binds. Guard: `tests/test_memcap_discipline.py`.
+- `hyxlab/spillcap.py` — how much DISK a spilling attach may take
+  (EXP-1375). DuckDB's `max_temp_directory_size` defaults to "90% of
+  available disk space", 1.26 TB of the volume the archives and the
+  collector share. Measured first: the sliced walk spills 45 MiB over
+  72 h / 26.0M rows, and the queries that need more DIE in memory rather
+  than spilling (atlas at 0.1 s having written nothing) — the largest
+  spill by a query that SUCCEEDED is 266 MiB. So the bound rescues
+  nothing; it replaces a number that is the disk. The tighter of 8x
+  `memory_limit` and 25% of free space. Guard:
+  `tests/test_spillcap_discipline.py`.
 - `hyxlab/streamstore.py` — stream archive (own DuckDB: book_events,
   stream_trades, stream_gaps; buffered flush bursts).
 - `collector/streamd.py` — stream daemon (asyncio, reconnect/re-seed/
