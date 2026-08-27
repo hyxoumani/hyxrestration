@@ -1,5 +1,74 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-27 02:30 UTC (RUNG-9 PASS — THE DAEMON WAS SIZING
+ITSELF FROM A MACHINE IT WAS NOT ALLOWED TO USE.**
+Last pass named this rung: "streamd balloons to its 2 GiB ceiling AT
+STARTUP and only sometimes survives; measure the burst, then bound it —
+do not raise `MemoryMax` to hide it." It was not the subscribe burst.
+**(1) THE CULPRIT IS ONE QUERY, AND IT IS OURS (EXP-1374).** DuckDB
+derives `memory_limit` from PHYSICAL memory — 80% of `/proc/meminfo` —
+and a capped systemd service does not have physical memory.
+`hyxlab-stream.service` declares `MemoryMax=2G` on a 60 GiB box, so
+DuckDB opened the 15.7 GB stream archive believing it had **48.2 GiB**.
+There is no spill and no back-pressure at the boundary it actually has:
+the cgroup answers with SIGKILL. **MEASURED: the daemon's own startup
+query — `SELECT max(recv_ts) FROM book_events WHERE venue='kalshi'`, the
+`last_recv_ts` read that bounds a `seq_reset` gap — peaks at 2899 MB RSS
+in 1.55 s against a 2048 MB cap.** That is why the kill landed one second
+after `kalshi-books: 614 open tickers`: that log line is immediately
+before `_kalshi_loop` runs the read. The subscribe burst was innocent.
+**(2) THE FIX COSTS NOTHING AND IS FASTER.** The same query under a
+pinned limit returns the identical answer, bounded — 1 GiB -> 1126 MB in
+**0.27 s** (vs 1.55 s), 512 MB -> 654 MB, 256 MB -> 415 MB — and
+`duckdb_temporary_files()` reports **ZERO bytes spilled at every one**.
+Nothing needed 2.8 GB: a streaming aggregate keeps whatever the buffer
+manager is told it may keep, so the limit is not a budget the work fits
+into, it IS the footprint. **This therefore does NOT make
+`max_temp_directory_size` more urgent** — that stays its own rung,
+honestly, rather than being smuggled in behind this one.
+**(3) `hyxlab/memcap.py`, applied at the connect chokepoint.**
+`cgroup_memory_max()` walks `/proc/self/cgroup` and takes the TIGHTEST
+`memory.max` over the cgroup AND every ancestor (a service with no cap of
+its own still inherits its slice's, and the kernel kills against the
+tightest). Half the cap, not 80%: DuckDB shares a cgroup with its host
+process, its buffers, and the page cache `memory.max` charges to us —
+measured overhead above the limit was ~155 MB, and the live unit holds
+133 MB of file cache. **NO CAP MEANS NO CHANGE** — an ad-hoc query in a
+login shell keeps DuckDB's own default, deliberately; this tightens only
+where a cap was declared and DuckDB could not see it.
+**(4) THE GUARD: `tests/test_memcap_discipline.py`.** DERIVED — every
+function in the kernel that calls `duckdb.connect` also calls
+`cgroup_memory_limit`, by AST, so a fourth attach that forgets it reddens
+on entry. CLAIMED — verified by RUNNING under a REAL cgroup:
+`systemd-run --scope -p MemoryMax=512M` reports **256 MiB, not 48.2
+GiB**. **The premise is a test, not a memory**: the default limit is
+asserted to be ~80% of `MemTotal`, so the day DuckDB reads `memory.max`
+itself this reddens and `memcap.py` can go instead of outliving its
+reason. Mutation-verified five ways, each reddening a different test.
+**(5) VERIFIED LIVE, ON THE PROMOTE RESTART ITSELF** — the exact event
+that killed it last pass. Promoted 02:22:38Z; the OUTGOING activation
+logged `2G memory peak`, the incoming one reports **MemoryPeak 1.13 GiB,
+NRestarts=0**, no OOM, and `kalshi-books: connected` one second after the
+ticker line. Shadow (cap 1G) peaks at 414 MB. Suite 836 -> **844 green**,
+promoted and pushed.
+NEXT PASS: (1) **`max_temp_directory_size` is still unset everywhere** —
+DuckDB may spill up to 90% of the 1.9T disk the archive lives on. Now
+that spill is private per-pid and measured at zero for the daemon paths,
+the open question is what a REPLAY (`run_l2`, atlas) actually spills;
+measure before picking a number. (2) `run_l2` still accumulates and
+consumes the full equity curve; bounding it is a behaviour change needing
+its own design. (3) `batch units` self-clears 08-28 or the budget is
+stale and must be re-measured, not re-excused. (4) The #32/#33/#34 lens
+sweeps remain the standing job. (5) The shadow run duration clock
+restarts from 2026-08-27 02:22Z (run `20260827T022238`, confirmed in
+`shadow_equity`); the previous run `20260826T201942` reached **6h01m**
+(20:20:44Z -> 02:22:09Z, 1066 points) before this promote spent it. That
+is the price, named rather than rounded down — and it buys the thing the
+duration clock kept losing to, since restarts are no longer a coin flip.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-26 20:45 UTC (RUNG-8 PASS — THE PROMOTE LANDED, AND
 THE CLAIM IT WAS WAITING FOR IS FALSIFIED: THE 21-00Z PEAK WAS 97%
 COMPOSITION.**

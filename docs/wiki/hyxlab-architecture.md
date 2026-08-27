@@ -33,7 +33,17 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   (pure fetch→records; sessions injected; fixtures in tests/fixtures/);
   kalshi_ws + polymarket_ws (WS auth/payloads/parsers, no sockets).
 - `hyxlab/store.py` — schema, naive-UTC, insert_new dedup, watermarks,
-  candles_as_snapshots (with crossed-candle gate), mirror tripwire.
+  candles_as_snapshots (with crossed-candle gate), mirror tripwire. Also
+  the repo's ONLY `duckdb.connect` (`test_sidecar_discipline.py`), which
+  makes it the chokepoint where every attach gets a private spill
+  directory (`private_spill`) and a cgroup-derived buffer budget
+  (`cgroup_memory_limit`).
+- `hyxlab/memcap.py` — DuckDB's `memory_limit` taken from the cgroup, not
+  from host RAM (EXP-1374). DuckDB defaults to 80% of `/proc/meminfo`,
+  which a `MemoryMax=`-capped service does not have; streamd's own
+  startup `last_recv_ts` read peaked at 2899 MB against a 2048 MB cap and
+  was OOM-killed. Half the cap, spills nothing, and a no-op where no
+  cgroup cap binds. Guard: `tests/test_memcap_discipline.py`.
 - `hyxlab/streamstore.py` — stream archive (own DuckDB: book_events,
   stream_trades, stream_gaps; buffered flush bursts).
 - `collector/streamd.py` — stream daemon (asyncio, reconnect/re-seed/
