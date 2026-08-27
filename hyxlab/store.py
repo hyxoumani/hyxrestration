@@ -17,6 +17,7 @@ from pathlib import Path
 
 import duckdb
 
+from hyxlab.memcap import duck_memory_limit
 from hyxlab.models import EconVintage, Forecast, MarketInfo, NewsItem, Snapshot
 from hyxlab.scratch import duck_scratch_dir
 
@@ -216,6 +217,34 @@ def private_spill(conn, path: str | Path) -> None:
         pass
 
 
+def cgroup_memory_limit(conn) -> None:
+    """Size `conn`'s buffer manager from the cgroup, not from host RAM.
+
+    DuckDB's default `memory_limit` is 80% of PHYSICAL memory, which a
+    capped systemd service does not have: `hyxlab-stream` runs under
+    `MemoryMax=2G` on a 60 GiB box and opened the stream archive
+    believing it had 48.2 GiB. Its own startup query then peaked at
+    2899 MB and the cgroup answered with SIGKILL (EXP-1374, measured —
+    see `hyxlab.memcap`). Under a pinned limit the same query is bounded,
+    faster, and spills nothing.
+
+    Applied at the connect chokepoint for the same reason as
+    `private_spill`: "this query is small" is a claim about a plan, and
+    the plan is the thing that changes. A no-op where no cgroup cap
+    binds, so an uncapped box keeps DuckDB's own default.
+
+    Never fatal, and the catch is deliberately total — same rule as
+    `private_spill`: hardening bolted onto every connect in the repo must
+    not be a new way to lose the archive.
+    """
+    try:
+        n = duck_memory_limit()
+        if n is not None:
+            conn.execute("SET memory_limit = ?", [f"{n}B"])
+    except Exception:  # noqa: BLE001 — see above
+        pass
+
+
 def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
     """`duckdb.connect` plus private spill — the ONLY attach in the repo.
 
@@ -234,6 +263,7 @@ def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
     """
     conn = duckdb.connect(str(path), read_only=read_only, **kw)
     private_spill(conn, path)
+    cgroup_memory_limit(conn)
     return conn
 
 
@@ -267,6 +297,7 @@ def connect_retry(
         try:
             conn = duckdb.connect(str(path), read_only=read_only)
             private_spill(conn, path)
+            cgroup_memory_limit(conn)
             return conn
         except duckdb.Error:
             if attempt == retries - 1:
@@ -312,6 +343,7 @@ class Store:
             p.parent.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(str(p), read_only=read_only)
         private_spill(self.conn, p)
+        cgroup_memory_limit(self.conn)
         if not read_only:
             self.conn.execute(_SCHEMA)
             if fresh:
