@@ -825,6 +825,36 @@ Format: what happened → root cause → error type → prevention tier
     landed flushes, so `>= 1` is the assertion. Cheap check: run the
     new guard once under load.
 
+37. **2026-08-27 — "both local copies deleted" was two of THREE, and the
+    one that got away was the daemon.** #34(c) unified the walk over
+    `book_events` into `simulator.bookreplay.stream_events` and recorded
+    that the duplication is why the memory fix reached only one caller.
+    The sweep covered `divergence` and `run_l2` — the two sites that
+    LOOKED like the report it was fixing. `simulator/shadow.py` carried a
+    third copy, in its boot seed, and kept it for two days across two
+    memory rungs that both went through the unified walk instead.
+    MEASURED on the live archive at shadow's 512 MiB engine limit, 72 h /
+    23.4M rows, identical rows out: the copy peaks at **1826 MiB of
+    spill**, the unified walk spills **nothing**, same wall clock. Under
+    the 1 GiB service cgroup of EXP-1375 the same shape raised
+    `OutOfMemoryException` at 24 h.
+    **AND UNIFYING IT SURFACED TWO BUGS PRESENT IN NEITHER OTHER SITE**,
+    the same way #34(c)'s merge did: the seed had no upper bound, so
+    rows landing between the anchor read and the walk were applied by the
+    seed AND again by the first poll; and the seed's floor, a gap's
+    `ended_at`, is INCLUSIVE — the half-open walk drops the reconnect
+    image that a seq_reset gap ends at, which is the row that re-seeds
+    the book. `divergence` had inherited the second one by copying the
+    call shape.
+    **RULE: a de-duplication sweep is finished when a GUARD says so, not
+    when the greps you thought of come back clean.** The three copies did
+    not share a distinctive string — the daemon's was spelled as a
+    hand-rolled `conn.execute`, which is what every DuckDB read looks
+    like. Escalated to a test: `test_both_seed_sites_ask_for_an_inclusive
+    _floor` enumerates the seed sites by AST, so a fourth one is a red
+    suite rather than a discovery. Sweep by ROLE ("who seeds a book from
+    the archive?"), then pin the answer.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

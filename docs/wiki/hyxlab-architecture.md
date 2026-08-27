@@ -63,11 +63,27 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 - `collector/trades_backfill.py` — trade-tape retro-pass (races retention).
 - `collector/qa.py` — daily data-quality checks (`hyxlab-qa.timer`).
 - `simulator/bookreplay.py` — stream events → ms-fidelity Snapshot stream
-  (gap-honest, complete-image emission, mirror-derived asks).
+  (gap-honest, complete-image emission, mirror-derived asks). Holds
+  `stream_events`, THE ONE walk over `book_events`: 6h slices, each sorted
+  separately, so peak memory is flat in window length rather than linear
+  (measured 2026-08-27 at a 512 MiB engine limit over 72 h / 23.4M rows:
+  unsliced peaks at 1826 MiB of spill, sliced spills nothing). Every
+  caller goes through it — reports, the L2 backtest AND the shadow
+  daemon's boot seed (mistake #37). `lo_inclusive=True` is for SEED
+  callers only: their `lo` is a gap's `ended_at`, and a seq_reset gap ends
+  AT the reconnect image that re-seeds the book, which the default
+  half-open `(lo, hi]` would drop.
 - `simulator/sim.py` — event loop (`step()`/`finalize()`/`run()`), order
   lifecycle, runtime invariants, latency model (`latency=Δ`; Δ=0 = legacy).
 - `simulator/shadow.py` — Tier-3 shadow harness (`hyxlab-shadow.service`):
   live Simulator on a stream-archive tail, ledger-only fills per run_id.
+  Boot seeds books through `bookreplay.stream_events`, bounded ABOVE at
+  the anchor (an unbounded seed and the first poll both apply anything
+  that lands in between — a delta counted twice is a book that never
+  existed). Its `stream_conn` lowers `memory_limit` to DUCK_MEM and then
+  re-derives `spill_cap`: it is the one site that moves the limit after
+  passing the connect chokepoint, and the cap is a multiple of the limit
+  in force (verified live under `MemoryMax=1G`: 512 MiB / 4.0 GiB).
 - `simulator/simui/` — interactive market-replay UI (`python -m
   simulator.simui`, localhost:8877): archived event groups replay like a
   live Kalshi event page; user + strategy orders fill through the real
