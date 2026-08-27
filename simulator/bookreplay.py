@@ -205,8 +205,21 @@ def stream_events(
     *,
     prefix: str | None = None,
     slice_hours: float = EVENT_SLICE_HOURS,
+    lo_inclusive: bool = False,
 ) -> Iterator[BookEvent]:
     """Kalshi book events in (lo, hi] in replay order, chunked and sliced.
+
+    `lo_inclusive` makes the low bound `>= lo` instead. SEED callers want
+    it and reports do not: a seed's `lo` is a gap's `ended_at`, and
+    `streamd` stamps a `seq_reset` gap's `ended_at` with the recv_ts of
+    the FIRST post-reset frame — on the books channel that frame is the
+    reconnect's full orderbook image. Excluding it drops every row of the
+    image (they share one recv_ts), leaving the book unseeded until the
+    NEXT connect, which on Kalshi can be hours. Implemented by stepping
+    `lo` back one microsecond, DuckDB's TIMESTAMP resolution, so the
+    predicate stays the pushable plain range the memory note below is
+    about; `datetime.min` (the no-prior-break sentinel) has no predecessor
+    and is already inclusive of everything, so it is left alone.
 
     THE ONE walk over `book_events`. It lived twice — in
     `simulator.divergence` and `simulator.run_l2` — and that duplication
@@ -225,6 +238,8 @@ def stream_events(
     sort's contribution flat at one slice regardless of window length, at
     no wall-clock cost (13.6s sliced vs 12.6s single over 18.5M rows).
     """
+    if lo_inclusive and lo != datetime.min:
+        lo -= timedelta(microseconds=1)
     where = "venue='kalshi' AND recv_ts > ?" + (" AND recv_ts <= ?" if hi else "")
     params: list = [lo, hi] if hi else [lo]
     if prefix:

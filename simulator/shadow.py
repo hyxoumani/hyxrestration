@@ -33,9 +33,9 @@ from pathlib import Path
 import duckdb
 
 from hyxlab.lockid import db_owner_lock_or_reason
-from hyxlab.store import Store, connect_retry, duck_connect
+from hyxlab.store import Store, connect_retry, duck_connect, spill_cap
 from hyxlab.streamstore import BookEvent
-from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
+from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots, stream_events
 from simulator.registry import build as build_strategies
 from simulator.sim import Simulator
 
@@ -55,9 +55,6 @@ DUCK_THREADS = 2
 # or misread each other's blocks (measured 2026-08-26, EXP-1373).
 # `hyxlab.store` now gives every connection a process-private directory,
 # so the override that made them share is gone rather than repointed.
-# Rows pulled per fetchmany() when seeding books from the archive. Bounds
-# the Python-side result list, which DUCK_MEM does not (see _read_new).
-SEED_BATCH = 10_000
 # Metadata recency window (see _try_load_markets): a settled market stays
 # loaded this many days past close so every poll between "result lands"
 # and "falls out of the window" can consume it; _settle runs per poll
@@ -84,6 +81,16 @@ def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
     conn = connect_retry(path)
     conn.execute(f"SET memory_limit = '{DUCK_MEM}'")
     conn.execute(f"SET threads = {DUCK_THREADS}")
+    # Re-derive the spill bound AFTER the override. `connect_retry` runs
+    # `spill_cap` at the chokepoint, but its input is
+    # `current_setting('memory_limit')` — read one statement before this
+    # one lowers it — so the cap this connection would otherwise carry is
+    # a multiple of a limit it no longer has. Measured 2026-08-27 outside
+    # a cgroup: `max_temp_directory_size` 344.1 GiB (the free-disk term,
+    # from the host-RAM default) against the 4.0 GiB this yields. The
+    # chokepoint's ORDER rule is the same rule; this is the one site that
+    # moves the limit after passing through it.
+    spill_cap(conn, path)
     return conn
 
 
@@ -275,53 +282,50 @@ class ShadowRunner:
                     floor = conn.execute(
                         f"SELECT max(ended_at) FROM stream_gaps WHERE {BOOK_GAPS}"
                     ).fetchone()[0]
-                    # Stream the seed rows — do NOT fetchall(). DUCK_MEM
-                    # bounds the ENGINE, not the materialized Python list,
-                    # and the seed window is "since the last book gap",
-                    # whose size is decided by a RACE: promote.sh restarts
-                    # hyxlab-stream and hyxlab-shadow together, so if
-                    # shadow reads the floor before stream writes its
-                    # `daemon_start` gap row it seeds from the PREVIOUS
-                    # break instead. Measured at the 2026-07-31 20:34
-                    # promote: 2,084,503 rows (~417MB as tuples, over the
-                    # 1G cgroup cap on top of the 512MiB engine) against
-                    # the 21,419 the winning ordering gives — a 97x swing
-                    # on a race, kernel-OOM-killed at boot, recovered only
-                    # by the systemd restart 30s later. Same shape as the
-                    # 2026-07-11/07-12 OOMs the DUCK_MEM note records.
-                    # And bounding the RESULT SET is not bounding the SCAN.
-                    # `recv_ts >= coalesce(?, recv_ts)` is not a range
-                    # predicate — its right side reads the column, so DuckDB
-                    # cannot push it into the scan as a min/max filter and
-                    # evaluates it row-by-row over all 170M archived rows.
-                    # Measured on the live archive, same 9,387-row result:
-                    # 685MB / 0.8s with the coalesce against 157MB / 0.16s
-                    # with a plain `>=`. That constant ~685MB — INVARIANT to
-                    # the window, so no seed-window narrowing touches it — is
-                    # the boot peak that left ~9% headroom under the 1G cap.
-                    # `recv_ts` is NOT NULL, so the no-floor branch (no
-                    # predicate at all) is exactly equivalent to the coalesce.
-                    where = "venue = 'kalshi'"
-                    params: list = []
-                    if floor is not None:
-                        where += " AND recv_ts >= ?"
-                        params.append(floor)
-                    res = conn.execute(
-                        "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side,"
-                        f" price, qty FROM book_events WHERE {where} ORDER BY recv_ts, seq",
-                        params,
-                    )
+                    # Seed through `bookreplay.stream_events` — THE ONE
+                    # walk over book_events — rather than a fourth
+                    # hand-rolled query. That module's docstring already
+                    # says the duplication is why its memory fix reached
+                    # only one caller, and this was the caller it missed:
+                    # measured 2026-08-27 (EXP-1375) on the live archive,
+                    # an UNSLICED sort of this shape DIES at a 24h window
+                    # (10.4M rows) under the 512MiB DUCK_MEM limit, while
+                    # the sliced walk does 72h / 26.0M rows spilling
+                    # 45 MiB. The seed window is "since the last book
+                    # gap", whose size is decided by a RACE: promote.sh
+                    # restarts hyxlab-stream and hyxlab-shadow together,
+                    # so if shadow reads the floor before stream writes
+                    # its `daemon_start` gap row it seeds from the
+                    # PREVIOUS break instead. Measured at the 2026-07-31
+                    # 20:34 promote: 2,084,503 rows against the 21,419
+                    # the winning ordering gives — a 97x swing on a race,
+                    # kernel-OOM-killed at boot. 2.08M rows still fit;
+                    # 10.4M do not, and nothing bounds which side of that
+                    # the race lands on. Slicing removes the tail.
+                    #
+                    # BOUNDED ABOVE AT THE ANCHOR, which the hand-rolled
+                    # query was not. `self.cursor` was read from a live
+                    # archive a daemon is still writing, so rows can land
+                    # between that read and this walk. An unbounded seed
+                    # APPLIES them, and the first real poll (`recv_ts >
+                    # cursor`) applies them AGAIN — a delta counted twice
+                    # is a book that never existed. `stream_events` is
+                    # half-open `(lo, hi]` and the poll is `> cursor`, so
+                    # the row at exactly the anchor belongs to the seed
+                    # and to nothing else.
+                    #
+                    # The floor is INCLUSIVE (see `lo_inclusive`): it is
+                    # a gap's `ended_at`, and a seq_reset gap ends at the
+                    # recv_ts of the reconnect image that re-seeds books.
                     n_rows = 0
 
                     def _seed_events():
                         nonlocal n_rows
-                        while True:
-                            batch = res.fetchmany(SEED_BATCH)
-                            if not batch:
-                                return
-                            for r in batch:
-                                n_rows += 1
-                                yield BookEvent(*r)
+                        for e in stream_events(
+                            conn, floor or datetime.min, self.cursor, lo_inclusive=True
+                        ):
+                            n_rows += 1
+                            yield e
 
                     seeded = 0
                     for _ in replay_snapshots(_seed_events(), replayer=self.replayer):

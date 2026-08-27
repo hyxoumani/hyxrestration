@@ -86,7 +86,10 @@ def replay_run(
         from simulator.bookreplay import BookReplayer
 
         replayer = BookReplayer()
-        seed = stream_events(conn, floor or datetime.min, anchor)
+        # `lo_inclusive`: the floor is a gap's `ended_at`, and a seq_reset
+        # gap ends AT the reconnect image that re-seeds books — excluding
+        # it made this report replay a hole the daemon never had.
+        seed = stream_events(conn, floor or datetime.min, anchor, lo_inclusive=True)
         for _ in replay_snapshots(seed, replayer=replayer):
             pass
         # Trade the window with full gap honesty (including gap rows the
