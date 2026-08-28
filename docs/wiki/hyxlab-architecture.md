@@ -85,7 +85,18 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   daemon's boot seed (mistake #37). `lo_inclusive=True` is for SEED
   callers only: their `lo` is a gap's `ended_at`, and a seq_reset gap ends
   AT the reconnect image that re-seeds the book, which the default
-  half-open `(lo, hi]` would drop.
+  half-open `(lo, hi]` would drop. The SLICE bounds what the engine
+  sorts; `EVENT_CHUNK` bounds what PYTHON holds, and until 2026-08-28 it
+  did not: at 200,000 rows one batch is **125.5 MiB of materialised
+  tuples and BookEvents** — 184.0 of a 3 h `run_l2`'s 194.7 MiB traced
+  peak, 15x the equity curve the ladder had named (EXP-1380). Measured
+  at **660 bytes/row**, linear from 1k to 200k, with the walk FLAT in
+  time (17.3-19.2 s) and IDENTICAL in answer (270,402 snapshots,
+  sha `9d52d498c6fd0e4f`, at every chunk size) — so the constant is a
+  BUDGET divided by a measured row cost, not a tuned row count. 5,000
+  rows / 4 MiB; `run_l2` end to end 194.7 -> 83.7 MiB. This is the walk
+  `hyxlab-shadow` (`MemoryMax=1G`) seeds through at every boot. Guard:
+  `tests/test_event_batch_discipline.py`.
 - `simulator/sim.py` — event loop (`step()`/`finalize()`/`run()`), order
   lifecycle, runtime invariants, latency model (`latency=Δ`; Δ=0 = legacy).
 - `simulator/shadow.py` — Tier-3 shadow harness (`hyxlab-shadow.service`):

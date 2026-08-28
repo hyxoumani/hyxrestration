@@ -1,5 +1,74 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-28 14:35 UTC (RUNG-15 PASS — THE LADDER FINALLY
+POINTS AT THE EQUITY CURVE, BECAUSE THE BATCH THAT DWARFED IT 15x IS
+GONE.**
+Last pass named this rung: "with the metadata load bounded, `run_l2`'s
+filtered peak is 194.7 MiB and the equity curve is 16.7 MiB of it —
+MEASURE what the remaining ~178 MiB is (`bookreplay`'s
+`fetchmany(200_000)` is the suspect) before bounding anything else."
+**(1) MEASURED FIRST, AND THIS TIME THE NAMED SUSPECT WAS RIGHT
+(EXP-1380).** A real 3 h `run_l2` under tracemalloc traceback
+attribution puts **184.04 MiB on one line** — `while rows :=
+cur.fetchmany(EVENT_CHUNK)` — against **12.43 MiB** for the whole equity
+curve and 4.30 MiB for the sim's mark-to-market. Two passes named a
+suspect by reasoning and one was wrong by two orders of magnitude; that
+does not make the measurement optional, it makes it the only reason we
+know which pass was which.
+**(2) LINEAR IN MEMORY, FLAT IN TIME, IDENTICAL IN ANSWER.** Over
+2026-08-27 12:00-15:00 on the live archive, the walk at chunk 200k /
+50k / 20k / 10k / 5k / 2k / 1k peaks at **188.1 / 48.7 / 20.6 / 11.2 /
+6.5 / 3.4 / 2.5 MiB** in 17.8 / 17.3 / 19.2 / 23.9 / 17.4 / 17.6 /
+17.4 s, and every one of the seven yields the SAME 270,402 snapshots
+(sha `9d52d498c6fd0e4f`). A batch costs **660 bytes/row**, measured
+across two orders of magnitude. So there is no trade-off to tune and no
+window length that buys a big batch back — which is why the constant is
+now a **budget** (`EVENT_BATCH_BUDGET`, 4 MiB) divided by a **measured
+per-row cost** (`EVENT_ROW_BYTES`), not a row count. A row count invites
+"make it bigger for speed"; the measurement says there is no speed to
+buy. `EVENT_CHUNK` 200_000 -> **5_000**.
+**(3) run_l2 END TO END: 194.7 -> 83.7 MiB traced peak**, and the
+largest single term is now the equity curve at 17.4 MiB — which is what
+the ladder believed it already was two passes ago. The `fetchmany` line
+is 16.3 MiB and most of that is retained book-state strings, not the
+batch.
+**(4) NOT ONLY AN AD-HOC COST — THE LIVE 1G DAEMON SEEDS THROUGH IT.**
+`hyxlab-shadow.service` (`MemoryMax=1G`) walks this exact path at every
+boot, and promotion restarted it (`simulator/bookreplay.py` is in its
+import closure, and unlike the last two passes a restart here buys the
+daemon the fix). Post-restart, seeding **1,214,972 archived events ->
+302,317 top states**: `memory.events` **all zero — `max 0`, not merely
+`oom_kill 0`**, i.e. no reclaim pressure at all; cgroup anon **83.4
+MiB**, `MemoryPeak` 340.6 MiB (page cache, per the ops rule). The run it
+replaced reported a 484.8 MB peak over 1d 00h 03m.
+**(5) FIVE MUTANTS, ALL RED, AND THE CONTROL FAILED FIRST.** Revert to
+200k; **shrink the CLAIMED `EVENT_ROW_BYTES` instead of the batch** (the
+budget arithmetic passes either way — only a measurement against a real
+DuckDB tells them apart, so the guard makes one); inflate the budget; a
+chunk that swallows the fixture whole; and a batch that drops a row. The
+peak control failed on its first version because it ACCUMULATED the
+60k-row walk into a list — 23.5 MiB of test bookkeeping burying the
+9 MiB it was there to see. Hashed instead of accumulated, it discriminates.
+**(6) PROMOTED, SHADOW RESTARTED, SIMUI NOTICED.** `promote.sh` named
+simui as executing changed code and correctly declined to restart it
+(live paper session) — the notice added two passes ago doing its job
+unprompted. Suite 879 -> **882 green**, pushed.
+NEXT PASS: (1) **THE NEW TOP RUNG — the Python heap is now 83.7 MiB but
+the PROCESS is 1,025.9 MiB peak RSS. The heap is no longer where a
+replay's memory is; the DuckDB engine is.** That is a different measuring
+instrument (cgroup + `memory.stat`, not tracemalloc) and the ladder
+should not climb further on the Python side until it is read — the
+`memory_limit` is 512 MiB and the gap wants explaining. (2) Four
+one-shots remain unbounded on `markets()` (`run_backtest`, `run_favlong`,
+`run_favlong_tight`, `run_sim`); still a tail, not a queue — each is run
+by hand, outside any cgroup. (3) `batch units` re-read after
+**20:48Z** (~6 h from now); if it has not cleared, the 08-21 run is not
+the only breach and the budget must be re-measured. (4) The #32/#33/#34
+lens sweeps remain the standing job.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-28 08:30 UTC (RUNG-14 PASS — THE ONE-SHOT THAT HOLDS
 THE TABLE LONGEST NOW ASKS FOR 0.033% OF IT, AND A STANDING BUDGET ITEM
 CLEARED ON EVIDENCE RATHER THAN ON ITS DUE DATE.**
