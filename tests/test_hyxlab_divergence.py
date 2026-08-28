@@ -419,17 +419,25 @@ def test_lo_inclusive_keeps_the_row_at_the_bound(tmp_path):
     assert len(sentinel) == n  # the sentinel is already inclusive of everything
 
 
-def test_both_seed_sites_ask_for_an_inclusive_floor(tmp_path):
+def test_every_seed_site_asks_for_an_inclusive_floor(tmp_path):
     """Coupling guard. `simulator.divergence` documents its seed as
     replaying history "exactly as shadow does", and the two drifting apart
     at the boundary is exactly the class of bug that made
     `stream_events` THE ONE walk in the first place. Each module seeds
     once, and each seed passes `lo_inclusive=True`; the report walks that
-    follow it must NOT (a report's `lo` is an anchor, not a gap end)."""
+    follow it must NOT (a report's `lo` is an anchor, not a gap end).
+
+    THREE modules, not two. This guard shipped naming shadow and
+    divergence as "both" seed sites while `simulator.run_l2` — which
+    documents itself as using "the divergence runner's exact seeding
+    discipline" — seeded from the same gap floor, exclusively, and kept
+    the hole for two rungs (EXP-1378). "Both" was a count of the sites
+    the fix had touched, not of the sites that seed; mistake #37 again.
+    Sweep by ROLE."""
     import ast
     from pathlib import Path
 
-    for module in ("simulator/shadow.py", "simulator/divergence.py"):
+    for module in ("simulator/shadow.py", "simulator/divergence.py", "simulator/run_l2.py"):
         tree = ast.parse(Path(module).read_text())
         calls = [
             c
