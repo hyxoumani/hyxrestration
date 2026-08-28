@@ -234,6 +234,12 @@ def test_promote_sh_sources_the_helper_and_passes_roots():
 
 
 # ------------------------------------------------- every daemon, not two
+# Long-running units that a promote must NOT restart on its own, and why.
+# simui holds a live paper-trading session; dropping it to ship a change
+# it is not running costs an operator their session.
+NOTIFY_ONLY = {"hyxlab-simui.service"}
+
+
 def _long_running_units() -> dict[str, str]:
     """unit name -> ExecStart root module, for the units that RUN
     continuously from the stable tree (`Type=simple`). Timers are exempt:
@@ -255,15 +261,19 @@ def _long_running_units() -> dict[str, str]:
     return out
 
 
-def test_every_long_running_daemon_has_a_restart_decision():
+def test_every_long_running_daemon_is_decided_about():
     """DERIVED, not listed by hand. `promote.sh` restarts the daemons
     whose code moved — but the daemons were enumerated in the script, and
     `hyxlab-simui.service` (installed 2026-08-20, `Restart=always`,
-    `MemoryMax=1G`, running from stable) was not among them. Every
-    promotion from its install to 2026-08-27 left it running whatever
-    code it started with, silently, while the script printed a confident
-    "none — no daemon's code moved". The set of daemons is a property of
-    `scripts/systemd/`, so read it from there."""
+    `MemoryMax=1G`, running from stable) appeared in neither the restart
+    list nor the output. Its exclusion from the RESTART set is deliberate
+    and pinned elsewhere (a restart drops a live paper session), but
+    `Restart=always` means it has no other path to new code, so every
+    promotion from its install to 2026-08-27 left it running its original
+    code while the script printed a confident "none — no daemon's code
+    moved". Silence is the failure; a decision, either way, is the rule.
+    The set of daemons is a property of `scripts/systemd/`, so read it
+    from there rather than repeating it here."""
     text = (REPO / "scripts" / "promote.sh").read_text()
     units = _long_running_units()
     assert set(units) == {
@@ -273,7 +283,13 @@ def test_every_long_running_daemon_has_a_restart_decision():
     }, f"the set of long-running daemons changed: {sorted(units)}"
     for unit, module in units.items():
         assert f"needs_restart {module} " in text, f"{unit} ({module}) has no restart decision"
-        assert f"RESTART+=({unit})" in text, f"{unit} is never added to the restart list"
+        if unit in NOTIFY_ONLY:
+            assert f"RESTART+=({unit})" not in text, f"{unit} must not be auto-restarted"
+            assert f"NOTICE: {unit} executes changed code" in text, (
+                f"{unit} is neither restarted nor reported — that is the silence"
+            )
+        else:
+            assert f"RESTART+=({unit})" in text, f"{unit} is never added to the restart list"
         assert unit in text.split("== promoted:")[0].split("for u in ")[-1].split("\n")[0], (
             f"{unit}'s state is not reported after the promotion"
         )
