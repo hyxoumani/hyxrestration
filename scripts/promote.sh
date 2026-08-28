@@ -62,6 +62,15 @@ printf '%s\n' "${CHANGED:-(nothing)}" | sed 's/^/   /'
 
 # Each daemon's ExecStart module, plus everything it imports.
 # hyxlab-stream: collector.streamd | hyxlab-shadow: simulator.shadow
+# hyxlab-simui: simulator.simui.__main__ (`python -m PKG` runs the
+# package's __main__, and THAT is the closure root — rooting at the
+# package itself walks a docstring-only __init__.py and finds nothing,
+# which is the shape of a restart rule that always says no).
+# The three Type=simple units in scripts/systemd/ are exactly the
+# daemons that run from stable, and tests/test_promote_restart_decision.py
+# derives that list and asserts each has a line below: simui ran old code
+# through every promotion from its install (2026-08-20) to 2026-08-27
+# because this list was written by hand and simui was added later.
 # needs_restart (scripts/restart_decision.sh, EXP-1276) intersects CHANGED
 # with the daemon's static import closure via scripts/daemon_imports.py —
 # the old directory regexes survive only as the fallback if the tool errors.
@@ -76,7 +85,7 @@ echo "== sync stable venv deps =="
 "$STABLE/.venv/bin/pip" install -q -r "$DEV/scripts/requirements-stable.txt"
 
 echo "== smoke-import in stable venv =="
-(cd "$STABLE" && .venv/bin/python -c "import collector.streamd, collector.collect, collector.sweep, simulator.shadow")
+(cd "$STABLE" && .venv/bin/python -c "import collector.streamd, collector.collect, collector.sweep, simulator.shadow, simulator.simui.server")
 
 echo "== install systemd units (repo scripts/systemd/ is canonical) =="
 cp "$DEV"/scripts/systemd/hyxlab-* ~/.config/systemd/user/
@@ -86,6 +95,7 @@ echo "== restart daemons whose code moved (timers pick up new code on next run) 
 RESTART=()
 needs_restart collector.streamd '^(collector|hyxlab)/' && RESTART+=(hyxlab-stream.service)
 needs_restart simulator.shadow '^(simulator|strategies|hyxlab)/' && RESTART+=(hyxlab-shadow.service)
+needs_restart simulator.simui.__main__ '^(simulator|strategies|hyxlab)/' && RESTART+=(hyxlab-simui.service)
 if [[ -n "$DEFER" ]]; then
     KEPT=()
     for u in "${RESTART[@]}"; do
@@ -107,7 +117,7 @@ if ((${#RESTART[@]})); then
 else
     echo "   none — no daemon's code moved (use --restart-all to force)"
 fi
-for u in hyxlab-stream.service hyxlab-shadow.service; do
+for u in hyxlab-stream.service hyxlab-shadow.service hyxlab-simui.service; do
     printf '   %-24s %s  since %s\n' "$u" \
         "$(systemctl --user is-active "$u")" \
         "$(systemctl --user show "$u" -p ActiveEnterTimestamp --value)"

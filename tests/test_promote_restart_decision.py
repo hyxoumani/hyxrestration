@@ -231,3 +231,66 @@ def test_promote_sh_sources_the_helper_and_passes_roots():
     assert "needs_restart collector.streamd '^(collector|hyxlab)/'" in text
     assert "needs_restart simulator.shadow '^(simulator|strategies|hyxlab)/'" in text
     subprocess.run(["bash", "-n", str(REPO / "scripts" / "promote.sh")], check=True)
+
+
+# ------------------------------------------------- every daemon, not two
+def _long_running_units() -> dict[str, str]:
+    """unit name -> ExecStart root module, for the units that RUN
+    continuously from the stable tree (`Type=simple`). Timers are exempt:
+    a oneshot picks up new code on its next firing, with no process to
+    restart."""
+    out = {}
+    for unit in sorted((REPO / "scripts" / "systemd").glob("*.service")):
+        text = unit.read_text()
+        if "Type=simple" not in text:
+            continue
+        exec_line = next(x for x in text.splitlines() if x.startswith("ExecStart="))
+        parts = exec_line.split()
+        module = parts[parts.index("-m") + 1]
+        # `python -m PKG` executes PKG.__main__, and a package's own
+        # __init__ may import nothing at all.
+        if (REPO / module.replace(".", "/") / "__main__.py").exists():
+            module += ".__main__"
+        out[unit.name] = module
+    return out
+
+
+def test_every_long_running_daemon_has_a_restart_decision():
+    """DERIVED, not listed by hand. `promote.sh` restarts the daemons
+    whose code moved — but the daemons were enumerated in the script, and
+    `hyxlab-simui.service` (installed 2026-08-20, `Restart=always`,
+    `MemoryMax=1G`, running from stable) was not among them. Every
+    promotion from its install to 2026-08-27 left it running whatever
+    code it started with, silently, while the script printed a confident
+    "none — no daemon's code moved". The set of daemons is a property of
+    `scripts/systemd/`, so read it from there."""
+    text = (REPO / "scripts" / "promote.sh").read_text()
+    units = _long_running_units()
+    assert set(units) == {
+        "hyxlab-stream.service",
+        "hyxlab-shadow.service",
+        "hyxlab-simui.service",
+    }, f"the set of long-running daemons changed: {sorted(units)}"
+    for unit, module in units.items():
+        assert f"needs_restart {module} " in text, f"{unit} ({module}) has no restart decision"
+        assert f"RESTART+=({unit})" in text, f"{unit} is never added to the restart list"
+        assert unit in text.split("== promoted:")[0].split("for u in ")[-1].split("\n")[0], (
+            f"{unit}'s state is not reported after the promotion"
+        )
+
+
+def test_each_daemon_root_resolves_to_a_real_closure():
+    """A root module that resolves to nothing makes `needs_restart`
+    answer "no" forever — the failure mode is silence, so the closure of
+    every daemon root must actually contain the kernel it reads."""
+    for unit, module in _long_running_units().items():
+        files, _lazy = closure(module)
+        assert "hyxlab/store.py" in files, f"{unit}: closure of {module} is {sorted(files)[:5]}"
+
+
+def test_a_simui_only_change_restarts_simui_alone():
+    changed = "simulator/simui/session.py"
+    args = ("simulator.simui.__main__", "^(simulator|strategies|hyxlab)/")
+    assert "RESTART" in decide(changed, *args)
+    assert decide(changed, *STREAM_ARGS).strip().endswith("SKIP")
+    assert decide(changed, *SHADOW_ARGS).strip().endswith("SKIP")
