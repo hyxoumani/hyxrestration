@@ -22,7 +22,7 @@ Honesty rules (see docs/plans/simui/plan.md):
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -90,15 +90,27 @@ def _event_ticker(market_id: str) -> str:
     return market_id.rsplit("-", 1)[0]
 
 
-def _try_load_markets(archive_db: str) -> dict[tuple[str, str], MarketInfo]:
-    """Market metadata (titles, close times, strikes). The archive may be
-    writer-locked for minutes; the UI degrades to bare tickers."""
+def _try_load_markets(
+    archive_db: str, market_ids: Iterable[str]
+) -> dict[tuple[str, str], MarketInfo] | None:
+    """Metadata (titles, close times, strikes) for the given Kalshi ids,
+    or None if the archive is unavailable.
+
+    `market_ids` is not an optimisation. Every caller here already knows
+    the exact ids it will render, and an unfiltered `store.markets()` is
+    1.87M MarketInfo objects — 1.32 GiB resident, measured 2026-08-27
+    (EXP-1378) — inside a unit capped at `MemoryMax=1G`. The archive may
+    also be writer-locked for minutes; the UI degrades to bare tickers,
+    and None (not an empty dict) is what says so, so a session whose
+    markets simply have no metadata row stops asking instead of retrying
+    forever.
+    """
     try:
         store = Store(archive_db, read_only=True)
     except duckdb.Error:
-        return {}
+        return None
     try:
-        return store.markets()
+        return store.markets(venue="kalshi", market_ids=market_ids)
     finally:
         store.close()
 
@@ -111,7 +123,7 @@ def list_events(stream_db: str = STREAM_DB, archive_db: str = ARCHIVE_DB) -> lis
             "SELECT market_id, count(*), min(recv_ts), max(recv_ts)"
             " FROM book_events WHERE venue = 'kalshi' GROUP BY market_id"
         ).fetchall()
-    infos = _try_load_markets(archive_db)
+    infos = _try_load_markets(archive_db, [r[0] for r in rows]) or {}
     events: dict[str, dict] = {}
     for market_id, n, t0, t1 in rows:
         ev = events.setdefault(
@@ -236,8 +248,8 @@ class ReplaySession:
         Returns True the one time metadata lands."""
         if self.meta_loaded:
             return False
-        infos = _try_load_markets(self.archive_db)
-        if not infos:
+        infos = _try_load_markets(self.archive_db, self.market_ids)
+        if infos is None:
             return False
         self.markets = {
             ("kalshi", m): _sanitize(infos.get(("kalshi", m), MarketInfo("kalshi", m)))
@@ -469,8 +481,11 @@ def load_session(
     if not events:
         raise ValueError(f"no archived book events for event {event!r}")
     market_ids = sorted({e.market_id for e in events})
-    infos = _try_load_markets(archive_db)
-    markets = {("kalshi", m): infos.get(("kalshi", m), MarketInfo("kalshi", m)) for m in market_ids}
+    infos = _try_load_markets(archive_db, market_ids)
+    markets = {
+        ("kalshi", m): (infos or {}).get(("kalshi", m), MarketInfo("kalshi", m))
+        for m in market_ids
+    }
     return ReplaySession(
         market_ids,
         events,
@@ -481,5 +496,5 @@ def load_session(
         latency=latency,
         start_cash=start_cash,
         archive_db=archive_db,
-        meta_loaded=bool(infos),
+        meta_loaded=infos is not None,
     )

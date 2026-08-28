@@ -162,7 +162,7 @@ def test_ensure_metadata_retries_and_sanitizes(monkeypatch):
     s = make_session(image())
     s.meta_loaded = False
     late = {("kalshi", "EV-M1"): MarketInfo("kalshi", "EV-M1", title="Late", result="yes")}
-    monkeypatch.setattr("simulator.simui.session._try_load_markets", lambda _db: late)
+    monkeypatch.setattr("simulator.simui.session._try_load_markets", lambda _db, _ids: late)
     assert s.ensure_metadata() is True
     info = s.sim.markets[("kalshi", "EV-M1")]
     assert info.title == "Late"

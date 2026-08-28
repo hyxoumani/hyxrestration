@@ -643,20 +643,29 @@ class Store:
         venue: str | None = None,
         alive_days: float | None = None,
         include: Iterable[tuple[str, str]] = (),
+        market_ids: Iterable[str] | None = None,
     ) -> dict[tuple[str, str], MarketInfo]:
         """Market metadata keyed (venue, market_id). Unfiltered by default.
 
-        The full table is ~486k rows / ~430MB as MarketInfo objects
-        (2026-08-07) and grows ~13k rows/day since the breadth widening —
-        long-lived holders (shadow) must filter or they eat their cgroup
-        cap. `alive_days` keeps a market while it is unsettled OR closed
-        within that many days; `include` pins specific (venue, market_id)
-        keys past any filter — a held position whose settlement lands
-        after the recency window would otherwise vanish from a reload
-        and never credit its payout.
+        The full table is 1.87M rows / **1.32 GiB resident, 1.56 GiB
+        peak** as MarketInfo objects (measured 2026-08-27, EXP-1378; it
+        was ~486k rows / ~430MB on 08-07, so this grows with the ARCHIVE
+        and nothing a caller chooses bounds it) — holders must filter or
+        they eat their cgroup cap. `alive_days` keeps a market while it
+        is unsettled OR closed within that many days; `market_ids`
+        restricts to a known id set (a REPLAY knows exactly which
+        markets its window can touch — 714 of 1.87M for a 3 h window,
+        and the empty set means the empty load, not the whole table);
+        `include` pins specific (venue, market_id) keys past any filter
+        — a held position whose settlement lands after the recency
+        window would otherwise vanish from a reload and never credit its
+        payout.
         """
         clauses = []
         params: list = []
+        if market_ids is not None:
+            clauses.append("market_id = ANY(?::VARCHAR[])")
+            params.append(list(market_ids))
         if venue is not None:
             clauses.append("venue = ?")
             params.append(venue)

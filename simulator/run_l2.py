@@ -52,17 +52,6 @@ def run_l2(
 ):
     """Replay (start, end] through the named strategies; returns
     (manifest_path, SimResult, n_snapshots)."""
-    store = open_retry(archive_db, read_only=True)
-    try:
-        markets = store.markets()
-    finally:
-        store.close()
-    strategies = build(strategy_names)
-    # L2 replay is Kalshi-only (BookReplayer refuses other venues); the
-    # feed provides no independent NO book (one mirrored book), so the
-    # capability guard rejects strategies this data cannot trigger.
-    sim = Simulator(markets, strategies, latency=latency, data_capabilities={"kalshi": frozenset()})
-
     n_snaps, ts_min, ts_max = 0, None, None
     with stream_conn(stream_db) as conn:
         # Seed books exactly as shadow/divergence do: replay history since
@@ -71,9 +60,44 @@ def run_l2(
             f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
             [start],
         ).fetchone()[0]
+        # Metadata for the markets THIS REPLAY CAN TOUCH, and no others.
+        # `store.markets()` unfiltered is 1.87M MarketInfo objects —
+        # measured 1.32 GiB resident / 1.56 GiB traced peak before the
+        # first event replays (EXP-1378), sized by the ARCHIVE rather
+        # than by the operator's window, against the 16.7 MiB the full
+        # equity curve of a 3 h replay costs. A book replay's reachable
+        # set is exactly the ids `book_events` carries over (seed floor,
+        # end], which for that same 3 h window is 714 of the 1.87M:
+        # 0.04%. Measured identical fills, metrics and snapshot count
+        # either way, at 1559.9 -> 194.7 MiB peak and 73.9s -> 50.6s.
+        # The floor is INCLUSIVE here for the same reason the seed walk
+        # below is (`lo_inclusive`): the reconnect image at a gap end is
+        # a real market of this replay.
+        ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT market_id FROM book_events"
+                " WHERE venue='kalshi' AND recv_ts >= ? AND recv_ts <= ?"
+                + (" AND market_id LIKE ?" if prefix else ""),
+                [floor or datetime.min, end, *([prefix + "%"] if prefix else [])],
+            ).fetchall()
+        ]
+        store = open_retry(archive_db, read_only=True)
+        try:
+            markets = store.markets(venue="kalshi", market_ids=ids)
+        finally:
+            store.close()
+        strategies = build(strategy_names)
+        # L2 replay is Kalshi-only (BookReplayer refuses other venues);
+        # the feed provides no independent NO book (one mirrored book), so
+        # the capability guard rejects strategies this data cannot trigger.
+        sim = Simulator(
+            markets, strategies, latency=latency, data_capabilities={"kalshi": frozenset()}
+        )
         replayer = BookReplayer()
         for _ in replay_snapshots(
-            stream_events(conn, floor or datetime.min, start, prefix=prefix), replayer=replayer
+            stream_events(conn, floor or datetime.min, start, prefix=prefix, lo_inclusive=True),
+            replayer=replayer,
         ):
             pass
         gaps = conn.execute(
