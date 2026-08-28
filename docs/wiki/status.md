@@ -1,5 +1,74 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-28 08:30 UTC (RUNG-14 PASS — THE ONE-SHOT THAT HOLDS
+THE TABLE LONGEST NOW ASKS FOR 0.033% OF IT, AND A STANDING BUDGET ITEM
+CLEARED ON EVIDENCE RATHER THAN ON ITS DUE DATE.**
+Last pass named this rung: "the five enumerated one-shots still load
+1.32 GiB each, and `simulator.divergence` is the one that matters — it
+is a standing report, it holds the table for the length of a 10.5-day
+replay, and its reachable set is derivable exactly as run_l2's now is.
+Graduating it is deleting one line from `UNBOUNDED_ONE_SHOTS`."
+**(1) DONE, AND MEASURED ON THE LIVE ARCHIVE (EXP-1379).** The archive
+attach moved INSIDE the stream connection — the id set is a fact the
+STREAM archive owns, so the order was backwards, not merely the filter
+missing. Over the real window of the closed shadow run
+`20260827T022238` (12h05m, seed floor 2026-08-26 20:20:25Z): the
+unfiltered load is **1,881,418 markets / 1966.8 MiB peak RSS / 4.6 s**,
+the bounded load is **614 markets / 340.6 MiB / 0.2 s**. 614 of 1.88M is
+**0.033%**. Not "smaller" — the SAME: the 614 MarketInfo objects the
+bounded load returns are byte-identical to the same 614 out of the
+unfiltered load (sha256 over the pickled field tuples, `822781af92a0c024`
+both ways), so the cheap path is not a cheaper different answer.
+**(2) THE REPORT ITSELF, RE-RUN END TO END ON THE NEW PATH.**
+`20260827T022238`: **1734 of 1734** shadow fills matched, price delta
+mean and abs-mean **0.0**, zero unmatched on either side, gross cash and
+fees identical to the cent (1357.35 / 71.65). The zero baseline that
+makes nonzero divergence attributable to infrastructure is intact, so
+the haircut is still zero and this pass also discharges the standing
+"re-run divergence on newly accumulated data" rung.
+**(3) FIVE MUTANTS, ALL RED — AND TWO OF THEM SURVIVED THE FIRST TEST I
+WROTE.** Revert the bound (also reds the AST sweep); bound at `anchor`
+instead of `end` (drops every market first seen after the seed, i.e.
+most of a long run); **`ids or None`** — the one-character mutation that
+restores 1.32 GiB at exactly the moment the operator asked for the
+cheapest possible replay; an **exclusive floor** — rung-11's hole for
+the third time, which loses a market whose ONLY event is the reconnect
+image at the gap end; and no lower bound at all. The last two lived
+through the first version because that test's window happened to contain
+events and its seeded market happened to have later ones too. The fix
+was fixtures, not assertions: a market entirely pre-floor, a market
+whose sole event shares the reconnect image's recv_ts, and a whole test
+whose window is legitimately empty.
+**(4) `batch units` CLEARED ON EVIDENCE, NOT ON THE CALENDAR.** The
+standing item said "self-clears 08-28 or the budget is stale and must be
+re-measured, not re-excused". Read at 08:21Z it still FAILs, and the
+breach is not the 08-03 crypto pass at all — it is `hyxlab-sweep` on
+**08-21, 14.64h against the 12.5h budget**, which leaves the 7-day
+lookback at **08-28 20:48Z**, ~12 h from now. The budget is NOT stale,
+and that is a measurement rather than a wait: the six sweeps since run
+10.96 / 8.19 / 8.80 / 10.31 / 10.96 / 9.40 h — worst case **1.5 h under
+budget**. Today's run started 06:10Z and is still going, so the check
+should be read again after it lands.
+**(5) PROMOTED, NO RESTART SPENT.** `simulator/divergence.py` is in no
+daemon's import closure and the restart decision said so by name; stream
+(since 08-27 03:28Z), shadow (08-27 09:27Z) and simui keep running.
+Suite 877 -> **879 green**, pushed.
+NEXT PASS: (1) **THE NEW TOP RUNG — with the metadata load bounded,
+`run_l2`'s filtered peak is 194.7 MiB and the equity curve is 16.7 MiB
+of it. MEASURE what the remaining ~178 MiB is** (`bookreplay`'s
+`fetchmany(200_000)` is the suspect) before bounding anything else; the
+last two passes both named a suspect by reasoning and one of them was
+wrong by two orders of magnitude. (2) Four one-shots remain unbounded
+(`run_backtest`, `run_favlong`, `run_favlong_tight`, `run_sim`), and
+NONE of them is a standing report — each is run by hand, outside any
+cgroup, on a laptop-sized window — so the enumeration is now a tail, not
+a queue. (3) Re-read `batch units` after 20:48Z; if it has not
+cleared, the 08-21 run is not the only breach and the budget must be
+re-measured. (4) The #32/#33/#34 lens sweeps remain the standing job.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-28 02:40 UTC (RUNG-13 PASS — THE LADDER NAMED THE
 WRONG CONSUMER, AND THE RIGHT ONE OOM-KILLS A LIVE SERVICE IN 1.3 s.**
 Last pass named this rung: "`run_l2` accumulates and consumes the full
