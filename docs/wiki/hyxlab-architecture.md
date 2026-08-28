@@ -55,6 +55,19 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   nothing; it replaces a number that is the disk. The tighter of 8x
   `memory_limit` and 25% of free space. Guard:
   `tests/test_spillcap_discipline.py`.
+- `Store.markets()` — market metadata keyed (venue, market_id), and the
+  largest Python-heap allocation in the repo: unfiltered it is 1.87M
+  MarketInfo objects, **1.32 GiB resident / 1.56 GiB traced peak**
+  (measured 2026-08-27, EXP-1378; 486k rows / ~430 MB three weeks
+  earlier), sized by the ARCHIVE rather than by anything a caller
+  chooses. No `memory_limit` reaches it — it is the heap the cgroup
+  kills the process for, and simui's page view under `MemoryMax=1G` was
+  oom-killed in 1.257 s on it. Bound the load: `market_ids=` for a
+  caller that knows its id set (a replay's set is the ids `book_events`
+  carries over its window — 714 of 1.87M for 3 h), `alive_days=` for a
+  daemon, `include=` to pin a held position past either. Guard:
+  `tests/test_markets_load_discipline.py` — every call bounds or is one
+  of five enumerated offline one-shots.
 - `hyxlab/streamstore.py` — stream archive (own DuckDB: book_events,
   stream_trades, stream_gaps; buffered flush bursts).
 - `collector/streamd.py` — stream daemon (asyncio, reconnect/re-seed/
@@ -87,7 +100,11 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 - `simulator/simui/` — interactive market-replay UI (`python -m
   simulator.simui`, localhost:8877): archived event groups replay like a
   live Kalshi event page; user + strategy orders fill through the real
-  Simulator (ManualTrader queue → step()). session.py (ReplaySession;
+  Simulator (ManualTrader queue → step()). Runs from stable under
+  `MemoryMax=1G` and is the one daemon `promote.sh` never auto-restarts
+  (a restart drops a live paper session) — it prints a NOTICE instead,
+  so "not restarted" is not spelled "not mentioned". session.py
+  (ReplaySession; every metadata load is bounded to the ids it renders;
   seek = flat restart; chunked advance proven ≡ one-shot sim.run),
   server.py (websockets clock, guarded — errors log+pause, never die
   silently), static/index.html (single-file Kalshi-style UI with WS

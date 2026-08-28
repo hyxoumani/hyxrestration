@@ -1,5 +1,84 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-28 02:40 UTC (RUNG-13 PASS — THE LADDER NAMED THE
+WRONG CONSUMER, AND THE RIGHT ONE OOM-KILLS A LIVE SERVICE IN 1.3 s.**
+Last pass named this rung: "`run_l2` accumulates and consumes the full
+equity curve in process memory, where no `memory_limit` reaches; that is
+now the only unbounded consumer left under `MemoryMax`. MEASURE FIRST."
+**(1) MEASURED FIRST, AND THE NAMED SUSPECT WAS NOT THE CONSUMER
+(EXP-1378).** On the live 15.7 GB stream archive, a real 3 h replay
+(121,054 snapshots, tracemalloc line attribution): the full in-process
+equity curve costs **144.4 bytes/row, 16.7 MiB** — 3.1 MiB per
+window-hour at a quiet hour, 5.6 MiB at a busy one. It is not the
+problem and it does not need bounding. What the same run allocates
+BEFORE its first event is `store.markets()`, unfiltered: **1,869,512
+MarketInfo objects, 1.32 GiB resident / 1.56 GiB traced peak** — 80x
+the curve, and worse than big, because the curve is sized by the
+OPERATOR'S WINDOW while the metadata load is sized by the ARCHIVE.
+Nothing a caller chooses bounds it and it grows on its own (486k rows /
+~430 MB on 08-07 -> 1.87M / 1.32 GiB three weeks later). That 3 h window
+touches **714 of the 1.87M: 0.04%**. A rung named by reasoning is a
+hypothesis; this one was wrong by two orders of magnitude and one
+measurement said so.
+**(2) THE LIVE CASUALTY WAS simui, NOT run_l2.** `hyxlab-simui.service`
+is `MemoryMax=1G`, `Restart=always`, and loaded the whole table on a
+page view at three call sites that each already knew the exact ids they
+were about to render. PROVEN, not reasoned: the old path under simui's
+own cap in a `systemd-run -p MemoryMax=1G` unit is **oom-killed in
+1.257 s**; the new path, same cap, same archive, loads metadata for all
+5,411 stream ids and **exits 0 at 734.5 MiB peak in 648 ms**. Live after
+the restart, over the real websocket: catalog of **846 events / 5,281
+markets, all 5,281 with titles** in 1.3 s, unit at 555 MiB, `oom_kill
+0`. It had simply not been asked for a page since the archive outgrew
+its cap.
+**(3) THE RULE, NOT THE TWO FIXES.** `Store.markets(market_ids=...)`
+bounds a load to a known id set (empty set means empty load — "no ids"
+degrading to "all markets" is the mutation that silently restores the
+1.32 GiB, and it reds). `tests/test_markets_load_discipline.py` sweeps
+the four packages by AST: every `.markets()` either passes a bounding
+kwarg or is in an ENUMERATED set of five offline one-shots
+(`divergence`, `run_backtest`, `run_favlong`, `run_favlong_tight`,
+`run_sim`), so a new unbounded caller — especially inside a `MemoryMax`
+unit — is a red suite. CLAIMED by running: the bounded load is the
+unfiltered load restricted, field for field, and run_l2's fills,
+metrics and snapshot count are IDENTICAL either way at 1559.9 -> 194.7
+MiB peak and 73.9 -> 50.6 s. Six mutants, all red.
+**(4) TWO THINGS FOUND WHILE FIXING IT.** (a) run_l2's seed asked for an
+EXCLUSIVE floor — the third copy of the hole rung-11 closed at shadow
+and divergence, and reverting it left the suite green, because that
+guard was named `test_both_seed_sites...` when three modules seed. Now
+three, derived. (b) `promote.sh` decided restarts for two of the three
+`Type=simple` daemons; simui was in neither the list nor the output, so
+it had run its original code since 2026-08-20. Its exclusion is
+DELIBERATE (a restart drops a live paper session) and a test said so
+when the first fix tried to add it — so the fix is a NOTICE with the
+by-hand command, and the new guard derives the daemon set from
+`scripts/systemd/` and demands each be auto-restarted or notify-only,
+but not neither. It fired correctly on this pass's own promotion.
+**(5) PROMOTED, SHADOW AND STREAM DEFERRED, SIMUI RESTARTED BY HAND.**
+The only kernel change is an added optional kwarg; neither daemon's call
+site moved, so a restart would buy them nothing and cost shadow its
+contiguous span (12h08m at promote time, against the ~3 spanned days the
+diurnal analyses need). Both are recorded as running old `hyxlab/
+store.py` until their next natural restart. Suite 869 -> **877 green**,
+pushed.
+NEXT PASS: (1) **THE NEW TOP RUNG — the five enumerated one-shots still
+load 1.32 GiB each, and `simulator.divergence` is the one that matters**:
+it is a standing report, it holds the table for the length of a 10.5-day
+replay, and its reachable set is derivable exactly as run_l2's now is.
+Graduating it is deleting one line from `UNBOUNDED_ONE_SHOTS`. (2) With
+the metadata load bounded, run_l2's filtered peak is 194.7 MiB and the
+curve is 16.7 MiB of it — MEASURE what the remaining ~178 MiB is
+(`bookreplay`'s `fetchmany(200_000)` is the suspect) before bounding
+anything else. (3) `batch units` self-clears 08-28 or the budget is
+stale and must be re-measured, not re-excused. (4) The #32/#33/#34 lens
+sweeps remain the standing job. (5) Mistakes #39 (mutation-testing
+restored source with `git checkout` and deleted the uncommitted fix,
+twice) and #40 are logged.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-27 16:20 UTC (RUNG-12 PASS — THE CHOKEPOINT'S ORDER
 RULE COULD NOT SEE A CALLER, AND NOW THE RULE IS THE CALLER'S TOO.**
 Last pass named this rung: "`tests/test_spillcap_discipline.py` checks

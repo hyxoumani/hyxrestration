@@ -872,6 +872,47 @@ Format: what happened → root cause → error type → prevention tier
     no way to lose anything, over a split/rejoin that has one.
 
 
+39. **2026-08-27 — mutation-testing restored the source with `git
+    checkout`, which deleted the UNCOMMITTED fix the mutants were
+    testing. Twice, in one pass.** The loop was `sed -i <mutation>; run
+    tests; git checkout <file>` — correct only if the file's committed
+    state IS the state under test. It was not: the fix itself was still
+    in the working tree, so the first restore silently reverted three
+    edited source files to HEAD, and the loop went on producing
+    plausible red/green output about code that no longer existed. The
+    tell was the last line: a "clean" re-run that stayed RED. Then the
+    identical mistake in the next mutation round, on `scripts/promote.sh`.
+    **RULE: mutate against a snapshot you made, not against git.** `cp
+    file /tmp/file.bak` before the loop and `cp /tmp/file.bak file` to
+    restore — the backup is of what you are actually testing. If git is
+    to be the restore point, COMMIT FIRST, and then git and the working
+    tree agree by construction. The second-order lesson is that a
+    verification loop is source-mutating code with no test of its own:
+    check `git status --porcelain` when it finishes, and treat a
+    surprising final "clean" result as evidence about the harness, not
+    about the code.
+
+40. **2026-08-27 — "not mentioned" was read as "forgotten", and the fix
+    re-litigated a decision a test had already recorded.** `promote.sh`
+    restarted two of the three `Type=simple` daemons; `hyxlab-simui`
+    appeared in neither the restart list nor the output, so every
+    promotion since its install left it running its original code while
+    the script printed "none — no daemon's code moved". The first fix
+    added it to the restart list. `tests/test_systemd_units.py` went red
+    on the spot: simui's exclusion is DELIBERATE — it holds a live paper
+    session that a restart drops — and the exclusion was written down in
+    the one place that can enforce it. The real defect was narrower than
+    it looked: the deliberate choice not to act had been implemented as
+    silence, and silence is indistinguishable from an oversight for a
+    daemon that is also `Restart=always` and therefore has no other path
+    to new code. It now prints a NOTICE with the by-hand command.
+    **RULE: when a guard reds on your fix, read the guard before
+    changing it — it is the previous pass talking.** And the guard's own
+    lesson: a decision NOT to do something must be emitted, not merely
+    encoded, or the next reader re-discovers it as a bug. The
+    replacement rule partitions the daemons into auto-restart and
+    notify-only, so a daemon may be either — but not neither.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
