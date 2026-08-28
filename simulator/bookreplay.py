@@ -192,7 +192,24 @@ class BookReplayer:
         )
 
 
-EVENT_CHUNK = 200_000
+# One `fetchmany` batch is materialised Python: a tuple of 10 objects
+# per row plus the `BookEvent` built from it. MEASURED on the live
+# stream archive (EXP-1380), a batch costs **660 bytes/row** — 125.5
+# MiB at 200k, 31.5 at 50k, 12.4 at 20k, 2.9 at 5k, linear across two
+# orders of magnitude — and the batch is the WHOLE non-trivial heap of a
+# replay: a 3 h `run_l2` peaked at 188.1 MiB traced with 184.0 of it on
+# the `fetchmany` line, against 12.4 MiB for the full equity curve.
+#
+# So the chunk is not a memory/speed trade-off to tune; the same 3 h
+# window replays in 17.4 s at 5k and 17.8 s at 200k, and every chunk
+# size from 1k to 200k yields the IDENTICAL 270,402 snapshots
+# (sha 9d52d498c6fd0e4f). It is a memory budget with no bill attached,
+# so it is written as one: the batch may cost EVENT_BATCH_BUDGET, and
+# the row count follows from what a row costs. This walk runs inside
+# `hyxlab-shadow` (MemoryMax=1G), which seeds through it at boot.
+EVENT_ROW_BYTES = 660  # measured; see tests/test_event_batch_discipline.py
+EVENT_BATCH_BUDGET = 4 * 1024 * 1024
+EVENT_CHUNK = 5_000  # <= EVENT_BATCH_BUDGET // EVENT_ROW_BYTES (6357)
 EVENT_SLICE_HOURS = 6.0
 
 _EVENT_COLS = "venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
@@ -317,4 +334,3 @@ def replay_snapshots(
         snap = replayer.finalize_snap(open_group[0])
         if snap is not None:
             yield snap
-
