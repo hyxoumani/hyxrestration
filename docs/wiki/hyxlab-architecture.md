@@ -55,6 +55,21 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   nothing; it replaces a number that is the disk. The tighter of 8x
   `memory_limit` and 25% of free space. Guard:
   `tests/test_spillcap_discipline.py`.
+- `hyxlab/memprobe.py` — how a PROCESS memory figure may be taken
+  (EXP-1381). `tracemalloc` sees the CPython heap and nothing else; a
+  replay process is mostly not the heap (DuckDB's buffer manager, its
+  extension images, retained allocator arenas). Rungs 12-15 quoted a
+  process peak from tracemalloc-instrumented runs and the profiler was
+  44-56% of it: the same `run_l2` measures **409.0 / 590.9 / 638.7 MiB**
+  peak RSS at tracing off / `start()` / `start(25)`, same 293,568
+  snapshots. `process_peak()` therefore RAISES while tracing unless the
+  caller writes `allow_tracing=True`, and `MemoryReading` keeps `rss` and
+  `traced_peak` as separate fields. `PeakRss` samples at 20 Hz because
+  the measured replay peaks 18.8 MiB above where it ENDS. Use RSS, not
+  `duckdb_memory()`: closing the stream connection returned 189.4 MiB
+  while the engine claimed to hold 55.5 — its own accounting is a lower
+  bound, and the cgroup kills against RSS. Guard:
+  `tests/test_memprobe_discipline.py`. Mistakes #41.
 - `Store.markets()` — market metadata keyed (venue, market_id), and the
   largest Python-heap allocation in the repo: unfiltered it is 1.87M
   MarketInfo objects, **1.32 GiB resident / 1.56 GiB traced peak**

@@ -913,6 +913,34 @@ Format: what happened → root cause → error type → prevention tier
     replacement rule partitions the daemons into auto-restart and
     notify-only, so a daemon may be either — but not neither.
 
+41. **2026-08-28 — a profiler's own footprint was published as the
+    subject's, and became the ladder's next rung.** Rungs 12-15 bounded
+    heap terms with `tracemalloc` and, from the same instrumented runs,
+    quoted a PROCESS figure: "the Python heap is 83.7 MiB but the process
+    is 1,025.9 MiB peak RSS — the DuckDB engine is where a replay's
+    memory is." The gap was set up as the top of the queue. Re-measured
+    (EXP-1381), the identical `run_l2` peaks at **409.0 MiB with
+    tracemalloc off, 590.9 MiB at `start()` and 638.7 MiB at
+    `start(25)`** — 293,568 snapshots and the same answer all three
+    times. Between 44% and 56% of the "process" number was the
+    instrument, and the residual attributes completely by phase with
+    nothing left over for the mystery the rung was named after. The
+    direction was right (DuckDB under-reports itself: closing the stream
+    connection returned 189.4 MiB while `duckdb_memory()` claimed 55.5)
+    and the magnitude was fiction. Type: `wrong-assumption` /
+    `missing-verification`. **RULE: an instrument that is on is part of
+    the measurement.** Two instruments in one script is normal — the
+    error is letting one script's attribution mode set another's
+    headline. Prevention: `hyxlab/memprobe.py` — `process_peak()` RAISES
+    while `tracemalloc.is_tracing()` unless the caller writes
+    `allow_tracing=True`, and the reading it returns keeps `rss` and
+    `traced_peak` as separate fields so neither can be reported as the
+    other (`tests/test_memprobe_discipline.py`, 7 mutants). Second-order:
+    a number that has been quoted forward across three passes has been
+    re-READ three times and never re-MEASURED. **Before building on an
+    inherited figure, reproduce it** — this ladder's own rule for
+    suspects ("measure first") was never applied to its own baselines.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -1,5 +1,66 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-28 16:05 UTC (RUNG-16 PASS — THE RUNG THE LADDER WAS
+CLIMBING TOWARD DOES NOT EXIST: 60% OF THE "PROCESS PEAK" WAS THE
+PROFILER.**
+Last pass named this rung: "the Python heap is now 83.7 MiB but the
+PROCESS is 1,025.9 MiB peak RSS. The heap is no longer where a replay's
+memory is; the DuckDB engine is — read the cgroup, the gap wants
+explaining."
+**(1) THE GAP WAS THE INSTRUMENT (EXP-1381).** One `run_l2`
+(`hylshi_fade`, 2026-08-27 12:00-15:00Z, live archive, **293,568
+snapshots and the identical answer all three times**), peak RSS by a
+50 ms sampler: **tracemalloc off 409.0 MiB / `start()` 590.9 MiB (+181,
++44%) / `start(25)` 638.7 MiB (+230, +56%)**. Rungs 12-15 measured heap
+terms under traceback attribution and quoted the process figure from the
+same run. Between 44% and 56% of "1,025.9 MiB peak RSS" was never a
+property of the replay, and the number had been carried forward across
+three passes — re-read three times, never re-measured.
+**(2) THE HONEST 409.0 MiB ATTRIBUTES COMPLETELY, WITH NOTHING LEFT
+OVER.** By phase: 69.6 interpreter + imports; **+60.8 attaching the
+stream archive before any query runs**; +72.5 the `DISTINCT market_id`
+scan (engine reports 46.5, retained for the whole replay); +120.1
+`store.markets()` for 614 ids (engine 99.2, 65.9 returned at close);
++8.6 seed replay; +115.6 trading replay. There is no unexplained term,
+so there is no rung here.
+**(3) THE DIRECTION WAS RIGHT AND ONLY THE DIRECTION.** DuckDB does
+under-report itself: closing the stream connection returned **189.4
+MiB** while `duckdb_memory()` claimed 55.5 MiB was held. So the engine's
+own accounting is a LOWER BOUND and RSS is the instrument — which is the
+one part of the old rung worth keeping.
+**(4) MEASURED AND NOT A PROBLEM: the archive connection of an ad-hoc
+run carries `memory_limit` 48.2 GiB** (no cgroup binds, so
+`cgroup_memory_limit` is a deliberate no-op) against the stream
+connection's pinned 512 MiB. The asymmetry is real; it costs nothing —
+the buffer manager held 99.2 MiB, bounded by what the 614-id lookup
+scanned, not by the limit. Recorded rather than "fixed": lowering a
+limit nothing reaches buys nothing.
+**(5) THE ARTIFACT IS A REFUSAL, NOT A NOTE.** `hyxlab/memprobe.py`:
+`process_peak()` RAISES while `tracemalloc.is_tracing()` unless the
+caller writes `allow_tracing=True`; `MemoryReading` keeps `rss` and
+`traced_peak` as separate fields so neither can be published as the
+other; `PeakRss` samples, because the measured replay peaks 18.8 MiB
+above where it ends. Seven mutants, all red — including `.peak` trusting
+the sampler alone, since **VmHWM lags `statm` by ~1 MiB** (measured), so
+it takes the max of the two. Mistakes **#41**. Suite 882 -> **889**.
+**(6) QA READ: one FAIL, and it is the known one.** `batch units within
+measured run budget` still names `hyxlab-sweep` 08-21, 14.64h/12.5h —
+the 7-day lookback clears it **20:48Z tonight**, ~5 h out. Every other
+check PASS/SKIP/WATCH; stream fresh 9s, collection continuous (largest
+gap 6.7 min), poly universe not shrinking.
+NEXT PASS: (1) **re-read `batch units` after 20:48Z** — if it has not
+cleared, the 08-21 run is not the only breach and the budget must be
+re-measured, not re-excused. (2) The memory ladder has **no measured
+rung left**: run_l2 is 409.0 MiB fully attributed, the shadow daemon's
+cgroup reports `memory.events` all-zero, and the four remaining
+unbounded one-shots (`run_backtest`, `run_favlong`, `run_favlong_tight`,
+`run_sim`) are by-hand runs outside any cgroup — a tail, not a queue.
+Climb somewhere else rather than manufacturing a rung. (3) The
+#32/#33/#34 lens sweeps remain the standing job.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-28 14:35 UTC (RUNG-15 PASS — THE LADDER FINALLY
 POINTS AT THE EQUITY CURVE, BECAUSE THE BATCH THAT DWARFED IT 15x IS
 GONE.**
