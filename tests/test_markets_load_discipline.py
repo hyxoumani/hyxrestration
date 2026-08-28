@@ -64,7 +64,6 @@ BOUNDING = ("market_ids", "alive_days")
 # waived: deleting a line here is how a site graduates, and adding one
 # is a deliberate act with a reviewer.
 UNBOUNDED_ONE_SHOTS = {
-    "simulator/divergence.py",
     "simulator/run_backtest.py",
     "simulator/run_favlong.py",
     "simulator/run_favlong_tight.py",
@@ -105,12 +104,19 @@ def test_every_markets_load_is_bounded_or_enumerated():
     )
 
 
-def test_the_two_live_archive_readers_bound_their_load():
+def test_the_live_archive_readers_bound_their_load():
     """Named, not merely absent from the list above: `run_l2` reads the
-    live archive by hand and `simui` reads it from inside a
-    `MemoryMax=1G` unit, so their bound is the point of the rung."""
+    live archive by hand, `simui` reads it from inside a `MemoryMax=1G`
+    unit, and `divergence` is the standing report that HOLDS the table
+    for the length of a 10.5-day replay — so their bound is the point of
+    the rung, and a graduation that later regresses reds here by name
+    rather than merely re-joining the enumeration above."""
     calls = _markets_calls()
-    for module in ("simulator/run_l2.py", "simulator/simui/session.py"):
+    for module in (
+        "simulator/run_l2.py",
+        "simulator/simui/session.py",
+        "simulator/divergence.py",
+    ):
         assert module in calls, f"{module} no longer loads market metadata"
         for c in calls[module]:
             assert any(k.arg == "market_ids" for k in c.keywords), (

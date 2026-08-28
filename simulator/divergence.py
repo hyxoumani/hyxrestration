@@ -60,22 +60,6 @@ def replay_run(
     classify unmatched fills against the same coverage breaks the replay
     traded through.
     """
-    # `open_retry`, not a bare `Store`: this attaches the LIVE archive,
-    # whose write lock is taken by the 5-minute collector and held for
-    # ~7h by the poly sweep. A bare read-only attach dies instantly on
-    # the collision -- which is exactly how this report failed on
-    # 2026-08-25 08:58Z, against poly_sweep at 4h43m. `run_l2` (the
-    # module that copied this function's seeding discipline) already used
-    # the retrying helper; this site never got it. The shadow daemon
-    # takes the third valid option and DEGRADES (`except duckdb.Error:
-    # return None`), which a one-shot report cannot do.
-    store = open_retry(archive_db, read_only=True)
-    try:
-        markets = store.markets()
-    finally:
-        store.close()
-    sim = Simulator(markets, [STRATEGIES[n]() for n in strategy_names], latency=latency)
-
     with connect_retry(stream_db, **STREAM_ATTACH) as conn:
         # Seed books exactly as shadow does: replay history since the
         # last coverage break WITHOUT stepping the sim.
@@ -83,6 +67,43 @@ def replay_run(
             f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
             [anchor],
         ).fetchone()[0]
+        # Metadata for the markets THIS REPLAY CAN TOUCH, and no others
+        # — derived exactly as `run_l2` derives it (EXP-1378, EXP-1379).
+        # `store.markets()` unfiltered is 1.87M MarketInfo objects, 1.32
+        # GiB resident, sized by the ARCHIVE rather than by the window
+        # the operator asked for, and this report is the one-shot that
+        # holds it LONGEST: a 10.5-day replay of a shadow run. The
+        # archive attach therefore moved INSIDE the stream connection,
+        # because the id set is a fact the stream archive owns.
+        # The floor is INCLUSIVE for the same reason the seed walk below
+        # is (`lo_inclusive`): the reconnect image at a gap end is a real
+        # market of this replay. `end`, not `anchor`, is the upper bound
+        # — the traded window runs past the seed.
+        ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT DISTINCT market_id FROM book_events"
+                " WHERE venue='kalshi' AND recv_ts >= ? AND recv_ts <= ?",
+                [floor or datetime.min, end],
+            ).fetchall()
+        ]
+        # `open_retry`, not a bare `Store`: this attaches the LIVE
+        # archive, whose write lock is taken by the 5-minute collector
+        # and held for ~7h by the poly sweep. A bare read-only attach
+        # dies instantly on the collision -- which is exactly how this
+        # report failed on 2026-08-25 08:58Z, against poly_sweep at
+        # 4h43m. `run_l2` (the module that copied this function's
+        # seeding discipline) already used the retrying helper; this
+        # site never got it. The shadow daemon takes the third valid
+        # option and DEGRADES (`except duckdb.Error: return None`),
+        # which a one-shot report cannot do.
+        store = open_retry(archive_db, read_only=True)
+        try:
+            markets = store.markets(venue="kalshi", market_ids=ids)
+        finally:
+            store.close()
+        sim = Simulator(markets, [STRATEGIES[n]() for n in strategy_names], latency=latency)
+
         from simulator.bookreplay import BookReplayer
 
         replayer = BookReplayer()

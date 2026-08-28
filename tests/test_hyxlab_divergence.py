@@ -589,3 +589,122 @@ def test_replay_survives_a_transient_archive_lock(tmp_path, monkeypatch):
     )
     assert len(attempts) == 3, "the attach must have been retried, not merely lucky"
     assert len(fills) > 0
+
+
+def test_replay_loads_only_markets_its_window_can_touch(tmp_path, monkeypatch):
+    """EXP-1379, the graduation of `simulator/divergence.py` off
+    `UNBOUNDED_ONE_SHOTS`. This report holds the metadata table LONGEST
+    of the five one-shots — a 10.5-day replay of a shadow run — and the
+    table is 1.87M MarketInfo objects / 1.32 GiB, sized by the ARCHIVE
+    rather than by the window asked for. Its reachable set is exactly
+    the ids `book_events` carries over [seed floor, end], so:
+
+      * a market the archive knows and the window never sees must NOT
+        reach the Simulator, and
+      * the bound must run to `end`, not to `anchor` — the traded window
+        starts where the seed stops, so an `anchor` upper bound would
+        drop metadata for every market that first appears after the
+        anchor, which is most of a 10.5-day run.
+    """
+    import simulator.divergence as mod
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+
+    store = Store(archive_db)
+    store.upsert_markets(
+        [
+            MarketInfo(venue="kalshi", market_id="M0", title="entirely pre-floor"),
+            MarketInfo(venue="kalshi", market_id="M1", title="seeded"),
+            MarketInfo(venue="kalshi", market_id="M4", title="only the reconnect image"),
+            MarketInfo(venue="kalshi", market_id="M2", title="post-anchor"),
+            MarketInfo(venue="kalshi", market_id="M3", title="never in this window"),
+        ]
+    )
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    # A real seed floor, so the lower bound is exercised rather than
+    # collapsing to `datetime.min`: a books gap whose `ended_at` is the
+    # recv_ts of the reconnect image that re-seeds M1 (rung-11).
+    sstore.append_gap("kalshi", "books", T0 - timedelta(hours=1), T0, "seq_reset")
+    # M0 lives entirely BEFORE the floor: known to the archive,
+    # unreachable by this replay.
+    sstore.append_events(_snapshot_frame("M0", 1, 40, 59, T0 - timedelta(hours=2)))
+    # M1 and M4 share the reconnect image's recv_ts; M4 has NO other
+    # event, so an exclusive floor loses it and only it.
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.append_events(_snapshot_frame("M4", 1, 40, 59, T0))
+    for seq, bid, ask_no, minutes in [(2, 44, 55, 11), (3, 45, 54, 22)]:
+        sstore.append_events(
+            _snapshot_frame("M1", seq, bid, ask_no, T0 + timedelta(minutes=minutes))
+        )
+    # M2 exists only INSIDE the traded window; M3 only far past `end`.
+    sstore.append_events(_snapshot_frame("M2", 1, 44, 55, T0 + timedelta(minutes=30)))
+    sstore.append_events(_snapshot_frame("M3", 1, 44, 55, T0 + timedelta(hours=9)))
+    sstore.flush()
+
+    seen, real = {}, mod.Simulator
+
+    def spy(markets, *a, **kw):
+        seen["markets"] = markets
+        return real(markets, *a, **kw)
+
+    monkeypatch.setattr(mod, "Simulator", spy)
+    fills = mod.replay_run(
+        "R1",
+        T0.replace(tzinfo=None),
+        (T0 + timedelta(hours=2)).replace(tzinfo=None),
+        latency=0.0,
+        strategy_names=["probe"],
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+    )
+    assert fills, "the replay must still trade, or the bound is vacuous"
+    assert set(seen["markets"]) == {("kalshi", "M1"), ("kalshi", "M2"), ("kalshi", "M4")}
+    # Named, so a regression to `anchor` reads as itself rather than as
+    # a set mismatch.
+    assert ("kalshi", "M2") in seen["markets"], "the bound must run to `end`, not `anchor`"
+    assert ("kalshi", "M4") in seen["markets"], "the floor must INCLUDE the reconnect image"
+    assert seen["markets"][("kalshi", "M1")].title == "seeded"  # real rows, not stubs
+
+
+def test_a_window_with_no_events_loads_no_metadata(tmp_path, monkeypatch):
+    """The empty id set is a real bound. "No ids" degrading to "all
+    markets" — `market_ids=ids or None` — is the one-character mutation
+    that silently restores the 1.32 GiB at exactly the moment the
+    operator asked for the cheapest possible replay, and it is invisible
+    to every test whose window happens to contain events."""
+    import simulator.divergence as mod
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id=f"M{i}") for i in range(4)])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    # Every event is past `end`, so the replay's reachable set is empty
+    # while the archive's metadata table is not.
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0 + timedelta(hours=9)))
+    sstore.flush()
+
+    seen, real = {}, mod.Simulator
+
+    def spy(markets, *a, **kw):
+        seen["markets"] = markets
+        return real(markets, *a, **kw)
+
+    monkeypatch.setattr(mod, "Simulator", spy)
+    fills = mod.replay_run(
+        "R1",
+        T0.replace(tzinfo=None),
+        (T0 + timedelta(hours=2)).replace(tzinfo=None),
+        latency=0.0,
+        strategy_names=["probe"],
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+    )
+    assert fills == []
+    assert seen["markets"] == {}
