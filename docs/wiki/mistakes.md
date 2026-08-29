@@ -941,6 +941,45 @@ Format: what happened → root cause → error type → prevention tier
     inherited figure, reproduce it** — this ladder's own rule for
     suspects ("measure first") was never applied to its own baselines.
 
+42. **2026-08-29 — the fix for #32 decomposed a reading and left the
+    COMPARISON BETWEEN readings in prose, so #32's own lesson repeated
+    itself one axis over.** #32's finding was that `flagged_quoted: 0`
+    had been read five times as a measurement while most survivors were
+    never tested, and its stated root cause was that the 2026-08-02
+    pass's hand decomposition "lives only in the prose of the pass that
+    found it". The fix — `quoted_status` per bucket, `quoted_verdict`
+    counts that partition the tier — makes ONE reading honest. It does
+    not make two readings comparable, and the question a reader actually
+    has after the second `confirmed: 0` is whether the silence is
+    receding. Measured this pass on +15% settled data (1,592,941 ->
+    1,835,987): survivors **22 -> 28**, tested **3 -> 8**, silent
+    **19 -> 20**, tested share **0.1364 -> 0.2857**, and the tier's
+    first ever `refuted_sign`. Every one of those numbers came from
+    loading two JSON files by hand — i.e. the 08-02 failure, reproduced
+    by the entry written to prevent it.
+    Type: `wrong-statistic`, #32/#33's family; the escalation miss is
+    **scope**, not site. #34's rule ("enumerate every other
+    caller/field/tier the same lens applies to") was applied across
+    SITES and not across TIME.
+    **RULE: when a per-reading decomposition replaces a headline, ask
+    what the reader compares it to. If the answer is "the last
+    reading", the trajectory is part of the fix.**
+    Prevention: `verdict_stability` carries both partitions'
+    trajectories with the **population beside every count** — a count
+    moves because statuses changed and because the population moved
+    under them, and nothing in the count says which (#35) — and a prior
+    that predates the field or carries a different status set is
+    **absent from the trajectory rather than a zero in it**, since
+    fabricating that zero manufactures the very run of zeros the field
+    exists to break up. Seven mutants, all red, including both
+    zero-fills and a third `*_verdict` published without registering it
+    (AST-enumerated, #37's shape).
+    **Honest limit**: two readings carry the field (26 of 27 priors are
+    silent about it), so the trajectory is a slope through two points.
+    It is a field that will accumulate, not a trend that has been
+    established.
+
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

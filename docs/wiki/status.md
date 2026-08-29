@@ -1,5 +1,61 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-29 02:20 UTC (DRIFT PASS -- THE STANDING REPORT MOVED,
+AND THE FIELD THAT WOULD HAVE SHOWN IT DID NOT EXIST.**
+Last pass left two items: re-read the QA batch check after 20:48Z, and
+"climb somewhere else" because the memory ladder has no measured rung.
+**(1) THE QA BREACH WAS THE ONE RUN, AND IT CLEARED ON SCHEDULE.**
+`batch units within measured run budget` now reads worst
+`hyxlab-sweep.timer` **10.96h/12.5h** over 14 completed runs in 7d; the
+08-21 14.64h run rolled out of the lookback exactly as predicted, so it
+was not the visible edge of a wider breach and the budget does not need
+re-measuring. Full QA: 20 PASS, 2 WATCH (draining tape tail; poly-sweep
+overlapping the fade window at zero cost), 1 SKIP (collect-skips still
+UNVERIFIED -- no cycle has yet needed to wait out the lock).
+**(2) THE ATLAS RE-RUN ON +15% SETTLED DATA MOVED THE STRICTEST TIER.**
+Settled markets **1,592,941 -> 1,835,987**: day-weighted survivors
+**22 -> 28**, base tier 395 -> 399 buckets with tested 195 -> 207 and
+flagged share of tested 0.7231 -> 0.7053. Quoted tier:
+**0 confirmed / 7 not-significant / 1 refuted-on-sign / 20 silent**
+against 08-25's 0 / 3 / 0 / 19 -- the tier's **FIRST EVER
+`refuted_sign`**, `Financials|6h|d2`: gap +0.11 on all books, **-0.026
+on the 1,236 quoted ones**, 23% of the gap reversed on two-sided books.
+`gap_reversed_on_quoted_books` 6/22 -> **8/28**. The standing conclusion
+is unchanged in DIRECTION -- no bucket with quoted evidence supports the
+longshot-fade signature -- and now one bucket's quoted evidence points
+the other way. Not a verdict: pre-registration still decides.
+**(3) AND THE READING THAT MATTERED WAS NOT IN THE REPORT.** Both
+readings print `confirmed: 0`; that sentence is identical whether the
+silence is receding or growing, which is **#32's defect one axis over**
+-- the decomposition is per-reading, and the comparison ACROSS readings
+lived only in this pass's prose, exactly as the 08-02 hand
+decomposition did. `verdict_stability` now carries the trajectory of
+both partitions with the **population beside every count** (a count
+moves because statuses changed and because the population moved under
+them, and nothing in the count says which -- #35), and a prior that
+predates the field or carries a different status set is **ABSENT from
+the trajectory, not a zero in it**. Printed: `survivors +6, tested +5,
+silent +1; tested share 0.1364 -> 0.2857` -- 26 of 27 prior readings
+are silent about this field. Seven mutants, all red, including both
+zero-fills and a third `*_verdict` published without registering it
+(AST-enumerated, #37). Suite 889 -> **895**, promoted (no daemon's code
+moved), pushed.
+NEXT PASS: (1) **the quoted tier is now RESOLVING, not stalled** --
+tested share doubled in four days, so re-run the atlas when settled
+markets pass ~2.1M and read `verdict_stability.quoted_verdict` first;
+if `tested` stops gaining while survivors grow, MIN_N is the binding
+constraint and that is a measurement, not a tuning excuse. (2) The
+maker bracket is the other standing report and is 4 days stale
+(08-25) -- re-run it and read `direction_verdict`'s `powered` count on
+the newly accumulated stream. (3) `collect-skips` has been UNVERIFIED
+since it shipped; it needs a cycle that actually waits out the lock,
+which is a production event nobody schedules -- decide whether to
+force one or to stop printing it as a section. (4) The #32/#33/#34
+lens sweeps remain the standing job.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-28 16:05 UTC (RUNG-16 PASS — THE RUNG THE LADDER WAS
 CLIMBING TOWARD DOES NOT EXIST: 60% OF THE "PROCESS PEAK" WAS THE
 PROFILER.**
