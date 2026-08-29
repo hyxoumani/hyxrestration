@@ -907,6 +907,99 @@ def _quoted_verdict(buckets: list[dict]) -> dict:
     }
 
 
+# The two verdicts whose counts PARTITION a population, and the field that
+# names that population. Kept together because the stability of a partition is
+# read the same way for both, and because a third verdict must appear here to
+# be tracked at all -- an enumeration a test asserts against, per mistakes #37.
+VERDICT_POPULATION = {
+    "flag_verdict": ("buckets", FLAG_STATUSES),
+    "quoted_verdict": ("day_weighted_survivors", QUOTED_STATUSES),
+}
+
+
+def _verdict_point(report: dict, field: str, pop_key: str, statuses: tuple) -> dict | None:
+    """One reading of a verdict, or None if the report is SILENT about it.
+
+    A prior that predates the field, or carries a different status set, has no
+    opinion on these counts. Filling it with zeros would be #32's defect on a
+    time axis: an absent measurement plotted as a measured zero.
+    """
+    v = report.get(field)
+    if not isinstance(v, dict) or pop_key not in v:
+        return None
+    counts = v.get("counts")
+    if not isinstance(counts, dict) or set(counts) != set(statuses):
+        return None
+    pop = v[pop_key]
+    tested = pop - counts["silent"]
+    return {
+        "generated_at": report.get("generated_at"),
+        "counts": {s: counts[s] for s in statuses},
+        # published NEXT TO the counts, never inferred from them: a count moves
+        # both because statuses changed and because the population changed
+        # underneath them, and nothing in the count says which (mistakes #35).
+        "population": pop,
+        "tested": tested,
+        "tested_share": round(tested / pop, 4) if pop else None,
+        "shares": {s: (round(counts[s] / pop, 4) if pop else None) for s in statuses},
+    }
+
+
+def verdict_stability(out_dir: Path, current: dict) -> dict:
+    """Is the silence shrinking as the archive grows, or only being restated?
+
+    `flag_verdict` and `quoted_verdict` each partition a population into
+    statuses, and the reading that matters across time is not any single count
+    but whether `tested` is gaining on `silent`. Measured 2026-08-29 against
+    2026-08-25 -- settled markets 1.59M -> 1.84M -- the day-weighted tier grew
+    22 -> 28 while its silent share fell 0.8636 -> 0.7143, and the tier's first
+    ever `refuted_sign` appeared. Under a bare count that reads as "0 confirmed
+    for the Nth consecutive reading" either way.
+
+    This is the same failure #32 was written for, one axis over: the 08-02 pass
+    decomposed the tier by hand and the decomposition died with the prose. So
+    did the 08-25 -> 08-29 comparison, until it was made a field.
+
+    Never a verdict: a silent bucket getting tested is data arriving, not
+    evidence, and pre-registration still decides.
+    """
+    priors, n_files = _distinct_readings(
+        out_dir, json.dumps(current.get("data_fingerprint"), sort_keys=True)
+    )
+    out: dict = {}
+    for field, (pop_key, statuses) in VERDICT_POPULATION.items():
+        points = [_verdict_point(r, field, pop_key, statuses) for r in priors]
+        carried = [p for p in points if p is not None]
+        here = _verdict_point(current, field, pop_key, statuses)
+        if here is not None:
+            carried.append(here)
+        prior = carried[-2] if len(carried) > 1 else None
+        latest = carried[-1] if carried else None
+        out[field] = {
+            "rule": (
+                "counts are comparable across readings only against the "
+                "`population` printed beside them; a prior that does not carry "
+                "this verdict is absent from `trajectory`, not a zero in it"
+            ),
+            "reports_read": n_files,
+            "readings": len(carried),
+            "absent_in_priors": len(points) - len([p for p in points if p is not None]),
+            "trajectory": carried,
+            "delta_vs_prior": (
+                {
+                    "counts": {s: latest["counts"][s] - prior["counts"][s] for s in statuses},
+                    "population": latest["population"] - prior["population"],
+                    "tested": latest["tested"] - prior["tested"],
+                }
+                if prior is not None
+                else None
+            ),
+            "tested_share_first": carried[0]["tested_share"] if carried else None,
+            "tested_share_latest": latest["tested_share"] if latest else None,
+        }
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="calibration atlas: implied vs realized")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
@@ -931,6 +1024,7 @@ def main() -> None:
     # report is written -- the current run is the comparison's subject,
     # not one of its priors.
     atlas["tier_stability"] = tier_stability(out_dir, atlas)
+    atlas["verdict_stability"] = verdict_stability(out_dir, atlas)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(atlas, indent=1) + "\n")
 
@@ -980,6 +1074,18 @@ def main() -> None:
             f" {qv['gap_retained_median']}, range [{qv['gap_retained_min']},"
             f" {qv['gap_retained_max']}], {qv['gap_reversed_on_quoted_books']}"
             f" reversed sign"
+        )
+    # ...and the same decomposition ACROSS readings, because "0 confirmed" is
+    # the same sentence whether the silence is receding or not.
+    vs = atlas["verdict_stability"]["quoted_verdict"]
+    d = vs["delta_vs_prior"]
+    if d is not None:
+        print(
+            f"[atlas] quoted tier vs prior reading ({vs['readings']} readings,"
+            f" {vs['absent_in_priors']} prior report(s) silent): survivors"
+            f" {d['population']:+d}, tested {d['tested']:+d}, silent"
+            f" {d['counts']['silent']:+d}; tested share"
+            f" {vs['tested_share_first']} -> {vs['tested_share_latest']}"
         )
     if flags:
         print(
