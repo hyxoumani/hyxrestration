@@ -2,7 +2,7 @@
 range sits beside it, and the entry-drag model refuses to guess.
 Synthetic ledgers, no network."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import duckdb
 
@@ -370,3 +370,156 @@ def test_the_panel_is_an_intersection_not_the_days_spanned():
     assert panel["ragged_hours"] == [3]
     assert _hod(run, 3)["n_days"] == 3 and _hod(run, 3)["balanced"] is False
     assert _hod(run, 1)["balanced"] is True
+
+
+# ---------------------------------------------------------------------------
+# The census: which RUNS in a ledger are entitled to a shape claim
+#
+# The defect this section exists for (2026-08-29) is not across readings the
+# way the atlas's and the queue-score's were -- it is across RUNS inside one
+# reading. Every archived reading was taken with `--run` on whatever run was
+# live that day, which is always the shortest, so all of them printed
+# UNDERPOWERED; the all-runs default path raised TypeError on the first run
+# with no whole hour and had never once completed. Four fully powered runs
+# (up to 11 whole days, 55 day-pairs) sat unread for nine days.
+# ---------------------------------------------------------------------------
+
+_CENSUS_HODS = list(range(4, 18))
+
+
+def _run_rows(rid, curves, day0=0):
+    """`_multiday`'s row emitter for one run of a multi-run ledger."""
+    rows = [(rid, day0 * 1440 - 30, 0.0)]  # partial opening hour, excluded
+    for day, hours in sorted(curves.items()):
+        for hod, level in sorted(hours.items()):
+            base = (day0 + day) * 1440 + hod * 60
+            for k in range(25):
+                rows.append((rid, base + k * 2, level - 1.0))
+            rows.append((rid, base + 59, level))
+    last = max((day0 + d) * 1440 + max(h) * 60 for d, h in curves.items())
+    rows.append((rid, last + 61, 0.0))  # partial closing hour, excluded
+    return rows
+
+
+_RISING = {h: float(h * 20) for h in _CENSUS_HODS}
+_FALLING = {h: float(-h * 20) for h in _CENSUS_HODS}
+_BOWL = {h: float((h - 10) ** 2) for h in _CENSUS_HODS}
+
+
+def _census_ledger():
+    """Four runs, one of each thing a run can be. Ordered by run_id, so
+    the LAST one is deliberately the weakest -- that is the run every
+    archived reading was taken on."""
+    rows = []
+    # r1: two points inside a single hour. No whole hour at all.
+    rows += [("r1_none", 0, 1.0), ("r1_none", 20, 2.0)]
+    # r2: MIN_DAYS+1 days of the same curve -> powered, and it repeats.
+    rows += _run_rows("r2_pow_rep", dict.fromkeys(range(MIN_DAYS + 1), _BOWL))
+    # r3: the same span, days that disagree -> powered, does not repeat.
+    rows += _run_rows(
+        "r3_pow_not", {d: (_RISING if d % 2 == 0 else _FALLING) for d in range(MIN_DAYS + 1)}
+    )
+    # r4: MIN_DAYS days, but 17Z is missing from the last one, so the
+    # weakest hour has MIN_DAYS-1 draws. Underpowered PROFILE while its
+    # day-pairs are still scorable -- which is what makes it the mutant
+    # detector for tallying shape over every run instead of the powered
+    # ones.
+    r4 = {d: dict(_RISING) for d in range(MIN_DAYS)}
+    del r4[MIN_DAYS - 1][17]
+    rows += _run_rows("r4_under", r4)
+    return _ledger(sorted(rows, key=lambda r: (r[0], r[1])))
+
+
+def test_a_run_with_no_whole_hour_is_unscorable_not_a_zero_draw_run():
+    """LOAD-BEARING (mistakes #32, and the crash that hid the ledger).
+
+    `min(..., default=0)` made a run that published NO hour-of-day mean
+    report "weakest hour has 0 < 3 draws" -- an absent measurement
+    printed as a measured zero -- and the panel intersection over the
+    same empty family raised TypeError, which is why the all-runs path
+    had never completed and the powered runs were never read.
+    """
+    report = build_diurnal(_census_ledger())  # must not raise
+    run = _run(report, "r1_none")
+    assert run["n_whole_hours"] == 0
+    assert run["validity"]["profile_status"] == "unscorable"
+    assert run["validity"]["profile_verdict"].startswith("UNSCORABLE")
+    assert "0 <" not in run["validity"]["profile_verdict"]
+    # And no panel is not a balanced panel over zero days.
+    assert run["level_panel"]["level_verdict"].startswith("NO PANEL")
+    assert run["level_panel"]["days"] == []
+
+    census = report["power_census"]
+    assert census["unscorable"]["run_ids"] == ["r1_none"]
+    # Held OUT of the partition rather than counted as underpowered.
+    assert census["profile"]["scorable"] == 3
+    assert sum(census["profile"]["counts"].values()) == 3
+    assert census["runs_published"] == 4
+
+
+def test_shape_is_tallied_over_the_powered_runs_only():
+    """LOAD-BEARING. `r4_under` has scorable day-pairs, an underpowered
+    profile, and a REPEATS status: a census that tallies every run's
+    `shape_status` counts it and prints repeats 2 -- a false positive
+    manufactured out of a run whose weakest hour has fewer than MIN_DAYS
+    draws."""
+    census = build_diurnal(_census_ledger())["power_census"]
+    assert census["profile"]["counts"] == {"powered": 2, "underpowered": 1}
+    pw = census["shape_among_powered"]
+    assert pw["n"] == 2
+    assert pw["counts"] == {"repeats": 1, "does_not_repeat": 1, "underpowered": 0}
+    assert [u["run_id"] for u in census["profile"]["powered_runs"]] == [
+        "r2_pow_rep",
+        "r3_pow_not",
+    ]
+    # r4 IS scorable and DOES say something -- it is excluded on power,
+    # not because it had nothing to say.
+    r4 = _run(build_diurnal(_census_ledger()), "r4_under")
+    assert r4["validity"]["profile_status"] == "underpowered"
+    assert r4["shape_agreement"]["shape_status"] == "repeats"
+    assert r4["shape_agreement"]["n_scored_pairs"] >= 2
+
+
+def test_every_census_count_carries_the_span_that_produced_it():
+    """mistakes #35: a class count moves both because statuses changed
+    and because runs entered the ledger under them, and nothing in the
+    count says which. The spans are published beside it."""
+    census = build_diurnal(_census_ledger())["power_census"]
+    pw = census["shape_among_powered"]
+    assert pw["days_span"] == [MIN_DAYS + 1, MIN_DAYS + 1]
+    assert pw["total_scored_pairs"] == sum(
+        u["n_scored_pairs"] for u in census["profile"]["powered_runs"]
+    )
+    assert pw["total_scored_pairs"] > 0
+    for u in census["profile"]["powered_runs"]:
+        assert u["n_days"] == MIN_DAYS + 1
+        assert u["min_draws_per_hour"] >= MIN_DAYS
+
+
+def test_the_latest_run_is_named_and_is_not_the_powered_one():
+    """The whole failure mode was reading the newest run's verdict. The
+    census names it explicitly and says whether it is entitled to the
+    claim, rather than letting it be the last line on the screen."""
+    census = build_diurnal(_census_ledger())["power_census"]
+    latest = census["latest_run"]
+    assert latest["run_id"] == "r4_under"
+    assert latest["profile_status"] == "underpowered"
+    assert latest["is_powered"] is False
+    # ... while the ledger it sits in has answered the question twice.
+    assert census["shape_among_powered"]["n"] == 2
+
+
+def test_an_open_run_is_flagged_off_the_ledger_not_off_run_id_order():
+    """A run still writing has a span that will grow, so its status is a
+    snapshot. Newest run_id is not the test -- the last equity point is:
+    here the alphabetically LAST run is the stale one."""
+    # The ledger stores naive UTC, so the clock this is built against is
+    # UTC too -- a naive LOCAL now would read as hours stale on any host
+    # west of Greenwich, and pass this test for the wrong reason.
+    now = datetime.now(UTC).replace(tzinfo=None)
+    live = [("a_live", int((now - T0).total_seconds() // 60) - m, 1.0) for m in (5, 3, 1)]
+    stale = [("z_stale", 0, 1.0), ("z_stale", 20, 2.0)]
+    report = build_diurnal(_ledger(sorted(live + stale, key=lambda r: r[1])))
+    assert _run(report, "a_live")["open"] is True
+    assert _run(report, "z_stale")["open"] is False
+    assert report["power_census"]["open_runs"] == ["a_live"]

@@ -103,6 +103,27 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      level column can be read DOWN. `mean_equity_end` is kept beside
      it because it is the wider sample for reading any single hour --
      it is comparisons ACROSS hours that it cannot support.
+  8. A PER-RUN VERDICT READ OFF THE NEWEST RUN IS THE WEAKEST READING
+     THE LEDGER CONTAINS, AND IT IS THE ONE THE EYE TAKES. Measured
+     2026-08-29: all six archived readings of this report were taken
+     with `--run` on whatever run was live that day and all six printed
+     UNDERPOWERED, while the ledger already held FOUR fully powered runs
+     -- 20260713T064302 (4 days), 20260722T081852 (6), 20260803T142853
+     (5), 20260810T081931 (11 days, 10 draws/hr, 55 day-pairs) -- every
+     one of them reading DOES NOT REPEAT. Nobody saw them because the
+     all-runs default path raised `TypeError` on the first run with no
+     whole hour (`set.intersection` over an empty family) and so had
+     never once completed. `power_census` is therefore published FIRST:
+     it partitions the runs by `profile_status`, tallies `shape_status`
+     over the POWERED runs only, holds the unscorable runs out of that
+     partition rather than counting them as underpowered zeros, names
+     the latest run and whether it is entitled to a claim, and flags the
+     runs still writing. SHAPE is poolable across runs because rank
+     correlation is computed within a run; LEVEL is not, because each
+     run seeds a different book -- the census tallies no level term.
+     Bound 6's open question is thereby ANSWERED on the powered subset:
+     the daily shape does not recur. Not a verdict on any strategy:
+     pre-registration still decides that.
 """
 
 from __future__ import annotations
@@ -139,6 +160,16 @@ MIN_SHARED_HOURS = 12
 #: it is a screen against "the mean is an average of unlike days", not
 #: a significance test.
 SHAPE_RHO = 0.7
+#: The three things a run's diurnal profile can be. `unscorable` is NOT
+#: a weak `underpowered`: a run with no whole hour published no
+#: hour-of-day mean at all, and counting it as underpowered would plot an
+#: absent measurement as a measured zero (mistakes #32).
+PROFILE_STATUSES = ("powered", "underpowered", "unscorable")
+#: The three things the day-pair shape test can say. Same partition rule.
+SHAPE_STATUSES = ("repeats", "does_not_repeat", "underpowered")
+#: A run whose last equity point is this recent is still WRITING: its
+#: span will grow, so its status is a snapshot and not a settled draw.
+OPEN_RUN_GRACE_MIN = 30
 
 
 def _r(x: float | None, n: int = 1) -> float | None:
@@ -232,7 +263,16 @@ def _profile(hours: list[dict]) -> dict:
     # at 19Z gives 20Z one fewer day than 19Z, and equity LEVEL trends
     # across days by hundreds, so a mean over "whatever days this hour
     # had" is not comparable to the hour beside it.
-    panel = sorted(set.intersection(*({r["day"] for r in rows} for rows in buckets.values())))
+    # A run can publish NO whole hours at all (the ledger holds 50 runs and
+    # 14 of them are shorter than two hour boundaries). Intersecting an empty
+    # family is not "every day" -- it is undefined, and `set.intersection(*[])`
+    # raises. There is no panel, and the level column has nothing to be read
+    # off; say that rather than crash or print a balanced-looking zero.
+    panel = (
+        sorted(set.intersection(*({r["day"] for r in rows} for rows in buckets.values())))
+        if buckets
+        else []
+    )
 
     table = []
     for hod in sorted(buckets):
@@ -268,7 +308,10 @@ def _profile(hours: list[dict]) -> dict:
             "ragged_hours": ragged,
             # The one sentence a reader of the level column needs.
             "level_verdict": (
-                f"BALANCED (every hour averages the same {len(panel)} day(s))"
+                "NO PANEL (this run publishes no whole hour; nothing to read a"
+                " LEVEL off, and no hour-of-day mean is defined)"
+                if not table
+                else f"BALANCED (every hour averages the same {len(panel)} day(s))"
                 if not ragged
                 else (
                     f"RAGGED ({len(ragged)} hour(s) average a different day set:"
@@ -363,16 +406,19 @@ def _by_day(hours: list[dict]) -> dict:
 
     scored = [p for p in pairs if p["rho"] is not None]
     if len(scored) < 2:
+        status = "underpowered"
         verdict = (
             f"UNDERPOWERED ({len(scored)} scorable day-pair(s) at"
             f" >= {MIN_SHARED_HOURS} shared hours; no shape claim)"
         )
     elif min(p["rho"] for p in scored) >= SHAPE_RHO:
+        status = "repeats"
         verdict = (
             f"REPEATS (all {len(scored)} day-pairs rho >="
             f" {min(p['rho'] for p in scored)} >= {SHAPE_RHO})"
         )
     else:
+        status = "does_not_repeat"
         verdict = (
             f"DOES NOT REPEAT (weakest of {len(scored)} day-pairs rho"
             f" {min(p['rho'] for p in scored)} < {SHAPE_RHO})"
@@ -383,8 +429,118 @@ def _by_day(hours: list[dict]) -> dict:
             "pairs": pairs,
             "min_shared_hours": MIN_SHARED_HOURS,
             "shape_rho_floor": SHAPE_RHO,
+            # The prose sentence is for a reader; the status is what the
+            # across-run census tallies. Never re-derive one from the
+            # other by parsing -- they are published side by side.
+            "shape_status": status,
+            "n_scored_pairs": len(scored),
             "shape_verdict": verdict,
         },
+    }
+
+
+def power_census(runs: list[dict]) -> dict:
+    """Which runs in the ledger actually answer the shape question.
+
+    Why this exists (2026-08-29). Every archived reading of this report
+    was taken with `--run` on whatever run was live that day, and every
+    one of them printed UNDERPOWERED -- because the newest run is always
+    the shortest. The all-runs default path, which would have shown the
+    rest of the ledger, raised `TypeError` on the first run with no whole
+    hour and so had never once completed. The consequence, measured: FOUR
+    runs (20260713T064302, 20260722T081852, 20260803T142853,
+    20260810T081931 -- up to 11 whole days and 55 day-pairs) were fully
+    powered and unread, while six status passes carried "underpowered,
+    wait for more days" off the two runs that were not.
+
+    So the defect here is not across READINGS the way #32/#35 were at the
+    atlas and the queue-score; it is across RUNS inside a single reading.
+    The report published all 51 partitions and the eye took the last one,
+    and "UNDERPOWERED" is the identical sentence for a run six hours old
+    and for a ledger that has answered the question four times.
+
+    What may and may not be pooled, stated rather than left to the reader:
+
+      * SHAPE is poolable. Each run's `shape_status` is an independent
+        draw on "does the diurnal cycle recur", computed from rank
+        correlations WITHIN that run, so it carries across seedings.
+      * LEVEL is not. Each run seeds a different book at a different
+        time, so `mean_equity_end` is on a different scale per run. This
+        census tallies no level term and must not be extended to one.
+
+    Counts carry their units (mistakes #35): a class count moves both
+    because statuses changed and because runs entered the ledger under
+    them, so `runs` lists each member with the span and draw count that
+    put it there. `unscorable` runs are held OUT of the profile partition
+    rather than counted as underpowered zeros (mistakes #32).
+    """
+    scorable = [r for r in runs if r["validity"]["profile_status"] != "unscorable"]
+    unscorable = [r for r in runs if r["validity"]["profile_status"] == "unscorable"]
+
+    def _unit(r: dict) -> dict:
+        return {
+            "run_id": r["run_id"],
+            "n_days": r["n_days"],
+            "min_draws_per_hour": r["min_draws_per_hour"],
+            "n_scored_pairs": r["shape_agreement"]["n_scored_pairs"],
+            "shape_status": r["shape_agreement"]["shape_status"],
+            "open": r["open"],
+        }
+
+    powered = [r for r in scorable if r["validity"]["profile_status"] == "powered"]
+    latest = runs[-1] if runs else None
+    return {
+        "rule": (
+            "SHAPE is poolable across runs and LEVEL is not; a run with no"
+            " whole hour is absent from the profile partition, not an"
+            " underpowered zero in it; every count is read against the spans"
+            " listed beside it, never on its own"
+        ),
+        "runs_published": len(runs),
+        "unscorable": {
+            "n": len(unscorable),
+            "run_ids": [r["run_id"] for r in unscorable],
+            "why": "no whole hour: nothing to be powered or underpowered about",
+        },
+        "profile": {
+            "scorable": len(scorable),
+            "counts": {
+                st: sum(1 for r in scorable if r["validity"]["profile_status"] == st)
+                for st in PROFILE_STATUSES
+                if st != "unscorable"
+            },
+            "powered_runs": [_unit(r) for r in powered],
+        },
+        # The answer the ledger already holds, restricted to the runs that
+        # are entitled to give one. A shape status from an underpowered
+        # profile is not evidence and is not counted here.
+        "shape_among_powered": {
+            "n": len(powered),
+            "counts": {
+                st: sum(1 for r in powered if r["shape_agreement"]["shape_status"] == st)
+                for st in SHAPE_STATUSES
+            },
+            "total_scored_pairs": sum(r["shape_agreement"]["n_scored_pairs"] for r in powered),
+            "days_span": (
+                [min(r["n_days"] for r in powered), max(r["n_days"] for r in powered)]
+                if powered
+                else None
+            ),
+        },
+        "open_runs": [r["run_id"] for r in runs if r["open"]],
+        # Published because reading the newest run is exactly how the four
+        # powered runs went unseen for nine days.
+        "latest_run": (
+            {
+                "run_id": latest["run_id"],
+                "profile_status": latest["validity"]["profile_status"],
+                "shape_status": latest["shape_agreement"]["shape_status"],
+                "open": latest["open"],
+                "is_powered": latest["validity"]["profile_status"] == "powered",
+            }
+            if latest is not None
+            else None
+        ),
     }
 
 
@@ -399,8 +555,18 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
             [run_id] if run_id else [],
         ).fetchall()
     ]
+    now = datetime.now(UTC)
+    last_ts = {
+        r[0]: r[1]
+        for r in ledger.execute(
+            "select run_id, max(ts) from shadow_equity"
+            + (" where run_id = ?" if run_id else "")
+            + " group by 1",
+            [run_id] if run_id else [],
+        ).fetchall()
+    }
     report: dict = {
-        "generated_at": f"{datetime.now(UTC):%Y-%m-%dT%H:%M:%SZ}",
+        "generated_at": f"{now:%Y-%m-%dT%H:%M:%SZ}",
         "half_tick": HALF_TICK,
         "tight_gated_strategies": sorted(TIGHT_GATED),
         "runs": [],
@@ -419,12 +585,30 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
         drag_valid = all(h["drag_model_valid"] for h in hours)
         # The loudest hour of the day is the headline of this report --
         # it is the one that shows min-sampling is not measuring level.
+        # A run with no whole hour is UNSCORABLE, not underpowered: the
+        # `min(..., default=0)` below would otherwise report "weakest hour
+        # has 0 draws", which reads as a measured zero for a measurement
+        # that was never taken (mistakes #32).
+        profile_status = (
+            "unscorable"
+            if not prof["by_hour_of_day"]
+            else "underpowered"
+            if min_draws < MIN_DAYS
+            else "powered"
+        )
         dense_prof = [p for p in prof["by_hour_of_day"] if p["mean_range"] is not None]
         loudest = max(dense_prof, key=lambda p: p["mean_range"], default=None)
         quietest = min(dense_prof, key=lambda p: p["mean_range"], default=None)
         report["runs"].append(
             {
                 "run_id": rid,
+                # An OPEN run is still writing: its span will grow, so its
+                # status is a snapshot, not a settled draw. Read off the
+                # ledger rather than assumed from run_id ordering, because
+                # the newest run_id is not necessarily the live one.
+                "open": (now - last_ts[rid].replace(tzinfo=UTC)).total_seconds()
+                < OPEN_RUN_GRACE_MIN * 60,
+                "last_equity_at": f"{last_ts[rid]:%Y-%m-%dT%H:%M:%SZ}",
                 "n_hours": len(hours),
                 "n_whole_hours": len(whole),
                 "n_days": n_days,
@@ -435,10 +619,15 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
                     "partial_hours_excluded": sum(1 for h in hours if h["partial"]),
                     "sparse_hours": sum(1 for h in hours if h["pts"] < MIN_PTS_PER_HOUR),
                     "min_pts_per_hour": MIN_PTS_PER_HOUR,
+                    "min_days": MIN_DAYS,
+                    "profile_status": profile_status,
                     "profile_verdict": (
-                        f"UNDERPOWERED (weakest hour has {min_draws} <"
+                        "UNSCORABLE (this run publishes no whole hour; it has no"
+                        " hour-of-day mean to be powered or underpowered about)"
+                        if profile_status == "unscorable"
+                        else f"UNDERPOWERED (weakest hour has {min_draws} <"
                         f" {MIN_DAYS} draws; run spans {n_days} whole days)"
-                        if min_draws < MIN_DAYS
+                        if profile_status == "underpowered"
                         else f"{min_draws}+ draws per hour over {n_days} whole days"
                     ),
                 },
@@ -453,6 +642,7 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
                 **daily,
             }
         )
+    report["power_census"] = power_census(report["runs"])
     return report
 
 
@@ -473,6 +663,39 @@ def main(argv: list[str] | None = None) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=1) + "\n")
+
+    # The census FIRST. The failure this report had was that the eye went
+    # to one run's verdict, and a per-run verdict printed alone is the
+    # same sentence for a six-hour run and for a ledger that has answered
+    # the question four times.
+    c = report["power_census"]
+    pw = c["shape_among_powered"]
+    print(
+        f"[shadow_diurnal] census — {c['runs_published']} run(s) published:"
+        f" {c['profile']['counts']['powered']} powered,"
+        f" {c['profile']['counts']['underpowered']} underpowered,"
+        f" {c['unscorable']['n']} unscorable (no whole hour, NOT a zero)"
+    )
+    if pw["n"]:
+        tally = ", ".join(f"{k} {v}" for k, v in pw["counts"].items() if v)
+        print(
+            f"[shadow_diurnal] shape over the {pw['n']} POWERED run(s)"
+            f" ({pw['days_span'][0]}-{pw['days_span'][1]} whole days,"
+            f" {pw['total_scored_pairs']} scored day-pairs): {tally}"
+        )
+        for u in c["profile"]["powered_runs"]:
+            print(
+                f"    {u['run_id']}: {u['shape_status']} over {u['n_days']} days,"
+                f" {u['min_draws_per_hour']} draws/hr, {u['n_scored_pairs']} pairs"
+            )
+    lr = c["latest_run"]
+    if lr is not None:
+        print(
+            f"[shadow_diurnal] latest run {lr['run_id']} is"
+            f" {lr['profile_status']}{' and OPEN' if lr['open'] else ''} — it is"
+            f" {'' if lr['is_powered'] else 'NOT '}entitled to a shape claim;"
+            " LEVEL is not poolable across runs, SHAPE is.\n"
+        )
 
     # Print the profile for the longest-lived run: an hour-of-day mean
     # over one day is not a profile, and printing it invites it to be

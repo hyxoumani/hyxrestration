@@ -52,7 +52,11 @@ from __future__ import annotations
 
 import ast
 import re
+import shutil
+import tempfile
 from pathlib import Path
+
+import pytest
 
 from hyxlab.spillcap import SPILL_MULTIPLE, duck_spill_limit, parse_size
 
@@ -205,7 +209,38 @@ def _cap(conn) -> int | None:
     return parse_size(str(raw))
 
 
-def test_lowering_the_limit_does_not_move_the_cap(tmp_path):
+@pytest.fixture
+def spill_tmp():
+    """A temp dir on a volume where the MULTIPLE binds, not the disk term.
+
+    `tmp_path` is under `/tmp`, which on this host is a tmpfs sized off
+    RAM (31 GiB, 8.3 GiB free 2026-08-29). `DISK_SHARE * free` is then
+    ~2.2 GB -- BELOW the 4.0 GiB a 512 MiB engine earns -- so the disk
+    term binds every cap on the volume and the three claims below become
+    two equal numbers that agree for the wrong reason. The failing
+    assertion said so in its own message ("this box cannot show the
+    hazard") and then failed rather than declining to measure.
+
+    So the dir is placed on the repo volume, where free space is a
+    thousand times the multiple. If that volume is ALSO too small, the
+    box genuinely cannot demonstrate the rung and the tests SKIP: an
+    unmeasurable claim is not a refuted one (mistakes #32).
+    """
+    root = Path(__file__).resolve().parent.parent / ".pytest-spill"
+    root.mkdir(exist_ok=True)
+    d = Path(tempfile.mkdtemp(dir=root))
+    earned = duck_spill_limit(512 * 2**20, d)
+    if earned < SPILL_MULTIPLE * 512 * 2**20:
+        shutil.rmtree(d, ignore_errors=True)
+        pytest.skip(
+            f"the disk term binds on {root}: a 512 MiB engine earns {earned} B,"
+            f" under the {SPILL_MULTIPLE}x multiple this rung measures"
+        )
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def test_lowering_the_limit_does_not_move_the_cap(spill_tmp):
     """The hazard itself, on a real kernel connection.
 
     Not "the cap is large" — that depends on the box — but the exact
@@ -216,11 +251,11 @@ def test_lowering_the_limit_does_not_move_the_cap(tmp_path):
     """
     from hyxlab.store import connect_retry
 
-    conn = connect_retry(tmp_path / "override.duckdb", read_only=False)
+    conn = connect_retry(spill_tmp / "override.duckdb", read_only=False)
     before = _cap(conn)
     conn.execute("SET memory_limit = '512MiB'")
     after = _cap(conn)
-    earned = duck_spill_limit(512 * 2**20, tmp_path)
+    earned = duck_spill_limit(512 * 2**20, spill_tmp)
     conn.close()
 
     assert before is not None and after is not None
@@ -238,11 +273,11 @@ def test_lowering_the_limit_does_not_move_the_cap(tmp_path):
     )
 
 
-def test_re_deriving_after_the_override_earns_the_new_limit(tmp_path):
+def test_re_deriving_after_the_override_earns_the_new_limit(spill_tmp):
     """The fix, run: one call, and the bound describes the connection."""
     from hyxlab.store import connect_retry, spill_cap
 
-    db = tmp_path / "rederive.duckdb"
+    db = spill_tmp / "rederive.duckdb"
     conn = connect_retry(db, read_only=False)
     conn.execute("SET memory_limit = '512MiB'")
     spill_cap(conn, db)
@@ -254,7 +289,7 @@ def test_re_deriving_after_the_override_earns_the_new_limit(tmp_path):
     assert got == duck_spill_limit(512 * 2**20, db)
 
 
-def test_the_shipped_override_site_carries_the_rule(tmp_path):
+def test_the_shipped_override_site_carries_the_rule(spill_tmp):
     """End to end through the site the rule was written from.
 
     `test_hyxlab_shadow.py` asserts shadow's own cap; this asserts that
@@ -264,7 +299,7 @@ def test_the_shipped_override_site_carries_the_rule(tmp_path):
     from hyxlab.streamstore import StreamStore
     from simulator.shadow import DUCK_MEM, stream_conn
 
-    db = tmp_path / "stream.duckdb"
+    db = spill_tmp / "stream.duckdb"
     StreamStore(db)
     with stream_conn(str(db)) as conn:
         got = _cap(conn)

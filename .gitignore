@@ -32,3 +32,4 @@ phase0/data/finbert_scores.csv
 # phase0/results/ IS committed — the falsification record is the deliverable
 .secrets/
 .autodev/
+.pytest-spill/
