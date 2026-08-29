@@ -1,5 +1,76 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-29 08:30 UTC (MAKER-BRACKET PASS -- THE VERDICT DID
+NOT MOVE, THE POWER HALVED, AND THE ONLY SIGNIFICANT TIER IS THE ONE
+WHOSE INDEPENDENCE ASSUMPTION IS KNOWN FALSE.**
+Last pass named this: "the maker bracket is the other standing report
+and is 4 days stale -- re-run it and read `direction_verdict`'s
+`powered` count." Done, twice, at two widths.
+**(1) THE STALE-REPORT RE-RUN AT THE COMPARABLE WIDTH SAYS LESS THAN
+08-25 DID, NOT MORE.** Econ 336h `--markets 8`: **2,264 orders**, 8
+markets / **4 underlyings** (08-25: 5), `new_share_vs_all` **0.6484**.
+Crossing **88**, queue-pess **129**, queue-opt **143**; three-way split
+**39 / 2 / 82** (invented / ambiguous / forgone); `net_disagreement`
+**+2 -> -41**. `direction_verdict` **powered 4 -> 2**: the underlying
+tier fell to `underpowered` (`underlying_min_sign_p` 0.0625 > 0.05)
+because the top-8 selection reached one fewer event. So 08-25's clean
+null is **not reconfirmed at the honest tier -- it is unmeasured there
+this reading**, and both readings print `significant: 0` identically.
+**(2) THAT IDENTITY IS #35's DEFECT AT A SECOND SITE, AND IT IS NOW A
+FIELD.** `direction_stability` (`queuescore.py`) carries the trajectory
+of `direction_verdict` with the **units and the four per-reading
+`min_sign_p` ceilings beside every count** -- a count moves because
+statuses changed and because the units moved under them, and nothing in
+the count says which. Priors are filtered by COMPOSITION the way
+`independence_vs_prior` filters them (a weather reading is not an econ
+prior: **31 of 43 archived reports** cover other series), reports over
+the same orders collapse to one reading, and the **33 reports that
+predate `direction_verdict` are ABSENT from the trajectory, not zeros in
+it** -- plotting them would read as 33 consecutive readings that tested
+and found nothing. Same escalation rule as #33: the lens that found the
+atlas defect yesterday was swept to the comparable field rather than the
+instance being fixed. Eight mutants, all red (both zero-fills, dedup by
+report file, a fabricated -8 from a silent unit count, one ceiling per
+run, and splicing weather into econ). Suite 895 -> **905**.
+**(3) THE WIDENED RUN IS THE FIRST FULLY POWERED BRACKET WITH A
+SIGNIFICANT READING -- AND THE READING TO BELIEVE IS THE NULL.** Econ
+336h `--markets 24`: **5,643 orders**, 24 markets / **7 underlyings**,
+all four readings powered. MARKET tier **`significant_under` on both
+bounds** (14 of 17 leaning markets under, `market_sign_p` **0.0064**);
+UNDERLYING tier **`not_significant` on both** (4 of 5 leaning
+underlyings under, `underlying_sign_p` 0.1875, ceiling 0.03125).
+**24 markets are 7 events.** The market tier counts one strike ladder as
+up to a dozen independent draws -- the unit-of-independence trap the
+report was built to flag -- so the honest read is: no directional bias
+at the event tier, and the significance sits exactly where the
+independence assumption is false. Direction of the raw counts is
+nonetheless worth carrying: `pess_but_not_crossing` **121** against
+`crossing_but_not_opt` **61**, i.e. the crossing rule FORGOES real fills
+rather than inventing them. Not a verdict: pre-registration decides.
+**(4) THE WIDTH-24 RUN STARTS A NEW COMPARABILITY SERIES**, as
+`strategy-verdicts.md` said widening would, and it is **not independent
+of the width-8 run an hour earlier** (`new_share` 0.5988; 2,264 shared
+orders). `direction_stability` prints `significant +2` next to
+`markets +16, underlyings +3` -- which is the whole point of publishing
+the units beside the counts.
+**NO PROMOTE -- verified, not assumed:** `grep` over `scripts/systemd/`
+finds no unit referencing queuescore or maker_bracket, so no daemon
+moved and the shadow run survives. Pushed.
+NEXT PASS: (1) **The width-24 econ series has ONE reading.** A second
+needs to be spaced >= 336h from 2026-08-29 08:20Z (**2026-09-12**) to
+be independent, or the window shortened; anything sooner re-scores these
+orders and `new_share` will say so. (2) The atlas quoted tier is
+resolving -- re-run when settled markets pass ~2.1M (1.84M on 08-29) and
+read `verdict_stability.quoted_verdict` first. (3) `collect-skips` has
+been UNVERIFIED since it shipped and needs a lock-wait nobody schedules:
+decide to force one or stop printing the section. (4) The #32/#33/#34
+lens sweeps remain the standing job -- two sites fixed in two days, so
+enumerate the remaining `*_verdict`/`*_status` publishers and check each
+one's ACROSS-readings comparison, not just its within-run partition.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-29 02:20 UTC (DRIFT PASS -- THE STANDING REPORT MOVED,
 AND THE FIELD THAT WOULD HAVE SHOWN IT DID NOT EXIST.**
 Last pass left two items: re-read the QA batch check after 20:48Z, and

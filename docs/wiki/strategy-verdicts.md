@@ -141,6 +141,41 @@ structure — see [venues](venues.md)).
    or ~16 at `--markets 15` (measured: top-15 reaches 5 city-days).
    Widening top-N changes the scored population, so it starts a NEW
    comparability series rather than extending this one.
+   **The widening was run (2026-08-29), and it did exactly what that
+   last sentence warned about.** Two econ brackets on the same 336h
+   window: `--markets 8` (2,264 orders, 8 markets / **4** underlyings,
+   `new_share` 0.65) reads `powered` **2 of 4** — the underlying tier
+   LOST power against 08-25's 5 underlyings, so the clean 08-25 null was
+   NOT reconfirmed there; it is now no-evidence, and `net_disagreement`
+   moved **+2 -> -41**. `--markets 24` (5,643 orders, 24 markets / **7**
+   underlyings, `new_share` 0.60 — 2,264 of its orders ARE the 8-market
+   run's) is the first bracket ever with all four readings powered AND a
+   significant one: MARKET tier **`significant_under` on both bounds**
+   (14 of 17 leaning markets under, `market_sign_p` 0.0064;
+   `pess_but_not_crossing` 121 vs `crossing_but_not_opt` 61 — the
+   crossing rule FORGOES real fills rather than inventing them), while
+   the UNDERLYING tier reads **`not_significant` on both bounds** (4 of
+   5 leaning underlyings under, `underlying_sign_p` 0.1875, `min` 0.03125
+   — powered and negative). **Read the underlying tier.** 24 markets are
+   7 events; the market-tier p treats one strike ladder as up to a dozen
+   draws, which is the unit-of-independence trap this report exists to
+   flag, and it is what a significant market tier over a null underlying
+   tier looks like. So: no directional bias at the honest unit, and the
+   only tier that shows one is the one whose independence assumption is
+   known false. This starts the NEW comparability series, at width 24.
+   `reports/maker_bracket/20260829T081848.json`,
+   `20260829T082019.json`.
+   **Read `direction_stability` (2026-08-29) before comparing any two of
+   these readings.** `direction_verdict`'s counts are the same sentence
+   across runs whether the bracket gained units or swapped populations —
+   both 08-25 and the 08-29 width-8 run print `significant: 0`, and only
+   the units say the second could not have found one at the underlying
+   tier. The field carries the trajectory with `units` and per-reading
+   `min_sign_p` beside every count, filters priors by composition (a
+   weather reading is not an econ prior), collapses reports over the same
+   orders into one reading, and leaves the 33 reports that predate
+   `direction_verdict` ABSENT from the trajectory rather than plotting
+   them as measured zeros.
    **Live-paper fee evidence (2026-08-05, closed 2026-08-07 at wave
    4):** the diagnostic probe's shadow ledger (run 20260803T142853,
    499 daily-cohort markets settled over four waves) prices the taker
