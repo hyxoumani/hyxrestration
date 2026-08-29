@@ -295,6 +295,162 @@ def direction_verdict(concentration: dict, strict: dict) -> dict:
     }
 
 
+# The verdict fields whose stability across readings is tracked, mapped to the
+# status set that must PARTITION them. Enumerated on purpose: a second verdict
+# field must be registered here to be tracked at all, which is the arithmetic
+# guard mistakes #37 asked for -- a `*_verdict` shipped without an entry is a
+# field nobody compares across time.
+VERDICT_FIELDS = {"direction_verdict": DIRECTION_STATUSES}
+
+
+def _reading_fingerprint(report: dict) -> str:
+    """Identity of the DATA a bracket run scored: its set of virtual orders.
+
+    Two reports over the same orders are one measurement, not two — the 08-03
+    pair was a re-run minutes after shipping a tier. Counting report FILES
+    would give every such pair a guaranteed-identical verdict step and bias the
+    trajectory toward stable, the same unit-of-counting class as
+    `new_share_vs_all` and `_distinct_readings` in the atlas. The order key is
+    the one `independence_vs_prior` already uses, so a report is comparable to
+    itself across both fields.
+    """
+    keys = sorted(
+        (d["market_id"], d["placed"], d["price"]) for d in report.get("orders_detail", [])
+    )
+    return json.dumps(keys)
+
+
+def _verdict_point(report: dict, field: str, statuses: tuple) -> dict | None:
+    """One reading of a verdict, or None if the report is SILENT about it.
+
+    `direction_verdict` shipped 2026-08-25, 34 runs into the archive: every
+    older report has NO OPINION on these counts. Filling them with zeros would
+    read as 33 consecutive readings that tested a fill-model direction and
+    found none — which is #32's defect on a time axis, an absent measurement
+    plotted as a measured zero, and precisely the reading the field was added
+    to prevent.
+    """
+    v = report.get(field)
+    if not isinstance(v, dict):
+        return None
+    counts = v.get("counts")
+    if not isinstance(counts, dict) or set(counts) != set(statuses):
+        return None
+    conc = report.get("concentration") or {}
+    strict = report.get("concentration_strict") or {}
+    return {
+        "generated_at": report.get("generated_at"),
+        "counts": {s: counts[s] for s in statuses},
+        "powered": v.get("powered"),
+        "significant": v.get("significant"),
+        # The population, published NEXT TO the counts and never inferred from
+        # them. `direction_verdict` always partitions exactly four readings, so
+        # unlike the atlas tiers its denominator cannot move — what moves is the
+        # POWER those four readings had, and that is a property of how many
+        # independent units the top-N selection reached, not of the fill models
+        # (mistakes #35). A run going powered 0 -> 4 changed its market
+        # selection; the counts alone cannot say so.
+        "orders": report.get("orders"),
+        "window_hours": report.get("window_hours"),
+        "units": {"markets": conc.get("markets"), "underlyings": conc.get("underlyings")},
+        # per reading, because the ceiling is 2^-decisive and `decisive` differs
+        # between the floor and the ceiling: the two bounds lean different
+        # numbers of units.
+        "min_sign_p": {
+            "market_pess": conc.get("market_min_sign_p"),
+            "market_opt": strict.get("market_min_sign_p"),
+            "underlying_pess": conc.get("underlying_min_sign_p"),
+            "underlying_opt": strict.get("underlying_min_sign_p"),
+        },
+        "composition": report.get("market_composition"),
+    }
+
+
+def direction_stability(out_dir: Path, current: dict) -> dict:
+    """Is the bracket's "0 significant" a growing null, or one reading restated?
+
+    `direction_verdict` partitions four readings within ONE run. Across runs it
+    prints the same sentence — "0 significant, N powered" — whether the bracket
+    is gaining power on econ or has just swapped to a weather market set that
+    never had any. That comparison has lived only in the pass prose since the
+    field shipped, exactly as the atlas quoted-tier comparison did until
+    `atlas.verdict_stability` made it a field. Same defect, second site; the
+    lens is swept rather than the instance fixed (mistakes #33).
+
+    Priors are filtered by COMPOSITION the same way `independence_vs_prior`
+    filters them: a weather reading and an econ reading are two populations,
+    and splicing their verdicts into one trajectory would manufacture movement
+    out of a `--series` flag. Reports that carry no comparable composition are
+    counted in `incomparable_composition`, not dropped silently.
+
+    Never a verdict: a bracket gaining power is measurement improving, not
+    evidence, and pre-registration still decides.
+    """
+    fp_here = _reading_fingerprint(current)
+    comp_here = set(current.get("market_composition") or {})
+    by_fp: dict[str, dict] = {}
+    n_files = 0
+    n_incomparable = 0
+    for path in sorted(out_dir.glob("*.json")):
+        try:
+            rep = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        n_files += 1
+        if not set(rep.get("market_composition") or {}) & comp_here:
+            n_incomparable += 1
+            continue
+        fp = _reading_fingerprint(rep)
+        if fp == fp_here:
+            continue
+        by_fp[fp] = rep
+
+    out: dict = {}
+    for field, statuses in VERDICT_FIELDS.items():
+        points = [_verdict_point(r, field, statuses) for r in by_fp.values()]
+        carried = [p for p in points if p is not None]
+        here = _verdict_point(current, field, statuses)
+        if here is not None:
+            carried.append(here)
+        prior = carried[-2] if len(carried) > 1 else None
+        latest = carried[-1] if carried else None
+        out[field] = {
+            "rule": (
+                "counts are comparable across readings only against the "
+                "`units` and `min_sign_p` printed beside them; a prior that "
+                "does not carry this verdict is absent from `trajectory`, not "
+                "a zero in it"
+            ),
+            "reports_read": n_files,
+            "incomparable_composition": n_incomparable,
+            "comparable_readings": len(points),
+            "absent_in_priors": len(points) - len(carried) + (1 if here is not None else 0),
+            "readings": len(carried),
+            "trajectory": carried,
+            "delta_vs_prior": (
+                {
+                    "counts": {s: latest["counts"][s] - prior["counts"][s] for s in statuses},
+                    "powered": latest["powered"] - prior["powered"],
+                    "markets": _delta(latest["units"]["markets"], prior["units"]["markets"]),
+                    "underlyings": _delta(
+                        latest["units"]["underlyings"], prior["units"]["underlyings"]
+                    ),
+                }
+                if prior is not None
+                else None
+            ),
+            "powered_first": carried[0]["powered"] if carried else None,
+            "powered_latest": latest["powered"] if latest else None,
+        }
+    return out
+
+
+def _delta(a: int | None, b: int | None) -> int | None:
+    """None when either side is silent about the quantity — an absent unit
+    count is not a zero one, the same rule the trajectory itself follows."""
+    return None if a is None or b is None else a - b
+
+
 def over_award(o: VirtualOrder, bound: str) -> bool:
     """Does the crossing rule award a fill the queue evidence does not support?
 
@@ -660,15 +816,43 @@ def main() -> None:
             " direction_verdict — its counts PARTITION the four tier x bound"
             " readings, and powered=0 means this run says nothing about"
             " fill-model direction however large net_disagreement looks."
+            " Then read direction_stability: those counts are the same sentence"
+            " across runs whether the bracket is gaining independent units or"
+            " has swapped to a market set that never had power, so the"
+            " trajectory carries units and min_sign_p BESIDE every count, and a"
+            " report predating the verdict is ABSENT from it rather than a zero"
+            " in it."
         ),
         "orders_detail": [o.summary() for o in all_orders],
     }
     out_dir.mkdir(parents=True, exist_ok=True)
+    # computed against the archived priors, so it must run before this report is
+    # written -- the current run is the comparison's subject, not one of its
+    # priors.
+    report["direction_stability"] = direction_stability(out_dir, report)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
     for k, v in report.items():
-        if k != "orders_detail":
+        if k not in ("orders_detail", "direction_stability"):
             print(f"  {k}: {v}")
+    # ...and the same decomposition ACROSS readings, because "0 significant,
+    # N powered" is the same sentence whether the bracket is gaining power or
+    # has just swapped to a market set that never had any.
+    ds = report["direction_stability"]["direction_verdict"]
+    d = ds["delta_vs_prior"]
+    print(
+        f"  direction_stability: {ds['readings']} comparable reading(s),"
+        f" {ds['absent_in_priors']} prior report(s) silent about the verdict"
+        f" ({ds['incomparable_composition']} of {ds['reports_read']} archived"
+        f" reports cover other series); powered {ds['powered_first']} ->"
+        f" {ds['powered_latest']}"
+    )
+    if d is not None:
+        print(
+            f"  direction_stability vs prior reading: powered {d['powered']:+d},"
+            f" significant {d['counts']['significant_over'] + d['counts']['significant_under']:+d},"
+            f" markets {d['markets']}, underlyings {d['underlyings']}"
+        )
     print(f"[queuescore] written to {out}")
 
 
