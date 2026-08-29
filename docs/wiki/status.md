@@ -1,5 +1,90 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-29 14:30 UTC (CENSUS PASS -- THE STANDING REPORT HAD
+ANSWERED ITS OWN OPEN QUESTION FOUR TIMES AND THE ALL-RUNS PATH THAT
+WOULD HAVE SHOWN IT HAD NEVER ONCE RUN.**
+Last pass named the standing job: "enumerate the remaining
+`*_verdict`/`*_status` publishers and check each one's ACROSS-readings
+comparison." The enumeration finds three unregistered publishers, all in
+`simulator/shadow_diurnal.py` (`level_verdict`, `shape_verdict`,
+`profile_verdict`), and the defect there is one axis over again -- not
+across readings, across RUNS INSIDE ONE READING.
+**(1) THE ALL-RUNS DEFAULT PATH CRASHED, AND THAT IS WHY THE LEDGER WAS
+NEVER READ.** `_profile` intersects the day-sets of every published hour;
+a run with no whole hour gives an EMPTY family and `set.intersection(*[])`
+raises `TypeError`. 13 of the ledger's 51 runs are that short, so
+`python -m simulator.shadow_diurnal` with no `--run` had never completed
+since the module shipped (08-23). Every one of the six archived readings
+was therefore taken with `--run` on whatever run was live that day.
+**(2) THE LIVE RUN IS ALWAYS THE SHORTEST RUN, SO EVERY READING SAID
+UNDERPOWERED.** All six archived readings print `min_draws_per_hour` 2
+against `MIN_DAYS` 3, and six status passes carried "underpowered, wait
+for more days" off them. Meanwhile the ledger held **FOUR fully powered
+runs**: `20260713T064302` (4 whole days, 3 draws/hr, 5 day-pairs),
+`20260722T081852` (6 days, 5, 14), `20260803T142853` (5 days, 4, 6) and
+`20260810T081931` (**11 whole days, 10 draws/hr, 55 day-pairs**). **All
+four read DOES NOT REPEAT**, over **80 scored day-pairs**. Validity
+bound 6's open question -- "does the +72/-247/+150 cycle recur tomorrow"
+-- was answered in the archive on 08-20 and nothing could print it.
+**(3) THE FIX IS A CENSUS, PRINTED FIRST, NOT A BUGFIX.** A per-run
+verdict read off the newest run is the identical sentence for a six-hour
+run and for a ledger that has answered the question four times -- #32's
+defect with runs on the axis instead of readings. `power_census`
+partitions the runs by `profile_status`, tallies `shape_status` over the
+POWERED runs ONLY (an underpowered run with scorable day-pairs can print
+REPEATS, and pooling it manufactures a false positive), holds the 13
+unscorable runs OUT of the partition rather than counting them as
+"weakest hour has 0 < 3 draws" (**absent, not a measured zero**), prints
+the spans and day-pairs beside every count (#35), names the latest run
+and whether it is entitled to a claim, and flags runs still OPEN off the
+ledger's **last equity point**, never off run_id order. Stated in the
+field rather than left to the reader: **SHAPE is poolable across runs**
+(rank correlation is computed within a run, so seeding is a nuisance
+parameter) and **LEVEL is not** (each run seeds a different book) -- the
+census tallies no level term and must not be extended to one. Nine
+mutants, all red. Not a verdict on any strategy: pre-registration decides.
+**(4) THE SUITE WAS RED AT HEAD, ON THE BOX AND NOT IN THE CODE.**
+`test_memlimit_override_discipline`'s three CLAIMED tests run on
+`tmp_path`, i.e. `/tmp`, which here is a **31 GiB tmpfs with 8.3 GiB
+free**: `DISK_SHARE * free` is ~2.2 GB, below the **4.0 GiB** a 512 MiB
+engine earns, so the disk term binds every cap on the volume and the
+rung's two numbers agree for the wrong reason. The assertion's own
+message says "this box cannot show the hazard" -- and then FAILS rather
+than declining to measure. They now take a temp dir on the repo volume
+(1.4 TiB free) and **SKIP** if that one is too small as well: an
+unmeasurable claim is not a refuted one. Suite 905 -> **910**.
+**NO PROMOTE -- verified, not assumed:** `grep` over `scripts/systemd/`
+finds no unit referencing shadow_diurnal, and `simulator.shadow_diurnal`
+is not in `simulator.shadow`'s import closure, so the restart rule would
+not have fired anyway. That mattered more than usual this pass: the
+census shows the powered runs are the LONG ones, so a needless shadow
+restart is measured in exactly the asset this report just proved is
+scarce. Pushed.
+NEXT PASS: (1) **The shape answer is in; the LEVEL question is not.**
+`20260810T081931` is 11 days with a 9-day balanced panel -- the first
+run ever able to support `mean_equity_end_balanced` read DOWN the clock.
+Read that panel, and note the run is at **-2,139 equity**: the level
+column is a loss curve, and what it is a loss curve OF is the next
+question, not the diurnal shape. (2) **Run span is the binding
+constraint on this report and the loop is spending it.** Runs since
+08-23 are 6-24h because each promote restarts the daemon; four of the
+five longest runs in the ledger predate the current pass cadence.
+Decide deliberately whether to hold shadow restarts, and measure the
+cost, before the next long run is cut. (3) The archived readings for
+`20260823T201714` live under a directory literally named
+`reports/shadow_diurnal_20260823T201714.json/` -- a mis-typed `--out`;
+harmless, but it is why an archive sweep would miss them. (4) The
+width-24 econ maker bracket needs 2026-09-12 for a second independent
+reading; the atlas quoted tier wants settled markets ~2.1M (1.84M on
+08-29). Both data-gated. (5) The lens sweep is now THREE sites deep and
+`shadow_diurnal`'s publishers are still not in an AST-enumerated
+registry the way atlas's and queuescore's are -- that is the next
+mechanical rung.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
+
 Updated: **2026-08-29 08:30 UTC (MAKER-BRACKET PASS -- THE VERDICT DID
 NOT MOVE, THE POWER HALVED, AND THE ONLY SIGNIFICANT TIER IS THE ONE
 WHOSE INDEPENDENCE ASSUMPTION IS KNOWN FALSE.**

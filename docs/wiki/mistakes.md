@@ -980,6 +980,40 @@ Format: what happened → root cause → error type → prevention tier
     established.
 
 
+43. **2026-08-29 — a report's DEFAULT path had never once run, so its
+    verdict was always read off the weakest partition it contained.**
+    `simulator.shadow_diurnal` publishes one profile and shape verdict
+    per shadow run. Its all-runs default raised `TypeError` from
+    `set.intersection(*[])` whenever the ledger held a run with no whole
+    hour — 13 of 51 do — so it had never completed since the module
+    shipped on 08-23, and every one of the six archived readings was
+    taken with `--run` on whatever run was live that day. **The live run
+    is always the shortest run**, so all six printed UNDERPOWERED and
+    six status passes carried "wait for more days" off them, while the
+    ledger already held four fully powered runs (up to 11 whole days and
+    55 day-pairs) that all read DOES NOT REPEAT.
+    Type: `unexercised-path` crossed with #32's family. The tests
+    covered `build_diurnal` on synthetic single-run ledgers and the
+    operators always passed `--run`, so nothing ever built the report
+    the way the module's own `--help` says it runs by default.
+    **RULE: a report that publishes one verdict per member must publish
+    the CENSUS over members too, and the census is what gets printed
+    first. A per-member verdict shown alone is the same sentence for a
+    member with no power and for a population that has answered the
+    question — and the member the eye lands on is the newest one, which
+    is systematically the weakest.**
+    Corollary, learned the expensive way: **exercise the default
+    invocation on the real artefact**, not just the parameterised one
+    the caller happens to use. The crash and the nine unread days were
+    the same bug.
+    Prevention: `power_census`, printed before any per-run table;
+    `profile_status`/`shape_status` published beside the prose so a
+    tally never parses a sentence; unscorable members held OUT of the
+    partition rather than counted as zero-draw members (#32); every
+    count carrying the spans that produced it (#35); and the pooling
+    rule stated in the field — SHAPE pools across runs, LEVEL does not.
+    Nine mutants, all red.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
