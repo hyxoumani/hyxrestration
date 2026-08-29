@@ -124,6 +124,29 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      Bound 6's open question is thereby ANSWERED on the powered subset:
      the daily shape does not recur. Not a verdict on any strategy:
      pre-registration still decides that.
+  9. THE LEVEL COLUMN IS CUMULATIVE, SO A DRIFTING RUN PRINTS AN
+     HOUR-OF-DAY SHAPE IT DOES NOT HAVE. `mean_equity_end_balanced`
+     carries every hour before it within the day, so a run losing money
+     at a steady rate falls monotonically down the clock whether or not
+     any hour is special -- and the late-clock trough is then read as an
+     hour-of-day effect. MEASURED 2026-08-29 on `20260810T081931`, the
+     first run long enough to have a 9-day balanced panel: the raw column
+     spans 453.1, the run's own drift is -375.0/day, and with that drift
+     removed the hour-of-day shape spans only 293.6. `diurnal_level`
+     therefore publishes the same panel DIFFERENCED -- per hour-of-day
+     the mean close-to-close change, its deviation from the grand mean
+     per hour, and the running sum of those deviations, which starts and
+     ends at zero by construction. Deltas across a data outage are
+     excluded (`contiguous`), because a delta covering four hours filed
+     under one hour-of-day is exactly the value that would manufacture a
+     spike. The per-hour sign test's ceiling is `LEVEL_FWER` divided by
+     the hours tested: 24 hours are 24 chances, and an unadjusted 0.05
+     finds a trough on noise better than half the time. That ceiling is
+     0.00208, the strongest sign test a 9-day panel can produce is
+     0.0039, and so `level_shape_status` reads UNDERPOWERED: 12Z is
+     9 of 9 days below the leave-one-out centre at -125.7 and STILL cannot clear
+     it. Ten panel days would. That is a statement about power, not a
+     measured flat, and not a verdict on any strategy.
 """
 
 from __future__ import annotations
@@ -131,7 +154,8 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from math import comb
 from pathlib import Path
 
 import duckdb
@@ -167,6 +191,31 @@ SHAPE_RHO = 0.7
 PROFILE_STATUSES = ("powered", "underpowered", "unscorable")
 #: The three things the day-pair shape test can say. Same partition rule.
 SHAPE_STATUSES = ("repeats", "does_not_repeat", "underpowered")
+#: What the level PANEL can be. `no_panel` is absent, not flat.
+PANEL_STATUSES = ("balanced", "ragged", "no_panel")
+#: What the de-trended hour-of-day LEVEL test can say. Same partition
+#: rule as everywhere else: `unscorable` is an absent measurement.
+LEVEL_STATUSES = ("powered", "underpowered", "unscorable")
+#: Family-wise error rate for the per-hour sign test. Divided by the
+#: number of hours actually tested -- 24 hours of the clock are 24
+#: chances to find a trough, and an unadjusted 0.05 finds one on noise
+#: better than half the time.
+LEVEL_FWER = 0.05
+#: Every `*_verdict` this module publishes, with the UNIT its statuses
+#: are counted in and the statuses it may take. Enumerated because the
+#: comparable registries at `atlas.py` and `queuescore.py` exist and this
+#: module's four publishers were not in one -- an unregistered verdict is
+#: how a count gets plotted against readings that never tested it
+#: (mistakes #32/#33/#35). `test_hyxlab_shadow_diurnal.py` walks the AST
+#: for `*_verdict` keys and asserts this dict is exactly the population.
+#: The census tallies only the `run`-unit ones: LEVEL is per-run because
+#: each run seeds a different book, so it may never be pooled.
+VERDICT_POPULATION: dict[str, tuple[str, tuple[str, ...]]] = {
+    "profile_verdict": ("run", PROFILE_STATUSES),
+    "shape_verdict": ("run", SHAPE_STATUSES),
+    "level_verdict": ("hour_of_day", PANEL_STATUSES),
+    "level_shape_verdict": ("panel_day", LEVEL_STATUSES),
+}
 #: A run whose last equity point is this recent is still WRITING: its
 #: span will grow, so its status is a snapshot and not a settled draw.
 OPEN_RUN_GRACE_MIN = 30
@@ -233,9 +282,17 @@ def _hours(conn: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
 
     # d_equity is close-to-close, so it needs the PRIOR hour. The first
     # hour has none and is partial anyway.
-    for prev, cur in zip(rows, rows[1:], strict=False):
+    #
+    # Bound 9: a close-to-close delta is an HOUR's delta only when the two
+    # buckets are ADJACENT. The daemon can be down, and the query returns
+    # the surviving buckets adjacent in ROW order -- so a four-hour outage
+    # hands the hour after it a delta covering four, filed under one
+    # hour-of-day. `contiguous` marks the ones that are what they claim.
+    for i in range(1, len(rows)):
+        prev, cur = rows[i - 1], rows[i]
         d = cur["equity_end"] - prev["equity_end"]
         cur["d_equity"] = _r(d)
+        cur["contiguous"] = (eq[i][0] - eq[i - 1][0]) == timedelta(hours=1)
         valid = set(cur["strategies"]) <= TIGHT_GATED
         cur["drag_model_valid"] = valid
         # reval is the residual: the move the standing book made, once
@@ -243,6 +300,7 @@ def _hours(conn: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
         # when the drag model does not apply (bound 1).
         cur["reval"] = _r(d + cur["entry_drag_modeled"]) if valid else None
     rows[0]["d_equity"] = None
+    rows[0]["contiguous"] = False
     rows[0]["reval"] = None
     rows[0]["drag_model_valid"] = set(rows[0]["strategies"]) <= TIGHT_GATED
     return rows
@@ -301,11 +359,19 @@ def _profile(hours: list[dict]) -> dict:
             }
         )
     ragged = [p["hour_of_day"] for p in table if not p["balanced"]]
+    panel_status = "no_panel" if not table else "ragged" if ragged else "balanced"
+    bal = [
+        p["mean_equity_end_balanced"] for p in table if p["mean_equity_end_balanced"] is not None
+    ]
+    raw_span = _r(max(bal) - min(bal)) if bal else None
     return {
         "by_hour_of_day": table,
+        **_level_decomposition(hours, panel, raw_span),
         "level_panel": {
             "days": panel,
             "ragged_hours": ragged,
+            "panel_status": panel_status,
+            "raw_level_span": raw_span,
             # The one sentence a reader of the level column needs.
             "level_verdict": (
                 "NO PANEL (this run publishes no whole hour; nothing to read a"
@@ -321,6 +387,215 @@ def _profile(hours: list[dict]) -> dict:
                 )
             ),
         },
+    }
+
+
+def _sign_p(k: int, n: int) -> float:
+    """Two-sided exact binomial sign p for `k` of `n` below the centre."""
+    if n == 0:
+        return 1.0
+    m = min(k, n - k)
+    return min(1.0, 2 * sum(comb(n, i) for i in range(m + 1)) / 2**n)
+
+
+def _days_needed(ceiling: float) -> int:
+    """Smallest per-hour draw count whose BEST sign p clears `ceiling`."""
+    n = 2
+    while 2.0 ** (1 - n) > ceiling:
+        n += 1
+    return n
+
+
+def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | None) -> dict:
+    """The hour-of-day LEVEL column with the run's own drift taken out
+    (bound 9).
+
+    `mean_equity_end_balanced` is a CUMULATIVE quantity: within a day it
+    carries every hour before it. A run that loses money at a steady rate
+    therefore prints a column that falls monotonically down the clock
+    whether or not any hour of the day is special, and the eye reads the
+    late-clock trough as an hour-of-day effect. The decomposition below
+    is the same panel differenced: per hour-of-day, the mean of the
+    close-to-close CHANGE, its deviation from the run's grand mean per
+    hour, and the running sum of those deviations -- which is the level
+    column with a constant drift removed and so starts and ends at zero
+    by construction.
+
+    Three things it is careful about, all of which cut against the
+    finding rather than for it:
+
+      * ONLY CONTIGUOUS deltas. A delta across an outage is not an
+        hour's, and it is exactly the kind of large value that would
+        manufacture a spike at whatever hour-of-day the gap ended on.
+      * THE CEILING IS DIVIDED BY THE HOURS TESTED. Twenty-four hours are
+        twenty-four chances; an unadjusted 0.05 per hour finds a
+        "significant" hour on pure noise more often than not.
+      * THE PANEL CAN BE TOO SHORT TO SAY ANYTHING AT ALL. With `n`
+        draws the strongest sign test possible is `2^(1-n)`, so below
+        `_days_needed(ceiling)` days NO hour can clear the ceiling even
+        if every day agrees. That reads UNDERPOWERED -- distinct from a
+        measured flat, and it is the state this ledger is in.
+
+    The sign test centres each hour on the mean of the draws NOT in that
+    hour: an hour tested against a centre it helped set is partly tested
+    against itself, and one loud hour moves a pooled centre far enough
+    that all twenty-three others come out "significantly" on the other
+    side of it. `cum_demeaned` still uses the pooled grand mean, because
+    that is what makes the column a decomposition that sums to zero.
+    Within one day the deltas sum to that day's change and so are
+    negatively coupled, but the sign test runs ACROSS days at a fixed
+    hour, and days are the draws.
+    """
+    on_panel = set(panel)
+    buckets: dict[int, list[float]] = defaultdict(list)
+    non_contiguous = 0
+    for h in hours:
+        if h["partial"] or h["day"] not in on_panel or h["d_equity"] is None:
+            continue
+        if not h["contiguous"]:
+            non_contiguous += 1
+            continue
+        buckets[h["hour_of_day"]].append(h["d_equity"])
+
+    draws = [v for vs in buckets.values() for v in vs]
+    hours_tested = len(buckets)
+    if not draws:
+        return {
+            "diurnal_level": {
+                "n_panel_days": len(panel),
+                "hours_tested": 0,
+                "non_contiguous_deltas_excluded": non_contiguous,
+                "grand_mean_per_hour": None,
+                "drift_per_day": None,
+                "clock_complete": False,
+                "raw_level_span": raw_span,
+                "detrended_span": None,
+                "sign_p_ceiling": None,
+                "best_achievable_sign_p": None,
+                "panel_days_needed": None,
+                "by_hour_of_day": [],
+                "significant_hours": [],
+                "level_shape_status": "unscorable",
+                "level_shape_verdict": (
+                    "UNSCORABLE (no contiguous hour-to-hour change lands on the"
+                    " level panel; there is nothing to decompose, which is not"
+                    " the same as a flat clock)"
+                ),
+            }
+        }
+
+    grand = sum(draws) / len(draws)
+    others = {
+        hod: sorted(v for h, vs in buckets.items() if h != hod for v in vs) for hod in buckets
+    }
+    ceiling = LEVEL_FWER / hours_tested
+    table = []
+    cum = 0.0
+    for hod in sorted(buckets):
+        vs = buckets[hod]
+        mean = sum(vs) / len(vs)
+        cum += mean - grand
+        # The centre is the MEDIAN of every draw NOT in this hour. Two
+        # separate reasons, both learned the hard way:
+        #   * leave one out, because an hour tested against a centre it
+        #     helped set is partly tested against itself; and
+        #   * a median, because ONE loud hour moves a MEAN centre far
+        #     enough that all twenty-three others come out significantly
+        #     on the other side of it -- the outlier does not just fail
+        #     to be isolated, it makes every quiet hour a finding.
+        rest = others[hod]
+        centre = (
+            (rest[len(rest) // 2] if len(rest) % 2 else sum(rest[len(rest) // 2 - 1 :][:2]) / 2)
+            if rest
+            else grand
+        )
+        # A draw exactly ON the centre is not evidence either way, and
+        # counting it as "not below" is how a run with a perfectly
+        # constant drift reads 0-of-n below at every hour of the clock
+        # and prints 24 significant hours. Ties are dropped and the
+        # effective count is published beside the raw one.
+        below = sum(1 for v in vs if v < centre)
+        above = sum(1 for v in vs if v > centre)
+        table.append(
+            {
+                "hour_of_day": hod,
+                "n_days": len(vs),
+                "mean_d_equity": _r(mean),
+                "demeaned": _r(mean - grand),
+                "cum_demeaned": _r(cum),
+                "centre": _r(centre),
+                "n_below_centre": below,
+                "n_above_centre": above,
+                "n_tied": len(vs) - below - above,
+                "n_effective": below + above,
+                "sign_p": round(_sign_p(below, below + above), 6),
+            }
+        )
+
+    max_draws = max(p["n_effective"] for p in table)
+    best_p = 2.0 ** (1 - max_draws)
+    needed = _days_needed(ceiling)
+    status = "underpowered" if best_p > ceiling else "powered"
+    sig = [p for p in table if p["sign_p"] <= ceiling]
+    cums = [p["cum_demeaned"] for p in table]
+    detrended_span = _r(max(cums) - min(cums))
+    strongest = min(table, key=lambda p: p["sign_p"])
+    drift = _r(sum(p["mean_d_equity"] for p in table))
+
+    if status == "underpowered":
+        verdict = (
+            f"UNDERPOWERED ({max_draws} draw(s) at the best-sampled hour; the"
+            f" strongest sign test this panel can produce is p={best_p:.4f} >"
+            f" {ceiling:.5f}, the {LEVEL_FWER} ceiling over {hours_tested} hours"
+            f" tested, so NO hour can clear it even if every day agrees --"
+            f" {needed} untied panel days are needed). The shape is still worth"
+            f" reading: the raw level column spans {raw_span}, and with the"
+            f" run's own {drift}/day drift removed the hour-of-day shape spans"
+            f" {detrended_span}; strongest hour"
+            f" {strongest['hour_of_day']:02d}Z at {strongest['n_below_centre']}"
+            f"/{strongest['n_days']} days below the leave-one-out centre"
+            f" (p={strongest['sign_p']:g}). Not a claim."
+        )
+    elif sig:
+        named = ", ".join(
+            f"{p['hour_of_day']:02d}Z {p['demeaned']:+g} (p={p['sign_p']:g})" for p in sig
+        )
+        verdict = (
+            f"HOUR-OF-DAY LEVEL EFFECT at {len(sig)} of {hours_tested} hours"
+            f" tested, sign p <= {ceiling:.5f}: {named}. The raw level column"
+            f" spans {raw_span}; with the run's own {drift}/day drift removed"
+            f" the hour-of-day shape spans {detrended_span}."
+        )
+    else:
+        verdict = (
+            f"FLAT (no hour of {hours_tested} clears sign p {ceiling:.5f} over"
+            f" up to {max_draws} untied days; strongest is"
+            f" {strongest['hour_of_day']:02d}Z at p={strongest['sign_p']:g}). The"
+            f" raw level column's {raw_span} span is the run's own {drift}/day"
+            f" drift accumulating down the clock, not an hour-of-day effect:"
+            f" de-trended it spans {detrended_span}."
+        )
+
+    return {
+        "diurnal_level": {
+            "n_panel_days": len(panel),
+            "hours_tested": hours_tested,
+            "non_contiguous_deltas_excluded": non_contiguous,
+            "grand_mean_per_hour": _r(grand),
+            # Only a DAY when the whole clock is present; a partial clock
+            # sums to a partial day and must not be read as a daily rate.
+            "drift_per_day": drift,
+            "clock_complete": hours_tested == 24,
+            "raw_level_span": raw_span,
+            "detrended_span": detrended_span,
+            "sign_p_ceiling": round(ceiling, 6),
+            "best_achievable_sign_p": round(best_p, 6),
+            "panel_days_needed": needed,
+            "by_hour_of_day": table,
+            "significant_hours": [p["hour_of_day"] for p in sig],
+            "level_shape_status": status,
+            "level_shape_verdict": verdict,
+        }
     }
 
 
@@ -722,6 +997,23 @@ def main(argv: list[str] | None = None) -> None:
                 f" | {p['mean_min_gap']} | {p['mean_range']} | {p['mean_reval']}"
                 f" | {p['mean_drag']} | {p['mean_fills']} | {p['n_days']} |"
             )
+        # The level column above is CUMULATIVE, so a run that loses money
+        # at a steady rate prints a monotone fall down the clock whether
+        # or not any hour is special. Print the same panel DIFFERENCED
+        # right underneath it, so the drift and the shape are never read
+        # off one number (bound 9).
+        dl = best["diurnal_level"]
+        print(f"\n[shadow_diurnal] de-trended level — {dl['level_shape_verdict']}")
+        if dl["by_hour_of_day"]:
+            print("| UTC | mean_d_equity | demeaned | cum_demeaned | days | below | sign_p |")
+            print("|---|---|---|---|---|---|---|")
+            for q in dl["by_hour_of_day"]:
+                print(
+                    f"| {q['hour_of_day']:02d}Z | {q['mean_d_equity']} | {q['demeaned']}"
+                    f" | {q['cum_demeaned']} | {q['n_days']}"
+                    f" | {q['n_below_centre']}/{q['n_effective']} | {q['sign_p']:g} |"
+                )
+
         r = best["range_extremes"]
         print(
             f"\n[shadow_diurnal] loudest hour {r['loudest_hour_of_day']:02d}Z"

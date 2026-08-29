@@ -2,11 +2,21 @@
 range sits beside it, and the entry-drag model refuses to guess.
 Synthetic ledgers, no network."""
 
+import ast
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import duckdb
 
-from simulator.shadow_diurnal import HALF_TICK, MIN_DAYS, build_diurnal
+from simulator.shadow_diurnal import (
+    HALF_TICK,
+    LEVEL_STATUSES,
+    MIN_DAYS,
+    PANEL_STATUSES,
+    VERDICT_POPULATION,
+    build_diurnal,
+)
 
 T0 = datetime(2026, 8, 1, 0, 0)
 
@@ -523,3 +533,221 @@ def test_an_open_run_is_flagged_off_the_ledger_not_off_run_id_order():
     assert _run(report, "a_live")["open"] is True
     assert _run(report, "z_stale")["open"] is False
     assert report["power_census"]["open_runs"] == ["a_live"]
+
+
+# --- Bound 9: the level column is cumulative -------------------------------
+
+
+def _clock_ledger(n_days, delta, run_id="R"):
+    """A run of `n_days` full UTC days sampled twice an hour, where the
+    equity CHANGE over hour-of-day `hod` on day `d` is `delta(d, hod)`.
+    Equity is the running sum, so the level column is cumulative --
+    which is the whole thing bound 9 is about. One padding hour on each
+    end absorbs the partial-bucket rule (bound 2)."""
+    eq, level, minute = [], 0.0, -60
+    eq.append((run_id, minute, level))
+    minute = 0
+    for d in range(n_days):
+        for hod in range(24):
+            level += delta(d, hod)
+            eq.append((run_id, minute + 30, level))
+            eq.append((run_id, minute + 59, level))
+            minute += 60
+    eq.append((run_id, minute + 30, level))
+    return _ledger(eq)
+
+
+def _level(run):
+    return run["diurnal_level"]
+
+
+def test_a_pure_drift_run_reads_flat_not_a_late_clock_trough():
+    """LOAD-BEARING, and the reason bound 9 exists. Eleven days that lose
+    the SAME amount every hour of the clock. The raw level column falls
+    monotonically from 00Z to 23Z by hundreds and invites "the book bleeds
+    into the afternoon"; the truth is that no hour of the day is special
+    at all. The jitter differs by day so the draws are not all ties."""
+    run = _run(build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 + (d - 5.0))))
+    lv = _level(run)
+
+    # The artefact, still published: the raw column really does fall.
+    bal = [p["mean_equity_end_balanced"] for p in run["by_hour_of_day"]]
+    assert bal == sorted(bal, reverse=True)
+    assert lv["raw_level_span"] > 200
+
+    # And the de-trended column says the fall is the drift, not the clock.
+    assert lv["level_shape_status"] == "powered"
+    assert lv["level_shape_verdict"].startswith("FLAT")
+    assert lv["significant_hours"] == []
+    assert abs(lv["detrended_span"]) < 5
+    assert lv["clock_complete"] is True
+    assert lv["drift_per_day"] == -240.0  # 24 x the mean hourly change
+
+
+def test_a_real_hour_of_day_effect_survives_the_de_trending():
+    """The control for the test above. Same steady drift, plus 12Z losing
+    an extra 100 on every single day. The de-trended column must find it
+    and the sign test must name 12Z alone."""
+    run = _run(
+        build_diurnal(
+            _clock_ledger(
+                11,
+                lambda d, hod: -10.0 + (d - 5.0) - (100.0 if hod == 12 else 0.0),
+            )
+        )
+    )
+    lv = _level(run)
+    assert lv["level_shape_status"] == "powered"
+    assert lv["significant_hours"] == [12]
+    assert lv["level_shape_verdict"].startswith("HOUR-OF-DAY LEVEL EFFECT")
+    twelve = next(p for p in lv["by_hour_of_day"] if p["hour_of_day"] == 12)
+    assert twelve["n_below_centre"] == twelve["n_effective"] == 11
+    assert twelve["demeaned"] < -90
+
+
+def test_a_nine_day_panel_cannot_clear_the_ceiling_even_if_every_day_agrees():
+    """MEASURED on `20260810T081931`: 12Z is 9 of 9 days below the grand
+    mean and its sign p is 0.0039, against a 24-hour ceiling of 0.00208.
+    That is UNDERPOWERED, not a measured flat, and the verdict must say
+    how many days would fix it rather than print the strongest possible
+    reading as a null."""
+    run = _run(
+        build_diurnal(
+            _clock_ledger(
+                9,  # nine full days -> the panel the live ledger has
+                lambda d, hod: -10.0 + (d - 4.0) - (100.0 if hod == 12 else 0.0),
+            )
+        )
+    )
+    lv = _level(run)
+    assert lv["n_panel_days"] == 9
+    twelve = next(p for p in lv["by_hour_of_day"] if p["hour_of_day"] == 12)
+    assert twelve["n_below_centre"] == twelve["n_effective"] == 9  # every day agrees
+    assert twelve["sign_p"] == 0.003906
+    assert lv["level_shape_status"] == "underpowered"
+    assert lv["significant_hours"] == []  # cannot be claimed at this power
+    assert lv["panel_days_needed"] == 10
+    assert lv["level_shape_verdict"].startswith("UNDERPOWERED")
+    assert "10 untied panel days are needed" in lv["level_shape_verdict"]
+
+
+def test_the_ceiling_is_divided_by_the_hours_actually_tested():
+    """Twenty-four hours are twenty-four chances. An unadjusted 0.05 per
+    hour finds a trough on noise better than half the time, so the
+    ceiling divides by the hours tested -- and by the hours TESTED, not
+    by 24, so a run covering half a clock is not silently over-corrected."""
+    run = _run(build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 + (d - 5.0))))
+    lv = _level(run)
+    assert lv["hours_tested"] == 24
+    assert lv["sign_p_ceiling"] == round(0.05 / 24, 6)
+    # 11 draws an hour, one of which lands exactly ON the centre and is
+    # dropped as a tie -- so the best test this panel can run is 10 draws.
+    assert lv["best_achievable_sign_p"] == round(2.0 ** (1 - 10), 6)
+
+
+def test_a_delta_across_an_outage_is_excluded_not_filed_under_one_hour():
+    """The daemon goes down for four hours and comes back 5,000 lower.
+    The buckets either side are adjacent in ROW order, so the naive
+    close-to-close delta files a four-hour loss under a single
+    hour-of-day -- exactly the value that manufactures a spike."""
+    eq, level, minute = [("R", -60, 0.0)], 0.0, 0
+    for d in range(11):
+        for hod in range(24):
+            if hod in (5, 6, 7, 8):
+                minute += 60
+                continue  # the nightly maintenance window: no rows at all
+            level += -10.0 + (d - 5.0)
+            if d == 1 and hod == 9:
+                level -= 5000.0  # and one day it comes back 5,000 lower
+            eq.append(("R", minute + 30, level))
+            eq.append(("R", minute + 59, level))
+            minute += 60
+    eq.append(("R", minute + 30, level))
+    lv = _level(_run(build_diurnal(_ledger(eq))))
+
+    # Every 09Z delta spans the window, so 09Z has no honest draw at all
+    # and is absent from the table rather than carrying a four-hour loss.
+    assert lv["non_contiguous_deltas_excluded"] == 11
+    assert [p["hour_of_day"] for p in lv["by_hour_of_day"]] == [
+        h for h in range(24) if h not in (5, 6, 7, 8, 9)
+    ]
+    assert lv["hours_tested"] == 19
+    assert lv["sign_p_ceiling"] == round(0.05 / 19, 6)
+    # The 5,000 never reaches any hour-of-day mean.
+    assert abs(lv["detrended_span"]) < 50
+    assert lv["significant_hours"] == []
+
+
+def test_a_run_with_no_panel_is_unscorable_not_flat():
+    """Same partition rule as everywhere else: an absent measurement is
+    not a measured zero (mistakes #32)."""
+    run = _run(build_diurnal(_ledger([("R", 0, 0.0), ("R", 30, -5.0), ("R", 59, -7.0)])))
+    lv = _level(run)
+    assert lv["level_shape_status"] == "unscorable"
+    assert lv["level_shape_verdict"].startswith("UNSCORABLE")
+    assert lv["by_hour_of_day"] == []
+    assert lv["detrended_span"] is None
+    assert lv["drift_per_day"] is None
+
+
+def test_drift_per_day_is_not_claimed_on_a_partial_clock():
+    """A sum over 15 hours is not a daily rate, and nothing may read it
+    as one."""
+    eq, level, minute = [("R", -60, 0.0)], 0.0, 0
+    for _d in range(4):
+        for _hod in range(15):
+            level -= 10.0
+            eq.append(("R", minute + 30, level))
+            minute += 60
+        minute += 9 * 60  # the rest of the clock is simply absent
+    eq.append(("R", minute + 30, level))
+    lv = _level(_run(build_diurnal(_ledger(eq))))
+    assert lv["clock_complete"] is False
+    assert lv["hours_tested"] < 24
+    assert lv["sign_p_ceiling"] == round(0.05 / lv["hours_tested"], 6)
+
+
+def test_the_census_carries_no_level_term():
+    """LEVEL is not poolable across runs -- each run seeds a different
+    book. The census tallies shape only, and must never be extended."""
+    census = build_diurnal(_clock_ledger(11, lambda d, hod: -10.0))["power_census"]
+    assert "level" not in json.dumps(census)
+
+
+def test_every_verdict_publisher_is_registered():
+    """The registry that `atlas.py` and `queuescore.py` have and this
+    module did not. An unregistered verdict is how a count gets plotted
+    against readings that never tested it."""
+    tree = ast.parse(Path("simulator/shadow_diurnal.py").read_text())
+    published = {
+        k.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for k in node.keys
+        if isinstance(k, ast.Constant) and isinstance(k.value, str) and k.value.endswith("_verdict")
+    }
+    assert published == set(VERDICT_POPULATION)
+    assert VERDICT_POPULATION["level_shape_verdict"] == ("panel_day", LEVEL_STATUSES)
+    # The unit is the point: only the `run`-unit verdicts may be pooled.
+    assert {k for k, (unit, _) in VERDICT_POPULATION.items() if unit == "run"} == {
+        "profile_verdict",
+        "shape_verdict",
+    }
+
+
+def test_panel_status_names_the_three_states():
+    """`level_verdict` was a sentence with no machine-readable status
+    beside it, so nothing could tally it."""
+    balanced = _run(
+        build_diurnal(_panel_ledger({0: (1, 2, 3), 1: (1, 2, 3)}, lambda d, hod: -100.0 * d))
+    )
+    ragged = _run(
+        build_diurnal(_panel_ledger({0: (1, 2, 3), 1: (1, 2)}, lambda d, hod: -100.0 * d))
+    )
+    none = _run(build_diurnal(_ledger([("R", 0, 0.0), ("R", 30, -5.0), ("R", 59, -7.0)])))
+    assert balanced["level_panel"]["panel_status"] == "balanced"
+    assert ragged["level_panel"]["panel_status"] == "ragged"
+    assert none["level_panel"]["panel_status"] == "no_panel"
+    assert {r["level_panel"]["panel_status"] for r in (balanced, ragged, none)} <= set(
+        PANEL_STATUSES
+    )

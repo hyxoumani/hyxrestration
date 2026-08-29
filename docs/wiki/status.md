@@ -1,5 +1,81 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-29 20:25 UTC (LEVEL PASS -- THE COLUMN THE LAST PASS
+SAID TO READ IS CUMULATIVE, AND ITS DRIFT ALONE OUTRUNS ITS SPAN.**
+Last pass named the standing job: "`20260810T081931` is the first run
+with a 9-day balanced panel -- read `mean_equity_end_balanced` DOWN the
+clock, and note the run is at -2,139." Read. The column falls from
+**-2139.1 at 00Z to -2592.2 at 18Z** and recovers to -2489.5 by 23Z,
+which reads as an afternoon bleed with an evening recovery. It is
+almost entirely an artefact.
+**(1) A CUMULATIVE COLUMN CANNOT SEPARATE AN HOUR-OF-DAY EFFECT FROM A
+DRIFT.** `mean_equity_end_balanced` carries every hour before it inside
+the day, so a run losing money at a steady rate falls monotonically down
+the clock whether or not any hour is special. This run's own drift is
+**-375.0/day**, i.e. a **-359.4** fall across the 23 hour-steps of the
+clock on its own -- against a raw column span of **453.1**. The same panel
+DIFFERENCED -- per hour-of-day the mean close-to-close change, de-meaned
+and cumulated -- spans **293.6**, and it is not monotone: it rises to
+**+89.5 at 10Z** before falling to **-204.1 at 16Z**. Bound 7 balanced
+the DAYS in that column and bound 9 is the axis under it.
+**(2) THE ONE HOUR THAT IS THERE CANNOT BE CLAIMED, AND THE REPORT NOW
+SAYS SO IN THOSE WORDS.** **12Z is 9 of 9 panel days below the
+leave-one-out centre at -125.7** -- every single day agrees. Its
+two-sided sign p is **0.003906**, against a ceiling of **0.05/24 =
+0.00208** (24 hours of the clock are 24 chances; unadjusted, a trough
+turns up on noise better than half the time). The strongest test a
+9-day panel can run IS 0.0039, so **no hour could clear the ceiling even
+if every day agreed** -- `level_shape_status` reads **UNDERPOWERED**,
+names **10 panel days** as the fix, and prints the shape beside it as
+explicitly not a claim. That is a statement about power, not a measured
+flat, and it is one day of run span away from being decidable.
+**(3) THREE THINGS THAT CUT AGAINST THE FINDING, ALL LOAD-BEARING.**
+(a) Deltas across a data outage are EXCLUDED (`contiguous`): the query
+returns surviving buckets adjacent in ROW order, so a four-hour outage
+hands the next hour a four-hour loss filed under one hour-of-day --
+exactly the value that manufactures a spike. Zero excluded on the four
+powered runs today, which is why the reading above is unaffected; the
+guard is for the outage that has not happened yet. (b) Draws exactly ON
+the centre are TIES and are dropped -- counting them as "not below" makes
+a perfectly constant drift read 0-of-n below at all 24 hours and print
+24 significant hours. (c) The centre is a LEAVE-ONE-OUT MEDIAN: a mean
+centre is dragged by one loud hour far enough that all 23 others come
+out significant on the other side of it (measured on the synthetic --
+the outlier does not just fail to isolate, it makes every quiet hour a
+finding).
+**(4) THE FOUR PUBLISHERS ARE NOW IN AN AST-ENUMERATED REGISTRY**, the
+mechanical rung named last pass. `VERDICT_POPULATION` carries each
+verdict with the UNIT its statuses count in, and the unit is the point:
+only the two `run`-unit verdicts may be pooled by the census. LEVEL is
+`panel_day` and per-run because each run seeds a different book. Also
+added `panel_status`, so the existing `level_verdict` sentence finally
+has a machine-readable status beside it. Ten mutants, all red. Suite
+910 -> **920**.
+**NO PROMOTE -- verified, not assumed:** `grep` over `scripts/systemd/`
+finds no unit referencing shadow_diurnal, and it is not in
+`simulator.shadow`'s import closure. That matters more each pass: the
+census shows the powered runs are the LONG ones, and the live run
+`20260829T191841` is the asset this report is short of. Pushed.
+NEXT PASS: (1) **ONE MORE PANEL DAY DECIDES 12Z.** The binding
+constraint is run span and the loop is spending it -- runs since 08-23
+are 6-24h because each promote restarts the daemon, and four of the five
+longest runs predate the current cadence. Decide deliberately whether to
+hold shadow restarts; the cost is now measurable in a specific pending
+answer, not in the abstract. (2) **WHAT IS 12Z?** The 12Z bucket is
+08:00-09:00 New York and it CONTAINS 12:30Z, when the US macro releases
+print -- an hour before the equity open, not at it. Before claiming an effect, check whether
+12Z is where the probe strategy's FILLS concentrate (mean_fills at 12Z
+is 181.7 against 293.4 at 17Z -- it is NOT the busiest hour, which makes
+the -141.3 more interesting, not less). (3) The width-24 econ maker
+bracket needs 2026-09-12 for a second independent reading; the atlas
+quoted tier wants settled markets ~2.1M (1.84M on 08-29). Both
+data-gated. (4) `collect-skips` has been UNVERIFIED since it shipped:
+decide to force a lock-wait or stop printing the section.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
+
 Updated: **2026-08-29 14:30 UTC (CENSUS PASS -- THE STANDING REPORT HAD
 ANSWERED ITS OWN OPEN QUESTION FOUR TIMES AND THE ALL-RUNS PATH THAT
 WOULD HAVE SHOWN IT HAD NEVER ONCE RUN.**
