@@ -1,5 +1,63 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-30 20:35 UTC (ABSENCE PASS -- 29 OF 52 RUNS READ
+SETTLEMENT `unscorable` AND EVERY ONE OF THEM NEVER REACHED THE
+CONTROL.**
+Last pass named the standing job: "29 of 52 runs read settlement
+`unscorable` and nobody has asked WHY -- if that is mostly 'no
+contiguous delta at all' rather than 'every draw at the tested hour
+settled', the census is counting two unlike absences as one status.
+Split the reason, or say why one bucket is right." Split, and the answer
+is the extreme one.
+**(1) THE TWO ABSENCES ARE OPPOSITE FINDINGS, NOT DEGREES.** A run that
+produced no contiguous hour-to-hour change **never reached** the control
+and is evidence of nothing in either direction; a run whose every draw
+at the tested hour settled **reached it and lost to the worst
+contamination a panel can have**. `settlement_absence` now splits
+`unscorable` into `no_delta` / `all_settled_at_hour` /
+`no_deviation_at_hour`, and is `None` whenever the control actually
+ran -- a code on a scored panel would tally it as a missing one.
+**(2) MEASURED: ALL 29 ARE `no_delta`.** 23 of 52 runs reached the
+control; the 29 that did not are `no_delta` **29, `all_settled_at_hour`
+0, `no_deviation_at_hour` 0**. So the bucket is a statement about how
+young most shadow runs are and **not one about contamination** -- and
+the ledger holds **no** case of a panel defeated by total contamination,
+which the undifferentiated 29 could equally have meant. The scored side
+is unchanged: `20260810T081931` still reads CONFOUNDED at 12Z.
+**(3) THE CENSUS COUNTS ABSENCES IN RUNS AND REFUSES TO POOL THE SCORED
+STATUSES.** "17 runs read clean" would pool `panel_day` verdicts taken
+on unlike panels, which is the same rule that keeps LEVEL out of the
+census. WHY a control could not run is a coverage property OF THE RUN,
+so it is counted in runs, published beside `reached` so the absences are
+read against the runs that could have had them (mistakes #35), and a
+test asserts no scored status appears anywhere in the census blob.
+**(4) FOUR MUTANTS RED** (saturated-panel coded as `no_delta`,
+`reached` counting unscorable runs, census pooling the scored statuses,
+scored control carrying an absence code). Suite 940 -> **944**.
+**NO PROMOTE -- verified again this pass:** `grep` over
+`scripts/systemd/` finds no unit referencing `shadow_diurnal`. The live
+run `20260829T191841` has been up since 08-29 19:18 UTC and every
+promote restarts the shadow daemon; holding sim-side changes out of
+promote is what buys the 10th panel day. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT**
+for 12Z's sign test, and the settlement control's own balanced panel is
+3 days. Do not promote anything collection-side unless it is worth
+restarting the shadow daemon for, and say which when you do. (2) The
+successor question this pass opens: `no_delta` 29 is now known to be a
+COVERAGE fact, and coverage is the one thing the ledger can fix by
+itself -- ask why 29 runs produced no contiguous delta at all when only
+13 publish no whole hour, i.e. what kills the other 16 (partial hours?
+outage-split deltas? the on-panel filter?). That gap is a report bug or
+a daemon-restart artefact, and it is the difference between a ledger
+that will answer 12Z and one that keeps discarding the days that would.
+(3) `collect-skips` has been UNVERIFIED since it shipped: decide to
+force a lock-wait or stop printing the section. (4) The width-24 econ
+maker bracket needs 2026-09-12 for a second reading; the atlas quoted
+tier wants settled markets ~2.1M (1.84M on 08-29). Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-30 14:25 UTC (SWEEP PASS -- THE CONTROL SCORED ONE
 HOUR AND LEFT THE REST OF A CONTAMINATED CLOCK UNREAD.**
 Last pass named the standing job: "the control tests only the STRONGEST

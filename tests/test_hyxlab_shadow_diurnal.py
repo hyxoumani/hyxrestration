@@ -14,6 +14,7 @@ from simulator.shadow_diurnal import (
     LEVEL_STATUSES,
     MIN_DAYS,
     PANEL_STATUSES,
+    SETTLEMENT_ABSENCES,
     SETTLEMENT_STATUSES,
     VERDICT_POPULATION,
     build_diurnal,
@@ -1344,3 +1345,86 @@ def test_the_verdict_says_why_the_control_is_taken_at_one_hour():
     assert "at ONE hour deliberately" in v
     assert "24 different day-panels" in v and "multiplicity" in v
     assert "never as a verdict" in v
+
+
+def test_a_control_that_never_ran_is_not_a_control_that_found_nothing():
+    """Bound 11c. `unscorable` pools two OPPOSITE ledgers: a run that
+    produced no contiguous hour-to-hour change never reached the control
+    and carries no evidence about contamination either way, while a run
+    whose every draw at the tested hour settled reached it and lost to
+    total contamination. One count of 29 cannot be both."""
+    no_delta = _run(build_diurnal(_ledger([("R", 0, 0.0), ("R", 30, -5.0), ("R", 59, -7.0)])))[
+        "diurnal_level"
+    ]
+    saturated = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 + (d - 5.0) - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 12,
+            )
+        )
+    )["diurnal_level"]
+
+    assert no_delta["settlement_status"] == saturated["settlement_status"] == "unscorable"
+    # ...and the status is where the likeness stops.
+    assert no_delta["settlement_absence"] == "no_delta"
+    assert saturated["settlement_absence"] == "all_settled_at_hour"
+    assert no_delta["settlement_absence"] in SETTLEMENT_ABSENCES
+    assert saturated["settlement_absence"] in SETTLEMENT_ABSENCES
+    # The unreached control says so in prose too, not only in the code.
+    assert "never REACHED" in no_delta["settlement_verdict"]
+
+
+def test_a_scored_settlement_control_has_no_absence_to_explain():
+    """The field is the reason an absent reading is absent, so a control
+    that RAN must carry None -- a code there would make a scored panel
+    tally as a missing one."""
+    clean = _run(
+        build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 - (100.0 * (hod == 12))))
+    )["diurnal_level"]
+    scored = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 + (d - 5.0) - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 12 and d < 6,
+            )
+        )
+    )["diurnal_level"]
+
+    assert clean["settlement_status"] == "clean"
+    assert scored["settlement_status"] in ("survives", "confounded")
+    assert clean["settlement_absence"] is None
+    assert scored["settlement_absence"] is None
+
+
+def test_the_census_splits_settlement_absences_and_counts_them_in_runs():
+    """The census must name WHY each control could not run, and must read
+    the absences against the runs that could have had one (mistakes #35).
+    On this ledger every run is `no_delta`-free or not, and the split is
+    what distinguishes a young ledger from a contaminated one."""
+    report = build_diurnal(_census_ledger())
+    a = report["power_census"]["settlement_absence"]
+
+    assert a["runs_published"] == 4
+    assert a["counts"]["no_delta"] == 1  # r1_none: two points inside one hour
+    assert a["run_ids"]["no_delta"] == ["r1_none"]
+    assert a["counts"]["all_settled_at_hour"] == 0
+    assert a["unscorable"] == 1
+    assert a["reached"] == 3
+    assert a["reached"] + a["counts"]["no_delta"] == a["runs_published"]
+
+
+def test_the_census_does_not_pool_the_scored_settlement_statuses():
+    """`settlement_verdict` is a PANEL DAY verdict: "17 runs read clean"
+    pools readings taken on unlike panels, which is exactly what the
+    census rule forbids for LEVEL. Only absences -- a property of the run
+    -- may be counted here."""
+    census = build_diurnal(_census_ledger())["power_census"]
+    blob = json.dumps(census)
+
+    for scored in ("clean", "survives", "confounded"):
+        assert scored not in blob
+    assert set(census["settlement_absence"]["counts"]) == set(SETTLEMENT_ABSENCES)
+    assert "panel day" in census["settlement_absence"]["rule"]

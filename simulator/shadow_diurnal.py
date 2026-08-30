@@ -211,6 +211,18 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      rows are dropped. That is a statement about how soft the rest of
      the clock is, not a finding about those two hours. An hour with no free row at all has
      `demeaned_free` and `flipped` None -- absent, not a flip of zero.
+     A control that never RAN is not a control that found nothing
+     (bound 11c). `settlement_absence` splits `unscorable` into
+     `no_delta` -- the run produced no contiguous hour-to-hour change, so
+     the control was never reached and the run is evidence of nothing --
+     and `all_settled_at_hour` / `no_deviation_at_hour`, panels that
+     existed and could not be read. MEASURED 2026-08-30 over the 52
+     published runs: 29 unscorable, and ALL 29 are `no_delta`. So the
+     bucket is a statement about how young most shadow runs are and not
+     one about contamination, and the ledger holds no case of a panel
+     defeated by total contamination -- which the undifferentiated count
+     of 29 could equally have meant. The census counts absences in RUNS
+     and refuses to pool the scored statuses, which are per panel day.
      Orthogonal to whether
      the hour exists: bound 9's sign test still decides that.
 """
@@ -273,6 +285,17 @@ SPLIT_STATUSES = ("scorable", "unscorable")
 #: absent measurement: every draw at the hour under test is contaminated,
 #: or the hour has no deviation to attribute.
 SETTLEMENT_STATUSES = ("clean", "survives", "confounded", "unscorable")
+#: WHY a settlement control is `unscorable`, because the status alone
+#: pools two unlike absences (bound 11c). `no_delta` is a run that never
+#: produced a contiguous hour-to-hour change, so the control was never
+#: REACHED and the run says nothing at all about contamination;
+#: `all_settled_at_hour` and `no_deviation_at_hour` are panels that DO
+#: exist and could not be read -- the first is the worst contamination
+#: there is. A ledger of 29 `no_delta` runs and a ledger of 29
+#: `all_settled_at_hour` runs are opposite findings that tally
+#: identically without this field. `None` whenever the status is not
+#: `unscorable`: a scored control has no absence to explain.
+SETTLEMENT_ABSENCES = ("no_delta", "all_settled_at_hour", "no_deviation_at_hour")
 #: Fraction of the strongest hour's de-trended deviation that must remain
 #: once settlement-bearing rows are dropped before the hour is allowed to
 #: read `survives`. Half is deliberately generous -- an hour that keeps
@@ -593,6 +616,7 @@ def _settlement_absent(
     reason: str,
     table: list[dict] | None = None,
     sweep: list[dict] | None = None,
+    absence: str | None = None,
 ) -> dict:
     """The settlement control with nothing measured. Every field is None
     rather than zero: "no contaminated row was compared" and "the
@@ -601,7 +625,13 @@ def _settlement_absent(
     The SWEEP is passed through where it was computable, because a
     control that cannot score its own hour can still say what the other
     contaminated hours did -- and an empty list there would read as "no
-    contaminated hour", which is the opposite finding."""
+    contaminated hour", which is the opposite finding.
+
+    `absence` is the machine-readable half of `reason` (bound 11c). The
+    prose sentence is what a reader gets; a census tallying 52 runs needs
+    the code, or "no run ever produced a delta" and "every draw at the
+    tested hour expired" fall into one bucket."""
+    assert absence in SETTLEMENT_ABSENCES, absence
     for p in table or []:
         p["n_settlement_rows"] = p.get("n_settlement_rows", 0)
         p.setdefault("mean_d_settlement", None)
@@ -609,6 +639,7 @@ def _settlement_absent(
         p.setdefault("settlement_gap", None)
     return {
         "settlement_status": status,
+        "settlement_absence": absence,
         "settlement_rows": None,
         "settlement_free_rows": None,
         "hours_with_settlements": None,
@@ -722,7 +753,10 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
     dirty = [r for r in rows if r["n_settlements"]]
     if not rows:
         return _settlement_absent(
-            "unscorable", "UNSCORABLE (no contributing row to control)", table
+            "unscorable",
+            "UNSCORABLE (no contributing row to control)",
+            table,
+            absence="no_delta",
         )
     for p in table:
         rs = srows[p["hour_of_day"]]
@@ -735,6 +769,7 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
     if not dirty:
         return {
             "settlement_status": "clean",
+            "settlement_absence": None,
             "settlement_rows": 0,
             "settlement_free_rows": len(rows),
             "hours_with_settlements": 0,
@@ -775,6 +810,7 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
             " surviving hour)",
             table,
             sweep,
+            absence="all_settled_at_hour",
         )
     if not strongest["demeaned"]:
         return _settlement_absent(
@@ -783,6 +819,7 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
             " deviation to attribute to either settlement or marking)",
             table,
             sweep,
+            absence="no_deviation_at_hour",
         )
 
     # (a) the RAGGED settlement-free subset: every row that carried no
@@ -888,6 +925,7 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
     )
     return {
         "settlement_status": status,
+        "settlement_absence": None,
         "settlement_rows": len(dirty),
         "settlement_free_rows": len(all_free),
         "hours_with_settlements": n_dirty_hours,
@@ -1001,7 +1039,10 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                 **_settlement_absent(
                     "unscorable",
                     "UNSCORABLE (no contiguous change to control; there are no"
-                    " rows, which is not an uncontaminated panel)",
+                    " rows, which is not an uncontaminated panel -- the control"
+                    " was never REACHED, which is not a contaminated hour that"
+                    " could not be read)",
+                    absence="no_delta",
                 ),
             }
         }
@@ -1240,6 +1281,49 @@ def _by_day(hours: list[dict]) -> dict:
     }
 
 
+def _absence_census(runs: list[dict]) -> dict:
+    """WHY the settlement control could not run, split by reason and
+    counted in RUNS (bound 11c).
+
+    The status alone puts two opposite ledgers in one bucket. A run that
+    never produced a contiguous hour-to-hour change never REACHED the
+    control: it carries no evidence about contamination in either
+    direction. A run whose every draw at the tested hour settled reached
+    it and was defeated by the worst contamination the panel can have.
+    Both read `unscorable`, so a census that tallies the status and stops
+    cannot tell "the ledger is too young to ask" from "the ledger is
+    saturated with expiries" -- and the first is a wait, the second a
+    finding.
+
+    Only absences are tallied. The scored statuses are per PANEL DAY and
+    are deliberately not pooled here; `reached` is published beside the
+    counts so the absences are read against the runs that could have had
+    them, never on their own (mistakes #35).
+    """
+    lv = [(r["run_id"], r["diurnal_level"]) for r in runs]
+    absent = [(rid, d["settlement_absence"]) for rid, d in lv if d["settlement_absence"]]
+    return {
+        "rule": (
+            "absences are counted in RUNS and split by reason; the scored"
+            " statuses are per panel day and are NOT pooled here. `no_delta`"
+            " never reached the control and is evidence of nothing;"
+            " `all_settled_at_hour` reached it and lost to total contamination"
+        ),
+        "runs_published": len(runs),
+        # Reached = the run had a panel the control could look at, whether
+        # or not it could then be scored.
+        "reached": sum(1 for _rid, a in absent if a != "no_delta")
+        + sum(1 for _rid, d in lv if not d["settlement_absence"]),
+        "unscorable": len(absent),
+        "counts": {a: sum(1 for _rid, x in absent if x == a) for a in SETTLEMENT_ABSENCES},
+        "run_ids": {
+            a: [rid for rid, x in absent if x == a]
+            for a in SETTLEMENT_ABSENCES
+            if any(x == a for _rid, x in absent)
+        },
+    }
+
+
 def power_census(runs: list[dict]) -> dict:
     """Which runs in the ledger actually answer the shape question.
 
@@ -1274,6 +1358,12 @@ def power_census(runs: list[dict]) -> dict:
     them, so `runs` lists each member with the span and draw count that
     put it there. `unscorable` runs are held OUT of the profile partition
     rather than counted as underpowered zeros (mistakes #32).
+
+    The settlement block here tallies ABSENCES only, never the scored
+    statuses: `settlement_verdict` is a `panel_day` verdict, so "17 runs
+    read clean" would pool readings taken on unlike panels. Why a control
+    could not run is a coverage property OF THE RUN, and is counted in
+    runs (bound 11c).
     """
     scorable = [r for r in runs if r["validity"]["profile_status"] != "unscorable"]
     unscorable = [r for r in runs if r["validity"]["profile_status"] == "unscorable"]
@@ -1303,6 +1393,7 @@ def power_census(runs: list[dict]) -> dict:
             "run_ids": [r["run_id"] for r in unscorable],
             "why": "no whole hour: nothing to be powered or underpowered about",
         },
+        "settlement_absence": _absence_census(runs),
         "profile": {
             "scorable": len(scorable),
             "counts": {
@@ -1477,6 +1568,19 @@ def main(argv: list[str] | None = None) -> None:
         f" {c['profile']['counts']['underpowered']} underpowered,"
         f" {c['unscorable']['n']} unscorable (no whole hour, NOT a zero)"
     )
+    # Bound 11c: WHY the settlement control could not run, in runs. The
+    # status alone tallies "too young to ask" and "saturated with
+    # expiries" into one bucket, and those are opposite findings.
+    a = c["settlement_absence"]
+    if a["unscorable"]:
+        split = ", ".join(f"{k} {v}" for k, v in a["counts"].items() if v)
+        print(
+            f"[shadow_diurnal] settlement coverage — {a['reached']} of"
+            f" {a['runs_published']} run(s) reached the control;"
+            f" {a['unscorable']} could not be scored: {split}"
+            " (absences are counted in runs; the scored statuses are per"
+            " panel day and are not pooled)"
+        )
     if pw["n"]:
         tally = ", ".join(f"{k} {v}" for k, v in pw["counts"].items() if v)
         print(
