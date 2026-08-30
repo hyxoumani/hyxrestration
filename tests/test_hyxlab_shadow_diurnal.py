@@ -1168,3 +1168,179 @@ def test_no_hour_holds_both_kinds_of_row_and_the_gap_is_absent_not_zero():
     assert lv["settlement_check"]["hour_of_day"] == 12
     assert lv["settlement_check"]["n_settlement_rows"] == 0
     assert lv["settlement_status"] == "survives"
+
+
+# --- Bound 11b: one hour is scored, every contaminated hour is swept -------
+
+
+def _sweep_hour(lv, hod):
+    return next(q for q in lv["settlement_sweep"] if q["hour_of_day"] == hod)
+
+
+def test_the_sweep_re_reads_every_contaminated_hour_not_only_the_scored_one():
+    """The control scores the STRONGEST hour, which leaves the rest of a
+    contaminated clock unread. Here 05Z is contaminated too and is
+    nowhere near the strongest hour, yet dropping its settlement rows is
+    exactly as cheap. It must appear in the sweep."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod in (5, 12) and d < 6,
+            )
+        )
+    )["diurnal_level"]
+
+    assert lv["settlement_check"]["hour_of_day"] == 12  # scored hour unchanged
+    assert [q["hour_of_day"] for q in lv["settlement_sweep"]] == [5, 12]
+    assert _sweep_hour(lv, 5)["n_settlement_rows"] == 6
+    assert _sweep_hour(lv, 5)["n_free_rows"] == 5
+    assert _sweep_hour(lv, 12)["retained_share"] == lv["settlement_check"]["retained_share"]
+
+
+def test_an_hour_that_changes_sign_without_its_settlement_rows_is_flagged():
+    """The finding this rung exists for. 07Z is -200 on the six days a
+    position expires in it and +200 on the five it does not, so it reads
+    as a hole over the whole panel and as a PEAK on its settlement-free
+    rows. The sweep must say the sign changed -- that is a statement
+    about how soft the rest of the clock is, and it is invisible to a
+    control that only ever looks at 12Z."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: (
+                    -10.0
+                    - (100.0 if hod == 12 else 0.0)
+                    + ((-200.0 if d < 6 else 200.0) if hod == 7 else 0.0)
+                ),
+                lambda d, hod: hod in (7, 12) and d < 6,
+            )
+        )
+    )["diurnal_level"]
+
+    seven = _sweep_hour(lv, 7)
+    assert seven["demeaned"] < 0 < seven["demeaned_free"]
+    assert seven["flipped"] is True
+    assert _sweep_hour(lv, 12)["flipped"] is False
+    assert lv["sweep_hours_scorable"] == 2
+    assert lv["sweep_hours_flipped"] == 1
+    assert "change SIGN" in lv["settlement_verdict"]
+
+
+def test_the_sweep_is_a_diagnostic_and_never_moves_the_verdict():
+    """A flip at another hour is a warning about the panel, not evidence
+    about the hour under test. The two ledgers below are identical at 12Z
+    and differ only in whether 07Z flips: the scored verdict and its
+    control rank must not move. (The de-meaned SIZES legitimately do:
+    both the ragged and the balanced reading are deviations from a grand
+    mean that every hour's rows help set, so adding a loud hour anywhere
+    shifts the centre. Which is why the thing this test pins is the
+    ORDERING, and why the verdict is a rank and a retention rather than
+    a number of dollars.)"""
+
+    def lv_for(seven):
+        return _run(
+            build_diurnal(
+                _clock_ledger_with_settlements(
+                    11,
+                    lambda d, hod: (
+                        -10.0
+                        - (100.0 if hod == 12 else 0.0)
+                        + ((-200.0 if d < 6 else 200.0) if hod == 7 and seven else 0.0)
+                    ),
+                    lambda d, hod: hod in (7, 12) and d < 6,
+                )
+            )
+        )["diurnal_level"]
+
+    flat, flipping = lv_for(False), lv_for(True)
+    assert flipping["sweep_hours_flipped"] == 1 and flat["sweep_hours_flipped"] == 0
+    assert flat["settlement_status"] == flipping["settlement_status"]
+    assert flat["settlement_check"]["control_rank"] == flipping["settlement_check"]["control_rank"]
+    assert (
+        flat["settlement_check"]["control_deepest_hour"]
+        == flipping["settlement_check"]["control_deepest_hour"]
+        == 12
+    )
+
+
+def test_a_fully_contaminated_hour_is_listed_with_its_re_reading_absent():
+    """Absent, not zero (mistakes #32). 04Z settles on every one of its
+    days, so it has no settlement-free reading at all -- it must still be
+    LISTED (it is contaminated, which is the sweep's subject) with
+    `demeaned_free` and `flipped` None, and it must not be counted among
+    the hours the sweep actually scored."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 4 or (hod == 12 and d < 6),
+            )
+        )
+    )["diurnal_level"]
+
+    four = _sweep_hour(lv, 4)
+    assert four["n_free_rows"] == 0
+    assert four["demeaned_free"] is None and four["flipped"] is None
+    assert four["retained_share"] is None
+    assert lv["sweep_hours_scorable"] == 1  # 12Z only
+    assert lv["sweep_hours_flipped"] == 0
+
+
+def test_a_panel_where_every_row_settled_sweeps_hours_rather_than_nothing():
+    """An empty sweep means "no hour was contaminated", which is the
+    OPPOSITE finding to "every row settled". The control itself is
+    unscorable here -- there is no free reading of the strongest hour --
+    and the sweep must still come through it naming the hours."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: True,
+            )
+        )
+    )["diurnal_level"]
+
+    assert lv["settlement_status"] == "unscorable"
+    assert lv["settlement_check"] is None
+    assert len(lv["settlement_sweep"]) == 24
+    assert all(q["flipped"] is None for q in lv["settlement_sweep"])
+    assert lv["sweep_hours_scorable"] == 0 and lv["sweep_hours_flipped"] == 0
+
+
+def test_a_clean_panel_sweeps_zero_hours_which_is_a_measurement():
+    """The mirror of the case above: nothing settled anywhere, so zero
+    contaminated hours IS the reading and the sweep is an empty list
+    rather than None."""
+    lv = _run(
+        build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 - (100.0 * (hod == 12))))
+    )["diurnal_level"]
+
+    assert lv["settlement_status"] == "clean"
+    assert lv["settlement_sweep"] == []
+    assert lv["sweep_hours_scorable"] == 0 and lv["sweep_hours_flipped"] == 0
+
+
+def test_the_verdict_says_why_the_control_is_taken_at_one_hour():
+    """The choice of unit is the finding of this rung, so it has to be in
+    the report and not only in a docstring: 24 balanced controls are 24
+    different day-panels, and 24 verdicts are 24 more chances at the
+    multiplicity the sign-test ceiling exists to control."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 12 and d < 6,
+            )
+        )
+    )["diurnal_level"]
+
+    v = lv["settlement_verdict"]
+    assert "at ONE hour deliberately" in v
+    assert "24 different day-panels" in v and "multiplicity" in v
+    assert "never as a verdict" in v

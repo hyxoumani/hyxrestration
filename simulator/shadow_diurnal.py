@@ -197,7 +197,21 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      of bound 10 was one step ahead of its evidence. `clean` (no
      contributing row settled at all) is an absence of contamination and
      not a test the shape passed; an hour every one of whose draws settled
-     is `unscorable`, absent rather than surviving. Orthogonal to whether
+     is `unscorable`, absent rather than surviving.
+     The control scores ONE hour on purpose (bound 11b): each hour's
+     BALANCED panel is the set of days on which that hour is
+     settlement-free, so 24 balanced controls are 24 incomparable
+     panels, and a survives/confounded at every hour is 24 more chances
+     at the multiplicity the sign-test ceiling exists to control. The
+     cheap half generalises: every contaminated hour is re-read on its
+     settlement-free rows as a RAGGED FRAGILITY SWEEP, published beside
+     the verdict and never as one. MEASURED 2026-08-30 on
+     `20260810T081931`: 2 of the 10 contaminated hours change SIGN --
+     11Z (-27.0 -> +97.6) and 18Z (-18.4 -> +40.0) once their settlement
+     rows are dropped. That is a statement about how soft the rest of
+     the clock is, not a finding about those two hours. An hour with no free row at all has
+     `demeaned_free` and `flipped` None -- absent, not a flip of zero.
+     Orthogonal to whether
      the hour exists: bound 9's sign test still decides that.
 """
 
@@ -574,10 +588,20 @@ def _level_split(
     }
 
 
-def _settlement_absent(status: str, reason: str, table: list[dict] | None = None) -> dict:
+def _settlement_absent(
+    status: str,
+    reason: str,
+    table: list[dict] | None = None,
+    sweep: list[dict] | None = None,
+) -> dict:
     """The settlement control with nothing measured. Every field is None
     rather than zero: "no contaminated row was compared" and "the
-    comparison came out at zero" are different findings (mistakes #32)."""
+    comparison came out at zero" are different findings (mistakes #32).
+
+    The SWEEP is passed through where it was computable, because a
+    control that cannot score its own hour can still say what the other
+    contaminated hours did -- and an empty list there would read as "no
+    contaminated hour", which is the opposite finding."""
     for p in table or []:
         p["n_settlement_rows"] = p.get("n_settlement_rows", 0)
         p.setdefault("mean_d_settlement", None)
@@ -590,6 +614,9 @@ def _settlement_absent(status: str, reason: str, table: list[dict] | None = None
         "hours_with_settlements": None,
         "stratified_settlement_gap": None,
         "settlement_check": None,
+        "settlement_sweep": sweep,
+        "sweep_hours_scorable": None if sweep is None else sum(1 for q in sweep if q["flipped"] is not None),
+        "sweep_hours_flipped": None if sweep is None else sum(1 for q in sweep if q["flipped"]),
         "settlement_verdict": reason,
     }
 
@@ -598,6 +625,67 @@ def _median(vs: list[float]) -> float:
     vs = sorted(vs)
     n = len(vs)
     return vs[n // 2] if n % 2 else (vs[n // 2 - 1] + vs[n // 2]) / 2
+
+
+def _settlement_sweep(srows: dict[int, list[dict]], table: list[dict]) -> list[dict]:
+    """EVERY contaminated hour re-read on its settlement-free rows, not
+    only the hour the control scores (bound 11b).
+
+    The control proper takes one hour -- the strongest -- and that is
+    deliberate, for two reasons that are not the same reason:
+
+      * A BALANCED control cannot be run at 24 hours and read across
+        them. Each hour's balanced panel is the set of days on which
+        THAT hour is settlement-free, so 24 balanced controls are 24
+        different panels; the numbers would not be comparable with each
+        other, and "12Z ranks 3rd" would mean something different in
+        each one.
+      * A verdict attaches to a CLAIM, and the only claim the level test
+        makes is about the hour that comes nearest the sign-test
+        ceiling. Scoring survives/confounded at all 24 hours is 24 more
+        chances at exactly the multiplicity `LEVEL_FWER / hours_tested`
+        exists to control.
+
+    What is still worth having is the cheap half: the RAGGED
+    settlement-free re-reading, which every contaminated hour can carry
+    because it needs no per-hour panel. It is published as a FRAGILITY
+    SWEEP and never as a verdict -- an hour whose deviation changes SIGN
+    once its settlement rows are dropped is a warning about the panel as
+    a whole, not a finding about that hour. An hour every one of whose
+    draws settled has no free reading at all: `demeaned_free` and
+    `flipped` are None there, absent rather than a flip of zero
+    (mistakes #32)."""
+    rows = [r for rs in srows.values() for r in rs]
+    all_free = [r for r in rows if not r["n_settlements"]]
+    # A panel on which EVERY row settled still has contaminated hours to
+    # list -- they simply have no free reading. Returning an empty sweep
+    # there would read as "no hour was contaminated", the opposite
+    # finding, so the hours are listed with their re-reading absent.
+    g_free = sum(r["d_equity"] for r in all_free) / len(all_free) if all_free else None
+    out = []
+    for p in table:
+        if not p["n_settlement_rows"]:
+            continue
+        hod = p["hour_of_day"]
+        free = [r for r in srows[hod] if not r["n_settlements"]]
+        dev, dev_free = p["demeaned"], None
+        if free and g_free is not None:
+            dev_free = sum(r["d_equity"] for r in free) / len(free) - g_free
+        # A zero deviation has no sign to flip and no share to retain, so
+        # both are absent rather than 0.0 / False.
+        scorable = dev_free is not None and bool(dev)
+        out.append(
+            {
+                "hour_of_day": hod,
+                "n_settlement_rows": p["n_settlement_rows"],
+                "n_free_rows": len(free),
+                "demeaned": dev,
+                "demeaned_free": _r(dev_free),
+                "retained_share": round(dev_free / dev, 3) if scorable else None,
+                "flipped": ((dev_free > 0) != (dev > 0)) if scorable else None,
+            }
+        )
+    return out
 
 
 def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict:
@@ -652,6 +740,11 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
             "hours_with_settlements": 0,
             "stratified_settlement_gap": None,
             "settlement_check": None,
+            # Empty because no hour is contaminated -- here the zero IS
+            # the measurement, unlike the None of `_settlement_absent`.
+            "settlement_sweep": [],
+            "sweep_hours_scorable": 0,
+            "sweep_hours_flipped": 0,
             "settlement_verdict": (
                 f"CLEAN (not one of the {len(rows)} contributing rows carried a"
                 " settlement, so `reval` here is marking only and there is"
@@ -661,6 +754,9 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
         }
 
     gaps = [p["settlement_gap"] for p in table if p["settlement_gap"] is not None]
+    sweep = _settlement_sweep(srows, table)
+    n_sweep = sum(1 for q in sweep if q["flipped"] is not None)
+    n_flipped = sum(1 for q in sweep if q["flipped"])
     strongest = min(table, key=lambda p: p["sign_p"])
     hod = strongest["hour_of_day"]
     free = [r for r in srows[hod] if not r["n_settlements"]]
@@ -678,6 +774,7 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
             " settlement-free reading of it to compare against -- absent, not a"
             " surviving hour)",
             table,
+            sweep,
         )
     if not strongest["demeaned"]:
         return _settlement_absent(
@@ -685,6 +782,7 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
             f"UNSCORABLE ({head} The strongest hour {hod:02d}Z has no de-trended"
             " deviation to attribute to either settlement or marking)",
             table,
+            sweep,
         )
 
     # (a) the RAGGED settlement-free subset: every row that carried no
@@ -766,6 +864,25 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
             " is a few days long -- it is a statement that this panel cannot"
             " separate the two."
         )
+        + " The verdict is taken at ONE hour deliberately: it attaches to the"
+        " only claim the level test makes, and a balanced control at all 24"
+        " hours would be 24 different day-panels (not comparable with each"
+        " other) and 24 more chances at the multiplicity the sign-test ceiling"
+        " exists to control. The other contaminated hours are re-read on their"
+        " settlement-free rows as a RAGGED fragility sweep, never as a verdict:"
+        + (
+            f" {n_flipped} of {n_sweep} scorable contaminated hour(s) change SIGN"
+            " when their settlement rows are dropped"
+            + (
+                ", so the contamination is not confined to the hour under test"
+                " and the shape of the rest of the clock is soft too."
+                if n_flipped
+                else ", so the rest of the clock keeps its shape."
+            )
+            if n_sweep
+            else " no contaminated hour has both a free reading and a deviation"
+            " to re-read, so the sweep is ABSENT rather than a clean sweep."
+        )
         + " Settlement contamination is orthogonal to whether the hour exists;"
         " the sign test above still decides that.)"
     )
@@ -776,6 +893,9 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
         "hours_with_settlements": n_dirty_hours,
         "stratified_settlement_gap": _r(gap_med) if gap_med is not None else None,
         "settlement_check": check,
+        "settlement_sweep": sweep,
+        "sweep_hours_scorable": n_sweep,
+        "sweep_hours_flipped": n_flipped,
         "settlement_verdict": verdict,
     }
 
@@ -1420,6 +1540,22 @@ def main(argv: list[str] | None = None) -> None:
         # rows where positions expired are taken out and the hour is
         # looked at again.
         print(f"[shadow_diurnal] settlement control — {dl['settlement_verdict']}")
+        # Bound 11b: the control scores ONE hour, so the other
+        # contaminated hours are printed as a ragged fragility sweep --
+        # a diagnostic about the panel, never a verdict about an hour.
+        if dl.get("settlement_sweep"):
+            flips = ", ".join(
+                f"{q['hour_of_day']:02d}Z {q['demeaned']:+g}->{q['demeaned_free']:+g}"
+                for q in dl["settlement_sweep"]
+                if q["flipped"]
+            )
+            print(
+                f"[shadow_diurnal] settlement sweep — {dl['sweep_hours_flipped']} of"
+                f" {dl['sweep_hours_scorable']} scorable contaminated hour(s) change"
+                f" sign on their settlement-free rows{': ' + flips if flips else ''}"
+                f" (ragged: each hour's free rows are a different set of days, so"
+                f" this bounds the panel's softness and scores nothing)"
+            )
         if dl["by_hour_of_day"]:
             print(
                 "| UTC | mean_d_equity | demeaned | d_reval | d_drag | carrier"
