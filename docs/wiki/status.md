@@ -1,5 +1,70 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-30 14:25 UTC (SWEEP PASS -- THE CONTROL SCORED ONE
+HOUR AND LEFT THE REST OF A CONTAMINATED CLOCK UNREAD.**
+Last pass named the standing job: "the control tests only the STRONGEST
+hour; 11Z and 18Z both flip sign entirely when settlement rows are
+dropped -- decide whether the control should run at every hour, or say
+in the report why one hour is the right unit." Decided, and it is both,
+because they are different halves of the control.
+**(1) THE BALANCED CONTROL CANNOT BE RUN 24 TIMES AND READ ACROSS THE
+RESULTS.** Each hour's balanced panel is the set of days on which THAT
+hour is settlement-free, so 24 balanced controls are **24 different
+panels**; "12Z ranks 3rd" would mean something different in each one.
+And a survives/confounded at every hour is **24 more chances at exactly
+the multiplicity `LEVEL_FWER / hours_tested` exists to control** -- the
+same ceiling bound 9 spends its power on. The verdict therefore stays
+at the one hour the level test makes a claim about, and the report now
+**says so in those words** instead of only in a docstring.
+**(2) THE CHEAP HALF GENERALISES, SO IT DOES.** The RAGGED
+settlement-free re-reading needs no per-hour panel, so every
+contaminated hour gets one, published as a **FRAGILITY SWEEP and never
+as a verdict**. On `20260810T081931` **2 of the 10 scorable
+contaminated hours change SIGN** -- 11Z **-27.0 -> +97.6** and 18Z
+**-18.4 -> +40.0**. That bounds how soft the rest of the clock is; it
+is not a finding about those two hours, and the report says that too.
+Across all runs: 6 confounded, 17 clean, 29 unscorable; only 2 runs
+have any flip at all.
+**(3) ABSENT IS STILL NOT ZERO, IN BOTH DIRECTIONS.** An hour with no
+settlement-free row is **LISTED** (it is contaminated, which is the
+sweep's subject) with `demeaned_free` and `flipped` **None** -- not a
+flip of zero. A panel where EVERY row settled sweeps **24 hours rather
+than an empty list**, because an empty sweep reads as "nothing was
+contaminated", the opposite finding; the sweep is passed through the
+unscorable path so a control that cannot score its own hour still says
+what the others did. A clean panel's empty sweep is the one place the
+zero IS the measurement.
+**(4) THE DIAGNOSTIC MUST NOT MOVE THE VERDICT, AND A TEST PINS THAT.**
+Two ledgers identical at 12Z, differing only in whether 07Z flips, keep
+the same status, control rank and deepest control hour. The de-meaned
+SIZES legitimately move (every hour's rows help set the grand mean),
+which is why the scored reading is a rank and a retention rather than a
+number of dollars. Six mutants red (scored-hour-only sweep,
+absent-flip-as-false, empty-sweep-when-all-settled,
+unscorable-counted-as-scored, sweep dropped from the unscorable path,
+verdict without the unit rationale). Suite 933 -> **940**.
+**NO PROMOTE -- verified again this pass:** `grep` over
+`scripts/systemd/` finds no unit referencing `shadow_diurnal`. The live
+run `20260829T191841` has been up since 08-29 19:18 UTC and every
+promote restarts the shadow daemon; holding sim-side changes out of
+promote is what buys the 10th panel day. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT**
+for 12Z's sign test, and now doubly so -- the settlement control's own
+balanced panel is 3 days. Do not promote anything collection-side
+unless it is worth restarting the shadow daemon for, and say which when
+you do. (2) The successor question this pass opens: 29 of 52 runs read
+settlement `unscorable` and nobody has asked WHY -- if that is mostly
+"no contiguous delta at all" rather than "every draw at the tested hour
+settled", the census is counting two unlike absences as one status.
+Split the reason, or say why one bucket is right. (3) `collect-skips`
+has been UNVERIFIED since it shipped: decide to force a lock-wait or
+stop printing the section. (4) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled
+markets ~2.1M (1.84M on 08-29). Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-30 08:40 UTC (SETTLEMENT PASS -- THE MARKING STORY
 WAS ONE STEP AHEAD OF ITS EVIDENCE: SIX OF 12Z'S NINE DRAWS ARE HOURS
 IN WHICH POSITIONS EXPIRED.**
