@@ -1,5 +1,72 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-30 02:40 UTC (SPLIT PASS -- THE HOUR THE PANEL KEEPS
+POINTING AT IS A MARKING MOVE, AND NO FILL COST COULD ACCOUNT FOR IT.**
+Last pass named the standing job: "WHAT IS 12Z? -- before claiming an
+effect, check whether 12Z is where the probe's FILLS concentrate."
+Checked, and then made mechanical. The de-trended column says 12Z is
+**-125.7/hr with 9 of 9 panel days below the centre**; it cannot say
+which of the two terms `d_equity` is made of carries that, and "the
+hour's fills cost 125" and "the book was marked down 125" are different
+findings.
+**(1) IT IS ENTIRELY REVAL. MEASURED, NOT ARGUED.** On
+`20260810T081931` the -125.7 at 12Z is **reval -127.8 against drag
+-2.11** -- 102% of it is revaluation of the book that was ALREADY
+STANDING. Across the whole clock the **drag deviation spans 8.51
+against reval's 187.3**, and that span is the CEILING on any
+hour-of-day transaction-cost account of the shape: a **22x** gap, not a
+close call. Reval carries 22 of the 24 hours. 12Z is also not a busy
+fill hour (181.7 fills against 293.4 at 17Z), which is what made the
+question worth asking.
+**(2) THE SPLIT NEEDS NO POWER, WHICH IS THE POINT.** `d_equity = reval
+- entry_drag` is EXACT per row, so it survives averaging and de-meaning
+with no residual -- each hour's deviation from the grand mean is its
+reval deviation minus its drag deviation. It is arithmetic on the same
+rows, not a second test, so it is readable while the sign test sits
+UNDERPOWERED waiting on a 10th panel day. That is the whole reason to
+publish it now rather than after the panel grows.
+**(3) IT IS NOT EVIDENCE THE HOUR IS REAL, AND THE REPORT SAYS SO IN
+THOSE WORDS.** Which term carries an hour is orthogonal to whether the
+hour exists; bound 9's sign test still decides that and still reads
+UNDERPOWERED (p=0.0039 against a 0.00208 ceiling). What the split DOES
+settle is that if 12Z survives, it cannot be traded by declining to
+trade that hour -- the loss is on inventory already held, not on entry.
+**(4) THE TERMS ARE RE-READ OFF THE SPLIT'S OWN ROWS.** The profile's
+`mean_reval` column averages every whole hour of the run; the deviation
+being split is over the contiguous deltas of the BALANCED panel.
+Differencing one against the other is validity bound 7's composition
+defect one axis over, so `_level_split` re-reads drag and reval from
+the panel rows themselves. One row with no reval (bound 1, an ungated
+strategy) makes the split **UNSCORABLE** rather than an average over
+the rows that do have one -- absent, not zero -- and the level test
+survives the refusal. `level_split_verdict` registered in
+`VERDICT_POPULATION` at unit `panel_day`. Four mutants red (the fifth,
+span-over-raw-means, is mathematically equivalent -- a constant shift
+does not move a span). Suite 920 -> **924**.
+**NO PROMOTE -- verified again this pass:** `grep` over
+`scripts/systemd/` finds no unit referencing `shadow_diurnal`, and it
+is not in `simulator.shadow`'s import closure. That is now a deliberate
+policy and not an accident: the live run `20260829T191841` has been up
+since 19:18 UTC and every promote restarts the shadow daemon, so
+holding sim-side changes OUT of promote is what buys the 10th panel
+day. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT**
+for 12Z, and the live run is now the asset -- do not promote anything
+collection-side unless it is worth restarting the shadow daemon for,
+and say which when you do. (2) The successor question the split opens:
+reval absorbs SETTLEMENT as well as marking (bound 5), and 12Z's
+settlement count per hour is published but never differenced -- check
+whether the 12Z reval hole survives excluding settlement hours, which
+is the only remaining way it is not a pure mark. (3) `collect-skips`
+has been UNVERIFIED since it shipped: decide to force a lock-wait or
+stop printing the section. (4) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled
+markets ~2.1M (1.84M on 08-29). Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
+
 Updated: **2026-08-29 20:25 UTC (LEVEL PASS -- THE COLUMN THE LAST PASS
 SAID TO READ IS CUMULATIVE, AND ITS DRIFT ALONE OUTRUNS ITS SPAN.**
 Last pass named the standing job: "`20260810T081931` is the first run
