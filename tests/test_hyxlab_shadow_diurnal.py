@@ -751,3 +751,155 @@ def test_panel_status_names_the_three_states():
     assert {r["level_panel"]["panel_status"] for r in (balanced, ragged, none)} <= set(
         PANEL_STATUSES
     )
+
+
+def _clock_ledger_with_fills(n_days, delta, fills_at, run_id="R"):
+    """`_clock_ledger` plus fills. `fills_at(hod)` returns (qty, fee) for
+    an hour of the clock, or None for no fill. One fill is written ten
+    minutes into every matching hour of every day."""
+    eq, fills, level, minute = [], [], 0.0, -60
+    eq.append((run_id, minute, level))
+    minute = 0
+    for d in range(n_days):
+        for hod in range(24):
+            level += delta(d, hod)
+            spec = fills_at(hod)
+            if spec is not None:
+                qty, fee = spec
+                fills.append((run_id, "probe", minute + 10, qty, 0.20, fee))
+            eq.append((run_id, minute + 30, level))
+            eq.append((run_id, minute + 59, level))
+            minute += 60
+    eq.append((run_id, minute + 30, level))
+    return _ledger(eq, fills)
+
+
+def test_the_split_says_whether_an_hour_is_a_marking_move_or_a_fill_cost():
+    """LOAD-BEARING, and the reason bound 10 exists. Two ledgers whose
+    de-trended LEVEL columns are indistinguishable -- 12Z down ~96 on
+    every day of eleven -- built by opposite mechanisms. In the first,
+    12Z's loss is entirely what its own new fills cost on the way in; in
+    the second the fills are flat across the clock and the book was
+    simply marked down. `demeaned` alone cannot tell them apart, and only
+    one of them is a transaction-cost story."""
+    # (a) the hour costs 100 in entry drag: 100 contracts x half a tick
+    # plus 99.5 of fee. Its standing book does exactly what every other
+    # hour's does.
+    cost = _run(
+        build_diurnal(
+            _clock_ledger_with_fills(
+                11,
+                lambda d, hod: -10.0 + (d - 5.0) - (100.0 if hod == 12 else 0.0),
+                lambda hod: (100.0, 99.5) if hod == 12 else None,
+            )
+        )
+    )["diurnal_level"]
+    # (b) the same level shape with no fills anywhere: pure revaluation.
+    mark = _run(
+        build_diurnal(
+            _clock_ledger(11, lambda d, hod: -10.0 + (d - 5.0) - (100.0 if hod == 12 else 0.0))
+        )
+    )["diurnal_level"]
+
+    c12 = next(p for p in cost["by_hour_of_day"] if p["hour_of_day"] == 12)
+    m12 = next(p for p in mark["by_hour_of_day"] if p["hour_of_day"] == 12)
+    # The column that cannot discriminate: both hours look identical.
+    assert c12["demeaned"] == m12["demeaned"]
+    assert c12["sign_p"] == m12["sign_p"] == 0.000977
+    # The column that can.
+    assert c12["carrier"] == "drag"
+    assert abs(c12["demeaned_reval"]) < 1e-6
+    assert c12["demeaned_drag"] > 90
+    assert m12["carrier"] == "reval"
+    assert m12["demeaned_reval"] < -90
+    assert abs(m12["demeaned_drag"]) < 1e-6
+    # And the ceiling on a cost story is published for each: on the
+    # marking ledger no hour-of-day fill cost could account for ANY of it.
+    assert mark["drag_deviation_span"] == 0.0
+    assert mark["reval_deviation_span"] > 90
+    assert cost["drag_deviation_span"] > 90
+    assert "CEILING" in cost["level_split_verdict"]
+
+
+def test_the_split_is_an_exact_identity_at_every_hour():
+    """`d_equity = reval - entry_drag` holds per ROW, so it survives
+    averaging and de-meaning with no residual. That is what makes the
+    split readable while the sign test is still underpowered -- it is
+    arithmetic on the same rows, not a second test."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_fills(
+                9,
+                lambda d, hod: -10.0 + (d - 4.0) - (0.5 * hod),
+                lambda hod: (20.0 * hod, 3.0) if hod % 2 else None,
+            )
+        )
+    )["diurnal_level"]
+    assert lv["level_shape_status"] == "underpowered"  # the test has no power
+    assert lv["level_split_status"] == "scorable"  # the identity needs none
+    # Exact before publication; the only residual is the printed
+    # rounding (0.05 + 0.05 + 0.005 at worst).
+    for p in lv["by_hour_of_day"]:
+        assert abs(p["demeaned"] - (p["demeaned_reval"] - p["demeaned_drag"])) <= 0.105
+    assert lv["reval_carried_hours"] + sum(
+        1 for p in lv["by_hour_of_day"] if p["carrier"] == "drag"
+    ) == len(lv["by_hour_of_day"])
+
+
+def test_one_ungated_fill_makes_the_split_unscorable_not_a_partial_average():
+    """`reval` is null wherever the entry-drag model does not apply
+    (bound 1). Averaging only the rows that HAVE one would split a
+    deviation computed over rows the terms were not taken from. Absent,
+    not zero -- and the level test above must survive the refusal."""
+    eq, fills, level, minute = [("R", -60, 0.0)], [], 0.0, 0
+    for d in range(11):
+        for hod in range(24):
+            level += -10.0 + (d - 5.0)
+            if d == 3 and hod == 7:
+                fills.append(("R", "wide_maker", minute + 10, 50.0, 0.20, 1.0))
+            eq.append(("R", minute + 30, level))
+            eq.append(("R", minute + 59, level))
+            minute += 60
+    eq.append(("R", minute + 30, level))
+    lv = _run(build_diurnal(_ledger(eq, fills)))["diurnal_level"]
+
+    assert lv["level_split_status"] == "unscorable"
+    assert lv["rows_without_reval"] == 1
+    assert lv["level_split_verdict"].startswith("UNSCORABLE")
+    assert lv["reval_carried_hours"] is None
+    assert lv["drag_deviation_span"] is lv["reval_deviation_span"] is None
+    assert all(p["demeaned_reval"] is None and p["carrier"] is None for p in lv["by_hour_of_day"])
+    # The refusal is scoped to the split: the level test is unaffected.
+    assert lv["level_shape_status"] == "powered"
+    assert lv["level_shape_verdict"].startswith("FLAT")
+
+
+def test_the_split_reads_the_same_rows_as_the_deviation_it_splits():
+    """The profile's `mean_reval` column averages EVERY whole hour of the
+    run; the deviation being split is over the contiguous deltas of the
+    balanced panel. Differencing one against the other is bound 7's
+    composition defect one axis over, so the split re-reads the terms off
+    its own rows. Here 09Z's delta always spans a four-hour outage and is
+    excluded -- its fills' 500 of drag must reach no split cell."""
+    eq, fills, level, minute = [("R", -60, 0.0)], [], 0.0, 0
+    for d in range(11):
+        for hod in range(24):
+            if hod in (5, 6, 7, 8):
+                minute += 60
+                continue
+            level += -10.0 + (d - 5.0)
+            if hod == 9:
+                fills.append(("R", "probe", minute + 10, 100.0, 0.20, 499.5))
+            eq.append(("R", minute + 30, level))
+            eq.append(("R", minute + 59, level))
+            minute += 60
+    eq.append(("R", minute + 30, level))
+    lv = _run(build_diurnal(_ledger(eq, fills)))["diurnal_level"]
+
+    assert lv["non_contiguous_deltas_excluded"] == 11
+    assert 9 not in [p["hour_of_day"] for p in lv["by_hour_of_day"]]
+    # Every remaining row has no fill at all, so the excluded hour's 500
+    # of drag is nowhere in the split.
+    assert lv["level_split_status"] == "scorable"
+    assert lv["grand_mean_drag"] == 0.0
+    assert lv["drag_deviation_span"] == 0.0

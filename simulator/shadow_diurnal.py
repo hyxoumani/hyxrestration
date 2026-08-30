@@ -147,6 +147,29 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      9 of 9 days below the leave-one-out centre at -125.7 and STILL cannot clear
      it. Ten panel days would. That is a statement about power, not a
      measured flat, and not a verdict on any strategy.
+ 10. AN HOUR-OF-DAY DEVIATION IS NOT A TRANSACTION COST UNTIL THE SPLIT
+     SAYS SO. `d_equity = reval - entry_drag` holds per ROW and is
+     exact, so it survives averaging and de-meaning with no residual:
+     each hour's deviation from the grand mean is its reval deviation
+     minus its drag deviation. `diurnal_level` therefore prints both
+     terms beside the deviation, on the SAME rows -- the contiguous
+     deltas of the balanced panel, never the profile's `mean_reval`
+     column, which averages every whole hour of the run and would be
+     bound 7's composition defect one axis over. MEASURED 2026-08-30 on
+     `20260810T081931`: the -125.7/hr deviation at 12Z is reval -127.8
+     against drag -2.11, i.e. ALL of it is a marking move on the book
+     that was already standing, and 12Z is not even a busy fill hour
+     (181.7 fills against 293.4 at 17Z). Across the whole clock the drag
+     deviation spans 8.51 against reval's 187.3, and that span is the
+     CEILING on any hour-of-day transaction-cost account of this shape --
+     a 22x gap, not a close call. Being a marking
+     story is what makes it interesting -- and it is also why the hour
+     could not be traded by declining to trade it. The split needs no
+     power because it is arithmetic, but it is not evidence the hour is
+     real: the sign test of bound 9 is what decides that, and it still
+     reads UNDERPOWERED. Where any contributing row has no reval
+     (bound 1) the split is UNSCORABLE rather than averaged over the
+     rows that do -- absent, not zero.
 """
 
 from __future__ import annotations
@@ -196,6 +219,11 @@ PANEL_STATUSES = ("balanced", "ragged", "no_panel")
 #: What the de-trended hour-of-day LEVEL test can say. Same partition
 #: rule as everywhere else: `unscorable` is an absent measurement.
 LEVEL_STATUSES = ("powered", "underpowered", "unscorable")
+#: What the drag/reval split of the de-trended shape can say. It is an
+#: exact identity rather than a test, so there is no `underpowered`
+#: state -- either every contributing row has a reval or the split is
+#: absent (bound 10).
+SPLIT_STATUSES = ("scorable", "unscorable")
 #: Family-wise error rate for the per-hour sign test. Divided by the
 #: number of hours actually tested -- 24 hours of the clock are 24
 #: chances to find a trough, and an unadjusted 0.05 finds one on noise
@@ -215,6 +243,7 @@ VERDICT_POPULATION: dict[str, tuple[str, tuple[str, ...]]] = {
     "shape_verdict": ("run", SHAPE_STATUSES),
     "level_verdict": ("hour_of_day", PANEL_STATUSES),
     "level_shape_verdict": ("panel_day", LEVEL_STATUSES),
+    "level_split_verdict": ("panel_day", SPLIT_STATUSES),
 }
 #: A run whose last equity point is this recent is still WRITING: its
 #: span will grow, so its status is a snapshot and not a settled draw.
@@ -406,6 +435,103 @@ def _days_needed(ceiling: float) -> int:
     return n
 
 
+def _level_split(
+    buckets: dict[int, list[float]],
+    terms: dict[int, list[tuple[float, float | None]]],
+    table: list[dict],
+) -> dict:
+    """Split each hour-of-day's de-trended deviation into the two terms
+    `d_equity` is made of (bound 10).
+
+    Per row `d_equity = reval - entry_drag`, an EXACT identity, so it
+    survives averaging and de-meaning: an hour's deviation from the grand
+    mean is its reval deviation minus its drag deviation, with no
+    residual. That makes the split readable at any power -- it is
+    arithmetic on the same rows, not a second test -- which matters
+    because the sign test above can sit UNDERPOWERED for days while the
+    question "is this hour a marking move or a transaction cost?" is
+    already answered.
+
+    Refuses rather than guesses. `reval` is null wherever the entry-drag
+    model does not apply (bound 1), and averaging the non-null subset
+    would split a deviation computed over one set of rows using terms
+    from a smaller one. One null row makes the whole split unscorable,
+    and the count is published -- absent, not zero (mistakes #32).
+    """
+    rows = [t for vs in terms.values() for t in vs]
+    missing = sum(1 for _, rv in rows if rv is None)
+    if missing or not rows:
+        for p in table:
+            p["mean_drag"] = p["mean_reval"] = None
+            p["demeaned_drag"] = p["demeaned_reval"] = None
+            p["reval_share"] = p["carrier"] = None
+        return {
+            "level_split_status": "unscorable",
+            "rows_without_reval": missing,
+            "grand_mean_drag": None,
+            "grand_mean_reval": None,
+            "reval_carried_hours": None,
+            "drag_deviation_span": None,
+            "reval_deviation_span": None,
+            "level_split_verdict": (
+                f"UNSCORABLE ({missing} of {len(rows)} contributing hour(s) have"
+                " no reval: the entry-drag model does not apply to their fills"
+                " (bound 1), and averaging only the rows that do have one would"
+                " split a deviation over rows the terms were not taken from."
+                " Absent, not zero"
+            ),
+        }
+
+    grand_drag = sum(d for d, _ in rows) / len(rows)
+    grand_reval = sum(rv for _, rv in rows) / len(rows)
+    carried = 0
+    for p in table:
+        ts = terms[p["hour_of_day"]]
+        m_drag = sum(d for d, _ in ts) / len(ts)
+        m_reval = sum(rv for _, rv in ts) / len(ts)
+        d_drag, d_reval = m_drag - grand_drag, m_reval - grand_reval
+        p["mean_drag"] = _r(m_drag, 2)
+        p["mean_reval"] = _r(m_reval)
+        p["demeaned_drag"] = _r(d_drag, 2)
+        p["demeaned_reval"] = _r(d_reval)
+        dev = m_reval - m_drag - (grand_reval - grand_drag)
+        p["reval_share"] = round(d_reval / dev, 3) if dev else None
+        p["carrier"] = "reval" if abs(d_reval) >= abs(d_drag) else "drag"
+        carried += p["carrier"] == "reval"
+
+    # The spans are the ceiling on each story: whatever the shape is, no
+    # hour-of-day TRANSACTION-COST explanation of it can be larger than
+    # the drag term's own span across the clock.
+    d_span = _r(max(p["demeaned_drag"] for p in table) - min(p["demeaned_drag"] for p in table), 2)
+    r_span = _r(max(p["demeaned_reval"] for p in table) - min(p["demeaned_reval"] for p in table))
+    strongest = min(table, key=lambda p: p["sign_p"])
+    share = strongest["reval_share"]
+    verdict = (
+        f"REVAL carries the hour-of-day shape at {carried} of {len(table)}"
+        f" hours. At the strongest hour {strongest['hour_of_day']:02d}Z the"
+        f" {strongest['demeaned']:+g}/hr deviation is reval"
+        f" {strongest['demeaned_reval']:+g} against drag"
+        f" {strongest['demeaned_drag']:+g}"
+        + (f" ({share:.0%} reval)" if share is not None else "")
+        + " -- a MARKING move on the standing book, not what that hour's"
+        f" fills cost on the way in. Across the clock the drag deviation"
+        f" spans {d_span} against reval's {r_span}, which is the CEILING on"
+        " any hour-of-day transaction-cost explanation of this shape. Exact"
+        " identity per row, so it needs no power; which term carries an hour"
+        " does not make the hour real, and the sign test above decides that."
+    )
+    return {
+        "level_split_status": "scorable",
+        "rows_without_reval": 0,
+        "grand_mean_drag": _r(grand_drag, 2),
+        "grand_mean_reval": _r(grand_reval),
+        "reval_carried_hours": carried,
+        "drag_deviation_span": d_span,
+        "reval_deviation_span": r_span,
+        "level_split_verdict": verdict,
+    }
+
+
 def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | None) -> dict:
     """The hour-of-day LEVEL column with the run's own drift taken out
     (bound 9).
@@ -448,6 +574,12 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
     """
     on_panel = set(panel)
     buckets: dict[int, list[float]] = defaultdict(list)
+    # Bound 10: the same rows, carrying the two terms d_equity is made of.
+    # Collected here rather than read off `by_hour_of_day` because that
+    # column averages EVERY whole hour of the run and this one averages
+    # the contiguous deltas on the balanced panel -- different samples,
+    # and differencing one against the other is bound 7's defect again.
+    terms: dict[int, list[tuple[float, float | None]]] = defaultdict(list)
     non_contiguous = 0
     for h in hours:
         if h["partial"] or h["day"] not in on_panel or h["d_equity"] is None:
@@ -456,6 +588,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             non_contiguous += 1
             continue
         buckets[h["hour_of_day"]].append(h["d_equity"])
+        terms[h["hour_of_day"]].append((h["entry_drag_modeled"], h["reval"]))
 
     draws = [v for vs in buckets.values() for v in vs]
     hours_tested = len(buckets)
@@ -480,6 +613,17 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                     "UNSCORABLE (no contiguous hour-to-hour change lands on the"
                     " level panel; there is nothing to decompose, which is not"
                     " the same as a flat clock)"
+                ),
+                "level_split_status": "unscorable",
+                "rows_without_reval": 0,
+                "grand_mean_drag": None,
+                "grand_mean_reval": None,
+                "reval_carried_hours": None,
+                "drag_deviation_span": None,
+                "reval_deviation_span": None,
+                "level_split_verdict": (
+                    "UNSCORABLE (no contiguous change to split; there are no"
+                    " rows, which is not a shape carried by neither term)"
                 ),
             }
         }
@@ -532,6 +676,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             }
         )
 
+    split = _level_split(buckets, terms, table)
     max_draws = max(p["n_effective"] for p in table)
     best_p = 2.0 ** (1 - max_draws)
     needed = _days_needed(ceiling)
@@ -595,6 +740,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             "significant_hours": [p["hour_of_day"] for p in sig],
             "level_shape_status": status,
             "level_shape_verdict": verdict,
+            **split,
         }
     }
 
@@ -1004,12 +1150,21 @@ def main(argv: list[str] | None = None) -> None:
         # off one number (bound 9).
         dl = best["diurnal_level"]
         print(f"\n[shadow_diurnal] de-trended level — {dl['level_shape_verdict']}")
+        # Bound 10: the same deviation split into the two terms it is
+        # made of, in the same row, because "12Z is down 125" and "12Z's
+        # fills cost 125" are different findings and only one of them is
+        # a transaction-cost story.
+        print(f"[shadow_diurnal] split — {dl['level_split_verdict']}")
         if dl["by_hour_of_day"]:
-            print("| UTC | mean_d_equity | demeaned | cum_demeaned | days | below | sign_p |")
-            print("|---|---|---|---|---|---|---|")
+            print(
+                "| UTC | mean_d_equity | demeaned | d_reval | d_drag | carrier"
+                " | cum_demeaned | days | below | sign_p |"
+            )
+            print("|---" * 10 + "|")
             for q in dl["by_hour_of_day"]:
                 print(
                     f"| {q['hour_of_day']:02d}Z | {q['mean_d_equity']} | {q['demeaned']}"
+                    f" | {q['demeaned_reval']} | {q['demeaned_drag']} | {q['carrier'] or '—'}"
                     f" | {q['cum_demeaned']} | {q['n_days']}"
                     f" | {q['n_below_centre']}/{q['n_effective']} | {q['sign_p']:g} |"
                 )
