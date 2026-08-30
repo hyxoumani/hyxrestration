@@ -170,6 +170,35 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      reads UNDERPOWERED. Where any contributing row has no reval
      (bound 1) the split is UNSCORABLE rather than averaged over the
      rows that do -- absent, not zero.
+ 11. AN HOUR IS NOT A MARKING MOVE UNTIL THE ROWS WHERE POSITIONS EXPIRED
+     ARE TAKEN OUT AND IT IS LOOKED AT AGAIN. `reval` is a residual, so
+     bound 10's split says only that the hole is not what the hour's new
+     fills cost -- it cannot separate the market re-marking a standing
+     book from the book settling. MEASURED 2026-08-30 on
+     `20260810T081931`: 38 of the 216 contributing rows carry a
+     settlement, across 10 hours, ALL of them between 11Z and 20Z, and
+     6 of 12Z's 9 draws are among them. Bound 5's reassurance does not
+     hold on this panel. Two things the control is careful about:
+       * THE POOLED CONTRAST IS THE CONFOUND. Because settlements cluster
+         in exactly the hours the shape is about, "settlement rows average
+         worse" over the whole panel restates the hour-of-day effect
+         rather than controlling it. The gap is taken WITHIN each hour and
+         pooled by median -- -71.5/hr over the 10 affected hours here.
+       * DROPPING ROWS UNBALANCES THE PANEL, which is bound 7 on the delta
+         axis: 12Z keeps 3 draws where 00Z keeps 9. `retained_share` is
+         read off that ragged subset and is a bound, not a measurement;
+         the `control_*` fields re-run the whole clock on the BALANCED
+         sub-panel of days where the tested hour is settlement-free.
+     12Z reads CONFOUNDED: it retains 57% of its deviation (-71.6 against
+     -125.7) but on the 3-day balanced control it is -53.5 and ranks 3rd,
+     behind 18Z at -211.9. That is NOT a refutation -- a 3-day control
+     cannot refute anything -- it is the statement that this panel cannot
+     separate a marking move from an expiry, and that the marking reading
+     of bound 10 was one step ahead of its evidence. `clean` (no
+     contributing row settled at all) is an absence of contamination and
+     not a test the shape passed; an hour every one of whose draws settled
+     is `unscorable`, absent rather than surviving. Orthogonal to whether
+     the hour exists: bound 9's sign test still decides that.
 """
 
 from __future__ import annotations
@@ -224,6 +253,18 @@ LEVEL_STATUSES = ("powered", "underpowered", "unscorable")
 #: state -- either every contributing row has a reval or the split is
 #: absent (bound 10).
 SPLIT_STATUSES = ("scorable", "unscorable")
+#: What the settlement control of the de-trended shape can say (bound
+#: 11). `clean` is "no contributing row carried a settlement, so there is
+#: nothing to control for" -- NOT a passed test. `unscorable` is an
+#: absent measurement: every draw at the hour under test is contaminated,
+#: or the hour has no deviation to attribute.
+SETTLEMENT_STATUSES = ("clean", "survives", "confounded", "unscorable")
+#: Fraction of the strongest hour's de-trended deviation that must remain
+#: once settlement-bearing rows are dropped before the hour is allowed to
+#: read `survives`. Half is deliberately generous -- an hour that keeps
+#: less than half of itself is a settlement story with a marking residue,
+#: whichever way the residue is signed.
+SETTLEMENT_RETAIN = 0.5
 #: Family-wise error rate for the per-hour sign test. Divided by the
 #: number of hours actually tested -- 24 hours of the clock are 24
 #: chances to find a trough, and an unadjusted 0.05 finds one on noise
@@ -244,6 +285,7 @@ VERDICT_POPULATION: dict[str, tuple[str, tuple[str, ...]]] = {
     "level_verdict": ("hour_of_day", PANEL_STATUSES),
     "level_shape_verdict": ("panel_day", LEVEL_STATUSES),
     "level_split_verdict": ("panel_day", SPLIT_STATUSES),
+    "settlement_verdict": ("panel_day", SETTLEMENT_STATUSES),
 }
 #: A run whose last equity point is this recent is still WRITING: its
 #: span will grow, so its status is a snapshot and not a settled draw.
@@ -532,6 +574,212 @@ def _level_split(
     }
 
 
+def _settlement_absent(status: str, reason: str, table: list[dict] | None = None) -> dict:
+    """The settlement control with nothing measured. Every field is None
+    rather than zero: "no contaminated row was compared" and "the
+    comparison came out at zero" are different findings (mistakes #32)."""
+    for p in table or []:
+        p["n_settlement_rows"] = p.get("n_settlement_rows", 0)
+        p.setdefault("mean_d_settlement", None)
+        p.setdefault("mean_d_free", None)
+        p.setdefault("settlement_gap", None)
+    return {
+        "settlement_status": status,
+        "settlement_rows": None,
+        "settlement_free_rows": None,
+        "hours_with_settlements": None,
+        "stratified_settlement_gap": None,
+        "settlement_check": None,
+        "settlement_verdict": reason,
+    }
+
+
+def _median(vs: list[float]) -> float:
+    vs = sorted(vs)
+    n = len(vs)
+    return vs[n // 2] if n % 2 else (vs[n // 2 - 1] + vs[n // 2]) / 2
+
+
+def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict:
+    """Does the strongest hour's de-trended deviation survive dropping
+    the rows that carried a SETTLEMENT (bound 11)?
+
+    `reval` is a residual, so it absorbs settlement as well as marking,
+    and bound 5 counted settlements per hour only so that a contaminated
+    hour would be VISIBLE. Visible is not controlled: a hole carried by
+    the hours in which positions expire is not the same finding as a hole
+    carried by the market re-marking a standing book, and only the second
+    is a diurnal marking effect.
+
+    Two things this is careful about, both of which cut against the
+    finding rather than for it:
+
+      * THE POOLED CONTRAST IS THE CONFOUND ITSELF. Settlements cluster
+        in the hours the shape is about -- on this ledger every one of
+        them lands between 11Z and 20Z -- so "settlement rows average
+        worse than settlement-free rows" over the whole panel is a
+        restatement of the hour-of-day effect, not a control on it. The
+        gap is therefore taken WITHIN each hour of the clock and pooled
+        across hours by median.
+      * DROPPING ROWS UNBALANCES THE PANEL. The surviving rows at 12Z are
+        a different set of DAYS from the surviving rows at 00Z, which is
+        bound 7's composition defect on the delta axis. `retained_share`
+        is read off that ragged subset and so is a bound, not a
+        measurement; the `control_*` fields re-run the whole clock on the
+        BALANCED sub-panel of days where the hour under test is
+        settlement-free, where every hour averages the same days again --
+        at the cost of most of the panel.
+    """
+    rows = [r for rs in srows.values() for r in rs]
+    dirty = [r for r in rows if r["n_settlements"]]
+    if not rows:
+        return _settlement_absent(
+            "unscorable", "UNSCORABLE (no contributing row to control)", table
+        )
+    for p in table:
+        rs = srows[p["hour_of_day"]]
+        a = [r["d_equity"] for r in rs if r["n_settlements"]]
+        b = [r["d_equity"] for r in rs if not r["n_settlements"]]
+        p["n_settlement_rows"] = len(a)
+        p["mean_d_settlement"] = _r(sum(a) / len(a)) if a else None
+        p["mean_d_free"] = _r(sum(b) / len(b)) if b else None
+        p["settlement_gap"] = _r(sum(a) / len(a) - sum(b) / len(b)) if a and b else None
+    if not dirty:
+        return {
+            "settlement_status": "clean",
+            "settlement_rows": 0,
+            "settlement_free_rows": len(rows),
+            "hours_with_settlements": 0,
+            "stratified_settlement_gap": None,
+            "settlement_check": None,
+            "settlement_verdict": (
+                f"CLEAN (not one of the {len(rows)} contributing rows carried a"
+                " settlement, so `reval` here is marking only and there is"
+                " nothing to control for -- this is an absence of contamination,"
+                " not a test the shape passed)"
+            ),
+        }
+
+    gaps = [p["settlement_gap"] for p in table if p["settlement_gap"] is not None]
+    strongest = min(table, key=lambda p: p["sign_p"])
+    hod = strongest["hour_of_day"]
+    free = [r for r in srows[hod] if not r["n_settlements"]]
+    n_dirty_hours = sum(1 for p in table if p["n_settlement_rows"])
+    head = (
+        f"{len(dirty)} of {len(rows)} contributing rows over {n_dirty_hours} hour(s)"
+        f" carried a settlement, so bound 5's 'the big reval hours carry zero"
+        f" settlements' does NOT hold on this panel."
+    )
+    if not free:
+        return _settlement_absent(
+            "unscorable",
+            f"UNSCORABLE ({head} Every one of the {len(srows[hod])} draws at the"
+            f" strongest hour {hod:02d}Z is contaminated, so there is no"
+            " settlement-free reading of it to compare against -- absent, not a"
+            " surviving hour)",
+            table,
+        )
+    if not strongest["demeaned"]:
+        return _settlement_absent(
+            "unscorable",
+            f"UNSCORABLE ({head} The strongest hour {hod:02d}Z has no de-trended"
+            " deviation to attribute to either settlement or marking)",
+            table,
+        )
+
+    # (a) the RAGGED settlement-free subset: every row that carried no
+    # settlement, re-de-meaned on itself. Its hours no longer average the
+    # same days, so this is a bound on survival, not a measurement of it.
+    all_free = [r for r in rows if not r["n_settlements"]]
+    g_free = sum(r["d_equity"] for r in all_free) / len(all_free)
+    dev_free = sum(r["d_equity"] for r in free) / len(free) - g_free
+    retained = dev_free / strongest["demeaned"]
+
+    # (b) the BALANCED control: only the days on which the hour under
+    # test is settlement-free, at EVERY hour of the clock. Composition is
+    # back under control and the panel is much shorter.
+    days = sorted(r["day"] for r in free)
+    sub = [r for r in rows if r["day"] in set(days)]
+    g_sub = sum(r["d_equity"] for r in sub) / len(sub)
+    ctrl = {}
+    for h, rs in srows.items():
+        vs = [r["d_equity"] for r in rs if r["day"] in set(days)]
+        if vs:
+            ctrl[h] = sum(vs) / len(vs) - g_sub
+    # Rank in the direction of the finding: a trough is only still the
+    # trough if no hour of the control clock is deeper.
+    sign = 1.0 if strongest["demeaned"] > 0 else -1.0
+    order = sorted(ctrl, key=lambda h: -sign * ctrl[h])
+    rank = order.index(hod) + 1
+    status = "survives" if retained >= SETTLEMENT_RETAIN and rank == 1 else "confounded"
+    check = {
+        "hour_of_day": hod,
+        "demeaned": strongest["demeaned"],
+        "n_settlement_rows": len(srows[hod]) - len(free),
+        "n_free_rows": len(free),
+        "demeaned_free": _r(dev_free),
+        "retained_share": round(retained, 3),
+        "control_days": days,
+        "control_hours": len(ctrl),
+        "control_demeaned": _r(ctrl[hod]),
+        "control_rank": rank,
+        "control_deepest_hour": order[0],
+        "control_deepest_demeaned": _r(ctrl[order[0]]),
+    }
+    # A gap needs an hour holding BOTH kinds of row. An hour that settled
+    # on every one of its days contributes none, and if no hour has both
+    # there is no within-hour contrast at all -- which is absent, not a
+    # gap of zero. The pooled contrast is NOT the fallback: it is the
+    # confound this statistic exists to avoid.
+    gap_med = _median(gaps) if gaps else None
+    tail = (
+        f" Dropping them leaves {hod:02d}Z at {_r(dev_free):+g}/hr against"
+        f" {strongest['demeaned']:+g} on the full panel ({retained:.0%} retained,"
+        f" over {len(free)} of {len(srows[hod])} draws), and the within-hour gap"
+        " between a settlement row and a settlement-free one"
+        + (
+            f" runs {gap_med:+g}/hr at the median of {len(gaps)} hour(s)"
+            if gap_med is not None
+            else " is UNAVAILABLE -- no hour of the clock holds both kinds of"
+            " row, and the pooled contrast is the confound rather than the"
+            " fallback"
+        )
+        + " -- taken"
+        " WITHIN the hour because settlements cluster in the hours the shape is"
+        " about, so a pooled contrast would restate the effect rather than"
+        " control it. On the BALANCED control panel (the"
+        f" {len(days)} day(s) {hod:02d}Z is settlement-free, every hour averaging"
+        f" those same days) {hod:02d}Z reads {_r(ctrl[hod]):+g} and ranks"
+        f" {rank} of {len(ctrl)}; the extreme there is"
+        f" {order[0]:02d}Z at {_r(ctrl[order[0]]):+g}."
+    )
+    verdict = (
+        ("SURVIVES" if status == "survives" else "CONFOUNDED")
+        + f" ({head}{tail} "
+        + (
+            "The hour keeps most of itself and is still the extreme of the"
+            " control clock, so it is not an artefact of expiring positions."
+            if status == "survives"
+            else "The hour is NOT cleanly a marking move: too much of it goes"
+            " with the settlement rows, or the balanced control puts another"
+            " hour ahead of it. That is not a refutation -- the control panel"
+            " is a few days long -- it is a statement that this panel cannot"
+            " separate the two."
+        )
+        + " Settlement contamination is orthogonal to whether the hour exists;"
+        " the sign test above still decides that.)"
+    )
+    return {
+        "settlement_status": status,
+        "settlement_rows": len(dirty),
+        "settlement_free_rows": len(all_free),
+        "hours_with_settlements": n_dirty_hours,
+        "stratified_settlement_gap": _r(gap_med) if gap_med is not None else None,
+        "settlement_check": check,
+        "settlement_verdict": verdict,
+    }
+
+
 def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | None) -> dict:
     """The hour-of-day LEVEL column with the run's own drift taken out
     (bound 9).
@@ -580,6 +828,10 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
     # the contiguous deltas on the balanced panel -- different samples,
     # and differencing one against the other is bound 7's defect again.
     terms: dict[int, list[tuple[float, float | None]]] = defaultdict(list)
+    # Bound 11: the same rows again, kept whole, because the settlement
+    # control needs each row's DAY and settlement count and not just its
+    # delta -- dropping rows changes which days an hour averages.
+    srows: dict[int, list[dict]] = defaultdict(list)
     non_contiguous = 0
     for h in hours:
         if h["partial"] or h["day"] not in on_panel or h["d_equity"] is None:
@@ -589,6 +841,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             continue
         buckets[h["hour_of_day"]].append(h["d_equity"])
         terms[h["hour_of_day"]].append((h["entry_drag_modeled"], h["reval"]))
+        srows[h["hour_of_day"]].append(h)
 
     draws = [v for vs in buckets.values() for v in vs]
     hours_tested = len(buckets)
@@ -624,6 +877,11 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                 "level_split_verdict": (
                     "UNSCORABLE (no contiguous change to split; there are no"
                     " rows, which is not a shape carried by neither term)"
+                ),
+                **_settlement_absent(
+                    "unscorable",
+                    "UNSCORABLE (no contiguous change to control; there are no"
+                    " rows, which is not an uncontaminated panel)",
                 ),
             }
         }
@@ -677,6 +935,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
         )
 
     split = _level_split(buckets, terms, table)
+    control = _settlement_control(srows, table)
     max_draws = max(p["n_effective"] for p in table)
     best_p = 2.0 ** (1 - max_draws)
     needed = _days_needed(ceiling)
@@ -741,6 +1000,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             "level_shape_status": status,
             "level_shape_verdict": verdict,
             **split,
+            **control,
         }
     }
 
@@ -1155,16 +1415,23 @@ def main(argv: list[str] | None = None) -> None:
         # fills cost 125" are different findings and only one of them is
         # a transaction-cost story.
         print(f"[shadow_diurnal] split — {dl['level_split_verdict']}")
+        # Bound 11: `reval` is a residual and absorbs SETTLEMENT as well
+        # as marking, so "a marking move" is not established until the
+        # rows where positions expired are taken out and the hour is
+        # looked at again.
+        print(f"[shadow_diurnal] settlement control — {dl['settlement_verdict']}")
         if dl["by_hour_of_day"]:
             print(
                 "| UTC | mean_d_equity | demeaned | d_reval | d_drag | carrier"
-                " | cum_demeaned | days | below | sign_p |"
+                " | setts | d_free | cum_demeaned | days | below | sign_p |"
             )
-            print("|---" * 10 + "|")
+            print("|---" * 12 + "|")
             for q in dl["by_hour_of_day"]:
                 print(
                     f"| {q['hour_of_day']:02d}Z | {q['mean_d_equity']} | {q['demeaned']}"
                     f" | {q['demeaned_reval']} | {q['demeaned_drag']} | {q['carrier'] or '—'}"
+                    f" | {q['n_settlement_rows']}/{q['n_days']}"
+                    f" | {'—' if q['mean_d_free'] is None else q['mean_d_free']}"
                     f" | {q['cum_demeaned']} | {q['n_days']}"
                     f" | {q['n_below_centre']}/{q['n_effective']} | {q['sign_p']:g} |"
                 )

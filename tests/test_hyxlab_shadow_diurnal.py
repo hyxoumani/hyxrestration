@@ -14,6 +14,7 @@ from simulator.shadow_diurnal import (
     LEVEL_STATUSES,
     MIN_DAYS,
     PANEL_STATUSES,
+    SETTLEMENT_STATUSES,
     VERDICT_POPULATION,
     build_diurnal,
 )
@@ -903,3 +904,267 @@ def test_the_split_reads_the_same_rows_as_the_deviation_it_splits():
     assert lv["level_split_status"] == "scorable"
     assert lv["grand_mean_drag"] == 0.0
     assert lv["drag_deviation_span"] == 0.0
+
+
+# --- Bound 11: reval absorbs settlement, so a hole must be controlled ------
+
+
+def _clock_ledger_with_settlements(n_days, delta, settled_at, run_id="R"):
+    """`_clock_ledger` plus settlements. `settled_at(d, hod)` is True when
+    a position expires during that hour of that day; one settlement row is
+    written ten minutes into every matching hour."""
+    eq, setts, level, minute = [], [], 0.0, -60
+    eq.append((run_id, minute, level))
+    minute = 0
+    for d in range(n_days):
+        for hod in range(24):
+            level += delta(d, hod)
+            if settled_at(d, hod):
+                setts.append((run_id, minute + 10))
+            eq.append((run_id, minute + 30, level))
+            eq.append((run_id, minute + 59, level))
+            minute += 60
+    eq.append((run_id, minute + 30, level))
+    return _ledger(eq, settlements=setts)
+
+
+def test_a_hole_mostly_carried_by_settlement_rows_reads_confounded():
+    """LOAD-BEARING, and the reason bound 11 exists. `reval` is a
+    RESIDUAL, so it absorbs settlement as well as marking, and bound 5
+    only counted settlements so a contaminated hour would be visible.
+    Here 12Z is down on all eleven days -- it survives the sign test and
+    is still the trough of the balanced control clock -- but it is down
+    120 on the six days a position expires in it and only 40 on the five
+    it does not. Calling the whole hole a marking move on the standing
+    book overstates it by more than twice, and `demeaned` cannot see it."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (0.0 if hod != 12 else 110.0 if d < 6 else 30.0),
+                lambda d, hod: hod == 12 and d < 6,
+            )
+        )
+    )["diurnal_level"]
+    chk = lv["settlement_check"]
+
+    assert lv["settlement_status"] == "confounded"
+    assert lv["settlement_verdict"].startswith("CONFOUNDED")
+    assert lv["settlement_rows"] == 6
+    assert lv["hours_with_settlements"] == 1
+    assert chk["hour_of_day"] == 12
+    # The hour is real in sign and still the extreme of the control clock
+    # -- retention alone is what condemns it, and it must be able to.
+    assert chk["control_rank"] == 1
+    assert 0.40 < chk["retained_share"] < 0.45
+    assert chk["n_settlement_rows"] == 6 and chk["n_free_rows"] == 5
+    # Not a refutation, and it does not touch whether the hour exists.
+    assert "not a refutation" in lv["settlement_verdict"]
+    assert _hod_level(lv, 12)["sign_p"] == 0.000977
+
+
+def _hod_level(lv, hod):
+    return next(p for p in lv["by_hour_of_day"] if p["hour_of_day"] == hod)
+
+
+def test_a_marking_hole_that_settlements_merely_coincide_with_survives():
+    """The control must not condemn an hour just because settlements land
+    in it. Here 12Z is down exactly 100 on every day, and a settlement
+    lands in it on six of the eleven -- the rows that carried one are
+    indistinguishable from the rows that did not, so nothing about the
+    hole goes with the expiries."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 12 and d < 6,
+            )
+        )
+    )["diurnal_level"]
+    chk = lv["settlement_check"]
+
+    assert lv["settlement_status"] == "survives"
+    assert lv["settlement_verdict"].startswith("SURVIVES")
+    assert chk["hour_of_day"] == 12
+    assert chk["control_rank"] == 1
+    assert chk["retained_share"] > 1.0  # dropping them does not shrink it
+    assert chk["control_days"] == [f"2026-08-{7 + d:02d}" for d in range(5)]
+
+
+def test_the_settlement_gap_is_taken_within_the_hour_not_pooled():
+    """LOAD-BEARING. Settlements cluster in the hours the shape is about
+    -- on the live ledger every one lands between 11Z and 20Z -- so
+    'settlement rows average worse than settlement-free rows' pooled over
+    the panel is a RESTATEMENT of the hour-of-day effect, not a control on
+    it. On the ledger above every settlement row sits in the one hour that
+    is 100 down, so a pooled contrast reads about -96/hr while the honest
+    within-hour gap is exactly zero."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 12 and d < 6,
+            )
+        )
+    )["diurnal_level"]
+    rows = [
+        (p["n_settlement_rows"], p["mean_d_settlement"], p["mean_d_free"])
+        for p in lv["by_hour_of_day"]
+    ]
+    dirty = [(a, b) for n, a, b in rows if n]
+    assert len(dirty) == 1
+    assert abs(dirty[0][0] - dirty[0][1]) < 1e-6  # same hour, same number
+    assert lv["stratified_settlement_gap"] == 0.0
+    # What the pooled contrast would have said, computed here so the
+    # difference is on the record rather than asserted in prose.
+    pooled = _hod_level(lv, 12)["mean_d_settlement"] - (
+        sum(p["mean_d_free"] * (p["n_days"] - p["n_settlement_rows"]) for p in lv["by_hour_of_day"])
+        / sum(p["n_days"] - p["n_settlement_rows"] for p in lv["by_hour_of_day"])
+    )
+    assert pooled < -90
+
+
+def test_an_hour_whose_every_draw_settled_is_unscorable_not_surviving():
+    """Absent, not zero (mistakes #32). If a settlement lands in 12Z on
+    every day of the panel there is no settlement-free reading of that
+    hour to compare against, and a control that cannot run must say so
+    rather than pass the hour through."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 + (d - 5.0) - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 12,
+            )
+        )
+    )["diurnal_level"]
+
+    assert lv["settlement_status"] == "unscorable"
+    assert lv["settlement_verdict"].startswith("UNSCORABLE")
+    assert lv["settlement_check"] is None
+    assert lv["stratified_settlement_gap"] is None
+    # Scoped to the control: the level test and the split are unaffected.
+    assert lv["level_shape_status"] == "powered"
+    assert lv["level_split_status"] == "scorable"
+    assert _hod_level(lv, 12)["n_settlement_rows"] == 11
+
+
+def test_no_settlements_at_all_reads_clean_which_is_not_a_passed_test():
+    """A panel with no settlement row anywhere has nothing to control
+    for. That is an absence of contamination, and the verdict says so in
+    those words -- reading it as 'the marking story was tested and held'
+    is exactly the mistake bound 11 exists to stop."""
+    lv = _run(
+        build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 + (d - 5.0) - (100.0 * (hod == 12))))
+    )["diurnal_level"]
+
+    assert lv["settlement_status"] == "clean"
+    assert lv["settlement_rows"] == 0
+    assert lv["settlement_free_rows"] == 264
+    assert lv["settlement_check"] is None
+    assert "not a test the shape passed" in lv["settlement_verdict"]
+    assert all(p["n_settlement_rows"] == 0 for p in lv["by_hour_of_day"])
+
+
+def test_the_settlement_control_is_registered_with_the_other_verdicts():
+    """An unregistered verdict is how a count gets plotted against
+    readings that never tested it (mistakes #32/#33/#35). LEVEL-side
+    verdicts are per PANEL DAY and may never be pooled by the census."""
+    assert VERDICT_POPULATION["settlement_verdict"] == ("panel_day", SETTLEMENT_STATUSES)
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 12 and d < 6,
+            )
+        )
+    )["diurnal_level"]
+    assert lv["settlement_status"] in SETTLEMENT_STATUSES
+
+
+def test_an_hour_that_keeps_its_size_but_loses_its_rank_reads_confounded():
+    """Retention is not enough on its own. Dropping settlement rows makes
+    the surviving panel RAGGED -- 12Z's five remaining draws are a
+    different set of DAYS from 00Z's eleven -- which is bound 7's
+    composition defect on the delta axis. Here 12Z is down 100 on every
+    day and so keeps all of itself, but on the balanced control panel (the
+    five days it is settlement-free, every hour averaging those same days)
+    18Z is three times deeper. The ragged subset could not have seen
+    that."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: (
+                    -10.0 - (100.0 if hod == 12 else 0.0) - (300.0 if hod == 18 and d >= 6 else 0.0)
+                ),
+                lambda d, hod: hod == 12 and d < 6,
+            )
+        )
+    )["diurnal_level"]
+    chk = lv["settlement_check"]
+
+    assert _hod_level(lv, 12)["sign_p"] == 0.000977  # still the strongest hour
+    assert chk["retained_share"] > 1.0  # and it keeps every bit of its size
+    assert chk["control_rank"] == 2
+    assert chk["control_deepest_hour"] == 18
+    assert lv["settlement_status"] == "confounded"
+
+
+def test_the_balanced_control_can_clear_an_hour_the_ragged_subset_condemns():
+    """The control panel must be BALANCED, and this is the case that
+    proves it has to be. 12Z is down 100 on every day; 18Z is down 300,
+    but only on the six days a position expires in 12Z. Over the whole
+    panel 18Z is therefore the deeper hour and 12Z would read second --
+    yet on the five days 12Z is actually settlement-free 18Z is an
+    ordinary hour, and the comparison the control is asked to make is
+    between hours averaging THE SAME days."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: (
+                    -10.0 - (100.0 if hod == 12 else 0.0) - (300.0 if hod == 18 and d < 6 else 0.0)
+                ),
+                lambda d, hod: hod == 12 and d < 6,
+            )
+        )
+    )["diurnal_level"]
+    chk = lv["settlement_check"]
+
+    # Over the whole panel 18Z is the deeper hour by a distance...
+    assert _hod_level(lv, 18)["demeaned"] < _hod_level(lv, 12)["demeaned"]
+    # ...and on the days the control actually compares, it is not.
+    assert chk["control_rank"] == 1
+    assert chk["control_deepest_hour"] == 12
+    assert lv["settlement_status"] == "survives"
+
+
+def test_no_hour_holds_both_kinds_of_row_and_the_gap_is_absent_not_zero():
+    """The within-hour gap needs an hour holding BOTH kinds of row. Here
+    04Z settles on every one of its eleven days and no other hour settles
+    at all, so there is no hour to take a contrast in -- while the hour
+    under test, 12Z, is clean and perfectly scorable. Found by the
+    all-runs path, which is the same way bound 8's crash was found: the
+    live run is never the awkward one."""
+    lv = _run(
+        build_diurnal(
+            _clock_ledger_with_settlements(
+                11,
+                lambda d, hod: -10.0 - (100.0 if hod == 12 else 0.0),
+                lambda d, hod: hod == 4,
+            )
+        )
+    )["diurnal_level"]
+
+    assert lv["settlement_rows"] == 11
+    assert lv["stratified_settlement_gap"] is None
+    assert "UNAVAILABLE" in lv["settlement_verdict"]
+    assert "pooled contrast is the confound" in lv["settlement_verdict"]
+    # 12Z carried no settlement, so the control still runs and clears it.
+    assert lv["settlement_check"]["hour_of_day"] == 12
+    assert lv["settlement_check"]["n_settlement_rows"] == 0
+    assert lv["settlement_status"] == "survives"

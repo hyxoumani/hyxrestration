@@ -1,5 +1,74 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-30 08:40 UTC (SETTLEMENT PASS -- THE MARKING STORY
+WAS ONE STEP AHEAD OF ITS EVIDENCE: SIX OF 12Z'S NINE DRAWS ARE HOURS
+IN WHICH POSITIONS EXPIRED.**
+Last pass named the standing job: "reval absorbs SETTLEMENT as well as
+marking (bound 5), and 12Z's settlement count per hour is published but
+never differenced -- check whether the 12Z reval hole survives excluding
+settlement hours." Checked. It does not survive cleanly, and bound 5's
+own reassurance is false on this panel.
+**(1) THE CONTAMINATION IS NOT MARGINAL, IT IS THE WINDOW.** On
+`20260810T081931` **38 of the 216 contributing rows carry a settlement,
+across 10 hours, and every one of those hours lies between 11Z and 20Z**
+-- i.e. exactly the window the afternoon hole lives in. **6 of 12Z's 9
+draws are contaminated.** Bound 5 counted settlements per hour so a
+contaminated hour would be VISIBLE; visible was never controlled, and
+the sentence it carried since 08-23 ("the big reval hours carry ZERO
+settlements") was true of one three-day run and is FALSE here.
+**(2) 12Z READS CONFOUNDED, WHICH IS NOT A REFUTATION AND THE REPORT
+SAYS SO.** Dropping the settlement rows leaves 12Z at **-71.6/hr
+against -125.7** (57% retained, on 3 of 9 draws), and it is still the
+deepest hour of that subset -- but the subset is RAGGED, which is bound
+7's composition defect on the delta axis: 12Z keeps 3 draws where 00Z
+keeps 9. On the **BALANCED control panel** -- the 3 days 12Z is
+settlement-free, every hour averaging those same days -- **12Z reads
+-53.5 and ranks 3rd of 24, behind 18Z at -211.9**. A 3-day control
+refutes nothing; what it establishes is that **this panel cannot
+separate a marking move from an expiry**, and bound 10's marking
+reading was one step ahead of its evidence.
+**(3) THE POOLED CONTRAST IS THE CONFOUND, NOT THE STATISTIC.**
+Settlement rows average ~-101/hr against +2.7 for the rest, which looks
+decisive and says nothing: settlements cluster in the hours the shape is
+about, so pooling restates the hour-of-day effect instead of controlling
+it. The gap is therefore taken **WITHIN each hour** and pooled by median
+-- **-71.5/hr over the 10 affected hours**. `SETTLEMENT_STATUSES` are
+`clean` / `survives` / `confounded` / `unscorable`, and `clean` is
+spelled as an absence of contamination, never a test the shape passed;
+an hour every one of whose draws settled is `unscorable`, absent rather
+than surviving. `settlement_verdict` registered in `VERDICT_POPULATION`
+at unit `panel_day`.
+**(4) THE ALL-RUNS PATH CAUGHT A CRASH AGAIN, THE SAME WAY BOUND 8'S
+WAS CAUGHT.** A run whose only settling hour settles on every one of its
+days yields no hour holding both kinds of row, and the median of an
+empty gap list raised `IndexError`. The gap is now **absent, not zero**,
+and the pooled contrast is explicitly not the fallback. Eight mutants
+red (pooled-instead-of-stratified, retention guard, rank guard,
+ragged-instead-of-balanced control, clean-as-survives, contaminated-hour
+passthrough, full-mean de-meaning). Suite 924 -> **933**.
+**NO PROMOTE -- verified again this pass:** `grep` over
+`scripts/systemd/` finds no unit referencing `shadow_diurnal` and it is
+not in `simulator.shadow`'s import closure. The live run
+`20260829T191841` has been up since 08-29 19:18 UTC and every promote
+restarts the shadow daemon; holding sim-side changes out of promote is
+what buys the 10th panel day. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT**
+for 12Z's sign test -- and it is now doubly binding, because the
+settlement control's own panel is 3 days. Do not promote anything
+collection-side unless it is worth restarting the shadow daemon for, and
+say which when you do. (2) The successor question this pass opens: the
+control tests only the STRONGEST hour. 11Z and 18Z both flip sign
+entirely when settlement rows are dropped (-27.0 -> +100.3 and -18.4 ->
++42.7) -- decide whether the control should run at every hour, or say in
+the report why one hour is the right unit. (3) `collect-skips` has been
+UNVERIFIED since it shipped: decide to force a lock-wait or stop
+printing the section. (4) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled
+markets ~2.1M (1.84M on 08-29). Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-30 02:40 UTC (SPLIT PASS -- THE HOUR THE PANEL KEEPS
 POINTING AT IS A MARKING MOVE, AND NO FILL COST COULD ACCOUNT FOR IT.**
 Last pass named the standing job: "WHAT IS 12Z? -- before claiming an
