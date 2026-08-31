@@ -212,19 +212,39 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      the clock is, not a finding about those two hours. An hour with no free row at all has
      `demeaned_free` and `flipped` None -- absent, not a flip of zero.
      A control that never RAN is not a control that found nothing
-     (bound 11c). `settlement_absence` splits `unscorable` into
-     `no_delta` -- the run produced no contiguous hour-to-hour change, so
-     the control was never reached and the run is evidence of nothing --
-     and `all_settled_at_hour` / `no_deviation_at_hour`, panels that
-     existed and could not be read. MEASURED 2026-08-30 over the 52
-     published runs: 29 unscorable, and ALL 29 are `no_delta`. So the
-     bucket is a statement about how young most shadow runs are and not
-     one about contamination, and the ledger holds no case of a panel
-     defeated by total contamination -- which the undifferentiated count
-     of 29 could equally have meant. The census counts absences in RUNS
+     (bound 11c). `settlement_absence` splits `unscorable` into the
+     never-reached codes and `all_settled_at_hour` /
+     `no_deviation_at_hour`, panels that existed and could not be read.
+     MEASURED 2026-08-30 over the 52 published runs: 28 unscorable and
+     ALL 28 never reached the control, so the ledger holds no case of a
+     panel defeated by total contamination -- which the undifferentiated
+     count could equally have meant. The census counts absences in RUNS
      and refuses to pool the scored statuses, which are per panel day.
-     Orthogonal to whether
-     the hour exists: bound 9's sign test still decides that.
+     Orthogonal to whether the hour exists: bound 9's sign test still
+     decides that.
+ 12. A RUN THAT NEVER REACHED THE CONTROL HAS NOT NECESSARILY GOT NO
+     DELTAS -- IT MAY HAVE NO PANEL TO PUT THEM ON. The `no_delta` bucket
+     of bound 11c read as "the ledger is too young to ask", and the
+     ledger disagrees. MEASURED 2026-08-30: of the 28 never-reached runs
+     only 13 publish no whole hour; the other 15 publish 5 to 24 whole
+     hours with ZERO non-contiguous deltas, and lose EVERY one of them to
+     an empty balanced panel. `20260708T215215` is the extreme case --
+     24 whole hours, all 24 hours of the clock, 24 contiguous hourly
+     deltas, and a panel of nothing. The cause is bound 7 read at the
+     wrong scale: the panel is the days common to every published hour,
+     and a run under ~48h that crosses midnight gives each hour-of-day
+     exactly ONE day, so the intersection is empty by construction. That
+     is not a report bug in the deltas and not a daemon artefact -- those
+     runs traced the clock once, and a clock traced once has no
+     hour-of-day mean to be balanced. Two consequences are fixed here:
+     `settlement_absence` splits into `no_whole_hour` /
+     `no_balanced_panel` / `no_contiguous_delta` so a wait for DATA is never
+     tallied with a wait for a SECOND PASS over data already held, and
+     `panel_status` reads `no_panel` whenever the panel is empty rather
+     than only when no hour is published -- those 15 runs read RAGGED,
+     whose whole meaning is "read the balanced column instead", pointing
+     at a column that is null in every row. `off_panel_deltas_excluded`
+     publishes the size of the discard beside the reason.
 """
 
 from __future__ import annotations
@@ -286,16 +306,41 @@ SPLIT_STATUSES = ("scorable", "unscorable")
 #: or the hour has no deviation to attribute.
 SETTLEMENT_STATUSES = ("clean", "survives", "confounded", "unscorable")
 #: WHY a settlement control is `unscorable`, because the status alone
-#: pools two unlike absences (bound 11c). `no_delta` is a run that never
-#: produced a contiguous hour-to-hour change, so the control was never
-#: REACHED and the run says nothing at all about contamination;
-#: `all_settled_at_hour` and `no_deviation_at_hour` are panels that DO
-#: exist and could not be read -- the first is the worst contamination
-#: there is. A ledger of 29 `no_delta` runs and a ledger of 29
-#: `all_settled_at_hour` runs are opposite findings that tally
-#: identically without this field. `None` whenever the status is not
+#: pools unlike absences (bound 11c). The first three never REACHED the
+#: control and say nothing at all about contamination; the last two are
+#: panels that DO exist and could not be read -- `all_settled_at_hour` is
+#: the worst contamination there is. `None` whenever the status is not
 #: `unscorable`: a scored control has no absence to explain.
-SETTLEMENT_ABSENCES = ("no_delta", "all_settled_at_hour", "no_deviation_at_hour")
+#:
+#: The three never-reached codes are themselves unlike, which is bound
+#: 11d and the reason this tuple is five long rather than three:
+#:   * `no_whole_hour` -- the run is younger than two hour boundaries and
+#:     publishes no hour-of-day cell at all. A wait, and nothing else.
+#:   * `no_balanced_panel` -- whole hours EXIST and their deltas are
+#:     contiguous, but no day is common to every published hour, so
+#:     bound 7's balanced panel is empty and every delta is off-panel.
+#:     This is the state of a run that traced a COMPLETE 24-hour clock
+#:     once: each hour-of-day got exactly one day, and one day cannot be
+#:     intersected into a panel. Not a wait for data -- a wait for a
+#:     SECOND pass over the same clock.
+#:   * `no_contiguous_delta` -- a panel exists and no delta on it is an
+#:     hour's, i.e. the daemon's outages fall where the panel is.
+#: MEASURED 2026-08-30: of 28 never-reached runs, 13 are `no_whole_hour`
+#: and 15 are `no_balanced_panel`, and `20260708T215215` is in the second
+#: bucket holding 24 whole hours, 24 hours-of-day and ZERO non-contiguous
+#: deltas. Pooled as one `no_delta` count those 15 read as "too young to
+#: ask", which is the opposite of what they are.
+SETTLEMENT_ABSENCES = (
+    "no_whole_hour",
+    "no_balanced_panel",
+    "no_contiguous_delta",
+    "all_settled_at_hour",
+    "no_deviation_at_hour",
+)
+#: The absences that mean the control was never REACHED, as opposed to
+#: reached and unreadable. `reached` in the census is counted against
+#: these and not against a single hard-coded code.
+NEVER_REACHED_ABSENCES = ("no_whole_hour", "no_balanced_panel", "no_contiguous_delta")
 #: Fraction of the strongest hour's de-trended deviation that must remain
 #: once settlement-bearing rows are dropped before the hour is allowed to
 #: read `survives`. Half is deliberately generous -- an hour that keeps
@@ -467,7 +512,13 @@ def _profile(hours: list[dict]) -> dict:
             }
         )
     ragged = [p["hour_of_day"] for p in table if not p["balanced"]]
-    panel_status = "no_panel" if not table else "ragged" if ragged else "balanced"
+    # Bound 11d: `no_panel` is "there is no panel", NOT "there is no whole
+    # hour". A run that traced a complete 24-hour clock ONCE publishes 24
+    # hours whose day sets are disjoint, so the intersection is empty --
+    # and reading that as RAGGED sent the reader to `mean_end_bal`, a
+    # column that is None in every row, off "the 0-day panel". Measured
+    # 2026-08-30: 15 of 52 runs were in that state.
+    panel_status = "no_panel" if not panel else "ragged" if ragged else "balanced"
     bal = [
         p["mean_equity_end_balanced"] for p in table if p["mean_equity_end_balanced"] is not None
     ]
@@ -485,6 +536,16 @@ def _profile(hours: list[dict]) -> dict:
                 "NO PANEL (this run publishes no whole hour; nothing to read a"
                 " LEVEL off, and no hour-of-day mean is defined)"
                 if not table
+                else (
+                    f"NO PANEL (this run publishes {len(table)} hour(s) of the"
+                    " clock but NO DAY is common to all of them, so the panel"
+                    " is empty and mean_end_bal is null in every row. This is"
+                    " what a clock traced ONCE looks like — it is not RAGGED,"
+                    " because there is no balanced column to fall back to, and"
+                    " it is not a short run. It needs a second pass over the"
+                    " same hours, not more hours)"
+                )
+                if not panel
                 else f"BALANCED (every hour averages the same {len(panel)} day(s))"
                 if not ragged
                 else (
@@ -646,7 +707,9 @@ def _settlement_absent(
         "stratified_settlement_gap": None,
         "settlement_check": None,
         "settlement_sweep": sweep,
-        "sweep_hours_scorable": None if sweep is None else sum(1 for q in sweep if q["flipped"] is not None),
+        "sweep_hours_scorable": None
+        if sweep is None
+        else sum(1 for q in sweep if q["flipped"] is not None),
         "sweep_hours_flipped": None if sweep is None else sum(1 for q in sweep if q["flipped"]),
         "settlement_verdict": reason,
     }
@@ -756,7 +819,7 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
             "unscorable",
             "UNSCORABLE (no contributing row to control)",
             table,
-            absence="no_delta",
+            absence="no_contiguous_delta",
         )
     for p in table:
         rs = srows[p["hour_of_day"]]
@@ -991,8 +1054,20 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
     # delta -- dropping rows changes which days an hour averages.
     srows: dict[int, list[dict]] = defaultdict(list)
     non_contiguous = 0
+    # Bound 11d: deltas that ARE an hour's and are dropped only because
+    # their day is not on the balanced panel. Counted because a run whose
+    # every contiguous delta is off-panel is not a run without deltas,
+    # and the two tallied identically until this was measured.
+    off_panel = 0
+    n_whole = 0
     for h in hours:
-        if h["partial"] or h["day"] not in on_panel or h["d_equity"] is None:
+        if h["partial"]:
+            continue
+        n_whole += 1
+        if h["d_equity"] is None:
+            continue
+        if h["day"] not in on_panel:
+            off_panel += 1 if h["contiguous"] else 0
             continue
         if not h["contiguous"]:
             non_contiguous += 1
@@ -1004,11 +1079,43 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
     draws = [v for vs in buckets.values() for v in vs]
     hours_tested = len(buckets)
     if not draws:
+        # Bound 11d: WHICH absence this is. "No delta" pooled three
+        # unlike states -- a run too young to publish an hour, a run that
+        # traced a whole clock exactly once so that no day is common to
+        # every hour, and a run whose panel exists but whose outages fall
+        # on it. The first is a wait for data, the second a wait for a
+        # SECOND pass over the same clock, the third a daemon fact.
+        absence = (
+            "no_whole_hour"
+            if not n_whole
+            else "no_balanced_panel"
+            if not panel
+            else "no_contiguous_delta"
+        )
+        why = {
+            "no_whole_hour": (
+                f"this run publishes no whole hour ({len(hours)} partial"
+                " bucket(s)), so there is no hour-of-day cell to difference"
+            ),
+            "no_balanced_panel": (
+                f"this run publishes {n_whole} whole hour(s) and"
+                f" {off_panel} contiguous hourly delta(s), but NO DAY is"
+                " common to every published hour, so bound 7's balanced"
+                " panel is empty and every delta is off-panel -- a clock"
+                " traced once, not a run without deltas"
+            ),
+            "no_contiguous_delta": (
+                f"this run has a {len(panel)}-day panel and"
+                f" {non_contiguous} delta(s) on it, none of them an"
+                " HOUR's: every one spans an outage"
+            ),
+        }[absence]
         return {
             "diurnal_level": {
                 "n_panel_days": len(panel),
                 "hours_tested": 0,
                 "non_contiguous_deltas_excluded": non_contiguous,
+                "off_panel_deltas_excluded": off_panel,
                 "grand_mean_per_hour": None,
                 "drift_per_day": None,
                 "clock_complete": False,
@@ -1022,8 +1129,8 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                 "level_shape_status": "unscorable",
                 "level_shape_verdict": (
                     "UNSCORABLE (no contiguous hour-to-hour change lands on the"
-                    " level panel; there is nothing to decompose, which is not"
-                    " the same as a flat clock)"
+                    f" level panel: {why}. There is nothing to decompose, which"
+                    " is not the same as a flat clock)"
                 ),
                 "level_split_status": "unscorable",
                 "rows_without_reval": 0,
@@ -1039,10 +1146,10 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                 **_settlement_absent(
                     "unscorable",
                     "UNSCORABLE (no contiguous change to control; there are no"
-                    " rows, which is not an uncontaminated panel -- the control"
-                    " was never REACHED, which is not a contaminated hour that"
-                    " could not be read)",
-                    absence="no_delta",
+                    f" rows, because {why}. That is not an uncontaminated"
+                    " panel -- the control was never REACHED, which is not a"
+                    " contaminated hour that could not be read)",
+                    absence=absence,
                 ),
             }
         }
@@ -1146,6 +1253,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             "n_panel_days": len(panel),
             "hours_tested": hours_tested,
             "non_contiguous_deltas_excluded": non_contiguous,
+            "off_panel_deltas_excluded": off_panel,
             "grand_mean_per_hour": _r(grand),
             # Only a DAY when the whole clock is present; a partial clock
             # sums to a partial day and must not be read as a daily rate.
@@ -1305,16 +1413,22 @@ def _absence_census(runs: list[dict]) -> dict:
     return {
         "rule": (
             "absences are counted in RUNS and split by reason; the scored"
-            " statuses are per panel day and are NOT pooled here. `no_delta`"
-            " never reached the control and is evidence of nothing;"
-            " `all_settled_at_hour` reached it and lost to total contamination"
+            " statuses are per panel day and are NOT pooled here."
+            f" {'/'.join(NEVER_REACHED_ABSENCES)} never reached the control and"
+            " are evidence of nothing, and they are three unlike waits:"
+            " `no_whole_hour` waits for data, `no_balanced_panel` holds a clock"
+            " already traced once and waits for a SECOND pass over it, and"
+            " `no_contiguous_delta` is an outage on the panel."
+            " `all_settled_at_hour` reached the control and lost to total"
+            " contamination"
         ),
         "runs_published": len(runs),
         # Reached = the run had a panel the control could look at, whether
         # or not it could then be scored.
-        "reached": sum(1 for _rid, a in absent if a != "no_delta")
+        "reached": sum(1 for _rid, a in absent if a not in NEVER_REACHED_ABSENCES)
         + sum(1 for _rid, d in lv if not d["settlement_absence"]),
         "unscorable": len(absent),
+        "never_reached": sum(1 for _rid, a in absent if a in NEVER_REACHED_ABSENCES),
         "counts": {a: sum(1 for _rid, x in absent if x == a) for a in SETTLEMENT_ABSENCES},
         "run_ids": {
             a: [rid for rid, x in absent if x == a]
@@ -1581,6 +1695,23 @@ def main(argv: list[str] | None = None) -> None:
             " (absences are counted in runs; the scored statuses are per"
             " panel day and are not pooled)"
         )
+        # Bound 11d: the never-reached runs that are NOT waiting for data.
+        # Printed with the deltas they hold, because "no panel" alone reads
+        # like "no run" and these runs traced the clock already.
+        held = [
+            (r["run_id"], r["diurnal_level"]["off_panel_deltas_excluded"], len(r["by_hour_of_day"]))
+            for r in report["runs"]
+            if r["diurnal_level"]["settlement_absence"] == "no_balanced_panel"
+        ]
+        if held:
+            print(
+                f"[shadow_diurnal] of those, {len(held)} run(s) hold"
+                f" {sum(n for _r, n, _h in held)} contiguous hourly delta(s)"
+                f" over up to {max(h for _r, _n, h in held)} hour(s) of the"
+                " clock and lose every one to an EMPTY balanced panel — a"
+                " clock traced ONCE, waiting for a second pass over the same"
+                " hours and not for more hours"
+            )
     if pw["n"]:
         tally = ", ".join(f"{k} {v}" for k, v in pw["counts"].items() if v)
         print(

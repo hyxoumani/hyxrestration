@@ -13,6 +13,7 @@ from simulator.shadow_diurnal import (
     HALF_TICK,
     LEVEL_STATUSES,
     MIN_DAYS,
+    NEVER_REACHED_ABSENCES,
     PANEL_STATUSES,
     SETTLEMENT_ABSENCES,
     SETTLEMENT_STATUSES,
@@ -1317,9 +1318,9 @@ def test_a_clean_panel_sweeps_zero_hours_which_is_a_measurement():
     """The mirror of the case above: nothing settled anywhere, so zero
     contaminated hours IS the reading and the sweep is an empty list
     rather than None."""
-    lv = _run(
-        build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 - (100.0 * (hod == 12))))
-    )["diurnal_level"]
+    lv = _run(build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 - (100.0 * (hod == 12)))))[
+        "diurnal_level"
+    ]
 
     assert lv["settlement_status"] == "clean"
     assert lv["settlement_sweep"] == []
@@ -1368,7 +1369,7 @@ def test_a_control_that_never_ran_is_not_a_control_that_found_nothing():
 
     assert no_delta["settlement_status"] == saturated["settlement_status"] == "unscorable"
     # ...and the status is where the likeness stops.
-    assert no_delta["settlement_absence"] == "no_delta"
+    assert no_delta["settlement_absence"] == "no_whole_hour"
     assert saturated["settlement_absence"] == "all_settled_at_hour"
     assert no_delta["settlement_absence"] in SETTLEMENT_ABSENCES
     assert saturated["settlement_absence"] in SETTLEMENT_ABSENCES
@@ -1380,9 +1381,9 @@ def test_a_scored_settlement_control_has_no_absence_to_explain():
     """The field is the reason an absent reading is absent, so a control
     that RAN must carry None -- a code there would make a scored panel
     tally as a missing one."""
-    clean = _run(
-        build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 - (100.0 * (hod == 12))))
-    )["diurnal_level"]
+    clean = _run(build_diurnal(_clock_ledger(11, lambda d, hod: -10.0 - (100.0 * (hod == 12)))))[
+        "diurnal_level"
+    ]
     scored = _run(
         build_diurnal(
             _clock_ledger_with_settlements(
@@ -1408,12 +1409,12 @@ def test_the_census_splits_settlement_absences_and_counts_them_in_runs():
     a = report["power_census"]["settlement_absence"]
 
     assert a["runs_published"] == 4
-    assert a["counts"]["no_delta"] == 1  # r1_none: two points inside one hour
-    assert a["run_ids"]["no_delta"] == ["r1_none"]
+    assert a["counts"]["no_whole_hour"] == 1  # r1_none: two points inside one hour
+    assert a["run_ids"]["no_whole_hour"] == ["r1_none"]
     assert a["counts"]["all_settled_at_hour"] == 0
     assert a["unscorable"] == 1
     assert a["reached"] == 3
-    assert a["reached"] + a["counts"]["no_delta"] == a["runs_published"]
+    assert a["reached"] + a["never_reached"] == a["runs_published"]
 
 
 def test_the_census_does_not_pool_the_scored_settlement_statuses():
@@ -1428,3 +1429,115 @@ def test_the_census_does_not_pool_the_scored_settlement_statuses():
         assert scored not in blob
     assert set(census["settlement_absence"]["counts"]) == set(SETTLEMENT_ABSENCES)
     assert "panel day" in census["settlement_absence"]["rule"]
+
+
+def _wrapped_clock_ledger(start_hod, n_whole, run_id="R"):
+    """A run that starts at `start_hod` and publishes `n_whole` whole
+    hours WRAPPING PAST MIDNIGHT, sampled twice an hour with no gaps.
+
+    Every delta it produces is an hour's, and no day is common to every
+    hour it publishes -- which is bound 11d's subject and, measured, the
+    state of 15 of the ledger's 52 runs.
+    """
+    base = T0 - timedelta(days=1) + timedelta(hours=start_hod)
+    off = int((base - T0).total_seconds() // 60)
+    eq, level = [(run_id, off - 30, 0.0)], 0.0
+    for i in range(n_whole):
+        level -= 10.0 + i
+        eq.append((run_id, off + i * 60 + 30, level))
+        eq.append((run_id, off + i * 60 + 59, level))
+    eq.append((run_id, off + n_whole * 60 + 30, level - 1.0))
+    return _ledger(eq)
+
+
+def test_a_clock_traced_once_is_not_a_run_without_deltas():
+    """Bound 11d, and the successor to 11c. `no_delta` read as "the
+    ledger is too young to ask", and for 15 of the ledger's 52 runs that
+    is the opposite of the truth: they hold a full set of CONTIGUOUS
+    hourly deltas and lose every one of them to an empty balanced panel,
+    because a run that crosses midnight once gives each hour-of-day
+    exactly one day and one day cannot be intersected into a panel.
+    A wait for DATA and a wait for a SECOND PASS over data already held
+    tally identically without this split."""
+    traced_once = _run(build_diurnal(_wrapped_clock_ledger(18, 24)))
+    too_young = _run(build_diurnal(_ledger([("R", 0, 0.0), ("R", 30, -5.0), ("R", 59, -7.0)])))
+    lv, young = traced_once["diurnal_level"], too_young["diurnal_level"]
+
+    # Both are unscorable and both never reached the control...
+    assert lv["settlement_status"] == young["settlement_status"] == "unscorable"
+    # ...and that is the whole of what they share.
+    assert lv["settlement_absence"] == "no_balanced_panel"
+    assert young["settlement_absence"] == "no_whole_hour"
+    assert lv["settlement_absence"] in SETTLEMENT_ABSENCES
+
+    # The deltas are REAL: 24 whole hours, all 24 hours of the clock, and
+    # not one of them lost to an outage.
+    assert traced_once["n_whole_hours"] == 24
+    assert len(traced_once["by_hour_of_day"]) == 24
+    assert lv["non_contiguous_deltas_excluded"] == 0
+    # The size of the discard is published beside the reason, because
+    # "no panel" alone reads like "no run".
+    assert lv["off_panel_deltas_excluded"] == 24
+    assert young["off_panel_deltas_excluded"] == 0
+    assert "clock traced once" in lv["settlement_verdict"]
+    assert "no whole hour" in young["settlement_verdict"]
+
+
+def test_an_empty_panel_reads_no_panel_and_never_ragged():
+    """`no_panel` must mean "there is no panel", not "there is no whole
+    hour". RAGGED's entire meaning is "read LEVEL off mean_end_bal
+    instead" -- and on an empty panel that column is null in every row,
+    so the verdict was pointing the reader at nothing."""
+    run = _run(build_diurnal(_wrapped_clock_ledger(18, 24)))
+    panel = run["level_panel"]
+
+    assert panel["days"] == []
+    assert panel["panel_status"] == "no_panel"
+    # The fallback column it would have been sent to does not exist.
+    assert all(p["mean_equity_end_balanced"] is None for p in run["by_hour_of_day"])
+    assert "NO PANEL" in panel["level_verdict"]
+    assert "not RAGGED" in panel["level_verdict"]
+    # ...and it is not the short-run sentence either: this run has hours.
+    assert "publishes no whole hour" not in panel["level_verdict"]
+    assert "second pass" in panel["level_verdict"]
+
+    # A run whose hours DO share days still reads balanced, so the fix
+    # did not simply retire the state.
+    assert (
+        _run(build_diurnal(_clock_ledger(11, lambda d, hod: -10.0)))["level_panel"]["panel_status"]
+        == "balanced"
+    )
+
+
+def test_a_panel_whose_deltas_all_span_outages_is_its_own_absence():
+    """The third never-reached code. This run has a panel -- every hour it
+    publishes is on one day -- and every delta on it crosses a gap, so it
+    is a DAEMON fact and not a panel-definition one. Filing it as
+    `no_balanced_panel` would blame the report for an outage."""
+    eq = [("R", h * 120, 0.0 - h) for h in range(5)]
+    eq += [("R", h * 120 + 59, 0.0 - h) for h in range(5)]
+    lv = _run(build_diurnal(_ledger(sorted(eq, key=lambda r: r[1]))))["diurnal_level"]
+
+    assert lv["settlement_absence"] == "no_contiguous_delta"
+    assert lv["non_contiguous_deltas_excluded"] > 0
+    assert lv["off_panel_deltas_excluded"] == 0
+    assert "spans an outage" in lv["settlement_verdict"]
+
+
+def test_the_census_reads_never_reached_against_the_runs_that_could_have_had_it():
+    """`reached` must be counted against EVERY never-reached code, not
+    against one hard-coded name: a run that never reached the control
+    because it had no panel is not a run that reached it."""
+    report = build_diurnal(_wrapped_clock_ledger(18, 24))
+    a = report["power_census"]["settlement_absence"]
+
+    assert a["counts"]["no_balanced_panel"] == 1
+    assert a["never_reached"] == 1
+    assert a["reached"] == 0
+    assert (
+        a["reached"]
+        + a["never_reached"]
+        + sum(v for k, v in a["counts"].items() if k not in NEVER_REACHED_ABSENCES)
+        == a["runs_published"]
+    )
+    assert "SECOND pass" in a["rule"]
