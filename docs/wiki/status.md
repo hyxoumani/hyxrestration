@@ -1,5 +1,65 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-31 (COUNTERFACTUAL PASS -- THE PANEL IS NOT WHAT
+MAKES THOSE 15 RUNS UNSCORABLE; THEIR DAY COUNT IS.**
+Last pass named the standing job: "15 runs now carry a NAMED, COUNTED
+discard of 255 real hourly deltas -- decide whether the de-trended sign
+test may run on the run's own days, or write in the report why the delta
+axis inherits the level panel." Decided by measurement, not by argument.
+**(1) THE MOVE IS REFUSED, AND THE NUMBER IS THE REASON.**
+`_off_panel_counterfactual` publishes `2^(1-max_draws)` over each run's
+OWN days -- the strongest sign test it could produce WITHOUT bound 7's
+panel if every draw agreed and none tied. That is an **UPPER bound**, so
+it leans toward dropping the panel. **MEASURED over all 52 runs: every
+one of the 15 `no_balanced_panel` runs spans exactly TWO days**, gets
+1-2 draws per hour, and **NOT ONE clears its own ceiling**
+(`no_balanced_panel_powerable_off_panel` = **0**). Dropping the panel
+would buy **zero** scored readings and fifteen unpowerable shapes.
+`20260708T215215`: 24 deltas, 2 days, best achievable p=**1.0000** vs a
+0.00208 ceiling, 10 untied days needed.
+**(2) THE PRINCIPLE STANDS BEHIND THE NUMBER.** The panel is NOT there
+because the quantity is cumulative -- a delta is not. It is there
+because `demeaned`, `cum_demeaned` and the leave-one-out centre are all
+**CROSS-HOUR** comparisons, and hours drawn on different days carry the
+day effect into the hour column. On a run that crosses midnight once
+that confound is a **step at 00Z filed as an hour-of-day shape**.
+**(3) THE ANSWER IS RE-MEASURED, NOT TRUSTED.** The census publishes
+`no_balanced_panel_powerable_off_panel` on every reading; a non-zero
+reopens the question. Scored runs publish `None`, never a dict -- a
+counterfactual beside a scored verdict invites the two being read
+against each other, which is bound 7's defect again.
+**(4) SIX MUTANTS RED** (always-underpowered, census hard-zeroed, scored
+path leaking a counterfactual, empty block zeroed instead of None,
+reason withheld from the reader, ragged scored run leaking one). Suite
+948 -> **954**. A control ledger (`_split_clock_ledger`) whose panel is
+empty for a reason that is NOT youth reads **`powered`**, so "no run is
+powerable off-panel" is a fact about this ledger and not a tautology.
+Census unchanged otherwise: 24 of 52 reached, 28 never reached
+(no_whole_hour 13, no_balanced_panel 15), still zero
+`all_settled_at_hour`.
+**NO PROMOTE -- verified again this pass:** `grep` over
+`scripts/systemd/` finds no unit referencing `shadow_diurnal`. The live
+run `20260829T191841` has been up since 08-29 19:18 UTC and every
+promote restarts the shadow daemon; holding sim-side changes out of
+promote is what buys the 10th panel day. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT**
+for 12Z's sign test. Do not promote anything collection-side unless it
+is worth restarting the shadow daemon for, and say which when you do.
+(2) The successor question this pass opens: bound 13 establishes that
+the 15 runs are day-starved rather than panel-starved, and the ledger
+now knows the exact wait -- `own_days_needed` per run. Nobody has asked
+whether those runs DIED young or were KILLED young: if the shadow daemon
+is being restarted every ~2 days by promotes, the ledger's day-count
+famine is self-inflicted and fixable by policy rather than by waiting.
+Measure run lifetimes against promote timestamps and say which.
+(3) `collect-skips` has been UNVERIFIED since it shipped: decide to
+force a lock-wait or stop printing the section. (4) The width-24 econ
+maker bracket needs 2026-09-12 for a second reading; the atlas quoted
+tier wants settled markets ~2.1M (1.84M on 08-29). Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-30 23:55 UTC (PANEL PASS -- 15 RUNS HELD A WHOLE
 CLOCK'S WORTH OF CONTIGUOUS DELTAS AND TALLIED AS "TOO YOUNG TO ASK".**
 Last pass named the standing job: "ask why 29 runs produced no
