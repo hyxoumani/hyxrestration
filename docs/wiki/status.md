@@ -1,5 +1,66 @@
 # Status & next steps (living page)
 
+Updated: **2026-08-30 23:55 UTC (PANEL PASS -- 15 RUNS HELD A WHOLE
+CLOCK'S WORTH OF CONTIGUOUS DELTAS AND TALLIED AS "TOO YOUNG TO ASK".**
+Last pass named the standing job: "ask why 29 runs produced no
+contiguous delta at all when only 13 publish no whole hour, i.e. what
+kills the other 16 -- that gap is a report bug or a daemon-restart
+artefact." Asked. It is NEITHER, and the bucket was mislabelled.
+**(1) MEASURED: 13 OF THE 28 NEVER-REACHED RUNS PUBLISH NO WHOLE HOUR;
+THE OTHER 15 PUBLISH 5-24 OF THEM.** Those 15 hold **255 contiguous
+hourly deltas between them and ZERO non-contiguous ones**, and lose
+every single delta to an **EMPTY BALANCED PANEL**.
+`20260708T215215` is the extreme case: 24 whole hours, all 24 hours of
+the clock, 24 contiguous deltas, and a panel of nothing.
+**(2) THE CAUSE IS BOUND 7 READ AT THE WRONG SCALE.** The panel is the
+days common to EVERY published hour, so a run under ~48h that crosses
+midnight gives each hour-of-day exactly ONE day and the intersection is
+empty by construction. Not a delta bug, not a daemon-restart artefact:
+those runs traced the clock **once**. They wait for a SECOND PASS over
+the same hours, which is a different wait from `no_whole_hour`'s wait
+for more hours -- and the two tallied identically.
+**(3) TWO CONSEQUENCES FIXED.** `SETTLEMENT_ABSENCES` splits into
+`no_whole_hour` / `no_balanced_panel` / `no_contiguous_delta`, with
+`NEVER_REACHED_ABSENCES` driving `reached` instead of one hard-coded
+name and `never_reached` published. And `panel_status` now reads
+`no_panel` whenever the panel is EMPTY rather than only when no hour is
+published: those 15 runs read **RAGGED**, whose entire meaning is "read
+LEVEL off `mean_end_bal` instead" -- pointing at a column that is null
+in every one of their rows. `off_panel_deltas_excluded` publishes the
+size of the discard beside the reason, because "no panel" alone reads
+like "no run".
+**(4) FIVE MUTANTS RED** (`no_panel` gated on the table, absence
+collapsed to one code, off-panel deltas uncounted, `reached`
+hard-coded, `no_panel` verdict reusing the ragged sentence). Suite
+944 -> **948**. Census now: 24 of 52 reached, 28 never reached
+(no_whole_hour 13, no_balanced_panel 15), still **zero**
+`all_settled_at_hour`.
+**NO PROMOTE -- verified again this pass:** `grep` over
+`scripts/systemd/` finds no unit referencing `shadow_diurnal`. The live
+run `20260829T191841` has been up since 08-29 19:18 UTC and every
+promote restarts the shadow daemon; holding sim-side changes out of
+promote is what buys the 10th panel day. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT**
+for 12Z's sign test. Do not promote anything collection-side unless it
+is worth restarting the shadow daemon for, and say which when you do.
+(2) The successor question this pass opens: 15 runs now carry a NAMED,
+COUNTED discard of 255 real hourly deltas, and the question the name
+raises is whether the delta decomposition needs the LEVEL panel at all.
+The panel exists because the level column is cumulative and must be
+comparable across hours; a DELTA is not cumulative. Decide whether the
+de-trended sign test may run on the run's own days (those 15 runs
+become UNDERPOWERED, which is an honest status, instead of unscorable),
+or write in the report why the delta axis inherits the level panel.
+Whichever way it goes, it must not move `20260810T081931`'s 12Z reading
+-- pin that with a test first. (3) `collect-skips` has been UNVERIFIED
+since it shipped: decide to force a lock-wait or stop printing the
+section. (4) The width-24 econ maker bracket needs 2026-09-12 for a
+second reading; the atlas quoted tier wants settled markets ~2.1M (1.84M
+on 08-29). Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-30 20:35 UTC (ABSENCE PASS -- 29 OF 52 RUNS READ
 SETTLEMENT `unscorable` AND EVERY ONE OF THEM NEVER REACHED THE
 CONTROL.**
