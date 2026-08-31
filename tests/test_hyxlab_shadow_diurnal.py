@@ -1541,3 +1541,159 @@ def test_the_census_reads_never_reached_against_the_runs_that_could_have_had_it(
         == a["runs_published"]
     )
     assert "SECOND pass" in a["rule"]
+
+
+def _split_clock_ledger(n_days, run_id="R"):
+    """A run whose panel is empty for a reason that is NOT a short run:
+    the first `n_days` days publish hours 00-11 and the next `n_days`
+    publish hours 12-23, so no day is common to every hour and yet every
+    hour still gets `n_days` draws.
+
+    This is the counterfactual's control case. Without it, "no
+    `no_balanced_panel` run could be scored off-panel" is unfalsifiable
+    -- the reading has to be able to come out the other way.
+    """
+    eq, level, minute = [], 0.0, 0
+    for d in range(2 * n_days):
+        lo = 0 if d < n_days else 12
+        for hod in range(lo, lo + 12):
+            minute = d * 24 * 60 + hod * 60
+            level -= 10.0 + (1.0 if hod in (5, 17) else 0.0)
+            eq.append((run_id, minute + 30, level))
+            eq.append((run_id, minute + 59, level))
+    return _ledger(eq)
+
+
+def test_the_delta_axis_keeps_the_panel_because_the_day_count_is_the_constraint():
+    """Bound 13, and the successor to 11d. 15 runs carry a named discard
+    of 255 real hourly deltas, which invites the move "a LEVEL is
+    cumulative and needs a common day set, a DELTA is not -- so score
+    those runs on their own days". The report answers with a number
+    instead of an argument: the strongest sign p the run could reach
+    off-panel if every draw agreed and none tied. MEASURED on the
+    ledger's 15 such runs, all of them span exactly two days, and that
+    upper bound clears no ceiling."""
+    lv = _run(build_diurnal(_wrapped_clock_ledger(18, 24)))["diurnal_level"]
+    cf = lv["off_panel_counterfactual"]
+
+    # The deltas are real and the panel is what discards them...
+    assert lv["settlement_absence"] == "no_balanced_panel"
+    assert cf["deltas"] == lv["off_panel_deltas_excluded"] == 24
+    # ...and the panel is NOT what makes the run unscorable: two days.
+    assert cf["own_days"] == 2
+    assert cf["max_draws_at_best_hour"] == 1
+    assert cf["hours_tested"] == 24
+    assert cf["best_achievable_sign_p"] == 1.0
+    assert cf["sign_p_ceiling"] == round(0.05 / 24, 6)
+    assert cf["would_be_status"] == "underpowered"
+    assert "DAY COUNT, not bound 7" in cf["verdict"]
+    assert "upper bound" in cf["verdict"]
+    # The reason travels with the absence, where the reader meets it.
+    assert "DAY COUNT" in lv["settlement_verdict"]
+
+
+def test_an_off_panel_run_with_enough_days_reads_powerable_and_is_not_dismissed():
+    """The control case. If the counterfactual could only ever say
+    "underpowered" it would be a constant dressed as a measurement, and
+    bound 13's claim would be a tautology rather than a fact about THIS
+    ledger. A run whose panel is empty because its hours are split across
+    two blocks of days -- not because it is young -- must read
+    `powered`, and the census must count it."""
+    report = build_diurnal(_split_clock_ledger(10))
+    lv = _run(report)["diurnal_level"]
+    cf = lv["off_panel_counterfactual"]
+
+    assert lv["settlement_absence"] == "no_balanced_panel"  # same absence...
+    assert cf["own_days"] == 20  # ...opposite cause
+    assert cf["max_draws_at_best_hour"] == 10
+    assert cf["best_achievable_sign_p"] <= cf["sign_p_ceiling"]
+    assert cf["would_be_status"] == "powered"
+    assert "the panel, not the day count" in cf["verdict"]
+    assert (
+        report["power_census"]["settlement_absence"]["no_balanced_panel_powerable_off_panel"] == 1
+    )
+
+
+def test_the_census_publishes_whether_dropping_the_panel_would_score_anything():
+    """The ledger-level answer, re-measured on every reading rather than
+    trusted from a design note. Zero means the day count is the binding
+    constraint; a non-zero would mean bound 7 is discarding a scorable
+    run and would reopen the question."""
+    a = build_diurnal(_wrapped_clock_ledger(18, 24))["power_census"]["settlement_absence"]
+
+    assert a["counts"]["no_balanced_panel"] == 1
+    assert a["no_balanced_panel_powerable_off_panel"] == 0
+    assert "day count, not bound 7" in a["rule"]
+
+
+def _ragged_clock_ledger(n_days, tail_hours, delta, run_id="R"):
+    """`n_days` full days plus a partial day covering hours 00..tail-1, so
+    the early hours carry one more day than the rest: a RAGGED panel that
+    still SCORES, and still discards off-panel deltas."""
+    eq, level, minute = [], 0.0, -60
+    eq.append((run_id, minute, level))
+    minute = 0
+    for d in range(n_days):
+        for hod in range(24):
+            level += delta(d, hod)
+            eq.append((run_id, minute + 30, level))
+            eq.append((run_id, minute + 59, level))
+            minute += 60
+    for hod in range(tail_hours):
+        level += delta(n_days, hod)
+        eq.append((run_id, minute + 30, level))
+        eq.append((run_id, minute + 59, level))
+        minute += 60
+    eq.append((run_id, minute + 30, level))
+    return _ledger(eq)
+
+
+def test_a_ragged_scored_run_discards_deltas_and_still_publishes_no_counterfactual():
+    """The counterfactual is about runs the panel left UNSCORED. A ragged
+    run is scored AND discards off-panel deltas, so it is the case where
+    publishing one would do real harm: two readings of the same run on
+    different samples, side by side, inviting the difference to be read
+    as a finding. That is bound 7's defect wearing bound 13's clothes."""
+    lv = _level(_run(build_diurnal(_ragged_clock_ledger(11, 6, lambda d, hod: -10.0 + (d - 5.0)))))
+
+    assert lv["level_shape_status"] in ("powered", "underpowered")  # it SCORED
+    assert lv["off_panel_deltas_excluded"] > 0  # and it DID discard
+    assert lv["off_panel_counterfactual"] is None
+
+
+def test_a_scored_run_publishes_no_counterfactual_and_12z_is_unmoved():
+    """Bound 13 must not touch the scored path. `20260810T081931`'s 12Z
+    reading is the one live claim this report carries, and a
+    counterfactual published beside a scored verdict would invite reading
+    the two against each other -- different samples, bound 7 again. None,
+    not an empty dict and not a zero."""
+    lv = _level(
+        _run(
+            build_diurnal(
+                _clock_ledger(9, lambda d, hod: -10.0 + (d - 4.0) - (100.0 if hod == 12 else 0.0))
+            )
+        )
+    )
+
+    assert lv["off_panel_counterfactual"] is None
+    assert lv["off_panel_deltas_excluded"] == 0
+    # The pin: the live 12Z reading, unchanged.
+    assert lv["n_panel_days"] == 9
+    twelve = next(p for p in lv["by_hour_of_day"] if p["hour_of_day"] == 12)
+    assert twelve["n_below_centre"] == twelve["n_effective"] == 9
+    assert twelve["sign_p"] == 0.003906
+    assert lv["level_shape_status"] == "underpowered"
+    assert lv["panel_days_needed"] == 10
+
+
+def test_a_run_with_no_delta_at_all_publishes_no_counterfactual():
+    """ "The counterfactual was not run" and "it came out at zero" are
+    different findings (mistakes #32). A run too young to publish a whole
+    hour has nothing to score off-panel either, and a zeroed block there
+    would read as a measured refusal."""
+    lv = _run(build_diurnal(_ledger([("R", 0, 0.0), ("R", 30, -5.0), ("R", 59, -7.0)])))[
+        "diurnal_level"
+    ]
+
+    assert lv["settlement_absence"] == "no_whole_hour"
+    assert lv["off_panel_counterfactual"] is None

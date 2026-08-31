@@ -245,6 +245,29 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      whose whole meaning is "read the balanced column instead", pointing
      at a column that is null in every row. `off_panel_deltas_excluded`
      publishes the size of the discard beside the reason.
+ 13. THE DELTA AXIS KEEPS BOUND 7'S PANEL, AND THE REASON IS MEASURED,
+     NOT INHERITED. Bound 12 named a discard of 255 real hourly deltas
+     across 15 runs, which raises the obvious move: a LEVEL is cumulative
+     and needs a common day set, a DELTA is not, so let the de-trended
+     sign test run on the run's own days and let those runs read
+     UNDERPOWERED instead of unscorable. The move is refused twice over.
+     FIRST, on principle: the panel is not there because the quantity is
+     cumulative, it is there because every statistic in the decomposition
+     -- `demeaned`, `cum_demeaned`, and the leave-one-out centre -- is a
+     CROSS-HOUR comparison, and hours drawn on different days carry the
+     day effect into the hour column. On a run that crosses midnight once
+     that confound is not subtle: the day effect IS a step at 00Z, filed
+     as an hour-of-day shape. SECOND, and decisively, on measurement:
+     `_off_panel_counterfactual` publishes `2^(1-max_draws)` over the
+     run's own days -- the strongest reading it could produce off-panel
+     if every draw agreed and none tied, an UPPER bound that leans toward
+     dropping the panel. MEASURED 2026-08-31 over all 52 runs: every one
+     of the 15 `no_balanced_panel` runs spans exactly TWO days and gets
+     1-2 draws per hour, and NOT ONE clears its own ceiling. Dropping the
+     panel would buy zero scored readings and fifteen unpowerable shapes.
+     What makes those runs unscorable is their DAY COUNT. The census
+     publishes `no_balanced_panel_powerable_off_panel` so the answer is
+     re-measured on every reading rather than trusted from this note.
 """
 
 from __future__ import annotations
@@ -1001,6 +1024,71 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
     }
 
 
+def _off_panel_counterfactual(off_buckets: dict[int, list[dict]]) -> dict | None:
+    """What the de-trended sign test WOULD produce if it ran on the run's
+    own days instead of bound 7's balanced panel (bound 11e).
+
+    This exists to answer the standing question rather than argue it. A
+    run with an empty panel discards every contiguous delta it holds, and
+    the obvious move is to say a DELTA is not cumulative and so need not
+    inherit the level column's panel. The move is wrong, but not for the
+    reason the panel was written for: it is wrong because every statistic
+    in the decomposition -- `demeaned`, `cum_demeaned`, and the
+    leave-one-out centre -- is a CROSS-HOUR comparison, and comparing
+    hours drawn on different days puts the day effect in the hour column.
+
+    The number published here is the argument that does not need that
+    one. `best_achievable_sign_p` is `2^(1-max_draws)` over the run's OWN
+    days: the strongest reading the run could produce off-panel if every
+    draw agreed and none tied. It is an UPPER bound on off-panel power,
+    so it leans toward dropping the panel and still loses. MEASURED
+    2026-08-31 over the ledger's 52 runs: all 15 `no_balanced_panel` runs
+    span exactly TWO days, giving 1-2 draws per hour, and NOT ONE of them
+    clears its own ceiling. Dropping the panel would have bought zero
+    scored readings and fifteen unpowerable shapes whose midnight step is
+    day composition. What makes these runs unscorable is their DAY COUNT,
+    not bound 7.
+
+    None when there are no off-panel deltas -- "the counterfactual was
+    not run" and "it came out at zero" are different findings.
+    """
+    if not off_buckets:
+        return None
+    days = {h["day"] for vs in off_buckets.values() for h in vs}
+    hours_tested = len(off_buckets)
+    max_draws = max(len(vs) for vs in off_buckets.values())
+    ceiling = LEVEL_FWER / hours_tested
+    best_p = 2.0 ** (1 - max_draws)
+    powerable = best_p <= ceiling
+    return {
+        "own_days": len(days),
+        "hours_tested": hours_tested,
+        "deltas": sum(len(vs) for vs in off_buckets.values()),
+        "max_draws_at_best_hour": max_draws,
+        "sign_p_ceiling": round(ceiling, 6),
+        "best_achievable_sign_p": round(best_p, 6),
+        "own_days_needed": _days_needed(ceiling),
+        "would_be_status": "powered" if powerable else "underpowered",
+        "verdict": (
+            f"OFF-PANEL CEILING: on its own {len(days)} day(s) this run holds"
+            f" {sum(len(vs) for vs in off_buckets.values())} contiguous delta(s)"
+            f" over {hours_tested} hour(s), at most {max_draws} at any one"
+            f" hour, so the strongest sign test it could produce WITHOUT"
+            f" bound 7's panel is p={best_p:.4f}"
+            + (
+                f" <= {ceiling:.5f} -- the panel, not the day count, is what"
+                " keeps this run unscorable"
+                if powerable
+                else f" > {ceiling:.5f}, the ceiling over those hours."
+                f" {_days_needed(ceiling)} untied days are needed, so dropping"
+                " the panel would buy this run NO scored reading -- what makes"
+                " it unscorable is its DAY COUNT, not bound 7"
+            )
+            + " (an upper bound: ties can only weaken it)"
+        ),
+    }
+
+
 def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | None) -> dict:
     """The hour-of-day LEVEL column with the run's own drift taken out
     (bound 9).
@@ -1059,6 +1147,10 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
     # every contiguous delta is off-panel is not a run without deltas,
     # and the two tallied identically until this was measured.
     off_panel = 0
+    # Bound 11e: the off-panel contiguous deltas KEPT, not just counted, so
+    # the report can publish what a panel-free decomposition would have
+    # scored instead of arguing about it.
+    off_buckets: dict[int, list[dict]] = defaultdict(list)
     n_whole = 0
     for h in hours:
         if h["partial"]:
@@ -1067,7 +1159,9 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
         if h["d_equity"] is None:
             continue
         if h["day"] not in on_panel:
-            off_panel += 1 if h["contiguous"] else 0
+            if h["contiguous"]:
+                off_panel += 1
+                off_buckets[h["hour_of_day"]].append(h)
             continue
         if not h["contiguous"]:
             non_contiguous += 1
@@ -1092,6 +1186,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             if not panel
             else "no_contiguous_delta"
         )
+        counterfactual = _off_panel_counterfactual(off_buckets)
         why = {
             "no_whole_hour": (
                 f"this run publishes no whole hour ({len(hours)} partial"
@@ -1102,7 +1197,8 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                 f" {off_panel} contiguous hourly delta(s), but NO DAY is"
                 " common to every published hour, so bound 7's balanced"
                 " panel is empty and every delta is off-panel -- a clock"
-                " traced once, not a run without deltas"
+                " traced once, not a run without deltas. "
+                + (counterfactual["verdict"] if counterfactual else "")
             ),
             "no_contiguous_delta": (
                 f"this run has a {len(panel)}-day panel and"
@@ -1116,6 +1212,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                 "hours_tested": 0,
                 "non_contiguous_deltas_excluded": non_contiguous,
                 "off_panel_deltas_excluded": off_panel,
+                "off_panel_counterfactual": counterfactual,
                 "grand_mean_per_hour": None,
                 "drift_per_day": None,
                 "clock_complete": False,
@@ -1254,6 +1351,11 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             "hours_tested": hours_tested,
             "non_contiguous_deltas_excluded": non_contiguous,
             "off_panel_deltas_excluded": off_panel,
+            # Bound 11e: None, not a dict. A run that HAS a panel was never
+            # a candidate for the panel-free reading, and publishing a
+            # counterfactual beside a scored verdict invites reading the
+            # two against each other -- different samples, bound 7 again.
+            "off_panel_counterfactual": None,
             "grand_mean_per_hour": _r(grand),
             # Only a DAY when the whole clock is present; a partial clock
             # sums to a partial day and must not be read as a daily rate.
@@ -1420,7 +1522,10 @@ def _absence_census(runs: list[dict]) -> dict:
             " already traced once and waits for a SECOND pass over it, and"
             " `no_contiguous_delta` is an outage on the panel."
             " `all_settled_at_hour` reached the control and lost to total"
-            " contamination"
+            " contamination."
+            " `no_balanced_panel_powerable_off_panel` is how many of the"
+            " second bucket a panel-free sign test could actually SCORE:"
+            " zero means the day count, not bound 7, is the constraint"
         ),
         "runs_published": len(runs),
         # Reached = the run had a panel the control could look at, whether
@@ -1430,6 +1535,15 @@ def _absence_census(runs: list[dict]) -> dict:
         "unscorable": len(absent),
         "never_reached": sum(1 for _rid, a in absent if a in NEVER_REACHED_ABSENCES),
         "counts": {a: sum(1 for _rid, x in absent if x == a) for a in SETTLEMENT_ABSENCES},
+        # Bound 11e: the ledger's own answer to "should the delta axis keep
+        # bound 7's panel". Counted in runs, over the `no_balanced_panel`
+        # bucket only, because those are the only runs the question is
+        # about. Zero means dropping the panel buys no scored reading.
+        "no_balanced_panel_powerable_off_panel": sum(
+            1
+            for _rid, d in lv
+            if (d.get("off_panel_counterfactual") or {}).get("would_be_status") == "powered"
+        ),
         "run_ids": {
             a: [rid for rid, x in absent if x == a]
             for a in SETTLEMENT_ABSENCES
