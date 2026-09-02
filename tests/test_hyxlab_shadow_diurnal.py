@@ -17,6 +17,8 @@ from simulator.shadow_diurnal import (
     PANEL_STATUSES,
     SETTLEMENT_ABSENCES,
     SETTLEMENT_STATUSES,
+    SUCCESSION_KINDS,
+    SUCCESSION_WINDOW_S,
     VERDICT_POPULATION,
     build_diurnal,
 )
@@ -1697,3 +1699,118 @@ def test_a_run_with_no_delta_at_all_publishes_no_counterfactual():
 
     assert lv["settlement_absence"] == "no_whole_hour"
     assert lv["off_panel_counterfactual"] is None
+
+
+# ------------------------------------------------------------- bound 14
+# Did the day-starved runs DIE young or get KILLED young? The ledger can
+# tell a stop from a host outage by the gap to the successor, and that is
+# all it can tell.
+def _clock_rows(run_id, start_min, n_whole):
+    """`_wrapped_clock_ledger`'s rows, placed at `start_min` from T0 so
+    several runs can share one ledger. Wraps midnight when n_whole >= 24
+    from any start, so the run is `no_balanced_panel` -- day-starved."""
+    eq, level = [(run_id, start_min - 30, 0.0)], 0.0
+    for i in range(n_whole):
+        level -= 10.0 + i
+        eq.append((run_id, start_min + i * 60 + 30, level))
+        eq.append((run_id, start_min + i * 60 + 59, level))
+    eq.append((run_id, start_min + n_whole * 60 + 30, level - 1.0))
+    return eq
+
+
+def _succession_ledger(gap_a_b_min, gap_b_c_min=1):
+    """A and B trace the clock once each (day-starved); C is two points in
+    one hour (no whole hour). A's successor starts `gap_a_b_min` after
+    A's last row; B's successor `gap_b_c_min` after B's."""
+    a_start = -24 * 60 + 60 * 20  # 20Z the day before T0, wraps midnight
+    a = _clock_rows("A", a_start, 24)
+    b_start = a[-1][1] + gap_a_b_min + 30
+    b = _clock_rows("B", b_start, 24)
+    c_start = b[-1][1] + gap_b_c_min
+    c = [("C", c_start, 1.0), ("C", c_start + 20, 2.0)]
+    return _ledger(a + b + c)
+
+
+def test_a_stopped_run_reads_immediate_and_an_outage_reads_after_outage():
+    """`Restart=always RestartSec=30` makes a successor within minutes the
+    signature of the PROCESS being stopped; a successor hours later is
+    the host being down. The boundary is the published window, and a gap
+    exactly on it is still a stop."""
+    lt = _run(build_diurnal(_succession_ledger(gap_a_b_min=1)), "A")["lifetime"]
+    assert lt["succession"] == "immediate"
+    assert lt["successor_run_id"] == "B"
+    assert lt["successor_gap_s"] == 60.0
+    assert lt["succession_window_s"] == SUCCESSION_WINDOW_S
+
+    on_edge = _run(build_diurnal(_succession_ledger(SUCCESSION_WINDOW_S // 60)), "A")["lifetime"]
+    assert on_edge["succession"] == "immediate"
+    over = _run(build_diurnal(_succession_ledger(SUCCESSION_WINDOW_S // 60 + 1)), "A")["lifetime"]
+    assert over["succession"] == "after_outage"
+    assert over["successor_run_id"] == "B"
+
+
+def test_the_last_closed_run_has_no_successor_and_a_live_one_is_open():
+    """A closed run nothing followed is `no_successor`, not a stop and not
+    an outage; a run still writing is `open` with no end and no successor.
+    Neither may be tallied as stopped."""
+    report = build_diurnal(_succession_ledger(1))
+    c = _run(report, "C")["lifetime"]
+    assert c["succession"] == "no_successor"
+    assert c["successor_run_id"] is None and c["successor_gap_s"] is None
+    assert c["ended_at"] is not None
+
+    live_start = int((datetime.now(UTC).replace(tzinfo=None) - T0).total_seconds() // 60) - 5
+    live = _ledger([("L", live_start, 1.0), ("L", live_start + 4, 2.0)])
+    lt = _run(build_diurnal(live), "L")["lifetime"]
+    assert lt["succession"] == "open"
+    assert lt["ended_at"] is None
+    assert lt["span_hours"] == 0.1
+
+
+def test_the_lifetime_census_counts_stops_over_the_day_starved_runs_only():
+    """`stopped_not_starved` is a count over the `no_balanced_panel` bucket
+    and nothing else: A (stopped) and B (host outage) are both
+    day-starved, C is not in the bucket and its `no_successor` must not
+    leak in. The spans sit beside the count (mistakes #35)."""
+    report = build_diurnal(_succession_ledger(gap_a_b_min=1, gap_b_c_min=3 * 60))
+    lt = report["power_census"]["lifetimes"]
+
+    assert lt["succession_counts"] == {
+        "open": 0,
+        "immediate": 1,
+        "after_outage": 1,
+        "no_successor": 1,
+    }
+    assert lt["closed_runs"] == 3
+    nbp = lt["no_balanced_panel"]
+    assert nbp["n"] == 2
+    assert nbp["stopped_not_starved"] == 1
+    assert [r["run_id"] for r in nbp["runs"]] == ["A", "B"]
+    assert {r["succession"] for r in nbp["runs"]} == {"immediate", "after_outage"}
+    assert nbp["span_hours"]["min"] == nbp["span_hours"]["max"] == 25.0  # 24 whole hours + edges
+    # The wait bound 13 published travels with the run that carries it.
+    assert all(r["own_days_needed"] is not None for r in nbp["runs"])
+    assert "promote reflog" in lt["rule"]
+
+
+def test_a_one_run_report_still_reads_its_successor_off_the_whole_ledger():
+    """`--run A` must not turn A into the last run in the ledger: its
+    successor is a fact about the ledger, and a filtered report that
+    published `no_successor` would call a stopped run a natural end."""
+    report = build_diurnal(_succession_ledger(1), run_id="A")
+    assert [r["run_id"] for r in report["runs"]] == ["A"]
+    lt = report["runs"][0]["lifetime"]
+    assert lt["succession"] == "immediate"
+    assert lt["successor_run_id"] == "B"
+
+
+def test_the_lifetime_block_never_claims_a_reason_for_the_stop():
+    """The ledger holds no exit reason. The block must publish WHAT
+    followed and WHEN, and must not carry a field that names promote,
+    crash or reboot as the cause -- that is the reflog's and the
+    journal's to say."""
+    report = build_diurnal(_succession_ledger(1))
+    blob = json.dumps(report["power_census"]["lifetimes"]["no_balanced_panel"]["runs"])
+    for word in ("promote", "crash", "reboot", "cause", "reason"):
+        assert word not in blob
+    assert set(SUCCESSION_KINDS) == {"open", "immediate", "after_outage", "no_successor"}

@@ -1,5 +1,87 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-02 (LIFETIME PASS -- THE 15 DAY-STARVED RUNS WERE
+KILLED YOUNG, NOT DEAD YOUNG; 19 PROMOTES DID THE KILLING; THE GUARD
+NOW ASKS THE RUN'S AGE.**
+Last pass named the standing job: "nobody has asked whether those runs
+DIED young or were KILLED young; measure run lifetimes against promote
+timestamps and say which." Measured, by three sources that agree.
+**(1) THE LEDGER: 15 OF 15 `no_balanced_panel` RUNS ENDED WITH THEIR
+SUCCESSOR WRITING WITHIN 4 MINUTES** (gaps 22-219 s, spans 5.7-41.6 h,
+median 23.4 h). The daemon is `Restart=always RestartSec=30`, so a
+successor that close is the signature of the process being STOPPED
+mid-write -- it cannot be the run running out of anything. Over all 51
+closed runs: 48 immediate, 3 after a host outage (14-17 h holes on
+07-08, 07-20, 08-20), 0 with no successor. **(2) THE PROMOTE REFLOG
+(64 promotes 07-30 to 08-29, UTC): 19 run ends fall within 3 min of a
+promote**, 5 of them among the 15 (20260730T202207, 20260731T203829,
+20260802T204103, 20260826T201942, 20260827T142740). Every one of those
+19 promotes moved a file in shadow's import closure (shadow.py,
+bookreplay.py, store.py, sim.py...) -- **the restart guard (EXP-1276)
+was RIGHT every time and the famine happened anyway**, because "did the
+code move" was the only question it asked. In the guard era (08-12 on)
+shadow was restarted by promote on 08-23, 08-26, 08-27 twice, and
+08-28: five kills in six days, runs of 66/72/6/12/24 h. **(3) THE
+JOURNAL (08-21 on, older boots rotated out): 5 of 5 non-reboot ends
+are `Stopping` = operator/promote; zero `Main process exited`.** The
+rest, attributed from the status log: 4 host reboots (08-02 01:48,
+08-07 19:31, 08-20 21:33, 08-29 19:15 -- two of them among the 15),
+one deliberate close (20260807T193303, "closed by design" 08-08), ONE
+crash (20260808T063109, unhandled ledger lock 08-10 02:15 -- a REACHED
+run, not a starved one), 24 July ends before the reflog begins (22
+with an immediate successor), 2 unattributed (08-02 08:20, 20:39).
+**So the answer: not one of the 15 died of its data. The wait bound 13
+priced (`own_days_needed` ~10) is one the promote policy was resetting
+every ~2 days.**
+**(4) SHIPPED, TWO SIDES.** Report side: every run publishes
+`lifetime` (`started_at`/`ended_at`/`span_hours`/`successor_run_id`/
+`successor_gap_s`/`succession` in {open, immediate, after_outage,
+no_successor}; `SUCCESSION_WINDOW_S`=900, in the empty band between
+the slowest stop-restart at 372 s and the fastest outage at ~15,000 s),
+read off the WHOLE ledger even under `--run`, and the census carries
+`lifetimes.no_balanced_panel.stopped_not_starved` (=15) with spans and
+`own_days_needed` beside it. The block names WHAT followed and WHEN and
+refuses to name WHO -- the reflog and journal do that, the ledger has
+no exit reason. Promote side: `young_run_guard` in
+`scripts/restart_decision.sh` -- when the closure guard says shadow's
+code moved AND `unit_age_s hyxlab-shadow.service` < `YOUNG_RUN_S` (3 d
+= MIN_DAYS), the restart is DEFERRED through the same path as
+`--defer`, with the age and the override (`--restart-young`, or
+`--restart-all`) printed. An unknown age never defers (a measured span
+is protected, never an assumed one; the simui failure mode is "not
+restarted" implemented as "not mentioned"). **Eleven mutants red**
+(window boundary, open vs no_successor, census over the bucket only,
+`--run` losing the successor, a cause field leaking; guard young/old/
+threshold/overrides/unknown-age, promote.sh ordering). Suite 954 ->
+**965**. Bound 14 in `simulator/shadow_diurnal.py`.
+**NO PROMOTE -- verified:** `daemon_imports.py intersect
+simulator.shadow` over the changed files is empty; promote.sh and
+restart_decision.sh run from the DEV tree, so the guard is live for the
+next promote without one. The live run `20260829T191841` is now
+**POWERED (5 whole days, 3 draws/hr, does_not_repeat, 6 pairs)** and at
+5.3 d is past the young-run threshold -- the guard would NOT protect it
+from a legitimate closure move, so the standing rule holds by hand: do
+not promote anything collection-side unless it is worth restarting the
+shadow daemon for, and say which. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT**
+for 12Z's sign test; live run at 5 days on 09-02 14:11Z, 10th day
+~09-08 if nothing stops it. (2) The guard's threshold is 3 d because
+that is where a run becomes SCORABLE; it is not where a run becomes
+VALUABLE -- the 12Z control wants 10. Decide whether the guard should
+price the run's age against `own_days_needed` of the live run (read
+off the latest diurnal reading) rather than a constant, or write why a
+constant is right. (3) Two ends (08-02 08:20Z, 08-02 20:39Z) are
+unattributed; both have successors within 82 s and dev commits within
+4 min -- almost certainly hand restarts during that day's shadow
+settlement work; not worth more than this line. (4) `collect-skips`
+has been UNVERIFIED since it shipped: decide to force a lock-wait or
+stop printing the section. (5) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled
+markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-08-31 (COUNTERFACTUAL PASS -- THE PANEL IS NOT WHAT
 MAKES THOSE 15 RUNS UNSCORABLE; THEIR DAY COUNT IS.**
 Last pass named the standing job: "15 runs now carry a NAMED, COUNTED

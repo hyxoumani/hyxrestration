@@ -1014,6 +1014,37 @@ Format: what happened → root cause → error type → prevention tier
     rule stated in the field — SHAPE pools across runs, LEVEL does not.
     Nine mutants, all red.
 
+44. **2026-09-02 -- a restart guard that was right every time still
+    starved the thing it guarded, because it asked only whether the
+    code moved and never how old the run was.** `promote.sh` restarts
+    `hyxlab-shadow` iff a promoted file is in the daemon's static import
+    closure (EXP-1276). Measured over 51 closed shadow runs: 19 ended
+    within 3 min of a promote, EVERY one of those promotes had moved a
+    closure file, and ALL 15 of the runs the diurnal census calls
+    day-starved (`no_balanced_panel`, median span 23.4 h, needing ~10
+    days) ended with their successor writing within 4 min. Not one ran
+    out of data. The promote header had already re-costed a restart in
+    DAYS OF SPAN (08-23) -- and then left the decision to a rule that
+    could not see span.
+    Type: `right-predicate-wrong-question`. The guard's predicate was
+    never wrong; the cost it was written to protect was not an input to
+    it. Cousin of #43: a verdict read off the freshest member is
+    systematically the weakest one, and here the freshest run was also
+    the one every promote reset.
+    **RULE: a guard that exists to protect an accumulated asset must
+    take the asset's current size as an input, not only the trigger.
+    "Should I restart" has two operands -- what moved, and what dies --
+    and a policy that reads one of them is a policy that will pay the
+    other every time it fires.**
+    Prevention: `young_run_guard` in `scripts/restart_decision.sh`
+    defers a shadow restart while the live run is younger than
+    `YOUNG_RUN_S` (3 d), printing the age and the override; an unknown
+    age never defers (protect a measured span, not an assumed one). The
+    ledger publishes `lifetime.succession` per run and
+    `stopped_not_starved` in the census so the famine is counted, not
+    inferred -- and names WHAT followed, never WHO stopped it, because
+    the ledger holds no exit reason (#32). Eleven mutants, all red.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

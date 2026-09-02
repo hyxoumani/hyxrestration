@@ -83,7 +83,10 @@ def test_streamd_eager_set_matches_the_interpreter(streamd):
     the eagerly loaded intra-repo modules to the static eager set."""
     files, lazy = streamd
     out = subprocess.run(
-        [PY, "-c", textwrap.dedent("""
+        [
+            PY,
+            "-c",
+            textwrap.dedent("""
             import sys
             before = set(sys.modules)
             import collector.streamd
@@ -91,13 +94,15 @@ def test_streamd_eager_set_matches_the_interpreter(streamd):
             for m in sorted(set(sys.modules) - before):
                 if m.split('.')[0] in pkgs:
                     print(m)
-        """)],
-        cwd=REPO, capture_output=True, text=True, check=True,
+        """),
+        ],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     loaded = set(out.stdout.split())
-    static_eager = {
-        f for f in files - lazy if f.endswith(".py")
-    }
+    static_eager = {f for f in files - lazy if f.endswith(".py")}
     as_modules = set()
     for f in static_eager:
         parts = f[: -len(".py")].split("/")
@@ -123,7 +128,8 @@ def test_shadow_closure_members(shadow):
 def test_unresolvable_root_exits_2():
     res = subprocess.run(
         [PY, TOOL, "closure", "no.such.module"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert res.returncode == 2
 
@@ -133,16 +139,9 @@ def test_lazy_vs_eager_on_synthetic_package(tmp_path):
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
-    (pkg / "root.py").write_text(
-        "import pkg.eager\n"
-        "def f():\n"
-        "    import pkg.lazy\n"
-    )
+    (pkg / "root.py").write_text("import pkg.eager\ndef f():\n    import pkg.lazy\n")
     (pkg / "eager.py").write_text("x = 1\n")
-    (pkg / "lazy.py").write_text(
-        "def g():\n"
-        "    from pkg import lazy2\n"
-    )
+    (pkg / "lazy.py").write_text("def g():\n    from pkg import lazy2\n")
     (pkg / "lazy2.py").write_text("y = 2\n")
     (pkg / "unrelated.py").write_text("z = 3\n")
     files, lazy = closure("pkg.root", repo=tmp_path)
@@ -165,7 +164,9 @@ def decide(changed: str, root: str, regex: str, force: str = "0") -> str:
     )
     res = subprocess.run(
         ["bash", "-c", script, "bash", changed],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return res.stdout
 
@@ -310,3 +311,72 @@ def test_a_simui_only_change_restarts_simui_alone():
     assert "RESTART" in decide(changed, *args)
     assert decide(changed, *STREAM_ARGS).strip().endswith("SKIP")
     assert decide(changed, *SHADOW_ARGS).strip().endswith("SKIP")
+
+
+# ------------------------------------------------------------- bound 14
+# The closure guard asks "did the code move"; young_run_guard asks "how
+# old is the run you are about to kill". Measured 2026-09-02: all 15
+# day-starved shadow runs were stopped mid-write, 19 promotes did the
+# stopping, and the closure guard was right every time.
+def guard(age: str, force: str = "0", young: str = "0", threshold: str | None = None) -> str:
+    env = f"FORCE_RESTART={force}; RESTART_YOUNG={young}; "
+    if threshold is not None:
+        env += f"YOUNG_RUN_S={threshold}; "
+    script = (
+        f'DEV="{REPO}"; {env}'
+        f'source "{REPO}/scripts/restart_decision.sh"; '
+        f'if young_run_guard hyxlab-shadow.service "$1"; then echo DEFER; else echo RESTART; fi'
+    )
+    res = subprocess.run(
+        ["bash", "-c", script, "bash", age],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return res.stdout
+
+
+def test_a_young_shadow_run_is_deferred_and_the_age_is_printed():
+    out = guard(str(2 * 86400))
+    assert out.strip().endswith("DEFER")
+    assert "48h" in out and "72h" in out  # what it has vs what it needs
+    assert "--restart-young" in out  # how to override, named
+
+
+def test_a_run_past_the_threshold_is_restarted():
+    assert guard(str(3 * 86400)).strip().endswith("RESTART")
+    assert guard(str(10 * 86400)).strip().endswith("RESTART")
+
+
+def test_the_threshold_is_the_env_and_defaults_to_three_days():
+    assert guard("100", threshold="50").strip().endswith("RESTART")
+    assert guard("100", threshold="101").strip().endswith("DEFER")
+    assert guard(str(259199)).strip().endswith("DEFER")
+
+
+def test_restart_all_and_restart_young_both_override_the_guard():
+    assert guard("60", force="1").strip().endswith("RESTART")
+    assert guard("60", young="1").strip().endswith("RESTART")
+
+
+def test_an_unknown_age_never_defers_and_says_so():
+    """The guard protects a MEASURED span. If systemd cannot say when the
+    unit started, deferring would be protecting an assumption -- and
+    silently leaving a daemon on old code (the simui failure mode)."""
+    for age in ("", "n/a", "abc"):
+        out = guard(age)
+        assert out.strip().endswith("RESTART")
+        assert "age unknown" in out
+
+
+def test_promote_sh_wires_the_young_run_guard_into_the_defer_path():
+    text = (REPO / "scripts" / "promote.sh").read_text()
+    assert "--restart-young) RESTART_YOUNG=1" in text
+    assert 'young_run_guard hyxlab-shadow.service "$(unit_age_s hyxlab-shadow.service)"' in text
+    # It must feed the SAME defer path as --defer, so the deferral is
+    # recorded the way an explicit one is, not restarted by a later branch.
+    guard_at = text.index("young_run_guard hyxlab-shadow.service")
+    defer_at = text.index('if [[ -n "$DEFER" ]]; then')
+    restart_at = text.index('systemctl --user restart "${RESTART[@]}"')
+    assert guard_at < defer_at < restart_at
+    subprocess.run(["bash", "-n", str(REPO / "scripts" / "promote.sh")], check=True)

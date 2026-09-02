@@ -395,6 +395,59 @@ VERDICT_POPULATION: dict[str, tuple[str, tuple[str, ...]]] = {
 #: A run whose last equity point is this recent is still WRITING: its
 #: span will grow, so its status is a snapshot and not a settled draw.
 OPEN_RUN_GRACE_MIN = 30
+#: Bound 14 (2026-09-02). A closed run whose SUCCESSOR's first equity row
+#: lands within this many seconds of its own last row did not run out of
+#: anything: the daemon is `Restart=always` with `RestartSec=30`, so a
+#: successor this close is the signature of the process being STOPPED
+#: (promote, operator, crash, reboot are not separable from the ledger --
+#: the promote reflog and the journal are). Measured over the 51 closed
+#: runs on 2026-09-02: every stop-and-restart succession fell in
+#: 21-372 s -- a fast host reboot (08-29, 219 s) is in that band and IS a
+#: stop -- and every host outage in 15,000-61,000 s. 900 s sits in the
+#: empty band between them.
+SUCCESSION_WINDOW_S = 900
+#: How a run's tenure ended. `immediate`: a successor within
+#: SUCCESSION_WINDOW_S (the process was stopped). `after_outage`: a
+#: successor, but only after a hole (the host, not the daemon, was down).
+#: `no_successor`: closed and nothing followed. `open`: still writing.
+SUCCESSION_KINDS = ("open", "immediate", "after_outage", "no_successor")
+
+
+def _lifetimes(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict[str, dict]:
+    """Every run's tenure and what followed it, read off the WHOLE ledger.
+
+    Deliberately unfiltered by `--run`: a run's successor is the next
+    run in the ledger, and a report built for one run must still know
+    what came after it. `succession` is a fact about the ledger's shape,
+    not about the daemon's exit code: the ledger holds no exit reason,
+    and this block does not invent one (mistakes #32).
+    """
+    rows = conn.execute(
+        "select run_id, min(ts), max(ts) from shadow_equity group by 1 order by 1"
+    ).fetchall()
+    out: dict[str, dict] = {}
+    for i, (rid, first, last) in enumerate(rows):
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        is_open = (now - last.replace(tzinfo=UTC)).total_seconds() < OPEN_RUN_GRACE_MIN * 60
+        gap = None if nxt is None else (nxt[1] - last).total_seconds()
+        if is_open and nxt is None:
+            kind = "open"
+        elif nxt is None:
+            kind = "no_successor"
+        elif gap <= SUCCESSION_WINDOW_S:
+            kind = "immediate"
+        else:
+            kind = "after_outage"
+        out[rid] = {
+            "started_at": f"{first:%Y-%m-%dT%H:%M:%SZ}",
+            "ended_at": None if kind == "open" else f"{last:%Y-%m-%dT%H:%M:%SZ}",
+            "span_hours": _r((last - first).total_seconds() / 3600, 1),
+            "successor_run_id": None if nxt is None else nxt[0],
+            "successor_gap_s": None if gap is None else _r(gap, 0),
+            "succession_window_s": SUCCESSION_WINDOW_S,
+            "succession": kind,
+        }
+    return out
 
 
 def _r(x: float | None, n: int = 1) -> float | None:
@@ -1552,6 +1605,69 @@ def _absence_census(runs: list[dict]) -> dict:
     }
 
 
+def _lifetime_census(runs: list[dict]) -> dict:
+    """Did the day-starved runs DIE young or get KILLED young (bound 14)?
+
+    Bound 13 established that the 15 `no_balanced_panel` runs are
+    day-starved, not panel-starved, and published the exact wait
+    (`own_days_needed`). The question that leaves open is whether the
+    wait is the ledger's to serve or the operator's to stop imposing: a
+    run that was STOPPED two days in, by a promote that restarted the
+    daemon, is a famine the promote policy made. The ledger can tell
+    "stopped" from "the host went away" by the gap to the successor, and
+    that is all it can tell; who stopped it is in the promote reflog and
+    the journal, not here.
+
+    Counted in runs, over the `no_balanced_panel` bucket, with the spans
+    beside the count (mistakes #35). `stopped_not_starved` is the number
+    of those runs whose successor started immediately: each was still
+    writing when it ended. Zero would mean the famine is the data's.
+    """
+    starved = [r for r in runs if r["diurnal_level"]["settlement_absence"] == "no_balanced_panel"]
+    closed = [r for r in runs if r["lifetime"]["succession"] != "open"]
+    spans = sorted(r["lifetime"]["span_hours"] for r in starved)
+    return {
+        "rule": (
+            "`succession` is read off the ledger: a successor within"
+            f" {SUCCESSION_WINDOW_S}s of a run's last row means the process was"
+            " STOPPED while writing, whoever stopped it; a later successor"
+            " means the host was down. `stopped_not_starved` counts the"
+            " `no_balanced_panel` runs that ended by a stop -- those runs did"
+            " not run out of days, they were denied them. The reason for each"
+            " stop lives in the promote reflog and the journal, not in the"
+            " ledger, and this block does not guess it"
+        ),
+        "succession_window_s": SUCCESSION_WINDOW_S,
+        "closed_runs": len(closed),
+        "succession_counts": {
+            k: sum(1 for r in runs if r["lifetime"]["succession"] == k) for k in SUCCESSION_KINDS
+        },
+        "no_balanced_panel": {
+            "n": len(starved),
+            "stopped_not_starved": sum(
+                1 for r in starved if r["lifetime"]["succession"] == "immediate"
+            ),
+            "span_hours": (
+                {"min": spans[0], "median": spans[len(spans) // 2], "max": spans[-1]}
+                if spans
+                else None
+            ),
+            "runs": [
+                {
+                    "run_id": r["run_id"],
+                    "span_hours": r["lifetime"]["span_hours"],
+                    "succession": r["lifetime"]["succession"],
+                    "successor_gap_s": r["lifetime"]["successor_gap_s"],
+                    "own_days_needed": (
+                        r["diurnal_level"].get("off_panel_counterfactual") or {}
+                    ).get("own_days_needed"),
+                }
+                for r in starved
+            ],
+        },
+    }
+
+
 def power_census(runs: list[dict]) -> dict:
     """Which runs in the ledger actually answer the shape question.
 
@@ -1622,6 +1738,7 @@ def power_census(runs: list[dict]) -> dict:
             "why": "no whole hour: nothing to be powered or underpowered about",
         },
         "settlement_absence": _absence_census(runs),
+        "lifetimes": _lifetime_census(runs),
         "profile": {
             "scorable": len(scorable),
             "counts": {
@@ -1676,6 +1793,7 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
         ).fetchall()
     ]
     now = datetime.now(UTC)
+    lifetimes = _lifetimes(ledger, now)
     last_ts = {
         r[0]: r[1]
         for r in ledger.execute(
@@ -1729,6 +1847,7 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
                 "open": (now - last_ts[rid].replace(tzinfo=UTC)).total_seconds()
                 < OPEN_RUN_GRACE_MIN * 60,
                 "last_equity_at": f"{last_ts[rid]:%Y-%m-%dT%H:%M:%SZ}",
+                "lifetime": lifetimes[rid],
                 "n_hours": len(hours),
                 "n_whole_hours": len(whole),
                 "n_days": n_days,
@@ -1826,6 +1945,18 @@ def main(argv: list[str] | None = None) -> None:
                 " clock traced ONCE, waiting for a second pass over the same"
                 " hours and not for more hours"
             )
+    # Bound 14: whether the day-starved runs were denied their days.
+    lt = c["lifetimes"]["no_balanced_panel"]
+    if lt["n"]:
+        sp = lt["span_hours"]
+        print(
+            f"[shadow_diurnal] of the {lt['n']} day-starved run(s),"
+            f" {lt['stopped_not_starved']} ended by a STOP with the successor"
+            f" running within {c['lifetimes']['succession_window_s']}s"
+            f" (spans {sp['min']}-{sp['max']}h, median {sp['median']}h) —"
+            " those runs were still writing when they ended; who stopped"
+            " them is in the promote reflog and the journal, not here"
+        )
     if pw["n"]:
         tally = ", ".join(f"{k} {v}" for k, v in pw["counts"].items() if v)
         print(

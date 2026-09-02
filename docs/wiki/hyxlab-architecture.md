@@ -203,6 +203,7 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   logical boundary enforced by tests/test_boundaries.py; physical
   deployment separated (daemons run from the `stable` worktree via
   `scripts/promote.sh`). Full package split deferred to the Pi
+- **Promote restart policy (bound 14, 2026-09-02)**: `promote.sh` restarts a daemon iff a promoted file is in its import closure (`scripts/restart_decision.sh`, EXP-1276) AND, for `hyxlab-shadow`, the live run is at least `YOUNG_RUN_S` (3 d) old; younger runs are deferred through the `--defer` path with the age printed. Override: `--restart-young` or `--restart-all`. Why: all 15 day-starved shadow runs were stopped by restarts, not starved by data (mistakes #44).
   migration, where collection moves to the Pi and the DB sync doubles
   as off-box backup.
 - No LLM in the signal path until deterministic signals prove out.

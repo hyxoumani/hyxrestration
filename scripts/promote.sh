@@ -33,10 +33,18 @@ DEV=/home/devs/workspace/hyxrestration
 STABLE=/home/devs/workspace/hyxrestration-stable
 
 FORCE_RESTART=0
+RESTART_YOUNG=0
 DEFER=""
 for arg in "$@"; do
     case "$arg" in
         --restart-all) FORCE_RESTART=1 ;;
+        # --restart-young: restart hyxlab-shadow even though its live run
+        # is younger than the span a scorable run needs (bound 14; see
+        # young_run_guard in restart_decision.sh). Without it, a young
+        # shadow run is DEFERRED automatically, because 2026-09-02's
+        # measurement found all 15 day-starved runs were stopped, not
+        # starved, and 19 promotes did the stopping.
+        --restart-young) RESTART_YOUNG=1 ;;
         # --defer=UNIT[,UNIT]: promote everything but leave the named
         # daemon(s) running old code until their next natural break.
         # For when the guard is RIGHT that code the daemon runs moved,
@@ -102,6 +110,14 @@ if needs_restart simulator.simui.__main__ '^(simulator|strategies|hyxlab)/'; the
     echo "   NOTICE: hyxlab-simui.service executes changed code and is NOT auto-restarted"
     echo "           (it holds a live paper session). Restart it when the UI is idle:"
     echo "           systemctl --user restart hyxlab-simui.service"
+fi
+# Bound 14: the closure guard asks "did the code move"; this asks "how
+# old is the run you are about to kill". A young shadow run is deferred
+# unless the operator says otherwise, and the deferral is printed with
+# the age, so it is recorded the same way an explicit --defer is.
+if [[ " ${RESTART[*]} " == *" hyxlab-shadow.service "* ]] \
+   && young_run_guard hyxlab-shadow.service "$(unit_age_s hyxlab-shadow.service)"; then
+    DEFER="${DEFER:+$DEFER,}hyxlab-shadow.service"
 fi
 if [[ -n "$DEFER" ]]; then
     KEPT=()
