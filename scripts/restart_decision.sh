@@ -42,6 +42,31 @@ needs_restart() {
 # question asked. This asks the second one: how old is what you are
 # about to kill.
 #
+# WHY A CONSTANT (decided 2026-09-02, closing the question the lifetime
+# pass left open). The alternative was to price the run's age against
+# `own_days_needed` of the LIVE run, read off the latest diurnal
+# reading, so the guard protects a run for as long as its own control
+# wants (~10 days for 12Z). Refused, for three measured reasons:
+#   (1) The number does not exist when it matters. A run below MIN_DAYS
+#       is unscored, and an unscored run publishes `own_days_needed`
+#       = None (the 2026-09-02 14:24Z reading carries None for the
+#       live run at 91 h). The guard would then fall back to a constant
+#       exactly in the window it was written for.
+#   (2) The deferral's cost is also a function of age: a deferred
+#       daemon runs OLD code, and every promote it survives widens the
+#       gap between what it runs and what the tests test. A 10-day
+#       floor with promotes every ~2 days is not a guard, it is "shadow
+#       is never restarted by promote", stated indirectly.
+#   (3) MIN_DAYS is where a run's span stops being worthless -- kill it
+#       below that and its deltas are discarded whole (bound 7). Above
+#       it, killing costs power, not scorability, and that is a judgment
+#       the operator makes per promote ("is this worth restarting shadow
+#       for?" -- status.md's standing rule), not one a script should make
+#       from a stale JSON. The guard prints the age so that judgment has
+#       its number.
+# Revisit if a reading ever publishes `own_days_needed` for an OPEN run
+# below MIN_DAYS -- then (1) stops being true.
+#
 # young_run_guard UNIT AGE_S
 #   Returns 0 iff restarting UNIT should be DEFERRED because its live run
 #   is younger than YOUNG_RUN_S (default 3 days) and the caller has not
