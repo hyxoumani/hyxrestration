@@ -704,6 +704,35 @@ def test_unreadable_journal_leaves_the_sidecar_unverified(tmp_path):
     assert not qa._failures and qa._skipped == ["collect-skips"]
 
 
+def test_unverified_line_names_when_production_was_last_measured(tmp_path, monkeypatch, capsys):
+    """26 days of UNVERIFIED after 08-07 could not say whether the producer
+    had been proven once or never. A measured pass leaves `last_ok`; the
+    next quiet day's SKIP must quote it, and a host with no record must say
+    so rather than borrow `first_seen`."""
+    monkeypatch.setattr(qa, "STATE", tmp_path / "sections.json")
+    qa.qa_collect_skips(path=str(tmp_path / "absent.jsonl"), journal_skips=0)
+    out = capsys.readouterr().out
+    assert "production has never been measured" in out
+    assert "last measured" not in out
+
+    # A first-seen stamp alone is NOT a measurement.
+    qa._note_seen("collect-skips", datetime.now(UTC) - timedelta(hours=5))
+    qa.qa_collect_skips(path=str(tmp_path / "absent.jsonl"), journal_skips=0)
+    assert "production has never been measured" in capsys.readouterr().out
+
+    path = str(tmp_path / "skips.jsonl")
+    _write_skips(path, 1)
+    qa._skipped.clear()
+    qa.qa_collect_skips(path=path, journal_skips=0)  # a hand-forced skip: rate check
+    assert not qa._failures and not qa._skipped
+    capsys.readouterr()
+    qa._skipped.clear()
+    qa.qa_collect_skips(path=str(tmp_path / "absent.jsonl"), journal_skips=0)
+    out = capsys.readouterr().out
+    assert qa._skipped == ["collect-skips"]
+    assert "production last measured 0h ago (" in out
+
+
 def test_a_produced_sidecar_within_budget_is_a_real_pass(tmp_path):
     path = str(tmp_path / "skips.jsonl")
     _write_skips(path, 2)

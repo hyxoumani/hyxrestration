@@ -248,6 +248,20 @@ def _record_ok(section: str, now: datetime) -> None:
     _save_state(state)
 
 
+def _last_ok(section: str) -> datetime | None:
+    """When this section last COMPLETED (a real measurement), or None. Unlike
+    `_skip_age_h` it does NOT fall back to `first_seen`: "first observed" is
+    not "last measured", and conflating them is how an untested producer
+    would borrow a date it never earned."""
+    ref = (_load_state().get(section) or {}).get("last_ok")
+    if not ref:
+        return None
+    try:
+        return datetime.fromisoformat(ref)
+    except ValueError:
+        return None
+
+
 def _skip_age_h(section: str, now: datetime) -> float | None:
     """Hours since this section last COMPLETED, falling back to when it was
     first observed if it never has."""
@@ -1039,6 +1053,19 @@ def qa_collect_skips(
         # would manufacture the alarm fatigue the check exists to avoid. The
         # journal witness above is what catches a dead producer, and it does so
         # on the first cycle that actually skips.
+        #
+        # What the reader DOES get is the last time production was measured
+        # (the rate check ran on a real row), so "untested" carries a date:
+        # 26 days of this line after 08-07 could not say whether the producer
+        # had been proven once or never. `scripts/probe_collect_skip.py`
+        # forces one in-window lock-wait to refresh it.
+        last = _last_ok("collect-skips")
+        detail += (
+            f"; production last measured {(now - last).total_seconds() / 3600:.0f}h ago "
+            f"({last.isoformat(timespec='minutes')})"
+            if last
+            else "; production has never been measured on this host"
+        )
         _skipped.append("collect-skips")
         print(f"SKIP  {name} — {detail}", flush=True)
         return
