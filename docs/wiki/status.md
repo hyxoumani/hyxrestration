@@ -1,5 +1,81 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-03 (PROBE PASS -- `collect-skips` IS VERIFIED, AND THE
+PROBE'S "DEAD BAND" WAS INSIDE A LIVE CYCLE.**
+Last pass named the standing job: "`collect-skips` has been UNVERIFIED
+since it shipped: decide to force a lock-wait or stop printing the
+section." Forced, and the forcing instrument was wrong twice.
+**(1) THE PROBE COULD NOT RUN AT ALL.** Its own documented invocation
+(`.venv/bin/python scripts/probe_collect_skip.py`) puts `scripts/` on
+`sys.path`, not the repo root, so `from hyxlab import lockid` raised
+ModuleNotFoundError on the first attempt. Its unit tests were green the
+whole time because pytest's `pythonpath = ["."]` hands the in-process
+import a path **the operator never gets**. The regression test now runs
+the module top-level in a subprocess under the REAL invocation's
+`sys.path`, with `run_name` != `__main__` so `main()` never takes the
+lock.
+**(2) THE WINDOW WAS BUILT ON A NUMBER THAT IS NOT TRUE.** Measured this
+pass -- one full 300 s period sampled at 4 Hz against the live lock, plus
+20 consecutive cycles from the journal. A cycle is FETCH -> acquire lock
+-> WRITE -> release, so what matters is when it **takes** the lock, i.e.
+`fetch_s` after the tick. `fetch_s` = **18.5-54.3 s** (`total_s` 27-113,
+not the 17-23 the window quoted), so a cycle can reach for the lock at
+**~+58 s -- inside the old (40, 200) band**. A probe holding the lock
+across that moment makes a real cycle wait and, on its production budget,
+skip: the exact harm the probe exists to promise it never does.
+**(3) FOUR UNITS WRITE THIS ARCHIVE, NOT TWO.** In one period the lock
+was taken by `hyxlab-sweep` (7 bursts, +0.3-8.1 s), `hyxlab-collect`
+(+29.3-32.7 s), `hyxlab-poly-sweep` (**+83.6-106.6 s, a 23 s hold**) and
+`hyxlab-breadth` (+122.0-123.4 s). That is what refused the probe at
++41 s on two consecutive ticks -- not the sweep, as first assumed. The
+non-blocking flock is what makes this safe; a refusal naming another
+writer is normal and means "retry next tick".
+**(4) SHIPPED: THE LOW EDGE IS NO LONGER A GUESS ABOUT THE CLOCK.**
+`collect_cycle_settled()` asks systemd whether THIS tick's cycle has
+already exited (`ActiveState` + `ExecMainExitTimestampMonotonic`
+projected onto the tick boundary); **an unreadable answer is refusal,
+never permission** -- the young-run guard's "an unknown age never defers",
+pointed the same way. `WINDOW_S` (60, 170) survives only as a coarse
+outer guard, and the subprocess timeout drops **120 -> 90 s** because the
+probe's WORST case is that timeout and 170 + 120 + 10 lands exactly on
++300. The row assertion relaxes from "exactly one new row" to "one row
+naming ME", so a genuine concurrent skip cannot fail the probe for being
+right.
+**(5) RUN AGAINST PRODUCTION -- the point of the pass.** exit **75**, one
+new sidecar row whose `holder.cmd` names the probe, held **28.8 s**,
+released at **+91 s**; the next scheduled cycle found the lock free. QA
+now prints **PASS -- "1 skipped cycles in 24h (max 3), producer proven
+alive"**, retiring the UNVERIFIED line that stood **27 days** since the
+last real skip (2026-08-07 07:44Z). `last_ok` is refreshed, so the next
+quiet spell carries a recent date instead of "never measured".
+**Eight mutants red** (old window restored; gate ignoring the tick
+comparison, accepting a running unit, opening on unreadable systemd,
+accepting a unit that never ran this boot; `main()` ungated; timeout back
+to 120; the `sys.path` bootstrap removed). Suite 968 -> **977**.
+**NO PROMOTE -- verified:** neither changed file is in the closure of
+`simulator.shadow`, `collector.collect` or `collector.qa`. Shadow's live
+run `20260829T191841` is at **4.56 d** -- past the 3 d young-run
+threshold, so the guard would NOT protect it and a promote would cost the
+10th panel day. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT** for
+12Z's sign test; live run at 4.56 d on 09-03 08:45Z, 10th day ~09-08 if
+nothing stops it. (2) The successor question this pass opens: the probe
+was green in CI and broken in production because the tests import it on a
+path the operator never has. **`scripts/` is not in the documented lint
+command** (`ruff check collector simulator strategies hyxlab tests`) and
+`scripts/daemon_imports.py` fails `SIM108` today, unnoticed -- so the same
+blind spot covers every operator script. Decide whether `scripts/` joins
+the lint set and whether any other script has an unrunnable entry point,
+or write why hand-run tooling is exempt. (3) `hyxlab-breadth` and
+`hyxlab-tradepass` are live units that no status entry has ever named;
+worth one pass to say what they write and whether QA watches them.
+(4) The width-24 econ maker bracket needs 2026-09-12 for a second
+reading; the atlas quoted tier wants settled markets ~2.1M. Both
+data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-02 (LIFETIME PASS -- THE 15 DAY-STARVED RUNS WERE
 KILLED YOUNG, NOT DEAD YOUNG; 19 PROMOTES DID THE KILLING; THE GUARD
 NOW ASKS THE RUN'S AGE.**
