@@ -1224,9 +1224,122 @@ def test_single_skipped_breadth_cycle_stays_inside_budget(tmp_path):
 
 
 def test_breadth_outage_straddling_the_window_edge_is_not_lost(tmp_path):
-    """The shared anchor, exercised through breadth: the hole's predecessor
-    cycle sits OUTSIDE the 24h window, so an unanchored query sees no gap."""
+    """The shared anchor, exercised through breadth: the hole's PREDECESSOR
+    cycle must sit outside the 24h window (26h back), or the gap is wholly
+    in-window and an unanchored query finds it anyway — which is what this
+    test did until 2026-09-04, asserting nothing about the anchor."""
     db = tmp_path / "a.duckdb"
     _cycles(db, [5 * i for i in range(0, 24 * 12)])
-    _breadth_cycles(db, [5 * i for i in range(0, 12)] + [5 * i for i in range(280, 300)])
+    _breadth_cycles(db, [5 * i for i in range(0, 12 * 20)] + [60 * 26])
     assert _BCONT in _run(None, tmp_path, archive=db)
+
+
+# --- nws forecast coverage (2026-09-04) --------------------------------
+# The SECOND unwatched live writer, and the one the derived coverage test
+# (tests/test_qa_table_coverage.py) found rather than a human: 580,270 rows
+# written in the same 5-min cycle as `snapshots`, never named in qa.py.
+
+_NFRESH = "nws forecasts fresh (< 20 min old)"
+_NCONT = "nws forecasts continuous over last 24h"
+
+
+def _nws_cycles(db, ages_min):
+    """Seed one NWS pull per entry, `ages_min` minutes before NOW. Several
+    stations per pull, each with its own `fetched_at` milliseconds apart —
+    which is what the archive really holds (measured: the raw p50 gap between
+    distinct `fetched_at` values is 0.03s, the within-cycle station walk)."""
+    from datetime import date
+
+    from hyxlab.models import Forecast
+
+    store = Store(db)
+    store.insert_forecasts(
+        [
+            Forecast(
+                station=st,
+                fetched_at=NOW - timedelta(minutes=a) + timedelta(milliseconds=100 * i),
+                target_date=date(2026, 9, 5),
+                high_f=70 + i,
+            )
+            for a in ages_min
+            for i, st in enumerate(("NYC", "CHI", "MIA"))
+        ]
+    )
+    store.close()
+
+
+def test_never_pulled_nws_is_not_a_defect(tmp_path, capsys):
+    """The station list is watchlist-driven. A deployment with no
+    `nws_stations` must be told neither that it is broken nor that it is
+    fine — a green line about a pull that does not exist is the same lie."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    out = capsys.readouterr().out
+    assert _NFRESH not in failed and _NCONT not in failed
+    assert _NFRESH not in out and _NCONT not in out
+
+
+def test_steady_nws_cadence_passes(tmp_path):
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _nws_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _NFRESH not in failed and _NCONT not in failed
+
+
+def test_dead_nws_pull_trips_freshness_while_the_collector_reads_green(tmp_path):
+    """THE FAILURE THIS EXISTS FOR. The NWS pull sits inside the collect
+    cycle under a per-station try/except, so an NWS outage or a station
+    rename drops forecasts while snapshots keep flowing. Every other archive
+    check passes; only the pull's own freshness can say so."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _nws_cycles(db, [90 + 5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _NFRESH in failed
+    assert "collector fresh (snapshots < 20 min old)" not in failed
+
+
+def test_healed_nws_outage_trips_continuity_only(tmp_path):
+    """The 08-20 shape applied to the pull: a multi-hour hole CLOSED before
+    QA looked. Freshness reads green; the retrospective check is the only
+    witness, and the forecasts in the hole are unrecoverable."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _nws_cycles(db, [5 * i for i in range(0, 24)] + [5 * i for i in range(60, 100)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _NCONT in failed
+    assert _NFRESH not in failed
+
+
+def test_within_cycle_station_walk_is_not_a_gap(tmp_path):
+    """`fetched_at` is stamped per STATION, not per cycle, so the table holds
+    sub-second gaps by construction. The check must read the cycle cadence
+    through them — measured p99 over 32 days is 300.0s once bucketed."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _nws_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _NCONT not in failed
+
+
+def test_single_skipped_nws_pull_stays_inside_budget(tmp_path):
+    """Measured benign worst gap is 25.0 min against a 60 min budget.
+    Alarming on one dropped pull would make the check unreadable."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _nws_cycles(db, [5 * i for i in range(0, 24 * 12) if i != 40])
+    failed = _run(None, tmp_path, archive=db)
+    assert _NCONT not in failed and _NFRESH not in failed
+
+
+def test_nws_outage_straddling_the_window_edge_is_not_lost(tmp_path):
+    """The shared anchor, exercised through a THIRD writer and a non-`ts`
+    column: the hole's predecessor pull sits outside the 24h window (26h
+    back), so an unanchored query gives the first in-window pull no lag and
+    the hole reads as if the day simply started late."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _nws_cycles(db, [5 * i for i in range(0, 12 * 20)] + [60 * 26])
+    assert _NCONT in _run(None, tmp_path, archive=db)

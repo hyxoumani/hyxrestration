@@ -183,6 +183,14 @@ BATCH_RUN_LOOKBACK_DAYS = 7
 # would go quiet forever and still read green (mistakes #25-27).
 COLLECTION_GAP_BUDGET_S = 3600.0
 
+# The instantaneous half of the pair: "is this writer running NOW". Shared by
+# every 5-min writer of the archive for the same reason _check_continuity is
+# (2026-09-04) — three writers now cycle on `*:0/5` (collect -> snapshots,
+# breadth -> breadth_snapshots, and the NWS pull inside the collect cycle ->
+# nws_forecasts), and a per-writer literal is how the fourth ships with a
+# quietly different tolerance than the first three.
+CYCLE_FRESH_S = 1200.0
+
 # EXP-962 — a draining backfill is not rot. 2026-08-04: the tape-coverage
 # check reported "3 traded markets unswept" while collector.trades_backfill
 # was live and landing 1.4k-9.3k markets/hour; the count fell 3 -> 2 during
@@ -524,8 +532,8 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     _record_ok("stream", now)
 
 
-def _largest_gap(conn, table: str, lo: datetime) -> tuple | None:
-    """Widest interval between consecutive cycles of `table` since `lo`, as
+def _largest_gap(conn, table: str, col: str, lo: datetime) -> tuple | None:
+    """Widest interval between consecutive cycles of `table`.`col` since `lo`, as
     (resumed_at, seconds), or None when the window holds fewer than two
     cycles.
 
@@ -536,9 +544,9 @@ def _largest_gap(conn, table: str, lo: datetime) -> tuple | None:
     return conn.execute(
         f"""
         WITH cyc AS (
-            SELECT DISTINCT ts FROM {table} WHERE ts >= ?
+            SELECT DISTINCT {col} AS ts FROM {table} WHERE {col} >= ?
             UNION ALL
-            SELECT max(ts) FROM {table} WHERE ts < ? AND ts IS NOT NULL
+            SELECT max({col}) FROM {table} WHERE {col} < ? AND {col} IS NOT NULL
         ),
         lagged AS (SELECT ts, ts - lag(ts) OVER (ORDER BY ts) AS d FROM cyc)
         SELECT ts, epoch(d) FROM lagged WHERE d IS NOT NULL ORDER BY d DESC LIMIT 1
@@ -547,11 +555,27 @@ def _largest_gap(conn, table: str, lo: datetime) -> tuple | None:
     ).fetchone()
 
 
-def _check_continuity(conn, name: str, table: str, now: datetime, noun: str) -> None:
+def _check_freshness(conn, name: str, table: str, col: str, now: datetime, noun: str) -> None:
+    """"Is this writer running NOW", for one 5-min writer of the archive.
+
+    The instantaneous half of the pair `_check_continuity` completes: this
+    one cannot see an outage that HEALED before QA looked, and that one
+    cannot see a writer that stopped inside the last 24h window and stayed
+    stopped for less than the gap budget. Neither is sufficient alone.
+    """
+    age = conn.execute(f"SELECT epoch(? - max({col})) FROM {table}", [now]).fetchone()[0]
+    check(
+        name,
+        age is not None and age < CYCLE_FRESH_S,
+        f"age {age:.0f}s" if age is not None else f"no {noun}",
+    )
+
+
+def _check_continuity(conn, name: str, table: str, col: str, now: datetime, noun: str) -> None:
     """Retrospective cadence check over the last 24h. Shared by every 5-min
     writer of the archive, so a second one cannot ship with a subtly
     different window, anchor or budget than the first."""
-    gap = _largest_gap(conn, table, now - timedelta(hours=24))
+    gap = _largest_gap(conn, table, col, now - timedelta(hours=24))
     if gap is None:
         # One cycle cannot exhibit a gap. That is UNMEASURED, not healthy —
         # say so out loud rather than banking a free pass (mistakes #28).
@@ -575,18 +599,17 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     if not _reachable(conn, "main archive reachable", "archive", now):
         return None
 
-    age = conn.execute("SELECT epoch(? - max(ts)) FROM snapshots", [now]).fetchone()[0]
-    check(
-        "collector fresh (snapshots < 20 min old)",
-        age is not None and age < 1200,
-        f"age {age:.0f}s" if age is not None else "no snapshots",
+    _check_freshness(
+        conn, "collector fresh (snapshots < 20 min old)", "snapshots", "ts", now, "snapshots"
     )
 
     # The freshness check above answers "is it collecting NOW". This answers
     # "has it been collecting ALL DAY" — the question no instantaneous check
     # can reach, because QA runs once and an outage that healed is over by the
     # time it looks. See COLLECTION_GAP_BUDGET_S.
-    _check_continuity(conn, "collection continuous over last 24h", "snapshots", now, "collector")
+    _check_continuity(
+        conn, "collection continuous over last 24h", "snapshots", "ts", now, "collector"
+    )
 
     # EXP-928 breadth is the FOURTH writer of this archive (measured
     # 2026-09-03) and the only exchange-wide quote history: the 5-min collect
@@ -610,16 +633,62 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     # and 4.4x under the event it exists to catch, exactly as for snapshots.
     n_breadth = conn.execute("SELECT count(*) FROM breadth_snapshots").fetchone()[0]
     if n_breadth:
-        b_age = conn.execute("SELECT epoch(? - max(ts)) FROM breadth_snapshots", [now]).fetchone()[
-            0
-        ]
-        check(
+        _check_freshness(
+            conn,
             "breadth fresh (snapshots < 20 min old)",
-            b_age is not None and b_age < 1200,
-            f"age {b_age:.0f}s" if b_age is not None else "no breadth snapshots",
+            "breadth_snapshots",
+            "ts",
+            now,
+            "breadth snapshots",
         )
         _check_continuity(
-            conn, "breadth continuous over last 24h", "breadth_snapshots", now, "breadth"
+            conn, "breadth continuous over last 24h", "breadth_snapshots", "ts", now, "breadth"
+        )
+
+    # THE SECOND UNWATCHED LIVE WRITER, found 2026-09-04 by the derived
+    # coverage test (tests/test_qa_table_coverage.py) rather than by hand —
+    # which is the whole point of deriving it. `nws_forecasts` had 580,270
+    # rows and was being written in the same 5-min cycle as `snapshots`, and
+    # qa.py did not name it ONCE. It is the ground truth `strategies.WeatherNWS`
+    # trades against, and forecasts are unrecoverable after the fact: NWS
+    # publishes the CURRENT forecast, so a pull missed at 14:15Z is gone.
+    #
+    # `snapshots` freshness is NOT a witness for it, and that is the reason
+    # this needs its own check rather than riding the collector's. The pull
+    # sits inside the same cycle but under a per-station try/except
+    # (`collect.py`: `print(f"[collect] nws {station}: ...")`), so an NWS
+    # outage, a DNS failure or a station rename drops forecasts silently while
+    # snapshots keep flowing and every existing archive check reads green.
+    #
+    # Budgets are the collector's, and the reuse is MEASURED, not assumed:
+    # over 32 days on the live archive the minute-bucketed cycle gap runs p50
+    # 300.0s and p99 300.0s (the `*:0/5` timer, exactly), the worst benign gap
+    # is 25.0 min, and the ONLY gap past 30 min is 265.0 min — the same
+    # 2026-08-20 box outage COLLECTION_GAP_BUDGET_S was cut against, all
+    # writers down together. So 60 min sits 2.4x above the benign worst and
+    # 4.4x under the event, exactly as it does for snapshots and breadth.
+    #
+    # Guarded on non-empty, the breadth/poly_prices/news_items idiom: the
+    # station list is watchlist-driven (`nws_stations`), so a deployment that
+    # pulls no weather must be told NEITHER that it is broken nor that it is
+    # fine.
+    n_nws = conn.execute("SELECT count(*) FROM nws_forecasts").fetchone()[0]
+    if n_nws:
+        _check_freshness(
+            conn,
+            "nws forecasts fresh (< 20 min old)",
+            "nws_forecasts",
+            "fetched_at",
+            now,
+            "nws forecasts",
+        )
+        _check_continuity(
+            conn,
+            "nws forecasts continuous over last 24h",
+            "nws_forecasts",
+            "fetched_at",
+            now,
+            "nws pull",
         )
 
     ok_sweeps = conn.execute(
