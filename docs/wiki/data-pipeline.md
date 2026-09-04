@@ -10,9 +10,31 @@ deadlock a long-lived daemon against the 5-min collector).
 
 Append-only facts: `candles` (hourly price+bid/ask OHLC, volume, OI),
 `snapshots` (live top-of-book), `nws_forecasts` (fetched_at = as-issued
-time), `observations` (climate-report highs). Reference: `markets`
+time; 5 watchlist stations on the collect cycle, 580k rows, the ground
+truth `strategies.WeatherNWS` trades against — and unrecoverable, since
+NWS publishes only the CURRENT forecast), `observations` (climate-report
+highs; no live writer since 2026-07-06). Reference: `markets`
 (metadata + settlement result), `series` (category/fee metadata),
 `sweep_log`, `watermarks`, `schema_meta`.
+
+**Which tables QA watches is DERIVED, not listed**
+(`tests/test_qa_table_coverage.py`, 2026-09-04). The CREATE TABLE set in
+`store.py` is compared against the SQL parsed out of `collector/qa.py`,
+and a table QA never reads fails the suite unless it is declared in
+`UNREAD` with a reason. This exists because the same defect landed twice:
+`breadth_snapshots` went unread for a month, and the derivation's first
+run immediately found the second one, `nws_forecasts` (580,270 rows,
+written in the same 5-min cycle as `snapshots`, never named in qa.py).
+Four tables are declared unread today — `series` and `watermarks` (sweep
+bookkeeping, witnessed by "sweep ran in last 36h"), `trades` (watched
+harder, per-market, through `trades_swept`), and `observations` (no live
+writer; newest row 2026-07-06). **Per-WRITER attribution is not
+derivable**, and that is pinned rather than assumed: every archive write
+goes through `store.py`, so all 8 unit import closures contain it and
+closure attribution would assign all 16 tables to all 8 writers. What the
+test does NOT claim: "read" is weaker than "checked for freshness"
+(`markets` is read only through `close_time`, a business column), so it
+catches the defect that has happened twice, not staleness in general.
 
 `breadth_snapshots` (EXP-928) is the archive's only EXCHANGE-WIDE quote
 history and deserves its own line: `snapshots` covers the 23-series
@@ -145,6 +167,15 @@ migrate, watchlist, stations).
   cannot ship with a different window, anchor or budget. Both are guarded
   on the table being non-empty, so a deployment that never enabled
   breadth stays green rather than alarming about a deliberate choice.
+  `nws_forecasts` got the same pair on 2026-09-04 (`nws forecasts fresh
+  (< 20 min)` / `... continuous over last 24h`), and both halves are now
+  shared helpers — `_check_freshness` and `_check_continuity`, the latter
+  parameterised on the cycle column so `fetched_at` works like `ts`.
+  **`snapshots` freshness is not a witness for the NWS pull**: the pull
+  runs inside the collect cycle under a per-station try/except, so an NWS
+  outage, a DNS failure or a station rename drops forecasts silently
+  while snapshots keep flowing and every other archive check reads green.
+  QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
   trade firehose (~105 ev/s) + orderbook_delta for watchlist series'

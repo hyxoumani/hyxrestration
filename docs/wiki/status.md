@@ -1,5 +1,91 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-04 (COVERAGE-DERIVATION PASS -- NOTHING ENUMERATED THE
+ARCHIVE'S TABLES AGAINST QA'S READERS, SO A SECOND LIVE WRITER WAS
+UNWATCHED.**
+Last pass named the standing job: "breadth was unwatched because nothing
+enumerates the archive's writers against QA's readers -- worth a pass to
+decide whether a test can DERIVE 'every table with a live writer has a
+freshness reader' or write why it cannot." Answered both ways, by
+measurement, and the answer produced a finding on its first run.
+**(1) THE PER-WRITER FORM CANNOT BE DERIVED, AND THAT IS MEASURED.**
+Every archive write goes through `hyxlab/store.py` by discipline, so all
+**8 unit import closures contain it** -- closure-based attribution would
+assign all 16 tables to all 8 writers, which is no attribution at all.
+Pinned in `test_unit_closures_cannot_attribute_tables_to_a_writer` rather
+than assumed: the day a unit writes the archive without the store, that
+test fails and the stronger form becomes possible.
+**(2) THE PER-TABLE FORM CAN, AND IT FOUND THE SECOND UNWATCHED WRITER
+IMMEDIATELY.** `tests/test_qa_table_coverage.py` compares the CREATE
+TABLE set in `store.py` against the SQL parsed out of `collector/qa.py`
+(literal `FROM`/`JOIN`, plus the table argument of the recency helpers,
+whose own SQL interpolates the name and leaves no literal to find). Its
+first run named **`nws_forecasts` -- 580,270 rows, written in the SAME
+5-min cycle as `snapshots`, and not mentioned once in qa.py** in the
+month since breadth. Nobody had noticed. That is the difference between
+adding a check and adding the thing that finds missing checks.
+**(3) THE NWS PULL IS NOT WITNESSED BY THE COLLECTOR IT RIDES IN.** The
+pull sits inside the collect cycle under a per-station `try/except`
+(`collect.py` prints and continues), so an NWS outage, a DNS failure or a
+station rename drops forecasts **silently while snapshots keep flowing**
+and every existing archive check reads green. It is the ground truth
+`strategies.WeatherNWS` trades against and it is unrecoverable: NWS
+publishes the CURRENT forecast, so a pull missed at 14:15Z is gone.
+**(4) THE REUSED BUDGETS ARE MEASURED, AGAIN.** Over **32 days** the
+minute-bucketed pull gap runs p50 **300.0s** and p99 **300.0s** (the
+`*:0/5` timer, exactly), worst benign gap **25.0 min**, and the ONLY gap
+past 30 min is **265.0 min** -- the same 2026-08-20 box outage
+`COLLECTION_GAP_BUDGET_S` was cut against, all writers down together. So
+60 min sits 2.4x above the benign worst and 4.4x under the event, exactly
+as for `snapshots` and `breadth`. `_check_freshness` is now extracted
+beside `_check_continuity` (three 5-min writers share both halves and the
+1200s literal), and `_largest_gap` is parameterised on the cycle column
+so `fetched_at` works like `ts`.
+**(5) A TEST THAT CLAIMED THE ANCHOR AND NEVER EXERCISED IT.** The breadth
+straddle test shipped last pass put its gap **wholly inside** the 24h
+window, so it passed with the pre-window anchor removed -- last pass's
+"caught through BOTH writers" was wrong. Both it and the new nws one now
+use the real shape (predecessor cycle 26h back), and the anchor mutant is
+caught through **all three** writers.
+**Eight mutants red** (nws checks removed; freshness budget widened; nws
+continuity pointed at `snapshots`; gap budget widened; window anchor
+dropped; an `UNREAD` declaration deleted; the helper arg index moved; the
+derivation made vacuous). Suite 995 -> **1009**.
+**RUN AGAINST PRODUCTION:** both new checks PASS -- nws age **252s**,
+largest 24h gap **5.5 min** against a 60 min budget. **PROMOTED, no
+daemon restart** (no daemon's code moved), so shadow's live run
+`20260829T191841` survives -- confirmed active after the promote. Pushed.
+Wiki: `data-pipeline.md` now describes the derived coverage, its four
+declared exemptions, and what it does NOT claim.
+**ALSO FIXED, BECAUSE IT BLOCKED THE GATE:** the promote gate failed a
+healthy tree on `test_rss_is_the_process_not_the_heap` at 4.52 MiB
+against a 4 MiB VmHWM slack. Measured: the lag is **0.00 MiB
+min/p50/max over 25 isolated samples and never above 0.5 MiB across all
+1009 teardowns of a full suite run** -- the old number was calibrated on
+the body of a distribution whose TAIL is what reaches the gate. Widened
+to 16 MiB, still two orders of magnitude under the defect the line
+catches (a heap instrument reads ~450 MiB low, not ~5).
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT** for
+12Z's sign test; live run `20260829T191841` reaches it ~09-08 if nothing
+stops it. (2) The successor this pass opens, and it is the same defect
+one level deeper: coverage now proves a table is READ, not that it is
+checked for FRESHNESS. `markets` is read only through `close_time`, a
+BUSINESS column, so `markets` going stale would still be invisible --
+exactly the shape of the breadth hole, one notch weaker. Worth a pass to
+decide whether "reader" can be strengthened to "reader of an INGEST
+stamp" (which needs the store to declare each table's write stamp, and
+`hyxlab/migrate.py` already keeps such a `(table, col)` list) or to write
+why it cannot. (3) The shell scripts (`promote.sh`,
+`restart_decision.sh`, `autoloop.sh`, `shadow-mem.sh`) still have no lint
+equivalent; there is no shellcheck in the project and
+`restart_decision.sh` gates every daemon restart. Decide whether it joins
+the gate or write why not. (4) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled
+markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-04 (BREADTH PASS -- THE ARCHIVE'S ONLY EXCHANGE-WIDE
 QUOTE HISTORY HAD NO CHECK ON IT.**
 Last pass named the standing job: "`hyxlab-breadth` and
