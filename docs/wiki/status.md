@@ -1,5 +1,78 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-03 (LINT-SCOPE PASS -- THE LINT SET WAS AN
+ENUMERATION, SO `scripts/` WAS NEVER IN IT.**
+Last pass named the standing job: "`scripts/` is not in the documented
+lint command and `scripts/daemon_imports.py` fails SIM108 today,
+unnoticed -- decide whether `scripts/` joins the lint set and whether any
+other script has an unrunnable entry point, or write why hand-run tooling
+is exempt." Both halves answered by measurement.
+**(1) IT WAS NEVER A DECISION.** The documented command enumerated five
+directories; `scripts/` was created later, and an enumeration omits by
+default. Nothing was exempting hand-run tooling -- no run of the
+documented command could print a finding there, so the SIM108 in
+`daemon_imports.py` had been live and unprintable. Whole-repo scope
+measured: **2 unlinted tracked files in `scripts/`, 28 in `phase0/`**,
+and nothing else outside.
+**(2) THIS IS THE PROBE BUG ONE LEVEL UP.** There the checked scope
+differed from the real scope in `sys.path` (pytest's `pythonpath` gave
+the import a root the operator never gets). Here it differs in the FILE
+SET. Both were green forever while being wrong, because nothing asserted
+that the checked set equals the real set. So the fix is not "add
+`scripts/`" -- that is the same enumeration with one more entry. The
+scope is now **DERIVED**: `ruff check .`, the repo minus pyproject's
+`extend-exclude`.
+**(3) `phase0/` IS THE ONE CODE EXEMPTION, AND IT IS NAMED.** A closed
+historical record of a falsified thesis, frozen by CLAUDE.md, so its 4
+findings (UP035, I001, 2x SIM102) have no legal fix -- the only answer
+would be editing a record that must not change. It moves from a partial
+data-only exclude to a whole-directory one, declared in BOTH pyproject
+and the test, so adding an exemption is a deliberate edit that says why.
+**(4) SHIPPED, TWO TEST FILES.** `test_lint_scope.py`: the documented
+command must stay derived, every tracked `.py` must be in scope or in a
+named exemption (the assertion that would have failed the day `scripts/`
+appeared), the exemption must really be out of scope -- otherwise it
+excuses files needing no excuse and rots into a comment about nothing --
+and the widened set must pass. `test_script_entry_points.py` answers the
+other half: **discovery-based, not a list**, since an enumerated check is
+the defect being fixed. Every `scripts/*.py` must reach module top-level
+under the operator's REAL `sys.path` (`scripts/` at [0], `PYTHONPATH`
+stripped, `run_name` != `__main__` so `main()` never takes the live
+lock), must print nothing at import, and must carry the `__main__` guard
+that makes the first two mean anything.
+**(5) THE ANSWER TO "ANY OTHER UNRUNNABLE SCRIPT": NO, TODAY.** Both
+scripts start clean; `daemon_imports.py` is stdlib-only and never needed
+a bootstrap. The value is the day a third script imports `hyxlab`
+without one -- which is why the check discovers rather than lists.
+**Seven mutants red** (enumerated command restored; phase0 back in
+scope; SIM108 restored; `scripts/` excluded from ruff; the probe's
+`sys.path` bootstrap removed -- caught INDEPENDENTLY of the probe's own
+test; a print at import; the `__main__` guard removed). Suite 977 ->
+**989**.
+**NO PROMOTE -- verified:** the changed files intersect the closure of
+`simulator.shadow`, `collector.collect` and `collector.qa` in **nothing**
+(`daemon_imports.py intersect`, all three empty). `daemon_imports.py`
+runs from the DEV tree via `promote.sh`, so the fix is live without a
+promote -- which matters, because a promote would restart shadow and cost
+the 10th panel day. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT**
+for 12Z's sign test; live run `20260829T191841` reaches it ~09-08 if
+nothing stops it. (2) `hyxlab-breadth` and `hyxlab-tradepass` are live
+units that no status entry has ever named -- and `hyxlab-breadth` showed
+up in the probe pass as the FOURTH writer of the archive, so it is
+already load-bearing in a measurement without ever being described.
+Worth one pass to say what they write and whether QA watches them.
+(3) The shell scripts (`promote.sh`, `restart_decision.sh`,
+`autoloop.sh`, `shadow-mem.sh`) got no equivalent of this pass -- there
+is no shellcheck in the project and `restart_decision.sh` is what gates
+every daemon restart. Decide whether it joins the gate or write why not.
+(4) The width-24 econ maker bracket needs 2026-09-12 for a second
+reading; the atlas quoted tier wants settled markets ~2.1M. Both
+data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-03 (PROBE PASS -- `collect-skips` IS VERIFIED, AND THE
 PROBE'S "DEAD BAND" WAS INSIDE A LIVE CYCLE.**
 Last pass named the standing job: "`collect-skips` has been UNVERIFIED
