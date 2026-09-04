@@ -14,6 +14,13 @@ time), `observations` (climate-report highs). Reference: `markets`
 (metadata + settlement result), `series` (category/fee metadata),
 `sweep_log`, `watermarks`, `schema_meta`.
 
+`breadth_snapshots` (EXP-928) is the archive's only EXCHANGE-WIDE quote
+history and deserves its own line: `snapshots` covers the 23-series
+watchlist, so a series family we have never studied has no price a
+strategy could have traded at, and can be evaluated retrospectively ONLY
+out of this table. Same columns as `snapshots` plus `volume_24h` and
+`rank`; one `ts` per cycle, ~1,000 rows. 8.26M rows since 2026-08-03.
+
 Stream archive (`streamstore.py`): `book_events` (kalshi snap qty =
 absolute level, delta qty = SIGNED change; poly delta qty = new ABSOLUTE
 size; poly market_id = CLOB token id), `stream_trades`, `stream_gaps`
@@ -113,8 +120,31 @@ migrate, watchlist, stations).
 - `hyxlab-poly-sweep.timer` (daily 05:00 UTC): `poly_sweep` —
   Polymarket metadata + volume/liquidity series + watermarked price
   capture (~60d retention) + trade tails, volume-desc to $10k.
+- `hyxlab-breadth.timer` (5 min, offset to :02,:07,... so it does not
+  contend with the collector for `data/writer.lock` on the same minute):
+  `collector.breadth --once` — one paginated `/markets?status=open` pass
+  ranks the open universe by `volume_24h` and IS the snapshot, so top-N
+  costs the same requests as top-1. `HYXLAB_BREADTH_CLOSE_WINDOW_H=24` is
+  what makes it affordable: the unwindowed universe is >200k markets,
+  almost all zero-volume parlay legs. **DEFAULT DISABLED in code —
+  installing and enabling the timer IS the enabling act**, because it
+  shares Kalshi's rate budget with the live trader. `Persistent=false`:
+  a missed cycle is a missed instant, and replaying it at boot would
+  stamp a stale quote with a fresh `ts`.
+- `hyxlab-tradepass.timer` (daily 06:35 UTC): `collector.trades_backfill`
+  — retro-pass over the trade tape, catching the gaps `sweep` leaves when
+  a per-market fetch raises HTTPError and is swallowed.
 - `hyxlab-qa.timer` (daily 07:00 UTC): data-quality checks, both
-  archives; FAIL lines land in the journal with exit 1.
+  archives; FAIL lines land in the journal with exit 1. It watches
+  tradepass through `qa_tape_coverage` (per-market persistence, plus a
+  `TAPE_SWEEP_STALL_H` floor for "the sweeper itself is dead") and its
+  wall-clock budget through `qa_batch_run_budget`. Breadth was NOT
+  watched at all until 2026-09-04; it now has the collector's own pair —
+  `breadth fresh (< 20 min)` and `breadth continuous over last 24h`,
+  sharing `_check_continuity` with `snapshots` so a second 5-min writer
+  cannot ship with a different window, anchor or budget. Both are guarded
+  on the table being non-empty, so a deployment that never enabled
+  breadth stays green rather than alarming about a deliberate choice.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
   trade firehose (~105 ev/s) + orderbook_delta for watchlist series'

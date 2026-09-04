@@ -1,5 +1,80 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-04 (BREADTH PASS -- THE ARCHIVE'S ONLY EXCHANGE-WIDE
+QUOTE HISTORY HAD NO CHECK ON IT.**
+Last pass named the standing job: "`hyxlab-breadth` and
+`hyxlab-tradepass` are live units that no status entry has ever named --
+and `hyxlab-breadth` showed up in the probe pass as the FOURTH writer of
+the archive, so it is already load-bearing in a measurement without ever
+being described. Worth one pass to say what they write and whether QA
+watches them." Both halves answered by measurement.
+**(1) TRADEPASS IS WATCHED; BREADTH WAS NOT WATCHED AT ALL.**
+`collector.trades_backfill` has two QA readers already
+(`qa_tape_coverage` for per-market persistence, `qa_batch_run_budget` for
+its 4.0h wall-clock budget). `collector.breadth` has **zero mentions in
+`collector/qa.py`** -- it has written the archive every 5 min since
+2026-08-03, **8.26M rows**, and nothing has ever read it.
+**(2) IT IS THE ONE TABLE WHOSE LOSS IS UNRECOVERABLE BY DESIGN.**
+`snapshots` covers the 23-series watchlist; `breadth_snapshots` is the
+only exchange-wide quote history, so a family we have never studied has
+no price a strategy could have traded at and can be evaluated
+retrospectively ONLY out of this table. A dead timer would have stayed
+invisible until someone tried to study a family and found the hole --
+which is exactly the moment the data can no longer be recovered. Every
+other writer's silence is loud within a day; this one's was silent
+forever.
+**(3) SHIPPED: THE COLLECTOR'S OWN PAIR, NOT A NEW IDEA.** `breadth
+fresh (< 20 min)` answers "is it running NOW"; `breadth continuous over
+last 24h` answers the outage that HEALS between two 10:00Z runs --
+EXP-1359's lesson, finally applied to the writer it was never applied to.
+The 24h gap query is extracted to `_largest_gap` / `_check_continuity`
+and now serves both writers, so a second 5-min writer cannot ship with a
+subtly different window, anchor or budget than the first.
+**(4) THE REUSED BUDGET IS MEASURED, NOT ASSUMED.** Over **32 days /
+9,150 cycles** on the live archive breadth runs p50 **300.0s** (its
+timer, exactly), p99 **314.7s**, worst benign gap **20.0 min**. Its ONLY
+gap past 30 min is **264.8 min** -- the same 2026-08-20 box outage
+`COLLECTION_GAP_BUDGET_S` was cut against, all writers down together. So
+60 min sits 3x above breadth's benign worst and 4.4x under the event,
+exactly as it does for `snapshots`. A second constant would have been
+duplication; the measurement is what earns the reuse.
+**(5) NEVER-ENABLED MUST NOT READ AS BROKEN -- OR AS FINE.** Breadth is
+DEFAULT DISABLED and installing the timer IS the enabling act, so both
+checks are guarded on the table being non-empty (the
+`poly_prices`/`news_items` idiom). A deployment that never ran it prints
+**neither** check, which the test asserts against stdout, not just
+against the failure list -- a green line about a collector that does not
+exist is the same lie as a red one.
+**Six mutants red** (guard removed; freshness budget widened; breadth
+continuity pointed at `snapshots`; the window anchor dropped -- now
+caught through BOTH writers; gap budget widened; breadth continuity
+dropped). Suite 989 -> **995**.
+**RUN AGAINST PRODUCTION:** both new checks PASS -- breadth age **191s**,
+largest 24h gap **5.2 min** against a 60 min budget. **PROMOTED, no
+daemon restart:** `collector/qa.py` intersects the closure of
+`collector.streamd`, `simulator.shadow` and `simulator.simui.__main__` in
+**nothing** (all three empty), so shadow's live run `20260829T191841`
+survives -- confirmed still active since 08-29 after the promote. Pushed.
+Wiki: `data-pipeline.md` now has `breadth_snapshots` in Tables and both
+units in Running pieces, which no page had ever described.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT** for
+12Z's sign test; live run `20260829T191841` reaches it ~09-08 if nothing
+stops it. (2) The successor question this pass opens: breadth was
+unwatched because nothing enumerates the archive's writers against QA's
+readers. **Four units write `hyxlab.duckdb` and QA discovers none of
+them** -- the coverage is a hand-kept list, the same enumeration defect as
+the lint scope and the probe path, one level up again. Worth a pass to
+decide whether a test can DERIVE "every table with a live writer has a
+freshness reader" or write why it cannot. (3) The shell scripts
+(`promote.sh`, `restart_decision.sh`, `autoloop.sh`, `shadow-mem.sh`) got
+no lint equivalent; there is no shellcheck in the project and
+`restart_decision.sh` gates every daemon restart. Decide whether it joins
+the gate or write why not. (4) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled
+markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
 Updated: **2026-09-03 (LINT-SCOPE PASS -- THE LINT SET WAS AN
 ENUMERATION, SO `scripts/` WAS NEVER IN IT.**
 Last pass named the standing job: "`scripts/` is not in the documented
