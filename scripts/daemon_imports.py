@@ -151,10 +151,8 @@ def closure(root_module: str, repo: Path = REPO_ROOT) -> tuple[set[str], set[str
     def edges_of(module: str, path: Path) -> list[tuple[str, bool]]:
         if module not in parsed:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            if path.name == "__init__.py":
-                package = module
-            else:
-                package = module.rpartition(".")[0]
+            # a package's __init__ IS its package; a module's package is its parent
+            package = module if path.name == "__init__.py" else module.rpartition(".")[0]
             col = _ImportCollector(package)
             col.visit(tree)
             # keep only intra-repo, resolvable edges

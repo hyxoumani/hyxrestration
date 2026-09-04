@@ -1,7 +1,13 @@
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = [".venv", "data", "reports", "phase0/data", "phase0/results"]
+# The lint set is "everything not listed here" — `ruff check .`. It is NOT an
+# enumeration of directories to check: an enumerated set silently omits whatever
+# is added next, which is how scripts/ went unlinted from the day it was created
+# (tests/test_lint_scope.py). phase0 is the one code exemption: a closed
+# historical record of a falsified thesis, frozen by CLAUDE.md, so a lint finding
+# there can only be answered by editing a record that must not change.
+extend-exclude = [".venv", "data", "reports", "phase0"]
 
 [tool.ruff.lint]
 select = [

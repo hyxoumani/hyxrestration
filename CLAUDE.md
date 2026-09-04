@@ -38,8 +38,10 @@ turn, arm the next one (running background task, or ScheduleWakeup
 # Test (test-gate hook runs this on stop)
 .venv/bin/python -m pytest tests/ -q
 
-# Lint/Format (auto-format hook runs ruff on edit)
-.venv/bin/ruff check collector simulator strategies hyxlab tests
+# Lint/Format (auto-format hook runs ruff on edit). The scope is the whole
+# repo minus pyproject's extend-exclude — never an enumerated dir list, which
+# omits whatever is added next (tests/test_lint_scope.py enforces both).
+.venv/bin/ruff check .
 
 # Archive health / one collection cycle / backtest replay
 .venv/bin/python -m collector.sweep --doctor
