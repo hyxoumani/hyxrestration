@@ -39,10 +39,19 @@ def test_rss_is_the_process_not_the_heap():
     after = rss_bytes()
     assert after - before >= 48 * MIB
     del ballast
-    # VmHWM is maintained coarsely and lags `statm` by up to ~1 MiB
-    # (measured here), which is the second reason `.peak` takes the max
-    # of the two rather than trusting the kernel's mark alone.
-    assert vm_hwm_bytes() >= after - 4 * MIB
+    # VmHWM is maintained coarsely and lags `statm`, which is the second
+    # reason `.peak` takes the max of the two rather than trusting the
+    # kernel's mark alone. The slack is sized to the lag's TAIL, not its
+    # typical value: the kernel refreshes `hiwater_rss` only at its own
+    # checkpoints, so the lag is 0.00 MiB almost always (measured
+    # 2026-09-04: 0.00 min/p50/max over 25 isolated samples, and no sample
+    # above 0.5 MiB across all 1009 teardowns of a full suite run) and then
+    # occasionally is not — the promote gate on 2026-09-04 saw 4.52 MiB on a
+    # loaded box and failed a healthy tree. 16 MiB covers that observation
+    # 3.5x over while staying two orders of magnitude below the defect this
+    # line exists to catch: an implementation answering from a HEAP
+    # instrument reads ~450 MiB low here, not ~5.
+    assert vm_hwm_bytes() >= after - 16 * MIB
 
 
 def test_peak_survives_what_an_endpoint_read_misses():
