@@ -524,6 +524,48 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     _record_ok("stream", now)
 
 
+def _largest_gap(conn, table: str, lo: datetime) -> tuple | None:
+    """Widest interval between consecutive cycles of `table` since `lo`, as
+    (resumed_at, seconds), or None when the window holds fewer than two
+    cycles.
+
+    Anchors on the newest cycle at or BEFORE the window, so an outage
+    straddling the left edge is measured rather than lost with its
+    predecessor. Without it the first in-window cycle has no lag at all.
+    """
+    return conn.execute(
+        f"""
+        WITH cyc AS (
+            SELECT DISTINCT ts FROM {table} WHERE ts >= ?
+            UNION ALL
+            SELECT max(ts) FROM {table} WHERE ts < ? AND ts IS NOT NULL
+        ),
+        lagged AS (SELECT ts, ts - lag(ts) OVER (ORDER BY ts) AS d FROM cyc)
+        SELECT ts, epoch(d) FROM lagged WHERE d IS NOT NULL ORDER BY d DESC LIMIT 1
+        """,
+        [lo, lo],
+    ).fetchone()
+
+
+def _check_continuity(conn, name: str, table: str, now: datetime, noun: str) -> None:
+    """Retrospective cadence check over the last 24h. Shared by every 5-min
+    writer of the archive, so a second one cannot ship with a subtly
+    different window, anchor or budget than the first."""
+    gap = _largest_gap(conn, table, now - timedelta(hours=24))
+    if gap is None:
+        # One cycle cannot exhibit a gap. That is UNMEASURED, not healthy —
+        # say so out loud rather than banking a free pass (mistakes #28).
+        print(f"WATCH {name} — fewer than 2 {noun} cycles in window", flush=True)
+        return
+    resumed, gap_s = gap
+    check(
+        name,
+        gap_s <= COLLECTION_GAP_BUDGET_S,
+        f"largest gap {gap_s / 60.0:.1f} min (resumed {resumed:%Y-%m-%d %H:%M}Z),"
+        f" budget {COLLECTION_GAP_BUDGET_S / 60.0:.0f} min",
+    )
+
+
 def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     """Returns the econ pull's age in days (see `qa_econ_pull_live`), or
     None when the archive was unreachable or has never been pulled — the
@@ -544,34 +586,40 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     # "has it been collecting ALL DAY" — the question no instantaneous check
     # can reach, because QA runs once and an outage that healed is over by the
     # time it looks. See COLLECTION_GAP_BUDGET_S.
-    name = "collection continuous over last 24h"
-    lo = now - timedelta(hours=24)
-    # Anchor on the newest cycle at or BEFORE the window, so an outage
-    # straddling the left edge is measured rather than lost with its
-    # predecessor. Without it the first in-window cycle has no lag at all.
-    gap = conn.execute(
-        """
-        WITH cyc AS (
-            SELECT DISTINCT ts FROM snapshots WHERE ts >= ?
-            UNION ALL
-            SELECT max(ts) FROM snapshots WHERE ts < ? AND ts IS NOT NULL
-        ),
-        lagged AS (SELECT ts, ts - lag(ts) OVER (ORDER BY ts) AS d FROM cyc)
-        SELECT ts, epoch(d) FROM lagged WHERE d IS NOT NULL ORDER BY d DESC LIMIT 1
-        """,
-        [lo, lo],
-    ).fetchone()
-    if gap is None:
-        # One cycle cannot exhibit a gap. That is UNMEASURED, not healthy —
-        # say so out loud rather than banking a free pass (mistakes #28).
-        print(f"WATCH {name} — fewer than 2 collector cycles in window", flush=True)
-    else:
-        resumed, gap_s = gap
+    _check_continuity(conn, "collection continuous over last 24h", "snapshots", now, "collector")
+
+    # EXP-928 breadth is the FOURTH writer of this archive (measured
+    # 2026-09-03) and the only exchange-wide quote history: the 5-min collect
+    # cycle snapshots the 23-series watchlist, so a series family we have
+    # never studied can be evaluated retrospectively ONLY out of this table.
+    # Nothing watched it until 2026-09-04 — its death would have stayed
+    # invisible until someone tried to study a family and found the hole,
+    # which is the one moment the data can no longer be recovered.
+    #
+    # Guarded on non-empty, the poly_prices/news_items idiom below: breadth is
+    # DEFAULT DISABLED and installing the timer IS the enabling act, so an
+    # archive that never ran it must stay green rather than alarm about a
+    # deliberate choice.
+    #
+    # It reuses the collector's budgets, and that reuse is MEASURED rather
+    # than assumed: over 32 days / 9,150 cycles on the live archive breadth
+    # runs p50 300.0s (its 5-min timer, exactly) and p99 314.7s, and its worst
+    # benign gap is 20.0 min. Its ONLY gap past 30 min is 264.8 min — the same
+    # 2026-08-20 box outage COLLECTION_GAP_BUDGET_S was cut against, all
+    # writers down together. So 60 min sits 3x above breadth's benign worst
+    # and 4.4x under the event it exists to catch, exactly as for snapshots.
+    n_breadth = conn.execute("SELECT count(*) FROM breadth_snapshots").fetchone()[0]
+    if n_breadth:
+        b_age = conn.execute("SELECT epoch(? - max(ts)) FROM breadth_snapshots", [now]).fetchone()[
+            0
+        ]
         check(
-            name,
-            gap_s <= COLLECTION_GAP_BUDGET_S,
-            f"largest gap {gap_s / 60.0:.1f} min (resumed {resumed:%Y-%m-%d %H:%M}Z),"
-            f" budget {COLLECTION_GAP_BUDGET_S / 60.0:.0f} min",
+            "breadth fresh (snapshots < 20 min old)",
+            b_age is not None and b_age < 1200,
+            f"age {b_age:.0f}s" if b_age is not None else "no breadth snapshots",
+        )
+        _check_continuity(
+            conn, "breadth continuous over last 24h", "breadth_snapshots", now, "breadth"
         )
 
     ok_sweeps = conn.execute(

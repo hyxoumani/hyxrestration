@@ -1127,3 +1127,106 @@ def test_reported_age_is_the_true_day_gap_not_the_stamp_offset(tmp_path, capsys)
     _run(None, tmp_path, archive=db)
     line = next(ln for ln in capsys.readouterr().out.splitlines() if "econ pull live" in ln)
     assert f"newest vintage date {vd:%Y-%m-%d}, 3d ago" in line
+
+
+# --- breadth coverage (2026-09-04) ------------------------------------
+# EXP-928 breadth has written this archive every 5 min since 2026-08-03 —
+# 8.26M rows, the only exchange-wide quote history — and NO check has ever
+# read it. These drive the coverage.
+
+_BFRESH = "breadth fresh (snapshots < 20 min old)"
+_BCONT = "breadth continuous over last 24h"
+
+
+def _breadth_cycles(db, ages_min):
+    """Seed one breadth cycle per entry, `ages_min` minutes before NOW. Two
+    markets per cycle, because a cycle is a rank list, not a row."""
+    from collector.breadth import breadth_row
+    from hyxlab.models import Snapshot
+
+    store = Store(db)
+    store.insert_breadth_snapshots(
+        [
+            breadth_row(
+                Snapshot(
+                    venue="kalshi",
+                    market_id=mid,
+                    ts=NOW - timedelta(minutes=a),
+                    yes_bid=0.44,
+                    yes_ask=0.46,
+                    no_bid=0.54,
+                    no_ask=0.56,
+                    yes_bid_size=1,
+                    yes_ask_size=1,
+                    no_bid_size=1,
+                    no_ask_size=1,
+                ),
+                1000.0,
+                rank,
+            )
+            for a in ages_min
+            for rank, mid in enumerate(("B1", "B2"), start=1)
+        ]
+    )
+    store.close()
+
+
+def test_never_enabled_breadth_is_not_a_defect(tmp_path, capsys):
+    """Breadth is DEFAULT DISABLED and installing its timer is the enabling
+    act. An archive that never ran it must not be told it is broken — and
+    must not be told it is fine either, so neither check may appear."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    out = capsys.readouterr().out
+    assert _BFRESH not in failed and _BCONT not in failed
+    assert _BFRESH not in out and _BCONT not in out
+
+
+def test_steady_breadth_cadence_passes(tmp_path):
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _BFRESH not in failed and _BCONT not in failed
+
+
+def test_dead_breadth_trips_freshness(tmp_path):
+    """The timer stops. The collector keeps running, so every other check
+    reads green and only breadth's own freshness can say so."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [90 + 5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _BFRESH in failed
+    assert "collector fresh (snapshots < 20 min old)" not in failed
+
+
+def test_healed_breadth_outage_trips_continuity_only(tmp_path):
+    """The 08-20 shape applied to breadth: a multi-hour hole CLOSED by QA
+    time. Freshness reads green; the retrospective check is the only witness."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24)] + [5 * i for i in range(60, 100)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _BCONT in failed
+    assert _BFRESH not in failed
+
+
+def test_single_skipped_breadth_cycle_stays_inside_budget(tmp_path):
+    """Breadth's measured p99 is 314.7s and its benign worst gap 20.0 min.
+    Alarming on one dropped cycle would make the check unreadable."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24 * 12) if i != 40])
+    failed = _run(None, tmp_path, archive=db)
+    assert _BCONT not in failed and _BFRESH not in failed
+
+
+def test_breadth_outage_straddling_the_window_edge_is_not_lost(tmp_path):
+    """The shared anchor, exercised through breadth: the hole's predecessor
+    cycle sits OUTSIDE the 24h window, so an unanchored query sees no gap."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 12)] + [5 * i for i in range(280, 300)])
+    assert _BCONT in _run(None, tmp_path, archive=db)
