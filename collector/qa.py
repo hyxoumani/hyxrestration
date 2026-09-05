@@ -1805,18 +1805,182 @@ def qa_batch_run_budget(
     _record_ok("batch-run-budget", now)
 
 
+# EXP-1383 — WHAT READS QA'S OWN VERDICT. Nothing did.
+# `hyxlab-qa.service` is `Type=oneshot` with no `OnFailure=`, no
+# `ExecStopPost=` and no notifier, and the repo contains no `systemctl
+# is-failed`, no `--failed` and no other reader of a unit's state (checked
+# repo-wide 2026-09-05). So `sys.exit(1)` set the unit to `failed` where
+# nothing queried it, and the `NOT a full pass` line exits 0 — for that one
+# even systemd's own state reads clean. The journal holds both, and the only
+# journal reader in this project is qa.py itself (`_journal`, and
+# `read_batch_runs` over the two units in BATCH_RUN_BUDGET_H, which does not
+# include this one). That makes the answer structural rather than a matter of
+# taste: the only consumer available to QA is the NEXT QA run, so it is made
+# one here.
+#
+# WHAT THIS CATCHES that nothing else can. The freshness checks are
+# INSTANTANEOUS (EXP-1359), so a defect that repairs itself between two 10:00Z
+# runs leaves no trace anywhere: yesterday's FAIL scrolled past in a journal
+# nobody reads and today's run is green. Recording the verdict makes the heal
+# reportable. The same record makes a MISSED run reportable, which is the
+# other half — a disabled timer, a box that stayed down, or a qa.py that dies
+# before its first line all look identical from inside a run that happens.
+#
+# WHAT IT CANNOT DO, stated so the next pass does not assume otherwise: report
+# its own non-execution. No in-process check can, which is exactly why the gap
+# arm reads the record's AGE instead of trusting that a run occurred — a
+# crash-looping QA is named by the first run that completes, and until one
+# does, no reader inside this process exists to name it.
+QA_RUN_SECTION = "run"
+QA_RUN_CHECK = "prior QA run was read"
+# The timer is daily at 10:00Z with `Persistent=true`, so consecutive records
+# sit 24h apart and ONE missed slot is 48h. 36h is the midpoint: it trips on a
+# single missed run while leaving 12h of slack for a late start or a boot
+# catch-up, and it is the tolerance SKIP_MAX_AGE_H already uses for the same
+# daily cadence.
+QA_RUN_GAP_BUDGET_H = 36.0
+
+
+def _own_findings() -> list[str]:
+    """This run's failures MINUS its own prior-run report. Including that
+    report would let one unread failure re-arm the report of itself, every
+    day, forever — the check would then be describing nothing but its own
+    echo."""
+    return [f for f in _failures if f != QA_RUN_CHECK]
+
+
+def _record_run(failures: list[str], skipped: list[str], now: datetime) -> None:
+    """Persist WHAT THIS RUN FOUND, for the next run to read back.
+
+    The two lists are stored rather than a single verdict word because the
+    next run's question is not "did it pass" but "did anything it reported go
+    unread" — and that is answered per NAME, against what is true today.
+    """
+    state = _load_state()
+    state[QA_RUN_SECTION] = {
+        "last_run": now.isoformat(),
+        "failures": sorted(failures),
+        "skipped": sorted(skipped),
+    }
+    _save_state(state)
+
+
+@dataclass(frozen=True)
+class PriorRun:
+    """The last recorded run, as the one parser of the record reports it."""
+
+    at: datetime
+    failures: tuple[str, ...]
+    skipped: tuple[str, ...]
+
+
+def _prior_run() -> PriorRun | None:
+    """The last recorded run, or None if there is none — one parser for the
+    record, so nothing can hold a second opinion about what it says.
+
+    A record written by an older qa.py, a truncated file or a hand-edited
+    timestamp all read as "no prior run": the alternative is failing on the
+    day the check is installed, which is how a check gets switched off. Naive
+    timestamps are read as UTC — sections.json has carried both forms since
+    before this record shared it.
+    """
+    entry = _load_state().get(QA_RUN_SECTION)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        at = datetime.fromisoformat(entry["last_run"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+
+    def _names(key: str) -> tuple[str, ...]:
+        raw = entry.get(key)
+        return tuple(str(x) for x in raw) if isinstance(raw, list) else ()
+
+    return PriorRun(at, _names("failures"), _names("skipped"))
+
+
+def qa_prior_run(
+    now: datetime | None = None,
+    failures: list[str] | None = None,
+    skipped: list[str] | None = None,
+) -> None:
+    """Read back what the previous run reported, because nothing else does.
+
+    Runs LAST, and is given this run's own findings, because both of its arms
+    are comparisons against today:
+
+      record too old  -> the run did not HAPPEN. The archive went unwatched
+                         across the gap, whatever the last run said.
+      unread + healed -> a name the prior run FAILED or SKIPPED that is green
+                         today. That is the state nothing else in the project
+                         can see: the checks are instantaneous (EXP-1359), so
+                         a defect that repairs itself between two 10:00Z runs
+                         leaves yesterday's line in a journal nobody reads and
+                         today's run green.
+
+    ONLY THE HEALED SET, and the production steady state is why. `collect-skips`
+    reports UNVERIFIED — hence SKIPPED — on every run of a healthy box, so
+    "the prior run was partial" is the NORMAL verdict here and an arm that
+    fired on it would fail every night forever. A name that is still failing
+    or still skipped today is reported by today's own line and bounded by its
+    own clock (SKIP_MAX_AGE_H); repeating it here would be a second opinion
+    about a live state, which is the noise that trains an operator to stop
+    reading QA. What is NOT repeated anywhere is the name that went quiet.
+
+    That is also what keeps the FAIL from re-arming itself: the record written
+    after this check carries the OTHER sections' findings, so a healed failure
+    is named exactly once and its own report is not a finding to report.
+    """
+    now = now or datetime.now(UTC)
+    today_failed, today_skipped = set(failures or ()), set(skipped or ())
+    prior = _prior_run()
+    if prior is None:
+        check(QA_RUN_CHECK, True, "no prior run on record — nothing to read back")
+        return
+    age_h = (now - prior.at).total_seconds() / 3600.0
+    reasons = []
+    if age_h > QA_RUN_GAP_BUDGET_H:
+        reasons.append(
+            f"QA DID NOT RUN — last run {prior.at:%Y-%m-%d %H:%M}Z, {age_h:.1f}h ago "
+            f"(budget {QA_RUN_GAP_BUDGET_H:.0f}h)"
+        )
+    healed_f = sorted(set(prior.failures) - today_failed)
+    healed_s = sorted(set(prior.skipped) - today_skipped)
+    if healed_f:
+        reasons.append(f"prior run FAILED {healed_f} and is green today — nothing read it")
+    if healed_s:
+        reasons.append(f"prior run SKIPPED {healed_s} and ran today — nothing read it")
+    if reasons:
+        check(QA_RUN_CHECK, False, "; ".join(reasons))
+        return
+    still = sorted(set(prior.failures) | set(prior.skipped))
+    check(
+        QA_RUN_CHECK,
+        True,
+        f"prior run {prior.at:%m-%d %H:%M}Z was {age_h:.1f}h ago"
+        + (f"; {still} still open today, reported by their own lines" if still else ", clean"),
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab daily data-quality checks")
     ap.add_argument("--hours", type=float, default=26.0, help="recency window")
     args = ap.parse_args()
 
-    print(f"[qa] {datetime.now(UTC):%Y-%m-%d %H:%M} window={args.hours}h", flush=True)
+    now = datetime.now(UTC)
+    print(f"[qa] {now:%Y-%m-%d %H:%M} window={args.hours}h", flush=True)
     qa_stream(args.hours)
     pull_age_d = qa_archive(args.hours)
     qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
     qa_collect_skips()  # sidecar journal; never gated by the archive lock
     qa_fade_window_capture()  # journal-only, for the same reason
     qa_batch_run_budget()  # journal-only, for the same reason
+    qa_prior_run(now, _own_findings(), _skipped)  # the only reader of the last run
+    # Re-read AFTER the check rather than reusing the list above: the
+    # exclusion is then a live filter, not an artifact of statement order.
+    _record_run(_own_findings(), _skipped, now)  # BEFORE either exit path below
     if _failures:
         print(f"[qa] {len(_failures)} FAILURES: {_failures}", flush=True)
         sys.exit(1)
