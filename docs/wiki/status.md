@@ -1,5 +1,82 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-04 (STALENESS-COVERAGE PASS -- COVERAGE PROVED TABLES
+ARE READ, NOT WATCHED, AND `candles` HAD NO ANSWER AT ALL.**
+Last pass named the successor itself: "coverage now proves a table is
+READ, not that it is checked for FRESHNESS -- worth a pass to decide
+whether 'reader' can be strengthened to 'reader of an INGEST stamp' or to
+write why it cannot." It can, it is derived, and its first run found one.
+**(1) THE STRONGER FORM IS DERIVABLE, PER TABLE.**
+`tests/test_qa_staleness_coverage.py` declares each table's ingest stamp
+(`STAMP`, checked against the table's own DDL so a renamed column cannot
+make a table look watched) and credits only two unambiguous shapes: a
+`_check_freshness(table, col)` call, or `max(<col> ...) FROM <table>`.
+**(2) THE RECENCY-WINDOW SHAPE IS DELIBERATELY NOT CREDITED, AND THE
+MEASUREMENT IS WHAT DECIDED IT.** `<col> > ? - INTERVAL` has two live
+users in qa.py that behave OPPOSITELY on an empty window: "sweep ran in
+last 36h" counts and FAILS at zero; the poly swept-universe tripwire
+guards on `len(runs) >= 2` and SKIPS at zero -- which is precisely what a
+dead sweep produces. Crediting the shape would have marked both watched.
+Nothing static separates them, so both carry a declared WITNESS and the
+derivation errs toward naming a watched table, never toward missing an
+unwatched one. Stated in the file rather than left as parser trivia.
+**(3) IT NAMED `candles` -- THE ONLY LIVE-WRITTEN TABLE WITH NEITHER AN
+AGE CHECK NOR A WITNESS**, and it is the one archive table with **no
+ingest stamp at all**: `end_ts` is the candle's period end and the sweep
+walks settled history, so `max(end_ts)` moves BACKWARDS on a healthy run.
+**(4) "sweep ran in last 36h" IS NOT A WITNESS FOR IT.** `sweep.py` logs
+`status='ok'` on the MARKET count, so a candlestick endpoint returning
+`{"candlesticks": []}` under HTTP 200 (renamed field, dropped
+`period_interval`) inserts nothing while the trade tape riding in the
+SAME loop keeps landing: sweep_log fills with ok entries, `trades_swept`
+stays fresh, every existing check reads green while the archive stops
+gaining candles. The nws shape exactly -- two payloads, one silent half.
+**(5) SHIPPED: ASK THE WRITER'S LOG FOR THE STAMP THE TABLE LACKS.**
+`candle ingest landing (36h)` sums `sweep_log.n_candles` over the same
+window as the sweep check, nested under `ok_sweeps` (no sweep, no candle
+to expect -- two red lines for one cause is noise, asserted against
+stdout). The `> 0` budget is a DEATH threshold ON PURPOSE and the
+measurement says it can be no tighter: over 30 days of hourly-stepped 36h
+windows the sum runs median **312,296** and min **5,726** (the 2026-08-20
+box outage), a **55x** benign spread that no percentile budget survives.
+**(6) THE OTHER SEVEN ARE DECLARED, WITH THE READER THAT COVERS THEM.**
+`markets` is the interesting one: it is written in the SAME transaction
+from the SAME fetch as the snapshots that witness it (`collect.py`'s
+per-series try builds `cyc.infos` and `cyc.kalshi_snaps` from one
+`get_markets` pair; `write_cycle` commits both or neither), so unlike the
+nws pull -- its own try, hence its own check -- it CANNOT go stale while
+"collector fresh" passes. Read from the code, not assumed.
+**Eight mutants red** (check removed; budget `>= 0`; window widened to
+72h; the `ok_sweeps` nesting removed; the derivation's `max()` shape
+dropped; a WITNESS deleted; a STAMP column renamed; the join filter
+removed -- pinned directly, since qa.py has no multi-table `max()` query
+today and the filter would otherwise sit unexercised until the day it
+matters). Suite 1009 -> **1021**.
+**RUN AGAINST PRODUCTION:** PASS -- **211,257 candles inserted by 3,872
+ok sweeps** in the window. **PROMOTED, no daemon restart** (`collector/
+qa.py` intersects the closure of streamd, shadow and simui in nothing --
+measured again this pass), so shadow's live run `20260829T191841`
+survives. Pushed. Wiki: `data-pipeline.md` now carries the derivation,
+its credited shapes, the uncredited one and all eight declarations.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT** for
+12Z's sign test; live run `20260829T191841` reaches it ~09-08 if nothing
+stops it. (2) The successor this pass opens: coverage now proves the
+QUESTION is asked, not that the ANSWER is loud. `poly_market_stats` is
+the standing example -- its only reader guards on `len(runs) >= 2` and
+goes quiet exactly when the sweep dies, and it is a declared witness
+today only because `poly_prices` rides the same walk. Worth a pass to ask
+how many QA checks can SKIP silently on empty input, and whether "a guard
+that consumes its own failure" is derivable the way the recency shape
+was. (3) The shell scripts (`promote.sh`, `restart_decision.sh`,
+`autoloop.sh`, `shadow-mem.sh`) still have no lint equivalent; there is
+no shellcheck in the project and `restart_decision.sh` gates every daemon
+restart. Decide whether it joins the gate or write why not. (4) The
+width-24 econ maker bracket needs 2026-09-12 for a second reading; the
+atlas quoted tier wants settled markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-04 (COVERAGE-DERIVATION PASS -- NOTHING ENUMERATED THE
 ARCHIVE'S TABLES AGAINST QA'S READERS, SO A SECOND LIVE WRITER WAS
 UNWATCHED.**

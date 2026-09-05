@@ -36,6 +36,52 @@ test does NOT claim: "read" is weaker than "checked for freshness"
 (`markets` is read only through `close_time`, a business column), so it
 catches the defect that has happened twice, not staleness in general.
 
+**That stronger question is derived too** (`tests/test_qa_staleness_
+coverage.py`, 2026-09-04). Per table it asks whether qa.py ever asks the
+age of the table's INGEST STAMP — declared in `STAMP`, and required to be
+a real column of that table's DDL — crediting only the two unambiguous
+shapes: a `_check_freshness(table, col)` call, or `max(<col> ...) FROM
+<table>`. The recency-window shape (`<col> > ? - INTERVAL`) is
+deliberately NOT credited, because its two live users behave oppositely
+on an empty window: "sweep ran in last 36h" counts and FAILS at zero,
+while the poly swept-universe tripwire guards on `len(runs) >= 2` and
+SKIPS at zero — exactly what a dead sweep produces. Nothing static
+separates them, so both tables carry a declared `WITNESS` instead and the
+derivation errs toward naming a table that IS watched, never toward
+missing one that is not. A join may not lend one table another's stamp
+(pinned directly, since qa.py has no multi-table `max()` query today).
+Its first run named **`candles`** — the only live-written table with
+neither an age check nor a witness.
+
+`candles` is the one archive table with **no ingest stamp at all**:
+`end_ts` is the candle's period end and the sweep walks settled history,
+so `max(end_ts)` moves BACKWARDS on a healthy run. `sweep ran in last
+36h` is not a witness for it: `sweep.py` logs `status='ok'` on the MARKET
+count, so a candlestick endpoint returning `{"candlesticks": []}` under
+HTTP 200 (renamed field, dropped `period_interval`) inserts nothing while
+the trade tape riding in the same loop keeps landing — sweep_log fills
+with ok entries, `trades_swept` stays fresh, everything reads green. The
+nws shape exactly: two payloads in one loop, one silent failure. So
+`candle ingest landing (36h)` asks the writer's own log for the stamp the
+table lacks — `sum(sweep_log.n_candles)` over the same 36h window,
+nested under `ok_sweeps` (no sweep, no candle to expect, and the cause is
+already named once). The `> 0` budget is a DEATH threshold on purpose and
+the measurement says it can be no tighter: over 30 days of hourly-stepped
+36h windows the sum runs median 312,296 and min 5,726 (the 2026-08-20 box
+outage) — a 55x benign spread that no percentile budget survives.
+Production 2026-09-04: 211,257 candles over 3,872 ok sweeps.
+
+Four tables have no ingest stamp (`candles`, `trades`, `observations`,
+`watermarks`, plus `schema_meta` which has no time column at all) and
+four carry a witness rather than their own check: `markets` (written in
+the SAME transaction from the SAME fetch as the snapshots that witness it
+— `collect.py`'s per-series try builds `cyc.infos` and `cyc.kalshi_snaps`
+from one `get_markets` pair, so unlike the nws pull it cannot go stale
+while "collector fresh" passes), `series`/`watermarks` (the 06:10Z sweep),
+`poly_market_stats` (same walk as `poly_prices`, whose freshness is
+checked), and `sweep_log` (its own count-window check, which is stronger
+than a `max()` since it ignores `truncated` rows).
+
 `breadth_snapshots` (EXP-928) is the archive's only EXCHANGE-WIDE quote
 history and deserves its own line: `snapshots` covers the 23-series
 watchlist, so a series family we have never studied has no price a
