@@ -697,6 +697,45 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     ).fetchone()[0]
     check("sweep ran in last 36h", ok_sweeps > 0, f"{ok_sweeps} ok entries")
 
+    # `candles` is the ONE archive table with no ingest stamp — end_ts is the
+    # candle's period end, and the sweep walks settled history, so max(end_ts)
+    # legitimately moves BACKWARDS and cannot answer "is candle ingest alive".
+    # Found 2026-09-04 by tests/test_qa_staleness_coverage.py, which derives
+    # exactly that question per table; `candles` was the only live-written
+    # table with neither its own age check nor a witness.
+    #
+    # THE FAILURE THIS EXISTS FOR, and why "sweep ran in last 36h" is not it:
+    # sweep.py logs status='ok' on the row COUNT of markets, not of candles,
+    # so a candlestick endpoint that starts returning `{"candlesticks": []}`
+    # under HTTP 200 (a renamed field, a dropped period_interval) inserts
+    # nothing while the trade tape riding in the same loop keeps landing.
+    # sweep_log fills with ok entries, trades_swept stays fresh, and every
+    # existing check reads green while the archive stops gaining candles —
+    # the nws shape exactly: two payloads in one loop, one silent failure.
+    #
+    # The writer's own log carries the stamp the table lacks, so ask it, over
+    # the same 36h window as the sweep check above. > 0 is deliberately a
+    # DEATH threshold, not a degradation one, and the measurement says it can
+    # be no tighter: over 30 days of hourly-stepped 36h windows on the live
+    # archive the sum runs median 312,296 and min 5,726 (the 2026-08-20 box
+    # outage), a 55x benign spread. Any percentile budget across that would
+    # fire on a quiet day; ingest going to zero is unambiguous.
+    #
+    # Nested under ok_sweeps rather than guarded on non-empty: with no sweep
+    # in the window there is no candle to expect, and the failure is already
+    # named once above. Two red lines for one cause is noise, not coverage.
+    if ok_sweeps:
+        landed = conn.execute(
+            "SELECT coalesce(sum(n_candles), 0) FROM sweep_log WHERE swept_at > ? - INTERVAL"
+            " 36 HOUR",
+            [now],
+        ).fetchone()[0]
+        check(
+            "candle ingest landing (36h)",
+            landed > 0,
+            f"{landed} candles inserted by {ok_sweeps} ok sweep(s) in the window",
+        )
+
     # promote.sh installs code; it does not migrate the archive, and nothing
     # asserts the version at open — so a shipped migration can sit unapplied
     # indefinitely while every read silently uses the pre-migration

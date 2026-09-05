@@ -1343,3 +1343,80 @@ def test_nws_outage_straddling_the_window_edge_is_not_lost(tmp_path):
     _cycles(db, [5 * i for i in range(0, 24 * 12)])
     _nws_cycles(db, [5 * i for i in range(0, 12 * 20)] + [60 * 26])
     assert _NCONT in _run(None, tmp_path, archive=db)
+
+
+# --- candle ingest (2026-09-04) -----------------------------------------
+# The only live-written archive table with NO ingest stamp: end_ts is the
+# candle's period end and the sweep walks settled history, so max(end_ts)
+# moves backwards on a healthy run. Found by the derived staleness coverage
+# (tests/test_qa_staleness_coverage.py), which asks per table whether anyone
+# would notice it stopping — `candles` was the only one with no answer.
+
+_CANDLES = "candle ingest landing (36h)"
+
+
+def _sweeps(db, entries):
+    """Seed sweep_log rows: (hours_ago, n_candles, status).
+
+    Inserted directly, not via `log_sweep`, which stamps `swept_at` with
+    now() — the window is exactly what these tests need to place rows in.
+    """
+    store = Store(db)
+    for h, n, status in entries:
+        t = (NOW - timedelta(hours=h)).replace(tzinfo=None)
+        store.conn.execute(
+            "INSERT INTO sweep_log VALUES ('KXTEST', ?, ?, ?, 1, ?, ?, '')", [t, t, t, n, status]
+        )
+    store.close()
+
+
+def test_landing_candles_pass(tmp_path):
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _sweeps(db, [(h, 5000, "ok") for h in (2, 14, 26)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _CANDLES not in failed and "sweep ran in last 36h" not in failed
+
+
+def test_sweeps_landing_zero_candles_trip_while_the_sweep_reads_green(tmp_path):
+    """THE FAILURE THIS EXISTS FOR. sweep.py logs status='ok' on the MARKET
+    count, so a candlestick endpoint returning an empty list under HTTP 200
+    keeps filling sweep_log with ok entries while the archive stops gaining
+    candles. 'sweep ran in last 36h' passes; only this can say so."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _sweeps(db, [(h, 0, "ok") for h in (2, 14, 26)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _CANDLES in failed
+    assert "sweep ran in last 36h" not in failed
+
+
+def test_candle_ingest_that_stopped_36h_ago_trips(tmp_path):
+    """The window is what makes it a check: candles landed, but outside it."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _sweeps(db, [(40, 500_000, "ok"), (2, 0, "ok")])
+    assert _CANDLES in _run(None, tmp_path, archive=db)
+
+
+def test_no_sweep_in_window_reports_the_sweep_once_not_twice(tmp_path, capsys):
+    """Nested under ok_sweeps on purpose: with no sweep there is no candle to
+    expect, and the cause is already named. Two red lines for one cause is
+    noise — assert against stdout, not just the failure list."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _sweeps(db, [(40, 500_000, "ok")])
+    failed = _run(None, tmp_path, archive=db)
+    out = capsys.readouterr().out
+    assert "sweep ran in last 36h" in failed
+    assert _CANDLES not in failed and _CANDLES not in out
+
+
+def test_a_truncated_sweeps_candles_still_count(tmp_path):
+    """status='truncated' means the market budget was reached, not that the
+    candles it did fetch are absent — the question here is whether ingest is
+    alive, and those rows are in the archive."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _sweeps(db, [(2, 1, "ok"), (3, 9000, "truncated")])
+    assert _CANDLES not in _run(None, tmp_path, archive=db)
