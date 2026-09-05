@@ -115,6 +115,40 @@ widest gap between consecutive run starts over all 64 runs is 26.4h.
 `ok_sweeps` is the other declared guard, and it needs no else: `sweep ran
 in last 36h` counts the same window and fails at zero.
 
+**The fourth derivation asks whether the SECTION stays**
+(`tests/test_qa_early_returns.py`, 2026-09-05). The third covers a check
+gated by an `if` and says nothing about a check whose section RETURNS
+before reaching it — a guard skips one check, an early exit drops the
+rest of the function. So every `return` in a `qa_*` section must have an
+EMITTER (`check`/`_check_freshness`/`_check_continuity`/`_reachable`/
+`print`) on its path — a preceding statement in its own or an enclosing
+block, or the TEST of an enclosing `if`, which is what credits the two
+`_reachable` exits, whose only emitter lives inside the condition. "On
+its path" is path-sensitive on purpose: an emitter inside a nested `if`
+fires on one branch while the return stays silent on the other, and
+crediting it would have read this pass's own fix as complete.
+
+Its first run named **`qa_econ_pull_live`'s empty-table return** — the
+one exit in qa.py that emitted nothing at all. Its guard IS monotone by
+the third derivation, so on a deployment that never enabled the econ pull
+silence is right; but monotone is an argument about the GUARD, not about
+what else can empty the table. `signals.main` calls `record_fetch`
+BEFORE the locked DuckDB write, so a fetch that succeeds and a write that
+does not leaves ok series in the sidecar and nothing in `econ_vintages`,
+and `diff_vintages` cannot explain it away — on an empty table every
+fetched observation is new. An econ pull broken from the day it was
+installed printed no line, and everything econ-side downstream read
+"cannot decide" (`pull_age_d` is None, so `qa_signals_fetch` skips too).
+
+Decided against the sidecar, in the `qa_signals_fetch` shape: ok series
+fetched within `ECON_PULL_GAP_BUDGET_D` + empty table = the fetch works
+and the write does not -> **FAIL** (`INGEST NEVER LANDED`); no sidecar
+run = the feed was never enabled -> quiet, the declared case; a run older
+than the budget = the pull is stopped and `qa_signals_fetch` already says
+so once -> quiet. `read_signals_fetch` is now the single parser of that
+file, because the two questions asked of it (is a series being dropped /
+is the ingest landing at all) must not disagree about what it says.
+
 Four tables have no ingest stamp (`candles`, `trades`, `observations`,
 `watermarks`, plus `schema_meta` which has no time column at all) and
 four carry a witness rather than their own check: `markets` (written in

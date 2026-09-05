@@ -1,72 +1,67 @@
 # Status & next steps (living page)
 
-Updated: **2026-09-05 (SILENT-GUARD PASS -- COVERAGE PROVED THE QUESTION
-IS ASKED, NOT THAT THE ANSWER IS EMITTED.**
-Last pass named the successor: "coverage now proves the QUESTION is
-asked, not that the ANSWER is loud... worth a pass to ask how many QA
-checks can SKIP silently on empty input, and whether 'a guard that
-consumes its own failure' is derivable the way the recency shape was."
-It is derivable, it is derived, and its first run found the one.
-**(1) THE CLASSIFICATION COMES OUT OF THE GUARD'S OWN SQL, NOT A
-DECLARATION.** `tests/test_qa_silent_guards.py` pairs every named
-`check()` in qa.py with the guards gating it and traces each guard's
-names back to the query that produced them. **MONOTONE** = traces only to
-an UNWINDOWED whole-table count (`n_breadth`, `n_nws`, `n_poly`,
-`n_news`): nothing in this repo deletes archive rows -- derived in the
-same file, venue retention purges upstream and we only accumulate -- so
-the guard means "was this feed ever enabled", is false only on a
-deployment that never turned it on, and never reverts. Silence is the
-right answer to a deliberate choice. **WINDOWED** = anything else; it
-empties on a dead writer, which is when the gated check matters most, so
-it must be DECLARED with what stays loud.
-**(2) IT NAMED `poly swept universe not shrinking`** -- the ONE guard in
-qa.py computed from a windowed read (`len(runs) >= 2` over 10 days of
-`poly_market_stats`) -- and it had no else branch at all. The tripwire
-stopped being PRINTED, so there was no line to miss. Two ways in, both
-silent before this pass: (a) the stats half of the poly walk goes inert
-(renamed column, raised insert) while the CLOB prices half keeps landing,
-so `poly prices fresh` stays GREEN and `runs` empties; (b) the universe
-collapses below the 500-market floor and stays there ten days, so the
-guard that exists to make the shrink RATIO meaningful consumes the
-collapse it was protecting against. The check written because a silent
-universe shrink went unnoticed could itself go missing unnoticed.
-**(3) FIXED IN THE `qa_signals_fetch` SHAPE, AGAINST A DIFFERENT
-WITNESS.** One sweep writes both tables, so `poly prices fresh (< 30h
-old)` decides it: fresh prices + no settled stats run = the stats writer
-is inert -> **FAIL** (`TRIPWIRE INERT`), once `SKIP_MAX_AGE_H` has passed
-since the tripwire last actually MEASURED something; stale prices = the
-sweep is down and is already reported one line above -> **SKIP**, the
-`candles`/`ok_sweeps` rule (two red lines for one cause is noise).
-**(4) THE 36h GRACE IS LOOSE ON THE MEASUREMENT.** Over the 30 days to
-2026-09-05 the trailing-10d window held median **9** and minimum **9**
-settled runs at every one of **721** hourly steps -- never once below the
-2 the guard needs -- and the widest gap between consecutive run starts
-over all 64 runs is **26.4h**. The SKIP branch does not fire benignly.
-**Eight mutants red** (escalation disabled; skip branch silenced;
-completion not recorded; the prices witness ignored, giving a double red;
-the else branch removed; a DECLARED entry deleted; a window added to an
-enabling guard -- synthetic source, qa.py has no such shape today; an
-untraceable guard read as monotone). Suite 1021 -> **1034**.
-**RUN AGAINST PRODUCTION:** PASS -- last completed sweep 2026-09-04
-04:15Z enumerated **17,179** markets vs prior-10d peak **17,626**.
+Updated: **2026-09-05 (EARLY-RETURN PASS -- COVERAGE PROVED THE GUARD IS
+LOUD, NOT THAT THE SECTION STAYS.**
+Last pass named the successor: "the derivation covers checks gated by an
+`if`, and says nothing about a check whose SECTION never runs... worth a
+pass to ask whether every early `return` in qa.py is bounded the way the
+lock skip is, or write why the remaining ones cannot be." Asked, derived,
+and its first run found the one.
+**(1) THE FOURTH DERIVATION IS PATH-SENSITIVE, WHICH IS THE WHOLE
+DIFFICULTY.** `tests/test_qa_early_returns.py` requires every `return` in
+a `qa_*` section to have an EMITTER on its path -- a preceding statement
+in its own or an enclosing block, or the TEST of an enclosing `if`. That
+last clause is what credits `qa_stream`/`qa_archive`'s `if not
+_reachable(...)` exits, whose only emitter lives inside the condition; a
+statement-only reading would have demanded declarations for the two
+best-bounded exits in the file and drowned the finding. And an emitter
+inside a NESTED `if` is deliberately not credited: it fires on one branch
+while the return stays silent on the other, which is exactly the shape of
+this pass's own fix.
+**(2) IT NAMED `qa_econ_pull_live`'s EMPTY-TABLE RETURN** -- the one exit
+in qa.py that emitted nothing. Its guard IS monotone by the previous
+derivation, so on a deployment that never enabled the econ pull silence
+is right. But monotone is an argument about the GUARD, not about what
+else can empty the table: `signals.main` calls `record_fetch` BEFORE the
+locked DuckDB write, so a fetch that succeeds and a write that fails
+leaves ok series in the sidecar and nothing in `econ_vintages` --
+`diff_vintages` cannot explain it, because on an empty table every
+fetched observation is new. **An econ pull broken from the day it was
+installed printed no line at all**, and every econ check downstream read
+"cannot decide" (`pull_age_d` None -> `qa_signals_fetch` skips too).
+**(3) FIXED IN THE `qa_signals_fetch` SHAPE, AGAINST THE SIDECAR.** ok
+series fetched within `ECON_PULL_GAP_BUDGET_D` + empty table -> **FAIL**
+(`INGEST NEVER LANDED`); no sidecar run -> quiet, the feed was never
+enabled (the DECLARED case); a run older than the budget -> quiet, the
+pull is stopped and `qa_signals_fetch` already says so once. One parser
+for that file now (`read_signals_fetch`, shared by both readers), because
+two opinions about what it says is one opinion nobody runs.
+**Ten mutants red** (FAIL branch dead; branch deleted outright, caught by
+the witness derivation; sidecar freshness ignored; a failed fetch counted
+as a landed one; the witness dropped so it always reds; a new silent exit
+elsewhere; a window added to the econ guard, both undeclared and
+re-declared; the declaration deleted; the sidecar parsed a second time).
+Suite 1034 -> **1049**.
+**RUN AGAINST PRODUCTION:** PASS -- `econ pull live` 0d ago (vintage
+2026-09-05), branch inert as expected on a populated archive.
 **PROMOTED, no daemon restart** (`collector/qa.py` is outside the closure
 of streamd, shadow and simui), so shadow's live run `20260829T191841`
-survives. Pushed. Wiki: `data-pipeline.md` now carries the third
-derivation, its two classes and both declared guards.
+survives -- 7d live. Pushed. Wiki: `data-pipeline.md` carries the fourth
+derivation and the decision table.
 NEXT PASS: (1) **THE 10TH PANEL DAY IS THE BINDING CONSTRAINT** for 12Z's
 sign test; live run `20260829T191841` reaches it ~09-08 if nothing stops
-it. (2) The successor this pass opens: the derivation covers checks
-gated by an `if`, and says nothing about a check whose SECTION never
-runs. `qa_stream`/`qa_archive` return early on an unreachable file and
-that IS bounded by STATE, but `qa_econ_pull_live` returns None on a
-pre-first-pull archive with no clock on it at all -- worth a pass to ask
-whether every early `return` in qa.py is bounded the way the lock skip
-is, or write why the remaining ones cannot be. (3) The shell scripts
-(`promote.sh`, `restart_decision.sh`, `autoloop.sh`, `shadow-mem.sh`)
-still have no lint equivalent; `restart_decision.sh` gates every daemon
-restart. Decide whether it joins the gate or write why not. (4) The
-width-24 econ maker bracket needs 2026-09-12 for a second reading; the
-atlas quoted tier wants settled markets ~2.1M. Both data-gated.
+it. (2) The successor this pass opens: all four derivations read qa.py as
+TEXT. None of them asks whether a check that is printed is ever READ --
+`hyxlab-qa` runs at 10:00Z into the journal, and a WATCH line or a
+SKIPPED-section summary that nobody sees is the same silence one level
+out. Worth a pass to ask what, if anything, consumes qa's exit code and
+its `NOT a full pass` line, and to write down why the answer is what it
+is. (3) The shell scripts (`promote.sh`, `restart_decision.sh`,
+`autoloop.sh`, `shadow-mem.sh`) still have no lint equivalent;
+`restart_decision.sh` gates every daemon restart. Decide whether it joins
+the gate or write why not. (4) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled
+markets ~2.1M. Both data-gated.
 NOTHING IS USER-GATED THIS PASS.**
 
 ---
