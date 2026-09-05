@@ -898,7 +898,46 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     return pull_age_d
 
 
-def qa_econ_pull_live(conn, now: datetime) -> int | None:
+def read_signals_fetch(path: str) -> tuple[dict[str, datetime], datetime | None, int]:
+    """Read the per-series ALFRED fetch sidecar: (last SUCCESSFUL fetch per
+    series, newest run's stamp, malformed row count). Timestamps come back
+    tz-aware; a naive one in the file is read as UTC, which is what
+    `record_fetch` writes.
+
+    Shared by `qa_signals_fetch` and `qa_econ_pull_live` on purpose — the two
+    decide opposite questions against this one file (is a series being
+    dropped / is the ingest landing at all), and a second parser is a second
+    opinion about what the file says.
+    """
+    last_ok: dict[str, datetime] = {}
+    newest_run: datetime | None = None
+    malformed = 0
+    p = Path(path)
+    if p.exists():
+        for line in p.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                at = datetime.fromisoformat(row["at"])
+                outcomes = row["series"]
+                if not isinstance(outcomes, dict):
+                    raise ValueError("series")
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=UTC)
+            newest_run = at if newest_run is None else max(newest_run, at)
+            for sid, outcome in outcomes.items():
+                if isinstance(outcome, dict) and outcome.get("ok"):
+                    prev = last_ok.get(sid)
+                    if prev is None or at > prev:
+                        last_ok[sid] = at
+    return last_ok, newest_run, malformed
+
+
+def qa_econ_pull_live(conn, now: datetime, fetch_log: str = SIGNALS_FETCH_LOG) -> int | None:
     """Is the ALFRED pull still bringing vintages home at all?
 
     Returns the age in whole days of the newest ingested VINTAGE DATE, or
@@ -916,6 +955,32 @@ def qa_econ_pull_live(conn, now: datetime) -> int | None:
     """
     name = "econ pull live (any series, last vintage date)"
     if not conn.execute("SELECT count(*) FROM econ_vintages").fetchone()[0]:
+        # An empty table is MONOTONE (nothing in this repo deletes archive
+        # rows — tests/test_qa_silent_guards.py derives that), so on a
+        # deployment that never enabled the pull this early return is silent
+        # on purpose: "was this feed ever turned on" is a deliberate choice.
+        #
+        # It is NOT silent when the pull is demonstrably running. The sidecar
+        # is written by `record_fetch`, which `signals.main` calls BEFORE the
+        # locked DuckDB write, so a fetch that succeeds and a write that never
+        # lands leaves exactly this state — ok series in the sidecar, nothing
+        # in the table — and `diff_vintages` cannot explain it, because on an
+        # empty table every fetched observation is new. Then the silence would
+        # hide the pull failing from the day it was installed, with no line to
+        # miss: the archive-age witness is not available on a young deployment
+        # and every econ check downstream reads "cannot decide" (EXP-1382).
+        last_ok, newest_run, _ = read_signals_fetch(fetch_log)
+        aware = now if now.tzinfo else now.replace(tzinfo=UTC)
+        run_age_d = None if newest_run is None else (aware - newest_run).total_seconds() / 86400.0
+        if last_ok and run_age_d is not None and run_age_d <= ECON_PULL_GAP_BUDGET_D:
+            check(
+                name,
+                False,
+                f"INGEST NEVER LANDED: econ_vintages is empty, but {fetch_log} records"
+                f" {len(last_ok)} series fetched OK {run_age_d:.1f}d ago — the fetch half of"
+                " the pull works and the archive write does not, so nothing econ-side has"
+                " ever had anything to measure",
+            )
         return None  # pre-first-pull archive: nothing to hold to a cadence
     # INTERVAL takes no placeholder in DuckDB; the offset is an int constant.
     last_vd = conn.execute(
@@ -964,31 +1029,8 @@ def qa_signals_fetch(
     name = "econ series all fetched, not just the fast ones"
     expected = series if series is not None else list(alfred.SERIES)
     # last successful fetch per series, over every run the sidecar holds
-    last_ok: dict[str, datetime] = {}
-    newest_run: datetime | None = None
-    malformed = 0
+    last_ok, newest_run, malformed = read_signals_fetch(path)
     p = Path(path)
-    if p.exists():
-        for line in p.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-                at = datetime.fromisoformat(row["at"])
-                outcomes = row["series"]
-                if not isinstance(outcomes, dict):
-                    raise ValueError("series")
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-                malformed += 1
-                continue
-            if at.tzinfo is None:
-                at = at.replace(tzinfo=UTC)
-            newest_run = at if newest_run is None else max(newest_run, at)
-            for sid, outcome in outcomes.items():
-                if isinstance(outcome, dict) and outcome.get("ok"):
-                    prev = last_ok.get(sid)
-                    if prev is None or at > prev:
-                        last_ok[sid] = at
     tail = f", {malformed} malformed rows" if malformed else ""
 
     run_age_d = None if newest_run is None else (now - newest_run).total_seconds() / 86400.0

@@ -1088,6 +1088,73 @@ def test_pull_liveness_is_blind_to_a_dropped_series_by_construction(tmp_path):
     assert "econ pull live (any series, last vintage date)" not in failed
 
 
+def _econ_pull_live(db, fetch_log):
+    """`qa_econ_pull_live` alone, against a real archive and a real sidecar."""
+    qa._failures.clear()
+    store = Store(db)
+    try:
+        qa.qa_econ_pull_live(store.conn, NOW.replace(tzinfo=None), fetch_log=fetch_log)
+    finally:
+        store.close()
+    failed = set(qa._failures)
+    qa._failures.clear()
+    return failed
+
+
+NAME_PULL = "econ pull live (any series, last vintage date)"
+
+
+def test_a_working_fetch_with_nothing_in_the_archive_is_a_failure(tmp_path, capsys):
+    """EXP-1382. `signals.main` calls record_fetch BEFORE the locked DuckDB
+    write, so a fetch that succeeds and a write that never lands leaves ok
+    series in the sidecar and an empty econ_vintages — and diff_vintages
+    cannot explain it away, because on an empty table every fetched
+    observation is new. Until this branch existed the section simply returned
+    None: no line, no clock, and the pull could be dead from the day it was
+    installed with nothing in the output to miss."""
+    path = _fetch_log(tmp_path, [(0, dict.fromkeys(SERIES3, True))])
+    assert NAME_PULL in _econ_pull_live(tmp_path / "a.duckdb", path)
+    assert "INGEST NEVER LANDED" in capsys.readouterr().out
+
+
+def test_a_deployment_that_never_enabled_the_pull_stays_quiet(tmp_path, capsys):
+    """The other half of the same empty table, and the reason the exit is
+    silent rather than red: no sidecar run at all means nobody ever turned the
+    econ pull on. Failing that would red every archive that does not want the
+    feed — the alarm fatigue the whole file is written against."""
+    absent = str(tmp_path / "nope.jsonl")
+    assert NAME_PULL not in _econ_pull_live(tmp_path / "a.duckdb", absent)
+    assert NAME_PULL not in capsys.readouterr().out
+
+
+def test_a_pull_that_stopped_is_not_reported_twice(tmp_path):
+    """A sidecar whose newest run predates the cadence budget means the pull
+    is not running now, which `qa_signals_fetch` already reports as UNVERIFIED
+    against this very archive. Two red lines for one cause is noise."""
+    path = _fetch_log(tmp_path, [(qa.ECON_PULL_GAP_BUDGET_D + 3, dict.fromkeys(SERIES3, True))])
+    assert NAME_PULL not in _econ_pull_live(tmp_path / "a.duckdb", path)
+
+
+def test_a_pull_whose_fetches_all_failed_lands_nothing_legitimately(tmp_path):
+    """No successful fetch, so there was never anything to insert — the empty
+    table is explained. The dropped series is qa_signals_fetch's question, and
+    it asks it on the same file."""
+    path = _fetch_log(tmp_path, [(0, dict.fromkeys(SERIES3, False))])
+    assert NAME_PULL not in _econ_pull_live(tmp_path / "a.duckdb", path)
+
+
+def test_a_populated_archive_still_measures_the_cadence(tmp_path):
+    """Non-vacuity: the new branch is reachable only on an empty table, and a
+    live archive must go on being judged on its newest vintage DATE — with a
+    fresh sidecar sitting right there, which must not shortcut anything."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _vintages(store, {"DFEDTARU": [NOW.date() - timedelta(days=10)]})
+    store.close()
+    path = _fetch_log(tmp_path, [(0, dict.fromkeys(SERIES3, True))])
+    assert NAME_PULL in _econ_pull_live(db, path)
+
+
 def _fetch_log(tmp_path, runs):
     """runs: [(days_ago, {series: ok_bool})]"""
     p = tmp_path / "signals_fetch.jsonl"
