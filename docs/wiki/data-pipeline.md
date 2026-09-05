@@ -71,6 +71,50 @@ the measurement says it can be no tighter: over 30 days of hourly-stepped
 outage) — a 55x benign spread that no percentile budget survives.
 Production 2026-09-04: 211,257 candles over 3,872 ok sweeps.
 
+**The third derivation asks whether the check is EMITTED at all**
+(`tests/test_qa_silent_guards.py`, 2026-09-05). Coverage proves the
+question is asked; it does not prove the answer is loud, and a check
+behind a guard is not asked at all when the guard is false. So every
+named `check()` in qa.py is compared against the guards that gate it, and
+the guard is classified from its own SQL rather than declared:
+
+- **MONOTONE** — the guard's names trace only to an UNWINDOWED whole-table
+  count (`n_breadth`, `n_nws`, `n_poly`, `n_news`). Nothing in this repo
+  deletes archive rows (derived by the same file; venue retention purges
+  upstream, we only accumulate), so such a guard means "was this feed ever
+  turned on", is false only on a deployment that never enabled the writer,
+  and never reverts. Silence is the right answer to a deliberate choice.
+- **WINDOWED** — anything else. It empties on a dead writer, which is when
+  the check it gates matters most, so it must be DECLARED with what stays
+  loud: an emitting `else` branch (derived — the `orelse` must really
+  emit), or another check that reds on the same input.
+
+Its first run named **`poly swept universe not shrinking`** — the one
+guard in qa.py computed from a windowed read (`len(runs) >= 2`, the last
+10 days of `poly_market_stats`), and it had no else branch: the tripwire
+simply stopped being printed, with no line to miss. Two ways in, both
+silent before 2026-09-05: (a) the stats half of the poly walk goes inert
+(renamed column, raised insert) while the CLOB prices half keeps landing,
+so `poly prices fresh` stays green and `runs` empties; (b) the universe
+collapses BELOW the 500-market floor and stays there ten days, so the
+guard that exists to make the shrink RATIO meaningful consumes the
+collapse it was protecting against. The check written because a silent
+universe shrink went unnoticed could itself go missing unnoticed.
+
+The fix is the `qa_signals_fetch` shape against a different witness:
+`poly prices fresh (< 30h old)` decides it, because the same sweep writes
+both tables. Fresh prices with no settled stats run = the stats writer is
+inert -> **FAIL** (`TRIPWIRE INERT`), once `SKIP_MAX_AGE_H` has passed
+since the tripwire last actually MEASURED something. Stale prices = the
+sweep itself is down, already reported one line above -> **SKIP**, since
+two red lines for one cause is the `candles`/`ok_sweeps` rule. The 36h
+grace is loose on the measurement: over the 30 days to 2026-09-05 the
+trailing-10d window held median 9 and minimum 9 settled runs at every one
+of 721 hourly steps — never once below the 2 the guard needs — and the
+widest gap between consecutive run starts over all 64 runs is 26.4h.
+`ok_sweeps` is the other declared guard, and it needs no else: `sweep ran
+in last 36h` counts the same window and fails at zero.
+
 Four tables have no ingest stamp (`candles`, `trades`, `observations`,
 `watermarks`, plus `schema_meta` which has no time column at all) and
 four carry a witness rather than their own check: `markets` (written in
