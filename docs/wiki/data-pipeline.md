@@ -149,6 +149,58 @@ so once -> quiet. `read_signals_fetch` is now the single parser of that
 file, because the two questions asked of it (is a series being dropped /
 is the ingest landing at all) must not disagree about what it says.
 
+**All four derivations read qa.py as TEXT; the fifth asks whether what
+it prints is READ** (`tests/test_qa_prior_run.py`, EXP-1383, 2026-09-05).
+Measured across the tree, the answer was nothing: `hyxlab-qa.service` is
+`Type=oneshot` with no `OnFailure=`, no `ExecStopPost=`, no `Restart=`
+and no notifier; there is no `systemctl is-failed`, no `--failed` and no
+other reader of a unit's state anywhere; `read_batch_runs` is the only
+journal consumer in the project and `BATCH_RUN_BUDGET_H` covers
+`hyxlab-sweep` and `hyxlab-tradepass` only; `autoloop.sh` never invokes
+qa. So `sys.exit(1)` set a `failed` state nothing queried, and the `NOT a
+full pass` line exits 0 — for that one even systemd's own state read
+clean. `test_nothing_outside_qa_reads_qa` keeps the premise honest: if a
+real consumer is ever added, it fails and this section is rewritten.
+
+The consequence is structural, not a matter of taste: the only consumer
+available to QA is the NEXT QA run, so `qa_prior_run` is made one. It
+runs LAST, is handed this run's own findings, and reports the two states
+nothing else in the project can see:
+
+  * **the run did not HAPPEN** — the record is older than
+    `QA_RUN_GAP_BUDGET_H` = 36h. The timer is daily at 10:00Z with
+    `Persistent=true`, so consecutive records sit 24h apart and one
+    missed slot is 48h; 36h is the midpoint, tripping on a single miss
+    with 12h of slack for a late start or a boot catch-up.
+  * **something went unread and HEALED** — a name the prior run FAILED
+    or SKIPPED that is green today. The freshness checks are
+    instantaneous (EXP-1359), so a defect that repairs itself between
+    two 10:00Z runs leaves yesterday's line in a journal nobody reads
+    and today's run green.
+
+**Only the healed set, and the production steady state is what decided
+it.** `collect-skips` reports UNVERIFIED — hence SKIPPED — on every run
+of a healthy box, so "the prior run was partial" is the NORMAL verdict
+here and an arm that fired on it would FAIL every night forever. A name
+that is still open today is reported by today's own line and bounded by
+its own clock (`SKIP_MAX_AGE_H`); repeating it here would be a second
+opinion about a live state. What is repeated nowhere is the name that
+went quiet. The record carries `_own_findings()` — this run's failures
+MINUS its own prior-run report — so a healed failure is named exactly
+once and the naming does not re-arm off its own echo; the filter is
+re-read after the check rather than reused from before it, so the
+exclusion is live rather than an artifact of statement order (that was
+one of the two mutants the first shape survived).
+
+**What it cannot do**, stated so the next pass does not assume it: report
+its own non-execution. No in-process check can, which is why the gap arm
+reads the record's AGE instead of trusting that a run occurred — a
+crash-looping QA is named by the first run that completes, and until one
+does, no reader inside this process exists to name it. The record lives
+under the `run` key of `reports/qa/sections.json`; an unparseable or
+older-format one reads as "no prior run" rather than failing on the day
+the check ships.
+
 Four tables have no ingest stamp (`candles`, `trades`, `observations`,
 `watermarks`, plus `schema_meta` which has no time column at all) and
 four carry a witness rather than their own check: `markets` (written in

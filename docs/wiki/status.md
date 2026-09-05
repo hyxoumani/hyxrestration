@@ -1,67 +1,63 @@
 # Status & next steps (living page)
 
-Updated: **2026-09-05 (EARLY-RETURN PASS -- COVERAGE PROVED THE GUARD IS
-LOUD, NOT THAT THE SECTION STAYS.**
-Last pass named the successor: "the derivation covers checks gated by an
-`if`, and says nothing about a check whose SECTION never runs... worth a
-pass to ask whether every early `return` in qa.py is bounded the way the
-lock skip is, or write why the remaining ones cannot be." Asked, derived,
-and its first run found the one.
-**(1) THE FOURTH DERIVATION IS PATH-SENSITIVE, WHICH IS THE WHOLE
-DIFFICULTY.** `tests/test_qa_early_returns.py` requires every `return` in
-a `qa_*` section to have an EMITTER on its path -- a preceding statement
-in its own or an enclosing block, or the TEST of an enclosing `if`. That
-last clause is what credits `qa_stream`/`qa_archive`'s `if not
-_reachable(...)` exits, whose only emitter lives inside the condition; a
-statement-only reading would have demanded declarations for the two
-best-bounded exits in the file and drowned the finding. And an emitter
-inside a NESTED `if` is deliberately not credited: it fires on one branch
-while the return stays silent on the other, which is exactly the shape of
-this pass's own fix.
-**(2) IT NAMED `qa_econ_pull_live`'s EMPTY-TABLE RETURN** -- the one exit
-in qa.py that emitted nothing. Its guard IS monotone by the previous
-derivation, so on a deployment that never enabled the econ pull silence
-is right. But monotone is an argument about the GUARD, not about what
-else can empty the table: `signals.main` calls `record_fetch` BEFORE the
-locked DuckDB write, so a fetch that succeeds and a write that fails
-leaves ok series in the sidecar and nothing in `econ_vintages` --
-`diff_vintages` cannot explain it, because on an empty table every
-fetched observation is new. **An econ pull broken from the day it was
-installed printed no line at all**, and every econ check downstream read
-"cannot decide" (`pull_age_d` None -> `qa_signals_fetch` skips too).
-**(3) FIXED IN THE `qa_signals_fetch` SHAPE, AGAINST THE SIDECAR.** ok
-series fetched within `ECON_PULL_GAP_BUDGET_D` + empty table -> **FAIL**
-(`INGEST NEVER LANDED`); no sidecar run -> quiet, the feed was never
-enabled (the DECLARED case); a run older than the budget -> quiet, the
-pull is stopped and `qa_signals_fetch` already says so once. One parser
-for that file now (`read_signals_fetch`, shared by both readers), because
-two opinions about what it says is one opinion nobody runs.
-**Ten mutants red** (FAIL branch dead; branch deleted outright, caught by
-the witness derivation; sidecar freshness ignored; a failed fetch counted
-as a landed one; the witness dropped so it always reds; a new silent exit
-elsewhere; a window added to the econ guard, both undeclared and
-re-declared; the declaration deleted; the sidecar parsed a second time).
-Suite 1034 -> **1049**.
-**RUN AGAINST PRODUCTION:** PASS -- `econ pull live` 0d ago (vintage
-2026-09-05), branch inert as expected on a populated archive.
-**PROMOTED, no daemon restart** (`collector/qa.py` is outside the closure
-of streamd, shadow and simui), so shadow's live run `20260829T191841`
-survives -- 7d live. Pushed. Wiki: `data-pipeline.md` carries the fourth
-derivation and the decision table.
+Updated: **2026-09-05 (READBACK PASS -- FOUR DERIVATIONS READ qa.py AS
+TEXT; NOTHING ASKED WHETHER WHAT IT PRINTS IS READ.**
+Last pass named the successor: "worth a pass to ask what, if anything,
+consumes qa's exit code and its `NOT a full pass` line, and to write down
+why the answer is what it is." Asked, measured, and the answer is
+**nothing**.
+**(1) THE PREMISE IS MEASURED, NOT ASSUMED.** `hyxlab-qa.service` is
+`Type=oneshot` with no `OnFailure=`, no `ExecStopPost=`, no `Restart=`
+and no notifier; the tree holds no `systemctl is-failed`, no `--failed`
+and no other reader of a unit's state; `read_batch_runs` is the project's
+ONLY journal consumer and `BATCH_RUN_BUDGET_H` covers `hyxlab-sweep` and
+`hyxlab-tradepass` only; `autoloop.sh` never invokes qa. So `sys.exit(1)`
+set a `failed` state nothing queried -- and the `NOT a full pass` line
+exits 0, so for that one even systemd's own state read clean.
+`test_nothing_outside_qa_reads_qa` fails the day that stops being true.
+**(2) THE ONLY CONSUMER AVAILABLE IS THE NEXT RUN, SO IT IS MADE ONE.**
+`qa_prior_run` runs LAST, against this run's own findings, and reports
+the two states nothing else can see: a record older than 36h (**the run
+did not HAPPEN** -- one missed 10:00Z slot is 48h, normal cadence 24h, so
+36h is the midpoint), and a name the prior run FAILED or SKIPPED that is
+**green today**. The checks are instantaneous (EXP-1359), so anything
+that repairs itself between two 10:00Z runs otherwise leaves yesterday's
+line in an unread journal and today's run green.
+**(3) ONLY THE HEALED SET, AND THE LIVE RUN IS WHAT DECIDED IT.** The
+first shape failed on the prior verdict -- and production's steady state
+IS partial: `collect-skips` reports UNVERIFIED on every run of a healthy
+box, so that arm would have FAILED every night forever, which is the
+noise that trains an operator to stop reading QA. A name still open today
+is reported by today's own line and bounded by its own clock; what is
+repeated nowhere is the name that went quiet. The record carries
+`_own_findings()` (this run's failures minus its own report), re-read
+AFTER the check so the exclusion is a live filter rather than an artifact
+of statement order.
+**Nineteen mutants red**, including the two the first shape survived (the
+exclusion filter dead-coded by ordering; the record reusing the pre-check
+list). Suite 1049 -> **1071**.
+**RUN AGAINST PRODUCTION:** PASS twice -- first run upgraded the
+older-format record silently, second read `['collect-skips'] still open
+today, reported by their own lines`. The steady state is quiet.
+**PROMOTED, no daemon restart** (no daemon's code moved), so shadow's
+live run `20260829T191841` survives -- 7d live. Pushed. Wiki:
+`data-pipeline.md` carries the fifth derivation, its premise and its
+limit.
 NEXT PASS: (1) **THE 10TH PANEL DAY IS THE BINDING CONSTRAINT** for 12Z's
 sign test; live run `20260829T191841` reaches it ~09-08 if nothing stops
-it. (2) The successor this pass opens: all four derivations read qa.py as
-TEXT. None of them asks whether a check that is printed is ever READ --
-`hyxlab-qa` runs at 10:00Z into the journal, and a WATCH line or a
-SKIPPED-section summary that nobody sees is the same silence one level
-out. Worth a pass to ask what, if anything, consumes qa's exit code and
-its `NOT a full pass` line, and to write down why the answer is what it
-is. (3) The shell scripts (`promote.sh`, `restart_decision.sh`,
-`autoloop.sh`, `shadow-mem.sh`) still have no lint equivalent;
-`restart_decision.sh` gates every daemon restart. Decide whether it joins
-the gate or write why not. (4) The width-24 econ maker bracket needs
-2026-09-12 for a second reading; the atlas quoted tier wants settled
-markets ~2.1M. Both data-gated.
+it. (2) The successor this pass opens, and it is the honest one: the new
+line is read by nothing either. That is a strictly smaller claim (one
+unread line instead of a whole unread run) but the same shape one level
+out, and the gap arm cannot fire while QA is not running at all. Worth a
+pass to ask whether any signal LEAVES this box today -- and if none does,
+to write down what the smallest honest egress would be (a file the
+autoloop reads? a `WantedBy` on a checker unit?) rather than adding a
+fifth reader inside the same process. (3) The shell scripts
+(`promote.sh`, `restart_decision.sh`, `autoloop.sh`, `shadow-mem.sh`)
+still have no lint equivalent; `restart_decision.sh` gates every daemon
+restart. Decide whether it joins the gate or write why not. (4) The
+width-24 econ maker bracket needs 2026-09-12 for a second reading; the
+atlas quoted tier wants settled markets ~2.1M. Both data-gated.
 NOTHING IS USER-GATED THIS PASS.**
 
 ---
