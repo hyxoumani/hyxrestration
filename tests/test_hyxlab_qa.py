@@ -448,6 +448,94 @@ def test_single_sweep_run_does_not_trip(tmp_path):
     assert "poly swept universe not shrinking" not in failed
 
 
+def _aged_poly_state(tmp_path, hours):
+    """Pretend the tripwire last actually MEASURED something `hours` ago, so
+    the escalation clock is testable without waiting a day and a half."""
+    (tmp_path / "sections.json").write_text(
+        json.dumps(
+            {
+                qa._POLY_UNIVERSE_SECTION: {
+                    "first_seen": (NOW - timedelta(hours=hours)).replace(tzinfo=None).isoformat(),
+                    "last_ok": (NOW - timedelta(hours=hours)).replace(tzinfo=None).isoformat(),
+                }
+            }
+        )
+    )
+
+
+def test_inert_stats_writer_is_not_silent(tmp_path, capsys):
+    """EXP-1381, the defect this branch exists for: the guard reads a
+    WINDOWED slice, so the stats half of the walk going inert empties `runs`
+    and the tripwire simply stopped being printed — while `poly prices fresh`
+    stayed green off the CLOB half of the same sweep."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    store.insert_poly_prices([("t0", "pm0", "yes", NOW - timedelta(hours=1), 0.5)])
+    store.close()
+    _aged_poly_state(tmp_path, qa.SKIP_MAX_AGE_H + 1)
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly prices fresh (< 30h old)" not in failed  # the sweep looks alive
+    assert "poly swept universe not shrinking" in failed
+    assert "TRIPWIRE INERT" in capsys.readouterr().out
+
+
+def test_collapse_below_the_ratio_floor_is_not_silent(tmp_path, capsys):
+    """The sharper half: the floor exists to make a RATIO meaningful, so a
+    universe that collapsed under it and stayed there ten days would consume
+    the very check written to catch a collapse."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _poly_runs(store, {72: 400, 48: 410, 24: 30})
+    store.close()
+    _aged_poly_state(tmp_path, qa.SKIP_MAX_AGE_H + 1)
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly swept universe not shrinking" in failed
+    assert f"under the {qa.POLY_UNIVERSE_MIN_PRIOR}" in capsys.readouterr().out
+
+
+def test_unevaluable_tripwire_is_a_bounded_skip_before_it_is_a_failure(tmp_path, capsys):
+    """A fresh archive that has swept prices but settled no run yet is
+    genuinely undecidable on sight — the qa_signals_fetch shape. It must SKIP
+    and start a clock, not red on the first day of its own life."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    store.insert_poly_prices([("t0", "pm0", "yes", NOW - timedelta(hours=1), 0.5)])
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly swept universe not shrinking" not in failed
+    out = capsys.readouterr().out
+    assert "SKIP  poly swept universe not shrinking" in out
+    assert "escalates to FAIL" in out
+    assert qa._POLY_UNIVERSE_SECTION in qa._skipped
+
+
+def test_a_stopped_sweep_is_reported_once_not_twice(tmp_path, capsys):
+    """Prices stale means the sweep itself is down, which `poly prices fresh`
+    already reds. The tripwire has nothing to add and must not add a second
+    red line for one cause — the `candles`/`ok_sweeps` nesting rule."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    store.insert_poly_prices([("t0", "pm0", "yes", NOW - timedelta(hours=40), 0.5)])
+    store.close()
+    _aged_poly_state(tmp_path, qa.SKIP_MAX_AGE_H * 10)
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly prices fresh (< 30h old)" in failed
+    assert "poly swept universe not shrinking" not in failed
+    assert "looks stopped too" in capsys.readouterr().out
+
+
+def test_a_measuring_tripwire_records_its_own_completion(tmp_path):
+    """The escalation clock must measure "last MEASURED", not "last seen" —
+    conflating them is how a check that never evaluates borrows a date it
+    never earned (the _last_ok rule)."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _poly_runs(store, {72: 700, 48: 720, 24: 710})
+    store.close()
+    _run(None, tmp_path, archive=db)
+    assert qa._last_ok(qa._POLY_UNIVERSE_SECTION) is not None
+
+
 def test_archive_locked_by_live_writer_is_not_a_failure(tmp_path, monkeypatch):
     """The poly sweep holds the write lock for hours; QA colliding with
     it must skip, not alarm — alarm fatigue buries real failures."""

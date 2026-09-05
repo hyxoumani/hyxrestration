@@ -102,6 +102,15 @@ ECON_PULL_GAP_BUDGET_D = 4
 SIGNALS_FETCH_LOG = "data/signals_fetch.jsonl"
 _SIGNALS_FETCH_SECTION = "signals-fetch"
 
+# EXP-1381 — the poly enumeration tripwire's own liveness. Its guard reads a
+# WINDOWED slice of poly_market_stats, so it stops being emitted at all on
+# exactly the input a dead stats writer produces (see qa_archive). The floor
+# below is what makes a shrink RATIO meaningful, and it is the sharper half of
+# the same defect: a universe that collapsed under it would silence the check
+# written to catch a collapse.
+_POLY_UNIVERSE_SECTION = "poly-universe"
+POLY_UNIVERSE_MIN_PRIOR = 500
+
 # EXP-960 — the fade window, in UTC hours. Live trading reads the snapshot
 # tape 23:00-04:00Z (research/lowt-window-structure: KXLOWT candidates appear
 # almost exclusively then), so a capture hole inside it is worth strictly more
@@ -556,7 +565,7 @@ def _largest_gap(conn, table: str, col: str, lo: datetime) -> tuple | None:
 
 
 def _check_freshness(conn, name: str, table: str, col: str, now: datetime, noun: str) -> None:
-    """"Is this writer running NOW", for one 5-min writer of the archive.
+    """ "Is this writer running NOW", for one 5-min writer of the archive.
 
     The instantaneous half of the pair `_check_continuity` completes: this
     one cannot see an outage that HEALED before QA looked, and that one
@@ -799,7 +808,36 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
         # to 2026-08-22 spanned 16,391-16,952, a 3.4% band, so 0.5 could only
         # ever catch a halving. 0.75 catches a quarter of the universe going
         # missing and still sits far outside the observed spread.
-        if len(runs) >= 2 and (prior := max(c for _, c in runs[1:])) > 500:
+        #
+        # THE ELSE BRANCH IS THE POINT (EXP-1381). Until 2026-09-05 this guard
+        # had none, and it is the one guard in qa.py computed from a WINDOWED
+        # read: `n_poly`, `n_breadth`, `n_nws`, `n_news` gate on a whole-table
+        # count that only ever goes up (nothing in this codebase deletes from
+        # an archive table), so they can be false only on a deployment that
+        # never enabled the writer. `runs` is the last 10 days, so it empties
+        # on precisely the input this check exists to notice — and then the
+        # tripwire disappeared from the output entirely, with no line to miss.
+        # Two ways in, both silent before today:
+        #   (a) the stats half of the walk goes inert (a renamed column, a
+        #       raised insert) while the CLOB prices half keeps landing, so
+        #       `poly prices fresh` stays green and `runs` empties;
+        #   (b) the universe collapses BELOW the floor and stays there ten
+        #       days, so the guard that exists to make the ratio meaningful
+        #       consumes the collapse it was protecting against.
+        # `poly prices fresh (< 30h old)` above is the independent witness
+        # that decides the skip, the qa_signals_fetch shape exactly: the same
+        # sweep writes both tables, so prices fresh + no settled runs = the
+        # stats writer is inert (FAIL, once a cycle has had time to run);
+        # prices stale = the sweep is stopped, already named once above, and a
+        # second red line for one cause is noise (SKIP).
+        #
+        # 36h of grace is SKIP_MAX_AGE_H, and it is loose on the measurement:
+        # over the 30 days to 2026-09-05 the trailing-10d window held median 9
+        # and minimum 9 settled runs at every one of 721 hourly steps — it was
+        # never once below the 2 this guard needs — and the widest gap between
+        # consecutive run starts across all 64 runs is 26.4h.
+        prior = max((c for _, c in runs[1:]), default=0)
+        if len(runs) >= 2 and prior > POLY_UNIVERSE_MIN_PRIOR:
             last_ts, last = runs[0]
             check(
                 "poly swept universe not shrinking",
@@ -807,6 +845,41 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
                 f"last completed sweep {last_ts:%Y-%m-%d %H:%MZ} enumerated {last}"
                 f" markets vs prior-10d peak {prior}",
             )
+            _record_ok(_POLY_UNIVERSE_SECTION, now)
+        else:
+            name = "poly swept universe not shrinking"
+            why = (
+                f"only {len(runs)} settled sweep run(s) in the last 10 days"
+                f" (need 2, {RUN_SETTLE_H}h settle)"
+                if len(runs) < 2
+                else f"the prior-10d peak is {prior} markets, under the"
+                f" {POLY_UNIVERSE_MIN_PRIOR} floor a shrink ratio needs"
+            )
+            waited = _skip_age_h(_POLY_UNIVERSE_SECTION, now)
+            if page < 30 and waited is not None and waited >= SKIP_MAX_AGE_H:
+                check(
+                    name,
+                    False,
+                    f"TRIPWIRE INERT: {why}, while poly_prices is {page:.1f}h old so the"
+                    f" sweep IS running — poly_market_stats is not being written, and the"
+                    f" enumeration-shrink tripwire has measured nothing for {waited:.1f}h"
+                    f" (max {SKIP_MAX_AGE_H:g}h)",
+                )
+            else:
+                _note_seen(_POLY_UNIVERSE_SECTION, now)
+                print(
+                    f"SKIP  {name} — UNVERIFIED: {why}"
+                    + (
+                        f"; poly_prices is {page:.1f}h old so the sweep looks stopped too and"
+                        " that is already reported above"
+                        if page >= 30
+                        else f"; the sweep IS running (poly_prices {page:.1f}h old), so this"
+                        f" escalates to FAIL if no run settles within {SKIP_MAX_AGE_H:g}h"
+                        + (f" (waiting {waited:.1f}h)" if waited is not None else "")
+                    ),
+                    flush=True,
+                )
+                _skipped.append(_POLY_UNIVERSE_SECTION)
 
     # Signal feeds (B4): once a feed has ever pulled, its cadence must
     # hold. Guarded on non-empty so pre-first-pull archives stay green.

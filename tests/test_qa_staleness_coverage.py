@@ -31,9 +31,11 @@ window. `sweep ran in last 36h` counts the window and FAILS at zero;
 the poly swept-universe tripwire guards on `len(runs) >= 2` and SKIPS at
 zero, which is precisely what a dead sweep produces. No static test can
 tell those apart, so the shape is dropped and both tables carry a
-declared WITNESS instead. The derivation therefore errs toward naming a
-table that IS watched (declare it) and never toward missing one that is
-not.
+declared WITNESS instead. (That the skip is now PRINTED rather than
+silent is a separate derivation — tests/test_qa_silent_guards.py — and it
+does not make the shape an age check.) The derivation therefore errs
+toward naming a table that IS watched (declare it) and never toward
+missing one that is not.
 
 WHAT THIS STILL DOES NOT CLAIM. That a credited reader FAILS when its
 table is stale — only that the question is asked. Whether the answer is
@@ -118,7 +120,10 @@ WITNESS: dict[str, str] = {
         "reads max(poly_prices.ts). Measured 2026-09-04 the two move together "
         "(22.0h, the same sweep). Its OWN reader — the swept-universe "
         "tripwire — is explicitly not the witness: it guards on len(runs) >= "
-        "2 and so goes quiet exactly when the sweep dies."
+        "2, so it measures nothing exactly when the sweep dies. Since "
+        "2026-09-05 that guard at least SAYS so (a bounded SKIP escalating "
+        "to FAIL, see tests/test_qa_silent_guards.py), but a skip is not an "
+        "age check and poly_prices remains the witness."
     ),
     "series": (
         "Upserted whole by the 06:10Z sweep; its liveness IS the sweep's, "
