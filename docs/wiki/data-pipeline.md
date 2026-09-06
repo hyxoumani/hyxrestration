@@ -488,6 +488,40 @@ time (a default argument would bind the module-load `STATE` and silently
 defeat the suite's monkeypatch; that is how the first version broke 29
 existing tests).
 
+**Unit drift — the second section, added 2026-09-06.** The unit-gate
+pass named this successor: `test_systemd_units.py` greps the *repo's*
+unit files, `test_systemd_verify.py` parses them, `promote.sh` copies
+them into `~/.config/systemd/user/` and never looks back. Between two
+promotes the installed set is owned by nobody. The obvious check is
+`diff scripts/systemd/x ~/.config/systemd/user/x`, and it reports CLEAN
+in three of the four states that matter. All four were measured against
+a throwaway `hyxprobe-drift.service` — never a hyxlab unit:
+
+| verdict | field | what a file diff sees |
+| --- | --- | --- |
+| `SHADOWED` | `FragmentPath` | clean — unit lookup walks a search path, so a copy in a higher-priority directory is what loaded. Both diffed files are correct; neither is running. |
+| `STALE-IN-MEMORY` | `NeedDaemonReload` | clean — active unit, fragment edited without `daemon-reload`: `show` still reports `Description=probe` while the file says `EDITED BY HAND`. repo == disk, manager runs neither. This is what a promote whose reload failed leaves behind. |
+| `DROP-IN` | `DropInPaths` | clean — `<unit>.d/*.conf` with `ExecStart=` + `ExecStart=/bin/echo hijacked` replaced the command outright, fragment byte-identical. A live practice on this box (`hylshi-watchdog.service.d`). |
+| `DRIFT` | fragment text | the one state it does catch. |
+
+Two measured complements keep either arm from being redundant: a drop-in
+added *before* a reload reads `DropInPaths=` empty with
+`NeedDaemonReload=yes`, so each covers the other's blind window; and an
+**inactive** unit always reads `NeedDaemonReload=no`, because systemd
+garbage-collects the unreferenced unit and re-reads the file on demand —
+not a hole, since nothing stale is in memory there, and the text
+comparison is the whole answer for those units.
+
+The set is globbed to all **21 files promote installs**, not the 12
+services `discover_units` returns: a hand-edited *timer* changes when
+everything downstream runs and appears in no service. `INSTALL_DIR` is
+asserted against promote.sh's own `cp` line, because if the destination
+moved every verdict would silently become `SHADOWED` against the old
+path — a checker crying wolf on a healthy box. An uninstalled unit reads
+`SKIP`, not a match: `judge` already prints `UNLOADED` for it, and two
+lines about one fact train the reader to skim. Twelve mutants red. First
+run: **21/21 clean**, so its value is prospective.
+
 Nine mutants red. A tenth defect was found by promote.sh, not by the
 pre-commit run: the premise scan read raw text and matched the word
 "webhook" in `health.py`'s **own docstring** — the file documenting the

@@ -1,5 +1,64 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-06 (UNIT-DRIFT PASS -- promote.sh COPIED THE UNITS OUT
+AND NOTHING EVER READ THEM BACK; THREE OF THE FOUR DRIFT STATES ARE
+INVISIBLE TO A FILE DIFF.**
+Last pass's item (3), taken because item (1) is still data-gated: the
+**10th panel day lands ~09-08** (7 of 10 today, live run `20260829T191841`,
+day 8 uninterrupted, unchecked again by design).
+**(1) THE INSTALLED SET WAS OWNED BY NOBODY.** `test_systemd_units.py`
+greps the REPO's unit files, `test_systemd_verify.py` parses them,
+`promote.sh` copies them to `~/.config/systemd/user/` and never looks back.
+**(2) THE OBVIOUS CHECK IS THE WRONG CHECK.** `diff repo installed` reports
+CLEAN in three of the four states that matter, each measured against a
+throwaway `hyxprobe-drift.service` (never a hyxlab unit): **SHADOWED** --
+unit lookup walks a search path, so a copy in a higher-priority dir is what
+loaded while both diffed files are correct and neither is running
+(`FragmentPath` is the only field that names what was read);
+**STALE-IN-MEMORY** -- an ACTIVE unit whose fragment was edited without
+`daemon-reload` keeps reporting `Description=probe` while the file says
+`EDITED BY HAND`, i.e. repo == disk and the manager runs NEITHER, which is
+exactly what a promote whose reload failed leaves behind; **DROP-IN** --
+`<unit>.d/*.conf` replaced `ExecStart` outright with the fragment
+byte-identical, and drop-ins are a live practice on this box
+(`hylshi-watchdog.service.d`). Only **DRIFT** is what a diff catches.
+**(3) THE COMPLEMENTS WERE MEASURED, SO NO ARM IS REDUNDANT.** A drop-in
+added before a reload reads `DropInPaths=` empty + `NeedDaemonReload=yes`
+(each arm covers the other's blind window); an INACTIVE unit always reads
+no-reload-needed, because systemd GCs the unreferenced unit and re-reads on
+demand -- not a hole, nothing stale is in memory there.
+**(4) IT IS A SECTION OF `collector.health`, NOT A SIXTH CHECKER** -- the
+egress pass's finding, applied to its own successor: another verdict
+nothing reads is not a check. Set globbed to all **21 files promote
+installs**, not the 12 services (a hand-edited TIMER changes when
+everything downstream runs and appears in no service); `INSTALL_DIR`
+asserted against promote.sh's own `cp` line, since a moved destination
+would turn every verdict into `SHADOWED` on a healthy box.
+**Twelve mutants red** (one survivor fixed in the CODE, not the test: the
+empty-`FragmentPath` branch was already covered by the directory check --
+`Path("").parent` is `.` -- so it collapsed into one arm whose only extra
+job, the wording, is now what the test pins).
+**FIRST RUN: 21/21 CLEAN.** The gate's value is prospective; the honest
+statement of this pass is that it found no live defect. Suite 1131 ->
+**1147**. **PROMOTED, no daemon restart** (no daemon imports
+`collector.health`) -- shadow's `20260829T191841` survives, day 8. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY, ~09-08** -- now the binding
+constraint, check it FIRST. (2) Still open, carried deliberately: the
+digest is read by an AGENT every six hours, which is a real consumer but
+not an alarm -- nothing wakes anyone if the box degrades between two
+autoloop iterations, and if the autoloop dies the digest dies with its only
+reader. Worth a pass to decide whether that is coverable from inside the
+box at all or is inherently user-gated (a destination), and to WRITE DOWN
+which. (3) New, opened by this pass: drift is now detected but not
+REPAIRED, and the repair (`cp` + `daemon-reload`) lives only inside
+promote.sh's happy path -- a `--units-only` re-install, or a stated
+decision not to automate it. (4) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled
+markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-06 (EGRESS PASS -- THE OLDEST OPEN QUESTION, CARRIED
 THREE PASSES: DOES ANY SIGNAL LEAVE THIS BOX? MEASURED -- ONE DOES, AND IT
 CARRIES ONLY PROSE.**
