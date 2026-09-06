@@ -232,9 +232,17 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         _failures.append(name)
 
 
-def _load_state() -> dict:
+def _load_state(path: Path | None = None) -> dict:
+    """The record, or {} if it is absent or unreadable. `path` is a parameter
+    because STATE is RELATIVE to the working directory and the dev tree and the
+    stable worktree therefore keep SEPARATE records (measured 2026-09-06: the
+    dev copy read 09-05T20:25Z from a hand run while production's read
+    09-06T10:00Z). A reader outside this process must be able to name the one
+    the timer actually writes; see `collector.health`."""
+    # Resolved at CALL time, never as a default argument: STATE is monkeypatched
+    # by the suite and a default would bind the module-load value forever.
     try:
-        return json.loads(STATE.read_text())
+        return json.loads((STATE if path is None else path).read_text())
     except (OSError, ValueError):
         return {}
 
@@ -1874,9 +1882,11 @@ class PriorRun:
     skipped: tuple[str, ...]
 
 
-def _prior_run() -> PriorRun | None:
+def _prior_run(state: dict | None = None) -> PriorRun | None:
     """The last recorded run, or None if there is none — one parser for the
-    record, so nothing can hold a second opinion about what it says.
+    record, so nothing can hold a second opinion about what it says. `state`
+    lets a reader outside this process pass a record loaded from another
+    tree's path without reimplementing the parse.
 
     A record written by an older qa.py, a truncated file or a hand-edited
     timestamp all read as "no prior run": the alternative is failing on the
@@ -1884,7 +1894,7 @@ def _prior_run() -> PriorRun | None:
     timestamps are read as UTC — sections.json has carried both forms since
     before this record shared it.
     """
-    entry = _load_state().get(QA_RUN_SECTION)
+    entry = (_load_state() if state is None else state).get(QA_RUN_SECTION)
     if not isinstance(entry, dict):
         return None
     try:

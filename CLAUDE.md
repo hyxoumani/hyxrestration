@@ -54,6 +54,12 @@ turn, arm the next one (running background task, or ScheduleWakeup
 SYSTEMD_UNIT_PATH=$PWD/scripts/systemd:/etc/systemd/user:/usr/lib/systemd/user \
   systemd-analyze verify --user scripts/systemd/hyxlab-*
 
+# Unit + QA digest: what the manager and QA already decided, re-run nothing.
+# Reads systemd's persisted state and QA's record FROM THE UNIT'S OWN
+# WorkingDirectory -- qa.STATE is relative, so the dev tree and the stable
+# worktree keep separate records (tests/test_health_digest.py).
+.venv/bin/python -m collector.health
+
 # Archive health / one collection cycle / backtest replay
 .venv/bin/python -m collector.sweep --doctor
 .venv/bin/python -m collector.collect --once

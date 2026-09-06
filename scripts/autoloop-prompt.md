@@ -1,6 +1,9 @@
 Run one iteration of autonomous development per CLAUDE.md Working Mode.
 
-Cold-start: read docs/wiki/status.md first, then git log --oneline -15.
+Cold-start: read docs/wiki/status.md first, then git log --oneline -15,
+then run `.venv/bin/python -m collector.health` — the machine-written
+digest of what the manager and QA already decided (it re-runs no check
+and opens no DB). Anything it flags outranks the ladder below.
 Pick the highest-value item: the execution queue if non-empty, else the
 investigation ladder — (1) re-run standing reports (divergence, maker
 bracket, atlas, QA) on newly accumulated data and chase drift; (2)
