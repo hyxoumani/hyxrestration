@@ -20,8 +20,10 @@ reason `qa_record_path` exists at all.
 from __future__ import annotations
 
 import ast
+import io
 import json
 import subprocess
+import tokenize
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -345,23 +347,57 @@ def test_the_digest_opens_no_database() -> None:
     assert "connect" not in (REPO / "collector/health.py").read_text().replace("connect_retry", "")
 
 
+def _code_only(path: Path) -> str:
+    """A file's CODE, with comments and string literals removed.
+
+    The naive version of this scan read raw text and matched the word "webhook"
+    in `health.py`'s own docstring -- the file that DOCUMENTS the measurement
+    became the counter-example to it, the moment it was committed. That is the
+    self-match trap the ops rules already name for `pkill -f`. Stripping
+    comments and literals asks the question of the code instead, which is what
+    "does anything notify" actually means; a notifier needs an import and a
+    call, neither of which survives as a comment.
+    """
+    src = path.read_text(errors="ignore")
+    if path.suffix != ".py":
+        return "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
+    out = []
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type not in (tokenize.COMMENT, tokenize.STRING):
+            out.append(tok.string)
+    return " ".join(out)
+
+
 def test_nothing_in_this_tree_notifies_off_box() -> None:
     """The measurement the digest's design rests on: no smtp, no webhook, no
     mail, no push client anywhere. The day one appears, this pass's conclusion
-    ("the git push is the whole egress") needs re-deciding rather than inheriting."""
+    ("the git push is the whole egress") needs re-deciding rather than
+    inherited. Asserted over CODE -- see `_code_only` for why that matters."""
     files = subprocess.run(
         ["git", "ls-files", "*.py", "*.sh", "*.service", "*.timer"],
         cwd=REPO, capture_output=True, text=True, check=True,
     ).stdout.split()
     hits = []
     for f in files:
-        if f.startswith(("phase0/", "tests/")):
+        if f.startswith("phase0/"):
             continue
-        low = (REPO / f).read_text(errors="ignore").lower()
+        low = _code_only(REPO / f).lower()
         for token in ("smtplib", "sendmail", "webhook", "ntfy.sh", "pushover", "api.telegram", "hooks.slack"):
             if token in low:
                 hits.append((f, token))
     assert not hits, f"something notifies off-box now; the digest's premise has changed: {hits}"
+
+
+def test_the_premise_scan_still_sees_a_real_notifier(tmp_path: Path) -> None:
+    """The stripper must not have turned the scan into something that passes by
+    matching nothing. A notifier in CODE is still caught; the same word in a
+    docstring is not."""
+    real = tmp_path / "real.py"
+    real.write_text("import smtplib\nsmtplib.SMTP('x')\n")
+    assert "smtplib" in _code_only(real)
+    prose = tmp_path / "prose.py"
+    prose.write_text('"""No smtplib here, only talk of it."""\n# and a webhook comment\nx = 1\n')
+    assert "smtplib" not in _code_only(prose) and "webhook" not in _code_only(prose)
 
 
 def test_checker_output_cannot_ride_the_push() -> None:
