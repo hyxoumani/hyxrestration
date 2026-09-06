@@ -1,3 +1,9 @@
+# shellcheck shell=bash
+# ^ This file has no shebang ON PURPOSE -- it is sourced by promote.sh, never
+#   executed -- so shellcheck cannot infer the dialect (SC2148) and the
+#   directive states it instead. The functions below use bash-only syntax
+#   ([[ ]], local, (( ))); a `sh` reading of them is not a thing that works.
+#
 # Restart decision for promote.sh (EXP-1276). Sourced, not executed, so
 # tests can exercise the decision logic without touching live daemons.
 #
@@ -91,10 +97,10 @@ young_run_guard() {
 # unit_age_s UNIT -> seconds since the unit last entered 'active', or ""
 # when systemd cannot say (inactive, never started, no user manager).
 unit_age_s() {
-    local ts now then
+    local ts now started
     ts=$(systemctl --user show "$1" -p ActiveEnterTimestamp --value 2>/dev/null) || return 0
     [[ -n "$ts" && "$ts" != "n/a" ]] || return 0
-    then=$(date -d "$ts" +%s 2>/dev/null) || return 0
+    started=$(date -d "$ts" +%s 2>/dev/null) || return 0
     now=$(date +%s)
-    echo $(( now - then ))
+    echo $(( now - started ))
 }

@@ -14,7 +14,8 @@ ERRORS=""
 
 run_task() {
   local TASK_FILE="$1"
-  local TASK_NAME=$(basename "$TASK_FILE" .md)
+  local TASK_NAME
+  TASK_NAME=$(basename "$TASK_FILE" .md)
   local CHECKS_PASSED=0
   local CHECKS_TOTAL=0
   local TASK_ERRORS=""

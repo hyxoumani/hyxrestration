@@ -43,6 +43,11 @@ turn, arm the next one (running background task, or ScheduleWakeup
 # omits whatever is added next (tests/test_lint_scope.py enforces both).
 .venv/bin/ruff check .
 
+# Shell lint (shellcheck, warning+). The file set is DISCOVERED, never listed --
+# an enumeration cannot fail when a new script appears (tests/test_shell_lint.py
+# enforces the command, the set and the severity floor).
+.venv/bin/shellcheck --severity=warning $(git ls-files '*.sh')
+
 # Archive health / one collection cycle / backtest replay
 .venv/bin/python -m collector.sweep --doctor
 .venv/bin/python -m collector.collect --once
