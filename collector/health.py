@@ -66,6 +66,24 @@ the unit set is discovered from `scripts/systemd/` -- the repo's canonical
 copies, the set `promote.sh` installs -- a unit committed but never promoted
 reads UNLOADED rather than vanishing from the digest.
 
+**(5) THE INSTALLED UNITS WERE OWNED BY NOBODY, AND A FILE DIFF CANNOT
+ANSWER IT.** Added 2026-09-06 as the unit-gate pass's named successor:
+`test_systemd_units.py` greps the REPO's unit files and
+`test_systemd_verify.py` parses them, `promote.sh` copies them into
+`~/.config/systemd/user/` and never looks back, so between two promotes
+nothing checks that what the manager LOADED is what the repo contains.
+The obvious check -- diff the repo file against the installed file -- is
+clean in three of the four states that matter, each measured against a
+throwaway probe unit (never a hyxlab unit): a copy in a higher-priority
+search-path directory is what actually loaded while both diffed files are
+correct (`FragmentPath`); an ACTIVE unit whose fragment was edited without
+a `daemon-reload` keeps reporting the OLD text -- what a promote whose
+reload failed leaves behind -- and only `NeedDaemonReload=yes` says so;
+and a `<unit>.d/*.conf` drop-in replaces `ExecStart` outright with the
+fragment byte-identical (`DropInPaths`), which is a live practice on this
+box. Reported as a second section rather than as a sixth checker, for the
+reason this module exists: another verdict nothing reads is not a check.
+
 The digest opens no DuckDB. A health report that took the archive lock to
 say things look fine would be able to hurt the thing it watches (ops rule,
 mistakes #20); everything here comes from the manager and from one JSON
@@ -100,7 +118,16 @@ PROPS = (
     "LastTriggerUSec",
     "NextElapseUSecRealtime",
     "WorkingDirectory",
+    "FragmentPath",
+    "DropInPaths",
+    "NeedDaemonReload",
 )
+
+# Where `promote.sh` installs: `cp "$DEV"/scripts/systemd/hyxlab-* ~/.config/systemd/user/`.
+# The drift arms compare the manager's loaded unit against this repo's copies, and
+# `hyxlab-autoloop.service` sets `WorkingDirectory` to the DEV tree -- the same tree
+# promote.sh copies FROM -- so the digest's reader compares against the right source.
+INSTALL_DIR = Path.home() / ".config/systemd/user"
 
 # The unit whose record carries qa's verdict, and the record itself. `QA_STATE`
 # is imported rather than spelled out so the path cannot drift from the writer's.
@@ -124,6 +151,20 @@ LATE_SLACK_S = 300.0
 # States that mean the unit is executing right now. `activating` is the one that
 # matters: a Type=oneshot service sits in it for its whole run.
 BUSY = ("active", "activating", "reloading", "deactivating")
+
+
+@dataclass(frozen=True)
+class UnitDrift:
+    """One unit file's agreement with the repo. `state` is the word; `detail` says
+    what the manager reported that the repo does not contain."""
+
+    unit: str
+    state: str
+    detail: str
+
+    @property
+    def ok(self) -> bool:
+        return self.state == "OK"
 
 
 @dataclass(frozen=True)
@@ -234,6 +275,98 @@ def judge(unit: str, svc: dict[str, str], timer: dict[str, str] | None, now: flo
     return UnitHealth(unit, "OK", f"last ran {_age(last, now)}")
 
 
+def discover_unit_files() -> list[str]:
+    """Every vendored unit file -- services AND timers.
+
+    `discover_units` answers "what runs"; drift asks the question of every FILE
+    `promote.sh` installs, which is 21 names, not 12. Globbed for the same reason:
+    a list cannot fail on the day a unit is added to it.
+    """
+    return sorted(f.name for f in UNIT_DIR.glob("hyxlab-*") if f.is_file())
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text()
+    except OSError:
+        return None
+
+
+def judge_drift(unit: str, props: dict[str, str], loaded_text: str | None, vendored: str) -> UnitDrift:
+    """Whether the unit the MANAGER holds is the unit this repo contains.
+
+    Pure, like `judge`: the four semantics below were measured on this box and
+    are asserted against strings, not against what systemd happens to hold at
+    test time.
+
+    Arms in severity order -- most severe is "the manager is running something
+    the repo does not contain at all":
+
+    **SHADOWED.** `FragmentPath` is the file systemd actually loaded. Unit
+    lookup walks a search path, so a copy in a higher-priority directory wins
+    and the installed copy is never read -- while a `diff repo ~/.config/...`
+    reports CLEAN, because both files it compares are correct and neither is
+    the one running. Only the manager can answer which file it read.
+
+    **STALE-IN-MEMORY.** Measured on an ACTIVE probe unit: edit the fragment on
+    disk without `daemon-reload` and `systemctl show` keeps reporting the OLD
+    text (`Description=probe` while the file said `EDITED BY HAND`), with
+    `NeedDaemonReload=yes`. So repo == disk can be true while the manager runs
+    older text -- the exact state a `promote.sh` whose `daemon-reload` failed
+    would leave behind, and the one state no file comparison can see. Note the
+    complement, also measured: for an INACTIVE unit the field always reads
+    `no`, because systemd garbage-collects the unreferenced unit and re-reads
+    the file on demand. That is not a hole -- an inactive unit has nothing
+    stale in memory to be wrong about.
+
+    **DROP-IN.** `DropInPaths` lists `<unit>.d/*.conf` files that override
+    directives without touching the fragment; an `ExecStart=` reset there
+    replaces the command entirely (measured: `/bin/true` became
+    `/bin/echo hijacked` with the fragment untouched). Invisible to every
+    fragment-text check in the tree, and a live practice on this box --
+    `hylshi-watchdog.service.d` exists. Measured interaction: a drop-in added
+    without a reload reads `DropInPaths=` empty and `NeedDaemonReload=yes`, so
+    the two arms cover each other's blind window.
+
+    **DRIFT.** The loaded fragment's text differs from the repo's copy. In the
+    DEV tree -- the tree `promote.sh` copies FROM and the tree the autoloop
+    runs the digest in -- this reads as "committed but not promoted", which is
+    the fact you want at cold start, not a false positive.
+    """
+    if props.get("LoadState") != "loaded":
+        # `judge` already reports this unit as UNLOADED; saying it twice is noise.
+        return UnitDrift(unit, "SKIP", f"LoadState={props.get('LoadState') or '?'}")
+
+    # One arm, not two: an empty FragmentPath needs no separate branch, since
+    # `Path("").parent` is `.` and already fails the directory test. It is named
+    # here only so the verdict says which of the two it was.
+    frag = (props.get("FragmentPath") or "").strip()
+    if not frag or Path(frag).parent != INSTALL_DIR:
+        return UnitDrift(unit, "SHADOWED", f"manager loaded {frag or '(no fragment path)'}, not {INSTALL_DIR}/{unit}")
+
+    if props.get("NeedDaemonReload") == "yes":
+        return UnitDrift(unit, "STALE-IN-MEMORY", "fragment on disk changed since load; daemon-reload never ran")
+
+    drops = [d for d in (props.get("DropInPaths") or "").split() if d]
+    if drops:
+        return UnitDrift(unit, "DROP-IN", f"{len(drops)} override(s) not in the repo: {' '.join(drops)}")
+
+    if loaded_text is None:
+        return UnitDrift(unit, "UNREADABLE", f"cannot read {frag}")
+    if loaded_text != vendored:
+        return UnitDrift(unit, "DRIFT", f"{frag} differs from scripts/systemd/{unit} (unpromoted, or hand-edited)")
+    return UnitDrift(unit, "OK", frag)
+
+
+def drift_report() -> list[UnitDrift]:
+    out = []
+    for unit in discover_unit_files():
+        props = show(unit)
+        frag = (props.get("FragmentPath") or "").strip()
+        out.append(judge_drift(unit, props, _read(Path(frag)) if frag else None, _read(UNIT_DIR / unit) or ""))
+    return out
+
+
 def qa_record_path(qa_svc: dict[str, str]) -> Path:
     """WHERE the timer's qa run writes its record.
 
@@ -298,6 +431,16 @@ def main() -> None:
         print(f"{r.state:<10} {r.unit:<{width}}  {r.detail}", flush=True)
     qa_svc = show(QA_UNIT)
     print(judge_qa(_load_state(qa_record_path(qa_svc)), qa_svc, now), flush=True)
+    drift = drift_report()
+    checked = [d for d in drift if d.state != "SKIP"]
+    drifted = [d for d in checked if not d.ok]
+    for d in drifted:
+        print(f"{d.state:<10} {d.unit:<{width}}  {d.detail}", flush=True)
+    print(
+        f"[health] {len(checked) - len(drifted)}/{len(checked)} loaded unit files match the repo"
+        + (f"; DRIFT: {[d.unit for d in drifted]}" if drifted else ""),
+        flush=True,
+    )
     bad = [r.unit for r in rows if not r.ok]
     print(f"[health] {len(rows) - len(bad)}/{len(rows)} units ok" + (f"; ATTENTION: {bad}" if bad else ""), flush=True)
 
