@@ -304,6 +304,58 @@ collection deployable without sim-side churn: collection ↛ sim, sim ↛
 collection, both may use the kernel (models, store, streamstore, fees,
 migrate, watchlist, stations).
 
+### Shell lint gate (shellcheck, since 2026-09-05)
+
+The deploy path is shell — `promote.sh` sources `restart_decision.sh`,
+which decides every daemon restart — and until this date **nothing
+checked any of it**. ruff does not read shell, and there was no
+shellcheck in the project: 4 operator scripts and 14 `.claude/` hooks
+were covered by no gate at all.
+
+    .venv/bin/shellcheck --severity=warning $(git ls-files '*.sh')
+
+pinned via `shellcheck-py` in `requirements.txt` (dev-only — the stable
+venv installs no linters), enforced by `tests/test_shell_lint.py`.
+
+**What the first run found**, both in `restart_decision.sh`:
+
+- **SC2148** — no shebang, so shellcheck could not tell the dialect.
+  Correct in substance: the file is *sourced*, never executed, so a
+  shebang would be a lie. Answered with `# shellcheck shell=bash`, which
+  states out loud the assumption promote.sh has always made.
+- **SC1010** — `local ts now then` declares a variable named after a
+  reserved word. Measured on this box's bash: it *does* localize, so the
+  finding was latent, not live. Renamed to `started` regardless; a
+  reserved word as an identifier is a parser dare with no upside.
+
+plus **SC2155** in `.claude/evals/run-smoke.sh` (`local X=$(cmd)` masks
+the command's exit status, so `set -e` cannot see it fail).
+
+**Why the floor is `warning`, measured.** At shellcheck's default (style
+and up) the tree carried 8 findings: the 3 above plus 5 in two families —
+SC2001 ×3 ("use `${var//a/b}` instead of sed") and SC2016 ×2
+("expressions don't expand in single quotes"). The SC2016 pair is a false
+positive **by construction**: both sites are sed/grep *scripts* whose
+backticks must not expand, so the only way to satisfy the finding is a
+`disable` comment. A gate whose findings are answered by disable comments
+teaches the operator to write disable comments. SC2001 has no failure
+mode, and one of its sites (`sed 's/^/    /'` over multi-line input) has
+no parameter-expansion form at all. The floor is **not** an amnesty:
+`BELOW_FLOOR_FAMILIES` names the two excused codes with reasons, and a
+*new* below-floor family fails the suite until someone rules on it.
+
+**Scope is discovered, not listed** — the same defect `test_lint_scope.py`
+closed for Python, where an enumerated directory list could not fail on
+the day `scripts/` appeared. The glob has its own blind spot (a shell
+script named without `.sh` is invisible to it), closed by asserting the
+naming convention holds rather than by complicating the command: a
+tracked file with a shell shebang and no `.sh` extension fails the suite
+and names itself. The shebang classifier is unit-tested against strings,
+since it matches nothing in the repo today and would otherwise be
+untested code passing by matching nothing.
+
+Six mutants red, one test each.
+
 ## Running pieces
 
 - `hyxlab-collect.timer` (systemd user, 5 min): `collect --once` —

@@ -1,5 +1,71 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-05 (SHELL-GATE PASS -- ruff DOES NOT READ SHELL, AND
+NOTHING ELSE DID EITHER; THE FILE THAT GATES EVERY DAEMON RESTART CARRIED
+TWO FINDINGS.**
+Item (3) has ridden the ladder for four passes ("the shell scripts still
+have no lint equivalent; decide whether `restart_decision.sh` joins the
+gate or write why not"). It joins.
+**(1) THE GAP WAS TOTAL, NOT PARTIAL.** No shellcheck existed in the
+project; `ruff check .` covers the repo's Python and reads no shell. So 4
+operator scripts and 14 `.claude/` hooks -- including `promote.sh` and
+the `restart_decision.sh` it sources, which decides every daemon restart
+and whose misjudgment costs a live shadow run -- were checked by nothing.
+`shellcheck-py` is now pinned in `requirements.txt` (dev-only; the stable
+venv installs no linters) and `tests/test_shell_lint.py` enforces the
+command, the file set and the floor.
+**(2) THE FIRST RUN FOUND TWO, BOTH IN THE RESTART GATE.** **SC2148**: no
+shebang, so the dialect was unknowable -- correct in substance (the file
+is sourced, never executed, so a shebang would be a lie), answered with
+`# shellcheck shell=bash`, which states out loud what promote.sh has
+always assumed. **SC1010**: `local ts now then` names a variable after a
+reserved word; measured on this box's bash it DOES localize, so latent
+rather than live -- renamed to `started` anyway, because a reserved word
+as an identifier is a parser dare with no upside. Plus **SC2155** in
+`run-smoke.sh`, where `local X=$(cmd)` masked the command's exit status
+from `set -e`.
+**(3) THE FLOOR IS `warning`, AND THE MEASUREMENT DECIDED IT.** At
+default severity the tree carries 5 more findings in two families:
+SC2001 x3 (prefer `${var//a/b}` over sed -- no failure mode, and one site
+is multi-line `sed 's/^/    /'`, which has no expansion form) and SC2016
+x2, a false positive BY CONSTRUCTION -- both sites are sed/grep scripts
+whose backticks must not expand, so the only way to satisfy the finding
+is a `disable` comment. A gate answered with disable comments teaches the
+operator to write disable comments. It is not an amnesty:
+`BELOW_FLOOR_FAMILIES` names the two codes with reasons and a NEW
+below-floor family fails the suite until someone rules on it.
+**(4) SCOPE IS DISCOVERED, NOT LISTED** -- the defect `test_lint_scope.py`
+closed for Python, where an enumerated directory list could not fail the
+day `scripts/` appeared. The `*.sh` glob has its own blind spot (a shell
+script named without `.sh`), closed by asserting the convention rather
+than complicating the command; the shebang classifier is unit-tested
+against strings, since it matches nothing in the repo today and would
+otherwise be untested code passing by matching nothing.
+**Six mutants red**, one test each. Suite 1071 -> **1086**.
+**PROMOTED, no daemon restart** (no daemon's import closure moved -- the
+change is shell, tests and docs), so shadow's live run `20260829T191841`
+survives -- day 7. Pushed. Wiki: `data-pipeline.md` carries the gate, its
+findings, the floor's measurement and the scope derivation.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT** for
+12Z's sign test; live run `20260829T191841` reaches it ~09-08 if nothing
+stops it. (2) The egress question, carried unanswered from the readback
+pass and now the oldest open one: does ANY signal leave this box? QA's
+new prior-run line is read by nothing either, and the gap arm cannot fire
+while QA is not running at all. Worth a pass to ask what the smallest
+honest egress would be (a file the autoloop reads? a `WantedBy` on a
+checker unit?) rather than adding a fifth reader inside the same process.
+(3) The successor this pass opens: the gate covers `*.sh` SYNTAX, but
+`scripts/systemd/*` unit files -- which promote.sh installs and which
+carry `ExecStart` command lines -- have no equivalent check
+(`systemd-analyze verify` exists and is not run). `test_systemd_units.py`
+reads them as text today. Worth a pass to ask whether the unit files can
+join a gate the way the shell scripts just did. (4) The width-24 econ
+maker bracket needs 2026-09-12 for a second reading; the atlas quoted
+tier wants settled markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-05 (READBACK PASS -- FOUR DERIVATIONS READ qa.py AS
 TEXT; NOTHING ASKED WHETHER WHAT IT PRINTS IS READ.**
 Last pass named the successor: "worth a pass to ask what, if anything,
