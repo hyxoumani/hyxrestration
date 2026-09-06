@@ -417,6 +417,85 @@ path; the documented command stripped of its `SYSTEMD_UNIT_PATH` prefix;
 promote.sh widened to a set the gate does not verify; a vendored unit
 re-pointed at a missing interpreter.
 
+### Health digest (`collector.health`, since 2026-09-06) — the box's one egress
+
+Five passes in a row built a checker and then found its verdict read by
+nothing. This one asks the question those passes deferred three times:
+**does any signal leave this box?** Measured 2026-09-06:
+
+- **Nothing notifies.** No smtp, no webhook, no mail, no push client —
+  zero hits across `*.py`, `*.sh`, `*.service`, `*.timer`.
+  `collector.backup` defaults `--dest` to `data/backups`, and
+  `HYXLAB_BACKUP_DIR` (the documented off-box hook, named in the unit's
+  own Description) is set nowhere, so even the backups stay on the disk
+  they protect.
+- **One thing leaves, and it carries only prose.** `scripts/autoloop.sh`
+  pushes to `origin main` every six hours. `/data/` and `/reports/` are
+  gitignored — rooted, deliberately — so no checker's *output* can ride
+  it. What leaves is exactly what an agent typed into `status.md`.
+
+So the smallest honest egress is not a new channel: it is a
+machine-written **input** to the one that exists. The autoloop's
+cold-start prompt runs `python -m collector.health`, which re-reads what
+the manager and qa already wrote down. It **runs no check and opens no
+DuckDB** — a health report that took the archive lock to say things look
+fine could hurt the thing it watches (ops rule, mistakes #20) — and it
+exits 0 unconditionally, because a gate whose failure nothing reads is
+the very defect it exists to answer. Preferred to a `WantedBy` on a
+checker unit for the readback pass's reason: another reader inside
+journald is another unread verdict.
+
+Four properties of systemd's persisted state had to be measured before
+they could be reported. Each is a way a naive digest lies:
+
+1. **`Result` is the PRIOR run's while a unit is in flight.** At 09:15Z
+   `hyxlab-sweep`, `hyxlab-poly-sweep` and `hyxlab-autoloop` all read
+   `ActiveState=activating` with `Result=success` — success belonging to
+   yesterday, with today's run still executing. `RUNNING` is its own
+   state and quotes no result, so the long multi-hour units (whose
+   failures matter most) are never reported in the past tense.
+2. **`ExecMainStatus=0` is a default, not a measurement.** Every unit
+   that has never exited reports 0 — the daemons up since 08-29 do, and
+   so would a unit that has never run. The status is read only when
+   `ExecMainExitTimestamp` is populated.
+3. **An empty `NextElapseUSecRealtime` is not a broken timer.** systemd
+   clears it while the triggered service is active; that is why
+   `list-timers` prints `-` for the sweeps. Lateness is asked only of an
+   *idle* service, or the digest would cry wolf on every long sweep,
+   daily, on a healthy box. The slack (300s) is one full period of the
+   fastest timer in the tree (`OnCalendar=*:0/5`).
+4. **An uninstalled unit answers quietly.** `systemctl show` on an
+   unknown name exits 0 with `LoadState=not-found`. The unit set is
+   discovered from `scripts/systemd/`, so a unit committed but never
+   promoted reads `UNLOADED` instead of dropping out of the digest.
+
+**The live defect it found on its first run.** `qa.STATE`
+(`reports/qa/sections.json`) is a **relative** path, so the dev tree and
+the stable worktree keep *separate* records. On 2026-09-06 dev read
+`09-05T20:25Z` (a hand run) while production read `09-06T10:00Z` — the
+same morning, and the dev copy is the one a naive reader prints.
+`qa_record_path` takes the path from the unit's own `WorkingDirectory`
+(stripping systemd's optional-`-` prefix). `judge_qa` then adds the arm
+qa cannot have: qa reads its record from inside the process that writes
+it, so it alone cannot notice that the manager *started* a run whose
+record never landed here. The unit's start time and the record's
+timestamp are two independent facts about the same run, and the digest is
+the only place both are in hand.
+
+qa's parser is reused rather than reimplemented — `_load_state(path)` and
+`_prior_run(state)` take the record as a parameter, resolved at **call**
+time (a default argument would bind the module-load `STATE` and silently
+defeat the suite's monkeypatch; that is how the first version broke 29
+existing tests).
+
+Nine mutants red. A tenth defect was found by promote.sh, not by the
+pre-commit run: the premise scan read raw text and matched the word
+"webhook" in `health.py`'s **own docstring** — the file documenting the
+measurement became its counter-example, and only once committed, since
+`git ls-files` lists tracked files only. The scan now strips comments and
+string literals and asks the question of *code*, which is the same
+self-match trap the ops rules name for `pkill -f`.
+
 ## Running pieces
 
 - `hyxlab-collect.timer` (systemd user, 5 min): `collect --once` —

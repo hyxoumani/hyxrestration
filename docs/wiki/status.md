@@ -1,5 +1,84 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-06 (EGRESS PASS -- THE OLDEST OPEN QUESTION, CARRIED
+THREE PASSES: DOES ANY SIGNAL LEAVE THIS BOX? MEASURED -- ONE DOES, AND IT
+CARRIES ONLY PROSE.**
+FIRST, THE PANEL DAY (ladder item 1) WAS CHECKED AND IS STILL DATA-GATED:
+live run `20260829T191841` has **7 whole panel days** (08-30..09-05); the
+10th lands ~09-08. Day 8 live, uninterrupted.
+**(1) NOTHING NOTIFIES.** No smtp, no webhook, no mail, no push client --
+zero hits across `*.py`, `*.sh`, `*.service`, `*.timer`.
+`collector.backup` defaults `--dest` to `data/backups`, and
+`HYXLAB_BACKUP_DIR` -- the documented off-box hook, named in the unit's own
+Description -- is set nowhere, so even the backups stay on the disk they
+protect. **ONE THING LEAVES: autoloop's `git push origin main`, every six
+hours.** And `/data/` and `/reports/` are gitignored (rooted, on purpose),
+so no checker's OUTPUT can ride it. What leaves is exactly what an agent
+typed into this page from memory. That is the whole answer, and it is why
+the five preceding checkers all ended unread.
+**(2) THE SMALLEST HONEST EGRESS IS AN INPUT, NOT A CHANNEL.**
+`collector.health` is read at the autoloop's cold start (the prompt now
+says so, and a test fails the day it stops). It RE-RUNS NO CHECK and opens
+NO DuckDB -- a health report that took the archive lock to say things look
+fine could hurt the thing it watches (mistakes #20) -- and exits 0
+unconditionally, since a gate whose failure nothing reads is the defect it
+exists to answer. Chosen over a `WantedBy` on a checker unit for the
+readback pass's reason: another reader inside journald is another unread
+verdict.
+**(3) FOUR FIELD SEMANTICS MEASURED BEFORE BEING REPORTED, each a way a
+naive digest lies.** `Result` is the PRIOR run's while a unit is in flight
+(sweep, poly-sweep and autoloop all read `activating`/`success` at 09:15Z
+-- so RUNNING is its own state and quotes no result); `ExecMainStatus=0` is
+a DEFAULT, not a measurement (every never-exited unit reports it), so it is
+read only when `ExecMainExitTimestamp` is populated; an empty
+`NextElapseUSecRealtime` means the service is still RUNNING, not that the
+timer broke, so lateness is asked only of an idle service (else it would
+cry wolf on every long sweep, daily, on a healthy box); an uninstalled unit
+answers `LoadState=not-found` at exit 0, so a committed-but-unpromoted unit
+reads UNLOADED instead of vanishing.
+**(4) IT FOUND A LIVE DEFECT ON ITS FIRST RUN.** `qa.STATE` is a RELATIVE
+path, so **the dev tree and the stable worktree keep SEPARATE qa records**:
+dev read `09-05T20:25Z` (a hand run) while production read `09-06T10:00Z`
+-- the same morning, and the dev copy is the one a naive reader prints.
+`qa_record_path` takes the path from the unit's own `WorkingDirectory`;
+`judge_qa` adds the arm qa cannot have -- qa reads its record from inside
+the process that writes it, so it alone cannot notice a run that STARTED
+and recorded elsewhere. Both trees now print the same reading.
+**(5) A TENTH DEFECT CAME FROM promote.sh, NOT THE PRE-COMMIT RUN.** The
+premise scan read raw text and matched "webhook" in `health.py`'s OWN
+docstring -- the file documenting the measurement became its
+counter-example, and only once committed, since `git ls-files` lists
+tracked files only. It now strips comments and literals and asks the
+question of CODE: the same self-match trap the ops rules name for
+`pkill -f`.
+**Nine mutants red** (the tenth arm survived its first mutant -- the
+exit-timestamp gate -- because the fixture never exercised it; the TEST was
+fixed, not the claim). Suite 1095 -> **1131**.
+**PROMOTED, no daemon restart** (no daemon's import closure moved --
+`collector.health` is imported by nothing), so shadow's live run
+`20260829T191841` survives -- day 8. Pushed. Wiki: `data-pipeline.md`
+carries the digest, its four measurements, the live defect and the
+self-match.
+NEXT PASS: (1) **THE 10TH PANEL DAY, ~09-08** -- 7 of 10 today, so the next
+pass or the one after should check it first; it is the binding constraint
+for 12Z's sign test. (2) The successor this pass opens, and it is the
+honest one: the digest is read by an AGENT, at cold start, once every six
+hours. That is a real consumer -- it can act, and its output is the thing
+that leaves -- but it is not an alarm: nothing wakes anyone if the box
+degrades between two autoloop iterations, and if the autoloop itself dies
+the digest dies with its only reader. Worth a pass to ask whether that
+failure mode can be covered from inside the box at all, or whether it is
+inherently the user-gated item (a destination) that the backup dest already
+is -- and to write down which. (3) Carried from the unit-gate pass: nothing
+checks that the units systemd has LOADED match the repo; a `systemctl cat`
+drift after a hand edit is invisible to both existing gates. The digest now
+reads the manager's state, so the pieces for this are in hand. (4) The
+width-24 econ maker bracket needs 2026-09-12 for a second reading; the
+atlas quoted tier wants settled markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-06 (UNIT-GATE PASS -- THE SHELL GATE COVERED `*.sh`
 ONLY; THE 21 FILES promote.sh INSTALLS WERE PARSED BY NOTHING.**
 Last pass named the successor: "the gate covers `*.sh` SYNTAX, but
