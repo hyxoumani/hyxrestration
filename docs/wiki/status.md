@@ -1,5 +1,73 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-06 (UNIT-GATE PASS -- THE SHELL GATE COVERED `*.sh`
+ONLY; THE 21 FILES promote.sh INSTALLS WERE PARSED BY NOTHING.**
+Last pass named the successor: "the gate covers `*.sh` SYNTAX, but
+`scripts/systemd/*` unit files -- which promote.sh installs and which
+carry `ExecStart` command lines -- have no equivalent check
+(`systemd-analyze verify` exists and is not run)." It is run now.
+**(1) THE READERS WERE ALL TEXT READERS.** `test_systemd_units.py` greps
+`ExecStart` for a `-m module` name, `OnCalendar` for a timezone suffix,
+`Description` for prose. Every one of those passes on a unit systemd
+refuses to load and on a unit whose interpreter does not exist.
+`tests/test_systemd_verify.py` parses them the way the manager does.
+**(2) THE EXIT CODE IS A LIAR FOR WARNINGS** -- systemd 260, measured:
+`Type=oneshot` + `RuntimeMaxSec=` prints the finding and exits **0**;
+hard errors exit 1. So the one class a return-code gate misses is exactly
+the silently-ignored directive -- present, plausible, doing nothing. The
+gate asserts an EMPTY REPORT as well as a zero exit, and
+`test_a_warning_only_finding_exits_zero` pins the measurement so the arm
+is known to be redundant rather than quietly load-bearing if systemd ever
+changes.
+**(3) THE TOOL IS NOT HERMETIC, AND THAT IS WHY THE ISOLATION EXISTS.**
+`verify --user` resolves through `~/.config/systemd/user`, which on this
+box holds an UNRELATED project (`hylshi-*`); a bare run reports two of
+its findings. Since the gate must read stdout, it would fail on files
+this repo cannot fix. `SYSTEMD_UNIT_PATH` pins the repo dir plus the
+SYSTEM user-unit dirs -- required, or every unit fails on `basic.target
+not found`, an artefact of the isolation. The property is asserted
+against a pure function, not against what this box happens to hold.
+**(4) THE LIMIT IS STATED, NOT LEFT TO BE DISCOVERED.**
+`WorkingDirectory=` and `EnvironmentFile=` at nonexistent paths both
+verify clean (measured). The one filesystem fact it checks is the
+`ExecStart` command's existence -- and that is the fact that matters,
+because every unit's ExecStart is an absolute path into the stable
+worktree's venv and NOTHING in the tree opened it. That arm is why the
+suite is deliberately not portable off this box; there the failure is
+correct.
+**FIRST RUN: CLEAN, both vendored and installed, parity 21/21.** The
+gate's value is prospective and the honest statement of this pass is that
+it found no live defect.
+**Five mutants red** (warning added to a real unit -- rc still 0; user
+unit dir admitted; documented command stripped of its env prefix;
+promote.sh widened past the verified set; a unit re-pointed at a missing
+interpreter). Suite 1086 -> **1095**.
+**PROMOTED, no daemon restart** (nothing in any daemon's import closure
+moved -- tests, docs and one CLAUDE.md command), so shadow's live run
+`20260829T191841` survives -- day 8. Pushed. Wiki: `data-pipeline.md`
+carries the gate, its three measurements and its stated limit.
+NEXT PASS: (1) **THE 10TH PANEL DAY IS STILL THE BINDING CONSTRAINT** for
+12Z's sign test; live run `20260829T191841` reaches it ~09-08 if nothing
+stops it -- two days out, so the next pass or the one after should check
+it first. (2) **THE EGRESS QUESTION IS NOW THE OLDEST OPEN ONE, CARRIED
+THREE PASSES**: does ANY signal leave this box? QA's exit code, its
+`NOT a full pass` line and its new prior-run line are all read by
+nothing, and this pass added a third gate whose only consumer is a test
+run. Worth a pass to ask what the smallest honest egress would be (a file
+the autoloop reads? a `WantedBy` on a checker unit?) rather than adding
+another reader inside the same process. It should be taken next unless
+the panel day lands first. (3) The successor this pass opens: the gate
+proves the units PARSE, and `test_systemd_units.py` proves the installed
+copies MATCH the repo -- but nothing checks that the units systemd has
+LOADED match either; a `systemctl cat` drift after a hand edit is
+invisible to both. Worth a pass to decide whether loaded-state parity can
+join a gate or to write why it cannot. (4) The width-24 econ maker
+bracket needs 2026-09-12 for a second reading; the atlas quoted tier
+wants settled markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-05 (SHELL-GATE PASS -- ruff DOES NOT READ SHELL, AND
 NOTHING ELSE DID EITHER; THE FILE THAT GATES EVERY DAEMON RESTART CARRIED
 TWO FINDINGS.**

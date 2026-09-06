@@ -356,6 +356,67 @@ untested code passing by matching nothing.
 
 Six mutants red, one test each.
 
+### systemd unit gate (`systemd-analyze verify`, since 2026-09-06)
+
+The shell gate closed the blind spot for `*.sh`. It closed it for `*.sh`
+only. The 21 files in `scripts/systemd/` that promote.sh copies verbatim
+into `~/.config/systemd/user/` were **parsed by nothing before install**.
+`tests/test_systemd_units.py` reads them as *text*: it greps `ExecStart`
+for a `-m module` name, `OnCalendar` for a timezone suffix, `Description`
+for prose. Every one of those checks passes on a unit systemd itself
+refuses to load, and on a unit whose interpreter does not exist.
+
+    SYSTEMD_UNIT_PATH=$PWD/scripts/systemd:/etc/systemd/user:/usr/lib/systemd/user \
+      systemd-analyze verify --user scripts/systemd/hyxlab-*
+
+enforced by `tests/test_systemd_verify.py`. Three measurements shaped it.
+
+**The exit code is a liar for warnings.** systemd 260, measured
+2026-09-06: `Type=oneshot` + `RuntimeMaxSec=` prints
+`RuntimeMaxSec= has no effect in combination with Type=oneshot. Ignoring.`
+and exits **0**. Hard errors (missing `ExecStart` binary, unparseable
+`OnCalendar`) exit 1. So the class of finding that reads as a *silently
+ignored directive* — present, plausible, doing nothing — is exactly the
+class a return-code gate lets through. The gate asserts an **empty
+report** as well as a zero exit, and
+`test_a_warning_only_finding_exits_zero` pins the measurement so that if
+systemd ever starts failing on warnings, the extra arm is known to have
+become redundant rather than staying load-bearing by accident.
+
+**The tool is not hermetic by default.** `verify --user` resolves through
+the full user unit search path, which includes `~/.config/systemd/user` —
+and on this box that directory holds an **unrelated project's** units. A
+bare run reports two findings belonging to `hylshi-*`. Since the gate
+must read stdout (above), it would fail on files this repo does not own.
+`SYSTEMD_UNIT_PATH` replaces the search path with the repo's own
+directory plus the *system* user-unit dirs; those are required, because
+without them every unit fails on `Unit basic.target not found`, an
+artefact of the isolation and not a defect in the unit. The isolation is
+asserted against a pure function, not against what this box has
+installed.
+
+**What it does not check.** `WorkingDirectory=` and `EnvironmentFile=`
+pointing at nonexistent paths both verify clean and exit 0 (measured).
+The one filesystem fact it *does* check is the `ExecStart` command's
+existence — which is the fact that matters, because every hyxlab unit's
+ExecStart is an absolute path into the stable worktree's venv
+(`…/hyxrestration-stable/.venv/bin/python`) and **nothing in the tree
+opened that path**. A stable venv rebuilt, renamed or half-deleted leaves
+every daemon failing at start while `git diff` shows perfect units. That
+arm is why the suite is deliberately not portable to a box without the
+stable worktree: there the failure is correct.
+
+**First run: the vendored units and the installed copies are both clean**
+(parity 21/21). The gate's value is prospective — it is the check that
+would have caught the 2026-08-03 timer defect's *unparseable* sibling,
+and it is the only thing that opens the interpreter path.
+
+Five mutants red: a warning-only finding added to a real unit (rc still
+0, caught by the report arm); the user unit dir admitted to the search
+path; the documented command stripped of its `SYSTEMD_UNIT_PATH` prefix;
+promote.sh widened to a set the gate does not verify; a vendored unit
+re-pointed at a missing interpreter.
+
 ## Running pieces
 
 - `hyxlab-collect.timer` (systemd user, 5 min): `collect --once` —

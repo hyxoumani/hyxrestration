@@ -48,6 +48,12 @@ turn, arm the next one (running background task, or ScheduleWakeup
 # enforces the command, the set and the severity floor).
 .venv/bin/shellcheck --severity=warning $(git ls-files '*.sh')
 
+# systemd unit gate. SYSTEMD_UNIT_PATH is load-bearing: without it verify
+# resolves through ~/.config/systemd/user and reports OTHER projects' units
+# (tests/test_systemd_verify.py enforces the command, the set and the isolation).
+SYSTEMD_UNIT_PATH=$PWD/scripts/systemd:/etc/systemd/user:/usr/lib/systemd/user \
+  systemd-analyze verify --user scripts/systemd/hyxlab-*
+
 # Archive health / one collection cycle / backtest replay
 .venv/bin/python -m collector.sweep --doctor
 .venv/bin/python -m collector.collect --once
