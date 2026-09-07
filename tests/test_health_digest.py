@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import io
 import json
+import re
 import subprocess
 import tokenize
 from datetime import UTC, datetime
@@ -29,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from collector import health
+from collector import health, qa
 from collector.qa import _load_state, _prior_run
 
 REPO = Path(__file__).resolve().parent.parent
@@ -296,19 +297,61 @@ def test_the_record_lag_slack_is_wider_than_a_runs_own_startup() -> None:
     assert 60 < health.QA_RECORD_LAG_S < 24 * 3600 / 2
 
 
-def test_the_qa_verdict_reports_skips_as_not_a_full_pass() -> None:
+def test_the_qa_verdict_reports_an_unexpected_skip_as_not_a_full_pass() -> None:
     now = datetime(2026, 9, 6, 14, 20, tzinfo=UTC)
     start = f"@{datetime(2026, 9, 6, 10, 0, tzinfo=UTC).timestamp()}"
     skipped = health.judge_qa(
-        _record("2026-09-06T10:00:00+00:00", skipped=["collect-skips"]), svc(ExecMainStartTimestamp=start), now
+        _record("2026-09-06T10:00:00+00:00", skipped=["fade-window"]), svc(ExecMainStartTimestamp=start), now
     )
-    assert "NOT a full pass" in skipped and "collect-skips" in skipped
+    assert "NOT a full pass" in skipped and "fade-window" in skipped
     failed = health.judge_qa(
-        _record("2026-09-06T10:00:00+00:00", failures=["stream"], skipped=["collect-skips"]),
+        _record("2026-09-06T10:00:00+00:00", failures=["stream"], skipped=["fade-window"]),
         svc(ExecMainStartTimestamp=start),
         now,
     )
     assert "FAILURES" in failed, "a failure must not be hidden behind a skip"
+
+
+def test_the_standing_skip_alone_does_not_make_the_run_partial() -> None:
+    """`collect-skips` is SKIPPED on every run of a healthy box, so a verdict
+    that called it partial read `NOT a full pass` every night forever -- the
+    alarm fatigue qa refuses to manufacture, reintroduced by its reader."""
+    now = datetime(2026, 9, 6, 14, 20, tzinfo=UTC)
+    line = health.judge_qa(
+        _record("2026-09-06T10:00:00+00:00", skipped=[qa.COLLECT_SKIP_SECTION]),
+        svc(ExecMainStartTimestamp=f"@{datetime(2026, 9, 6, 10, 0, tzinfo=UTC).timestamp()}"),
+        now,
+    )
+    assert "NOT a full pass" not in line
+    assert "clean" in line
+    assert qa.COLLECT_SKIP_SECTION in line, "quiet is not the same as unreported"
+
+
+def test_a_real_skip_beside_the_standing_one_still_reads_partial() -> None:
+    """The masking half: before this, adding a genuinely new skip changed only
+    the contents of a list inside a phrase that was already there every night."""
+    now = datetime(2026, 9, 6, 14, 20, tzinfo=UTC)
+    line = health.judge_qa(
+        _record("2026-09-06T10:00:00+00:00", skipped=[qa.COLLECT_SKIP_SECTION, "batch-run-budget"]),
+        svc(ExecMainStartTimestamp=f"@{datetime(2026, 9, 6, 10, 0, tzinfo=UTC).timestamp()}"),
+        now,
+    )
+    assert "NOT a full pass" in line
+    assert "batch-run-budget" in line
+    assert "skipped ['batch-run-budget']" in line, "the standing name must not pad the partial list"
+
+
+def test_the_standing_set_is_exactly_the_skip_qa_never_ages() -> None:
+    """The premise the digest's quiet arm rests on. Every OTHER `_skipped.append`
+    name means something could not be MEASURED, so its presence is news; this one
+    is the only site deliberately exempt from `_skip_age_h`. Read from the source
+    so a fifth skip added tomorrow fails here instead of being silently quieted."""
+    src = Path(qa.__file__).read_text()
+    appended = set(re.findall(r"_skipped\.append\(\s*(?:\"([^\"]+)\"|([A-Z_][A-Z_0-9]*))\s*\)", src))
+    names = {a or b for a, b in appended}
+    assert "COLLECT_SKIP_SECTION" in names, "the standing skip must be appended by its constant, not a literal"
+    assert frozenset({qa.COLLECT_SKIP_SECTION}) == qa.STANDING_SKIPS
+    assert len(names) > 1, "the scan must actually be finding the other skip sites"
 
 
 def test_an_absent_record_is_reported_not_treated_as_clean() -> None:

@@ -1,5 +1,68 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-07 (STANDING-SKIP PASS -- THE DIGEST SHIPPED YESTERDAY
+SAID `NOT a full pass` EVERY SIX HOURS ON A GREEN BOX, AND A REAL SKIP WOULD
+NOT HAVE CHANGED THE WORDING.**
+The health digest -- the box's ONE machine-written egress, read by the
+autoloop at every cold start -- was the first thing this pass ran, per its own
+instructions, and it flagged itself: `QA last run 09-06 10:00Z: skipped
+['collect-skips'] - NOT a full pass`.
+**(1) THAT IS THE HEALTHY STEADY STATE, NOT A FINDING.** `collect-skips`
+reports UNVERIFIED whenever no collector cycle happened to wait out the
+archive lock in the window, and weeks without lock contention is a healthy
+system. `qa_collect_skips` refuses to age it into a failure for exactly that
+reason, in a comment; `qa_prior_run` refuses to fire on it, in a test named
+`test_the_production_steady_state_of_a_chronic_skip_stays_quiet`. **Both
+refusals were reintroduced one layer up by their own reader** -- `judge_qa`
+took any non-empty skip set as partial. The alarm fatigue two layers of this
+codebase were written to avoid, delivered to the only consumer that exists.
+**(2) THE MASKING HALF IS THE SHARPER ONE.** A genuinely new skip
+(`batch-run-budget`, say) would have moved the line from
+`skipped ['collect-skips'] - NOT a full pass` to
+`skipped ['collect-skips', 'batch-run-budget'] - NOT a full pass`: same
+verdict word, same phrase, differing only in the contents of a list an agent
+reading past a familiar line does not diff. The signal the digest exists to
+carry was the one it could not deliver.
+**(3) THE FIX IS A SET WITH ONE DEFINITION, NOT A STRING IN THE READER.**
+`qa.STANDING_SKIPS` is exported from the producer and consumed by the reader;
+`COLLECT_SKIP_SECTION` replaced the literal at all three of qa's own uses, so
+a rename cannot desync them. `judge_qa` partitions the record's skips: only an
+UNEXPECTED skip makes the run partial and only it is listed in the partial
+set, while a standing name is still REPORTED -- unread is not the goal -- as a
+parenthetical that does not move the verdict. Live line now reads
+`clean (standing skip: collect-skips)`.
+**(4) THE MEMBERSHIP CRITERION IS PINNED BY A SOURCE SCAN, so the quiet set
+cannot grow quietly.** `collect-skips` is the only section deliberately exempt
+from `_skip_age_h`; every other skip means something could not be MEASURED
+(`fade-window`/`batch-run-budget` need a readable journal, `poly-universe`/
+`signals-fetch` escalate to FAIL after `SKIP_MAX_AGE_H`). A test reads the
+`_skipped.append` sites out of `qa.py`'s SOURCE and pins both the set and the
+constant-not-literal call.
+**Six mutants red** (empty standing set, standing name padding the partial
+list, standing name unreported, partial-off-any-skip, literal-not-constant,
+standing set widened to `fade-window`). Suite 1147 -> **1150**.
+**PROCESS NOTE, worth more than the fix: `git checkout <path>` restores from
+the INDEX, so a mutation harness that used it to undo a mutant silently
+reverted the UNSTAGED work under test** -- the first M1/M2 run's reds were the
+absent fix, not killed mutants. Rerun against `cp` backups; all six red for
+real. Never `git checkout` a path with uncommitted work in it.
+**PROMOTED, no daemon restart** (no daemon imports `collector.health`; qa is a
+timer) -- shadow's `20260829T191841` survives, day 9. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY, ~09-08** -- 8 whole days as of today,
+still the binding constraint, check it FIRST. (2) Still open, carried four
+passes: the digest's only reader is an agent every six hours, which is a
+consumer but not an ALARM -- nothing wakes anyone if the box degrades between
+two autoloop iterations, and if the autoloop dies the digest dies with its
+only reader. Decide whether that is coverable from inside the box at all, and
+WRITE DOWN which. (3) Drift is detected but not REPAIRED; the repair lives
+only inside promote.sh's happy path -- a `--units-only` re-install, or a
+stated decision not to automate it. (4) The width-24 econ maker bracket needs
+2026-09-12 for a second reading; the atlas quoted tier wants settled markets
+~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-06 (UNIT-DRIFT PASS -- promote.sh COPIED THE UNITS OUT
 AND NOTHING EVER READ THEM BACK; THREE OF THE FOUR DRIFT STATES ARE
 INVISIBLE TO A FILE DIFF.**

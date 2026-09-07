@@ -488,6 +488,37 @@ time (a default argument would bind the module-load `STATE` and silently
 defeat the suite's monkeypatch; that is how the first version broke 29
 existing tests).
 
+**A standing skip is not a partial run (2026-09-07).** The digest's first
+QA line read `skipped [...] — NOT a full pass` off any non-empty skip
+set — and `collect-skips` is SKIPPED on every run of a healthy box, by
+the same design decision recorded above. So the line the autoloop reads
+at every cold start carried that phrase every six hours, forever, on
+green; and the day a *real* skip appeared it would still read `NOT a full
+pass`, differing only in the contents of a list nobody could see change.
+That is both halves of the defect: the fatigue `qa_collect_skips`
+explicitly refuses to manufacture one layer down and `qa_prior_run`
+refuses one layer up, reintroduced by their reader, plus the masking of
+the signal it exists to carry.
+
+`qa.STANDING_SKIPS` now names the exempt set, at the one site that
+appends it (`COLLECT_SKIP_SECTION` — the literal is gone from all three
+of qa's uses, so a rename cannot desync the producer from its reader),
+and `judge_qa` partitions the record's skips against it. A standing name
+is still **reported** — unread is not the goal — but as a parenthetical
+that does not move the verdict: `clean (standing skip: collect-skips)`.
+Only a skip qa did *not* expect makes the run partial, and it alone is
+listed in the partial set.
+
+The membership criterion, so a fifth skip is not quietly added to the
+quiet set: `collect-skips` is the only section deliberately exempt from
+`_skip_age_h`. Every other skip name means something could not be
+MEASURED — `fade-window` and `batch-run-budget` need a readable journal,
+`poly-universe` and `signals-fetch` escalate to FAIL after
+`SKIP_MAX_AGE_H` — so their presence is news and this one's is not. A
+test reads the `_skipped.append` sites out of `qa.py`'s source and pins
+both the set and the constant-not-literal call, so a new standing claim
+fails there rather than silencing itself.
+
 **Unit drift — the second section, added 2026-09-06.** The unit-gate
 pass named this successor: `test_systemd_units.py` greps the *repo's*
 unit files, `test_systemd_verify.py` parses them, `promote.sh` copies

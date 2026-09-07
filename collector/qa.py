@@ -102,6 +102,23 @@ ECON_PULL_GAP_BUDGET_D = 4
 SIGNALS_FETCH_LOG = "data/signals_fetch.jsonl"
 _SIGNALS_FETCH_SECTION = "signals-fetch"
 
+# The one section that is SKIPPED on a HEALTHY box, and the only one whose skip
+# is deliberately not aged by `_skip_age_h` (see `qa_collect_skips`): it reports
+# UNVERIFIED whenever no collector cycle happened to wait out the archive lock
+# in the window, and weeks without lock contention is a healthy system, not a
+# defect. Every OTHER skip name means something could not be MEASURED --
+# `fade-window` and `batch-run-budget` need a readable journal, `poly-universe`
+# and `signals-fetch` escalate to FAIL after SKIP_MAX_AGE_H -- so their presence
+# is news and this one's is not.
+#
+# Named as a set, and exported, because a READER of qa's record cannot make that
+# distinction from the record alone: `collector.health` printed "NOT a full pass"
+# every night forever on a green box, and a genuinely new skip changed only the
+# contents of a list nobody could see change. One definition, so a rename cannot
+# desync the producer from its reader.
+COLLECT_SKIP_SECTION = "collect-skips"
+STANDING_SKIPS: frozenset[str] = frozenset({COLLECT_SKIP_SECTION})
+
 # EXP-1381 — the poly enumeration tripwire's own liveness. Its guard reads a
 # WINDOWED slice of poly_market_stats, so it stops being emitted at all on
 # exactly the input a dead stats writer produces (see qa_archive). The floor
@@ -1338,14 +1355,14 @@ def qa_collect_skips(
         # 26 days of this line after 08-07 could not say whether the producer
         # had been proven once or never. `scripts/probe_collect_skip.py`
         # forces one in-window lock-wait to refresh it.
-        last = _last_ok("collect-skips")
+        last = _last_ok(COLLECT_SKIP_SECTION)
         detail += (
             f"; production last measured {(now - last).total_seconds() / 3600:.0f}h ago "
             f"({last.isoformat(timespec='minutes')})"
             if last
             else "; production has never been measured on this host"
         )
-        _skipped.append("collect-skips")
+        _skipped.append(COLLECT_SKIP_SECTION)
         print(f"SKIP  {name} — {detail}", flush=True)
         return
     check(
@@ -1361,7 +1378,7 @@ def qa_collect_skips(
         + tail,
     )
     if recent <= COLLECT_SKIP_MAX_24H:
-        _record_ok("collect-skips", now)
+        _record_ok(COLLECT_SKIP_SECTION, now)
 
 
 @dataclass

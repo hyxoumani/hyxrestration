@@ -98,8 +98,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from collector.qa import STANDING_SKIPS, _load_state, _prior_run
 from collector.qa import STATE as QA_STATE
-from collector.qa import _load_state, _prior_run
 
 REPO = Path(__file__).resolve().parent.parent
 UNIT_DIR = REPO / "scripts/systemd"
@@ -235,7 +235,9 @@ def judge(unit: str, svc: dict[str, str], timer: dict[str, str] | None, now: flo
     rather than against whatever this box happens to be doing at test time.
     """
     if svc.get("LoadState") != "loaded":
-        return UnitHealth(unit, "UNLOADED", f"LoadState={svc.get('LoadState') or '?'} — not installed?")
+        return UnitHealth(
+            unit, "UNLOADED", f"LoadState={svc.get('LoadState') or '?'} — not installed?"
+        )
 
     started = _epoch(svc.get("ExecMainStartTimestamp", ""))
     exited = _epoch(svc.get("ExecMainExitTimestamp", ""))
@@ -244,22 +246,32 @@ def judge(unit: str, svc: dict[str, str], timer: dict[str, str] | None, now: flo
     if timer is None:
         # A daemon. Its liveness IS its ActiveState; there is no cadence to be late for.
         if not busy:
-            return UnitHealth(unit, "DOWN", f"{svc.get('ActiveState')}/{svc.get('SubState')}, result={svc.get('Result')}")
+            return UnitHealth(
+                unit,
+                "DOWN",
+                f"{svc.get('ActiveState')}/{svc.get('SubState')}, result={svc.get('Result')}",
+            )
         restarts = svc.get("NRestarts") or "0"
         return UnitHealth(unit, "OK", f"up since {_age(started, now)}, {restarts} restarts")
 
     if timer.get("LoadState") != "loaded" or timer.get("ActiveState") != "active":
-        return UnitHealth(unit, "TIMER-OFF", f"timer {timer.get('LoadState')}/{timer.get('ActiveState')}")
+        return UnitHealth(
+            unit, "TIMER-OFF", f"timer {timer.get('LoadState')}/{timer.get('ActiveState')}"
+        )
 
     if busy:
         # (1) Result here belongs to the PREVIOUS run. Quote nothing but the clock.
         return UnitHealth(unit, "RUNNING", f"started {_age(started, now)}")
 
     if svc.get("Result") != "success":
-        return UnitHealth(unit, "FAILED", f"result={svc.get('Result')}, exit={svc.get('ExecMainStatus')}")
+        return UnitHealth(
+            unit, "FAILED", f"result={svc.get('Result')}, exit={svc.get('ExecMainStatus')}"
+        )
     # (2) ExecMainStatus is only a measurement once the unit has actually exited.
     if exited is not None and (svc.get("ExecMainStatus") or "0") != "0":
-        return UnitHealth(unit, "FAILED", f"exit={svc.get('ExecMainStatus')} at {_age(exited, now)}")
+        return UnitHealth(
+            unit, "FAILED", f"exit={svc.get('ExecMainStatus')} at {_age(exited, now)}"
+        )
 
     last = _epoch(timer.get("LastTriggerUSec", ""))
     if last is None and exited is None:
@@ -269,9 +281,13 @@ def judge(unit: str, svc: dict[str, str], timer: dict[str, str] | None, now: flo
     if nxt is None:
         # (3) says an empty next elapse is normal WHILE RUNNING. This unit is idle,
         # so the manager has an active timer it has scheduled nothing for.
-        return UnitHealth(unit, "NO-NEXT", f"timer active, idle, no next elapse; last ran {_age(last, now)}")
+        return UnitHealth(
+            unit, "NO-NEXT", f"timer active, idle, no next elapse; last ran {_age(last, now)}"
+        )
     if now - nxt > LATE_SLACK_S:
-        return UnitHealth(unit, "LATE", f"due {_age(nxt, now)}, still idle; last ran {_age(last, now)}")
+        return UnitHealth(
+            unit, "LATE", f"due {_age(nxt, now)}, still idle; last ran {_age(last, now)}"
+        )
     return UnitHealth(unit, "OK", f"last ran {_age(last, now)}")
 
 
@@ -292,7 +308,9 @@ def _read(path: Path) -> str | None:
         return None
 
 
-def judge_drift(unit: str, props: dict[str, str], loaded_text: str | None, vendored: str) -> UnitDrift:
+def judge_drift(
+    unit: str, props: dict[str, str], loaded_text: str | None, vendored: str
+) -> UnitDrift:
     """Whether the unit the MANAGER holds is the unit this repo contains.
 
     Pure, like `judge`: the four semantics below were measured on this box and
@@ -342,19 +360,31 @@ def judge_drift(unit: str, props: dict[str, str], loaded_text: str | None, vendo
     # here only so the verdict says which of the two it was.
     frag = (props.get("FragmentPath") or "").strip()
     if not frag or Path(frag).parent != INSTALL_DIR:
-        return UnitDrift(unit, "SHADOWED", f"manager loaded {frag or '(no fragment path)'}, not {INSTALL_DIR}/{unit}")
+        return UnitDrift(
+            unit,
+            "SHADOWED",
+            f"manager loaded {frag or '(no fragment path)'}, not {INSTALL_DIR}/{unit}",
+        )
 
     if props.get("NeedDaemonReload") == "yes":
-        return UnitDrift(unit, "STALE-IN-MEMORY", "fragment on disk changed since load; daemon-reload never ran")
+        return UnitDrift(
+            unit, "STALE-IN-MEMORY", "fragment on disk changed since load; daemon-reload never ran"
+        )
 
     drops = [d for d in (props.get("DropInPaths") or "").split() if d]
     if drops:
-        return UnitDrift(unit, "DROP-IN", f"{len(drops)} override(s) not in the repo: {' '.join(drops)}")
+        return UnitDrift(
+            unit, "DROP-IN", f"{len(drops)} override(s) not in the repo: {' '.join(drops)}"
+        )
 
     if loaded_text is None:
         return UnitDrift(unit, "UNREADABLE", f"cannot read {frag}")
     if loaded_text != vendored:
-        return UnitDrift(unit, "DRIFT", f"{frag} differs from scripts/systemd/{unit} (unpromoted, or hand-edited)")
+        return UnitDrift(
+            unit,
+            "DRIFT",
+            f"{frag} differs from scripts/systemd/{unit} (unpromoted, or hand-edited)",
+        )
     return UnitDrift(unit, "OK", frag)
 
 
@@ -363,7 +393,11 @@ def drift_report() -> list[UnitDrift]:
     for unit in discover_unit_files():
         props = show(unit)
         frag = (props.get("FragmentPath") or "").strip()
-        out.append(judge_drift(unit, props, _read(Path(frag)) if frag else None, _read(UNIT_DIR / unit) or ""))
+        out.append(
+            judge_drift(
+                unit, props, _read(Path(frag)) if frag else None, _read(UNIT_DIR / unit) or ""
+            )
+        )
     return out
 
 
@@ -392,17 +426,32 @@ def judge_qa(state: dict, qa_svc: dict[str, str], now: datetime) -> str:
     notice that the manager started a run whose record never landed here. The
     unit's start time and the record's timestamp are two independent facts
     about the same run, and this is the only place both are in hand.
+
+    **A STANDING SKIP IS NOT A PARTIAL RUN.** The first shape of this line read
+    `skipped [...] — NOT a full pass` off any non-empty skip set, and
+    `collect-skips` is SKIPPED on every run of a healthy box (`qa.STANDING_SKIPS`
+    names it, at the one site that appends it). So the digest's QA line carried
+    that phrase every night forever, on green -- and the day a REAL skip appeared
+    it would still read `NOT a full pass`, differing only in the contents of a
+    list, which is the alarm fatigue `qa_collect_skips` refuses to manufacture
+    one layer down and `qa_prior_run` refuses one layer up. Standing names are
+    still REPORTED -- unread is not the goal -- but as a parenthetical that does
+    not move the verdict. Only a skip qa did NOT expect makes the run partial.
     """
     prior = _prior_run(state)
     started = _epoch(qa_svc.get("ExecMainStartTimestamp", ""))
     if prior is None:
         return "QA         no run on record"
     age_h = (now - prior.at).total_seconds() / 3600.0
+    standing = [name for name in prior.skipped if name in STANDING_SKIPS]
+    unexpected = [name for name in prior.skipped if name not in STANDING_SKIPS]
     verdict = "clean"
     if prior.failures:
         verdict = f"FAILURES {list(prior.failures)}"
-    elif prior.skipped:
-        verdict = f"skipped {list(prior.skipped)} — NOT a full pass"
+    elif unexpected:
+        verdict = f"skipped {unexpected} — NOT a full pass"
+    if standing:
+        verdict += f" (standing skip{'s' if len(standing) > 1 else ''}: {', '.join(standing)})"
     line = f"QA         last run {prior.at:%m-%d %H:%M}Z ({age_h:.1f}h ago): {verdict}"
     if started is not None and started - prior.at.timestamp() > QA_RECORD_LAG_S:
         gap_h = (started - prior.at.timestamp()) / 3600.0
@@ -442,7 +491,11 @@ def main() -> None:
         flush=True,
     )
     bad = [r.unit for r in rows if not r.ok]
-    print(f"[health] {len(rows) - len(bad)}/{len(rows)} units ok" + (f"; ATTENTION: {bad}" if bad else ""), flush=True)
+    print(
+        f"[health] {len(rows) - len(bad)}/{len(rows)} units ok"
+        + (f"; ATTENTION: {bad}" if bad else ""),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
