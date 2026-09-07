@@ -2,13 +2,17 @@
 Description=hyxlab exchange-wide top-N breadth snapshots (EXP-928)
 [Service]
 Type=oneshot
-# 110, not 500: OOMScoreAdjust is a per-mille-of-RAM handicap, so on this 60G
-# box 500 adds ~30G of pretend footprint and makes this unit outrank essentially
-# ANY other process. Measured 2026-09-07, when a 333 MiB poly-sweep was killed
-# ahead of the 24.0 GiB stranger that actually exhausted the box. 110 still
-# outranks the capture daemons (they inherit the manager's 100) without
-# outranking a real hog -- see tests/test_systemd_units.py for the arithmetic.
-OOMScoreAdjust=110
+# 220, not 500: OOMScoreAdjust is a per-mille-of-RAM handicap, not a priority
+# label, so on this 60G box 500 adds ~30G of pretend footprint and makes this
+# unit outrank essentially ANY other process -- measured 2026-09-07, when a
+# 333 MiB poly-sweep was killed ahead of the 24.0 GiB stranger that actually
+# exhausted the box. The baseline is the manager's DefaultOOMScoreAdjust=200,
+# which the capture daemons inherit; 220 is 20 per-mille (~1.2G) above it.
+# Measured oom_score: batch 350 MiB @220 = 816 and batch 30 MiB @220 = 813,
+# both above live stream/shadow @200 = 803/802 (so batch still dies first, the
+# 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
+# See tests/test_systemd_units.py for the arithmetic.
+OOMScoreAdjust=220
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # collector.breadth is OFF unless switched on. Installing + enabling this
 # timer IS the deliberate act; the env var below is what the unit

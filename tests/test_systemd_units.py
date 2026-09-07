@@ -75,11 +75,14 @@ def _field(text, key):
     return out
 
 
-# The user manager's default, which every hyxlab process inherits unless its
-# unit says otherwise. Unprivileged units cannot go BELOW it (the 2026-07-20
-# note), so this is the floor the capture daemons sit at.
-OOM_MANAGER_FLOOR = 100
-OOM_BATCH = 110
+# `DefaultOOMScoreAdjust` on this user manager, MEASURED from the live daemons'
+# own /proc rather than assumed: hyxlab-stream and hyxlab-shadow both run at
+# 200. (A `systemd-run` transient unit reports 100, which is an artifact of the
+# transient path -- trusting it would have put the batch units BELOW the daemons
+# and inverted the very ordering this setting exists to create.) Unprivileged
+# units cannot go below the manager's value (the 2026-07-20 note).
+OOM_MANAGER_FLOOR = 200
+OOM_BATCH = 220
 BOX_RAM_BYTES = 60 * 1024**3  # the deployment this fleet runs on
 
 
@@ -121,17 +124,23 @@ def test_oom_handicap_is_a_tiebreak_and_not_an_override():
     The handicap has to be big enough to order hyxlab's own processes (batch
     30-350 MiB vs daemons 68-270 MiB) and small enough to lose to any real hog.
     """
-    handicap = oom_handicap_bytes(OOM_BATCH - OOM_MANAGER_FLOOR, BOX_RAM_BYTES)
-    assert handicap > 300 * 1024**2, (
-        "handicap must exceed the largest capture daemon's measured anon "
-        f"footprint (~270 MiB) or it cannot order them at all; got {handicap}"
+    assert OOM_BATCH > OOM_MANAGER_FLOOR, (
+        "the batch units must sit ABOVE the manager default the capture daemons "
+        "inherit, or the 2026-07-20 ordering is inverted rather than tuned"
     )
-    assert handicap < 1024**3, (
-        "handicap must stay under 1 GiB: above that it stops breaking ties "
-        f"between hyxlab processes and starts outranking strangers; got {handicap}"
+    handicap = oom_handicap_bytes(OOM_BATCH - OOM_MANAGER_FLOOR, BOX_RAM_BYTES)
+    assert handicap > 270 * 1024**2, (
+        "handicap must exceed the largest capture daemon's measured anon "
+        f"footprint (~270 MiB), or the smallest batch unit (30 MiB) loses to "
+        f"the largest daemon and batch work stops dying first; got {handicap}"
+    )
+    assert handicap < 2 * 1024**3, (
+        "handicap must stay under 2 GiB: above that it stops breaking ties "
+        f"between hyxlab processes and starts outranking strangers big enough "
+        f"to actually exhaust a 60G box; got {handicap}"
     )
     # The falsified value, stated so it cannot be reintroduced as a round number.
-    assert oom_handicap_bytes(500 - OOM_MANAGER_FLOOR, BOX_RAM_BYTES) > 20 * 1024**3
+    assert oom_handicap_bytes(500 - OOM_MANAGER_FLOOR, BOX_RAM_BYTES) > 16 * 1024**3
 
 
 def test_daemons_are_not_oom_deprioritized():
