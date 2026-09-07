@@ -1,5 +1,64 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-07 (DRIFT-REPAIR PASS -- DETECTION SHIPPED WITHOUT A REPAIR,
+AND THE OBVIOUS REPAIR WOULD HAVE REPORTED SUCCESS ON A BOX IT DID NOT FIX.**
+Cold start first, per instructions: health digest **12/12 units ok, 21/21 unit
+files match, QA `clean (standing skip: collect-skips)`** -- yesterday's fix
+reading correctly in production. Item (1), the **10th panel day, is still
+data-gated**: shadow is at 204.9h (day 9 of `20260829T191841`), 10 lands ~09-08.
+So item (3), carried two passes.
+**(1) FOUR VERDICTS AND NO WAY TO ACT ON THEM.** 09-06 detected four drift
+states; the repair (`cp` + `daemon-reload`) lived only inside promote.sh's
+happy path, so fixing a hand-edited unit meant promoting CODE -- full suite,
+fast-forward of stable, and a daemon restart priced in DAYS OF SHADOW SPAN
+(EXP-961). `promote.sh --units-only` is that repair with nothing else attached.
+**(2) THE FINDING IS THAT THE REPAIR IS PARTIAL, AND A NAIVE ONE WOULD LIE.**
+`cp` + reload clears DRIFT and STALE-IN-MEMORY and is STRUCTURALLY unable to
+clear SHADOWED (the winning copy is in a higher-priority directory this repo
+does not own -- the repair is deleting someone else's file, an operator call)
+or DROP-IN (an override that survives every fragment rewrite by construction).
+A mode that ran the copy and exited 0 would convert a detected fault into a
+green line -- the exact lie `collector.health` exists to stop telling. So
+`REPAIRABLE`/`UNREPAIRABLE` are named in health.py, `--drift-only` RE-ASKS the
+judge after the copy and returns 0/1/2, and the shell exits with that status.
+Usage errors return 64, not 2, or a mistyped flag makes promote.sh explain a
+fault that does not exist.
+**(3) THE REPAIR MUST NOT GATE ON THE CHECK IT REPAIRS.** `--units-only` runs
+the two unit-FILE suites and deliberately not `tests/test_unit_drift.py`, whose
+live arm asserts the installed units already match the repo: gating there means
+the repair runs only on a box that does not need it.
+**(4) MEASURED END TO END, and the measurement corrected 09-06 twice.** Both
+repairable states induced on REAL units and cleared; daemons untouched
+(stream/shadow `NRestarts=0`, up since 08-29). 09-06 recorded "an INACTIVE unit
+always reads `NeedDaemonReload=no`, because systemd GCs it" -- it GCs the
+UNREFERENCED unit, and `hyxlab-backup.service`, inactive/dead, read `yes`
+because its TIMER references it. Every timer-backed service here is referenced
+that way, so an `ActiveState`-conditioned arm would have gone quiet on nearly
+the whole set. And a hand edit reads STALE-IN-MEMORY, not DRIFT, while the unit
+stays loaded: `show` reports the text the MANAGER holds, so the fragment
+comparison is comparing stale text to the repo and answers OK. The two
+repairable states are two phases of one fault.
+**Twelve mutants red.** PROCESS NOTE: the first scan draft matched
+`test_unit_drift.py` in the COMMENT explaining why the mode must not run it --
+the same failure as 3bfde83's premise scan; a scan that reads prose is testing
+the prose, so it reads code lines only. Suite 1150 -> **1163**.
+**PROMOTED, no daemon restart** (no daemon imports `collector.health`) --
+shadow's `20260829T191841` survives, day 9. Pushed.
+NEXT PASS: (1) **THE 10TH PANEL DAY, ~09-08** -- check it FIRST; it should
+land during the next pass. (2) Still open, carried five passes and now the
+oldest item: the digest's only reader is an agent every six hours, which is a
+consumer but not an ALARM -- nothing wakes anyone if the box degrades between
+two autoloop iterations, and if the autoloop dies the digest dies with its only
+reader. Decide whether that is coverable from inside the box at all, and WRITE
+DOWN which. (3) Opened by this pass: SHADOWED and DROP-IN are now DETECTED,
+classified unrepairable-by-script, and have no written operator procedure --
+the same shape of gap this pass just closed one level down. (4) The width-24
+econ maker bracket needs 2026-09-12 for a second reading; the atlas quoted tier
+wants settled markets ~2.1M. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-07 (STANDING-SKIP PASS -- THE DIGEST SHIPPED YESTERDAY
 SAID `NOT a full pass` EVERY SIX HOURS ON A GREEN BOX, AND A REAL SKIP WOULD
 NOT HAVE CHANGED THE WORDING.**
