@@ -1,5 +1,91 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-07 (BREADTH-TRUNCATION PASS -- THE COLLECTOR REPORTED
+SUCCESS WHILE DROPPING 97% OF ITS TAPE FOR 15 HOURS.**
+Cold start per instructions, and the digest earned its keep: it flagged
+`hyxlab-qa FAILED result=exit-code` / `FAILURES ['breadth continuous over
+last 24h']`. That outranked the ladder, so item (1) -- the 10th panel day --
+was not reached; see the COST note below.
+**(1) THE REPORTED FAULT WAS NOT THE FAULT.** "Continuity" reads like
+downtime. Breadth never missed a cycle: it ran every 5 min, exited 0, and
+systemd logged `Finished` throughout. The gap was in the DATA. At
+2026-09-06T23:32Z Kalshi's 24h-close universe crossed `MAX_PAGES *
+PAGE_LIMIT` (60,000) -- a mass listing of KXMVECROSSCATEGORY parlay legs; a
+live probe of the first 3,000 markets found 2,274 of them and only 157 with
+ANY 24h volume. `breadth_snapshots` fell from ~990 to as low as 3
+rows/cycle and is still only partly recovered.
+**(2) THE GUARD FIRED AND WAS WIRED TO NOTHING.** `MAX_PAGES` exists, in
+the module's own words, so a regression "is LOUD rather than merely
+expensive" -- and LOUD meant `print("[kalshi] get_markets TRUNCATED ...")`.
+`get_markets` printed it, returned the truncated list, and the collector
+ranked it and exited 0. journald is not a consumer. THE SAME SHAPE THIS
+REPO HAS NOW CLOSED FOUR PASSES RUNNING: a detection with no reader.
+**(3) A TRUNCATED WALK IS NOT A SLOW WALK -- IT IS AN UNRANKED ONE.** The
+module's value rests on "ranking is exact rather than sampled", which holds
+ONLY while the enumeration is exhaustive. Truncated, it returns the API's
+own order, which is not volume order: the volume-bearing markets sat beyond
+the cap, `top_n` correctly rejected the dead legs in front of them, and the
+result was a head slice wearing a ranking's name. That premise is now
+marked CONDITIONAL in the docstring with its falsification recorded.
+**(4) THE SHARPEST PART: BOTH BREADTH CHECKS WERE GREEN THE WHOLE TIME,
+AND HAD TO BE.** Freshness and 24h-continuity measure CADENCE, and cadence
+was perfect. Nothing measured CONTENT. The one failure that did fire was an
+arithmetic accident -- a 65-minute stretch where the count was exactly zero
+tripped the 60-min gap budget. A flood 5% smaller would have been
+PERMANENTLY invisible, and the hours at 109-541 rows/cycle produced no gap
+at all.
+**(5) THE FIX IS A RECORD, NOT A THRESHOLD.** Row count cannot separate "a
+quiet exchange" from "a truncated walk", and a count threshold is a guess
+that either misses the event or cries wolf on a Sunday -- the alarm fatigue
+last pass existed to kill. Truncation is a FACT about the walk.
+`get_markets` gains `with_truncated=True -> (markets, truncated)` (the shape
+`get_markets_ascending` already had; default keeps four callers
+byte-identical); a `breadth_cycles` table records what each cycle SAW next
+to what it wrote; QA fails on any truncated cycle in 24h -- no rate, since
+one truncated walk is already a ranking that cannot be trusted.
+**(6) A TRUNCATED CYCLE STILL WRITES, deliberately.** Quotes are
+unrecoverable after the fact, so refusing to write would convert a degraded
+tape into an ABSENT one -- strictly worse than the fault. Truncation
+destroys the ranking claim, not the rows.
+**(7) A NEW CHECK MUST NOT BE ABLE TO KILL THE RUN.** QA connects READ-ONLY
+and cannot create the table it reads, so between promote and breadth's next
+cycle `breadth_cycles` does not exist. Measured on the live archive:
+unguarded, the query raises `CatalogException` and takes every OTHER check
+down with it. Guarded on `information_schema`, absent -> WATCH.
+**Seven mutants red.** Suite 1163 -> **1177**. PROMOTED, PUSHED, and
+VERIFIED IN PRODUCTION end to end: the 14:32Z cycle logged
+`{'universe': 60000, 'picked': 714, 'truncated': True}`, the row persisted,
+and QA on the stable worktree now prints `FAIL breadth universe enumerated
+exhaustively over last 24h -- 1/1 cycles truncated, widest universe 60000`.
+**COST, NAMED PLAINLY: THIS PASS ENDED SHADOW RUN `20260829T191841` AT DAY
+9.** The change touches `hyxlab/store.py`, which is in shadow's and
+streamd's import closure, so promote.sh correctly restarted both; run
+`20260907T142900` is now anchored at the stream head. The 10th panel day
+(item (1), carried three passes, due ~09-08) is therefore pushed to ~09-17.
+I should have priced that BEFORE promoting rather than reporting it after
+-- EXP-961 exists precisely to make restarts cost days of shadow span. The
+trade I implicitly made: the breadth tape was losing ~97% of the archive's
+only exchange-wide quote history every 5 minutes, and every hour of delay
+was both more lost data and more blindness. I still judge shipping right,
+but the call should have been stated, not assumed.
+NEXT PASS: (1) **QA NOW FAILS EVERY DAY, CORRECTLY, AND THAT IS A DECISION
+REQUEST, NOT A BUG.** The fault is REAL and ONGOING (universe pinned at the
+60k cap, cutoff volume down to 0.1). Two options, both COST/SCOPE calls and
+neither a bug fix: widen `MAX_PAGES` -- 200 pages measured 2026-08-03 at
+140 s with 2x HTTP 429, every 5 min, against a rate budget SHARED WITH A
+LIVE TRADING LOOP -- or exclude the KXMVE* parlay family, which contradicts
+this module's stated reason to exist ("covering families we have never
+studied"). Decide and write down which; do NOT let it sit and become the
+chronic-skip problem one layer up. (2) The 10th panel day, now ~09-17.
+(3) Still the oldest item, carried six passes: the digest's only reader is
+an agent every six hours -- a consumer, not an ALARM. (4) SHADOWED and
+DROP-IN drift have no written operator procedure. (5) The width-24 econ
+maker bracket needs 2026-09-12; the atlas quoted tier wants ~2.1M settled
+markets. Both data-gated.
+NOTHING IS USER-GATED THIS PASS, but (1) IS AN OPERATOR DECISION.**
+
+---
+
 Updated: **2026-09-07 (DRIFT-REPAIR PASS -- DETECTION SHIPPED WITHOUT A REPAIR,
 AND THE OBVIOUS REPAIR WOULD HAVE REPORTED SUCCESS ON A BOX IT DID NOT FIX.**
 Cold start first, per instructions: health digest **12/12 units ok, 21/21 unit
