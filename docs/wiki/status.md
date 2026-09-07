@@ -1,5 +1,91 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-07 (OOM-ATTRIBUTION PASS -- THE UNIT THE DIGEST BLAMED
+WAS THE ONE PROCESS THAT WAS INNOCENT.**
+Cold start per instructions. The digest flagged `hyxlab-poly-sweep FAILED
+result=oom-kill, exit=9` -- a NEW fault, unrecorded, so it outranked both
+the ladder and the carried breadth decision.
+**(1) NOT OUR MEMORY, AND THE KERNEL SAID SO IN THE SAME SECOND.**
+poly-sweep was killed holding **341,160 kB anon (333 MiB)**, 13.5h in at
+15,600/17,028 markets. The process that actually exhausted the box held
+**25,213,472 kB (24.0 GiB)** -- an unrelated python in a Chromium scope,
+`oom_score_adj:0` -- and the kernel killed it **one second LATER**.
+`hyxlab-breadth` (266 MiB) and `hyxlab-collect` (30 MiB) were shot in the
+same episode. The three sacrifices freed 644 MB against a 24 GiB deficit
+(2.5%) and resolved nothing; the hog's own death did.
+**(2) THE DATA WAS NOT LOST TO BUFFERING.** `poly_sweep` flushes every 25
+markets, so the archive kept 644k prices / 850k trades. What was lost is
+1,428 markets of that day's Polymarket history and two collection cycles --
+recoverable on the next timer, unlike a quote tape.
+**(3) `MemoryPeak` 21.3G IS NOT A FOOTPRINT.** It is ~98% page cache --
+exactly the trap `.claude/rules/ops.md` already names, and the number a
+naive reader would have "confirmed" the leak with. The kernel's `anon-rss`
+at the moment of the kill is the only honest figure, and it is written
+next to every other victim of the episode.
+**(4) WHY THE INNOCENT UNIT WAS CHOSEN: `OOMScoreAdjust` IS A QUANTITY OF
+IMAGINARY MEMORY, NOT A PRIORITY LABEL.** `oom_badness()` adds
+`adj * totalpages / 1000`, so on this 60G box `500` is worth ~30G of
+pretend footprint and makes the unit outrank essentially any other process.
+The 2026-07-20 hardening ("sacrifice restartable batch work before live
+capture") is a REAL and still-valid intent -- what was never priced is that
+it also ranked the batch units below every stranger on the box up to ~30G.
+2026-09-07 was its first real test and it cost a 92%-complete 13.5h sweep.
+**(5) RETUNED TO 220, MEASURED ON FOUR POINTS.** batch 350 MiB @220 = 816,
+batch 30 MiB @220 = 813, live stream/shadow @200 = 803/802, stranger 1.6G
+@200 = 817, stranger 4.0G @200 = 843. Every batch unit outranks every
+capture daemon across their whole measured range (batch 30-350 MiB vs
+daemons 68-270 MiB), and anything over ~1.6G outranks the batch units and
+dies first. Residual, stated: the ordering holds while the daemons stay
+inside their measured footprints, which their own `MemoryMax` caps bound.
+**(6) I GOT THIS WRONG ONCE AND THE BOX CORRECTED ME.** The first commit
+shipped **110**, on the belief that the daemons inherit the manager default
+**100** -- which is what a `systemd-run --user` transient unit reports. The
+live daemons' own `/proc` says `DefaultOOMScoreAdjust=200`. At 110 the batch
+units sat BELOW live capture: not a mistuning, an INVERSION of the very
+ordering the setting exists to create. Nothing ran under it. The test now
+asserts `OOM_BATCH > OOM_MANAGER_FLOOR` so an inverting value cannot pass.
+The lesson is the repo's own standing one: measure the running process, not
+the convenient proxy.
+**(7) THE DIGEST NOW ANSWERS THE QUESTION IT RAISED.** `Result=oom-kill`
+names the VERB, never the CULPRIT, and separating "a leak to fix" from "a
+policy cost to price" took this entire pass in kernel forensics.
+`collector.health` joins the kernel's cgroup and footprint lines ON PID and
+reports the unit's own anon next to the episode's largest victim. It can
+CONVICT as well as excuse (symmetry arm); it will not borrow a stranger's
+kill hours later as an alibi (episode window); it reads the journal only
+when the manager already reported an oom-kill; and when journald has
+rotated it degrades to SILENCE, not to a guess -- a new reader must not be
+able to take the digest down (the 09-06 lesson, applied).
+**Suite 1177 -> 1184.** PROMOTED, PUSHED, VERIFIED IN PRODUCTION: the
+installed units read `OOMScoreAdjust=220` and the stable worktree's digest
+prints `OOM BYSTANDER: held 333 MiB anon (adj=500) when killed; the
+episode's largest victim was python at 24.0 GiB`.
+**COST: ZERO SHADOW SPAN, AND IT WAS PRICED BEFORE PROMOTING, NOT AFTER.**
+`collector/health.py` is in neither daemon's static import closure (checked
+with `daemon_imports.py closure` FIRST), so promote restarted nothing; run
+`20260907T142900` keeps its clock and the 10th panel day is still ~09-17.
+**ONE NEW GAP FOUND, NOT YET FIXED: a FULL promote carrying a unit-file
+change DEADLOCKS ON ITS OWN GATE.** Its suite includes the live drift arm,
+which cannot pass until the units are installed, and only promote installs
+them. 09-06 fixed exactly this for `--units-only` ("the repair must not gate
+on the check it repairs") and the full path still has it. Worked around this
+pass by running `--units-only` first, then the full promote. That ordering
+is currently tribal knowledge in this entry and nothing enforces it.
+NEXT PASS: (1) **the promote deadlock above** -- it is small, it is the same
+shape 09-06 already closed once, and it will bite the next unit change.
+(2) **The breadth truncation decision is STILL OPEN and QA still FAILS
+daily** (universe pinned at the 60k cap): widen `MAX_PAGES` or exclude the
+KXMVE* parlay family. Carried from last pass; do not let it become chronic.
+(3) The 10th panel day, ~09-17. (4) Still the oldest item, carried seven
+passes: the digest's only reader is an agent every six hours -- a consumer,
+not an ALARM; this pass is the argument FOR one, since the oom-kill sat
+unread for 7.5h. (5) SHADOWED and DROP-IN drift have no written operator
+procedure. (6) The width-24 econ maker bracket needs 2026-09-12; the atlas
+quoted tier wants ~2.1M settled markets. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-07 (BREADTH-TRUNCATION PASS -- THE COLLECTOR REPORTED
 SUCCESS WHILE DROPPING 97% OF ITS TAPE FOR 15 HOURS.**
 Cold start per instructions, and the digest earned its keep: it flagged
