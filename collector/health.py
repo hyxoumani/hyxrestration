@@ -97,6 +97,7 @@ from another unread verdict.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -263,6 +264,10 @@ def show(unit: str) -> dict[str, str]:
     return props
 
 
+def _with_oom(detail: str, note: str) -> str:
+    return f"{detail} — {note}" if note else detail
+
+
 def _age(ts: float | None, now: float) -> str:
     if ts is None:
         return "never"
@@ -270,7 +275,133 @@ def _age(ts: float | None, now: float) -> str:
     return f"{h:.1f}h ago" if h >= 1 else f"{(now - ts) / 60.0:.0f}m ago"
 
 
-def judge(unit: str, svc: dict[str, str], timer: dict[str, str] | None, now: float) -> UnitHealth:
+# --- OOM attribution -------------------------------------------------------
+# Measured 2026-09-07, after `result=oom-kill` on hyxlab-poly-sweep cost a
+# whole pass in kernel forensics to interpret. `Result=oom-kill` names the
+# VERB, never the CULPRIT: a global OOM kills by badness score, and this
+# fleet's batch units carry an `OOMScoreAdjust` that makes them preferred
+# victims ON PURPOSE. So the digest cannot report an oom-kill as a fault of
+# the unit -- on 09-07 poly-sweep died holding 333 MiB while the process
+# that actually exhausted the box held 24.0 GiB and was killed one second
+# LATER. The unit was executed as a hostage, and nothing said so.
+#
+# `MemoryPeak` cannot answer this either (the standing rule in
+# .claude/rules/ops.md): it charges the page cache the unit's own reads
+# pulled in, so poly-sweep's 21.3G "peak" was ~98% file cache. The kernel
+# writes the only honest number -- `anon-rss` at the moment of the kill --
+# and it writes it next to every other victim of the same episode.
+OOM_WINDOW_DAYS = 7  # journald retention is the real bound; this just caps the read
+OOM_EPISODE_S = 120.0  # kills from one global OOM land within seconds of each other
+
+_MEMCG_RE = re.compile(
+    r"oom-kill:constraint=.*?task_memcg=(?P<memcg>\S+?),task=(?P<task>[^,]+),pid=(?P<pid>\d+)"
+)
+_KILLED_RE = re.compile(
+    r"Out of memory: Killed process (?P<pid>\d+) \((?P<comm>[^)]*)\)"
+    r".*?anon-rss:(?P<anon>\d+)kB.*?oom_score_adj:(?P<adj>-?\d+)"
+)
+
+
+@dataclass(frozen=True)
+class OomVictim:
+    """One process the kernel killed, as the kernel itself recorded it."""
+
+    ts: float
+    pid: str
+    comm: str
+    owner: str  # the cgroup leaf -- a unit name, or a scope for anything else
+    anon_kb: int
+    adj: int
+
+
+def _gib(kb: int) -> str:
+    mib = kb / 1024.0
+    return f"{mib / 1024.0:.1f} GiB" if mib >= 1024 else f"{mib:.0f} MiB"
+
+
+def parse_kernel_oom(text: str) -> list[OomVictim]:
+    """Victims from `journalctl -k -o short-iso`. Pure, so the shapes below are
+    asserted against the real 2026-09-07 lines rather than against a live box.
+
+    The kernel emits two lines per victim: an `oom-kill:` line carrying the
+    cgroup, then a `Killed process` line carrying the footprint. They are
+    joined on pid rather than on adjacency -- interleaved episodes are common
+    and the pid is the only field that actually identifies the victim.
+    """
+    owners: dict[str, str] = {}
+    out: list[OomVictim] = []
+    for line in text.splitlines():
+        stamp, _, rest = line.partition(" ")
+        if m := _MEMCG_RE.search(rest):
+            leaf = m.group("memcg").rstrip("/").rsplit("/", 1)[-1]
+            owners[m.group("pid")] = leaf
+            continue
+        if m := _KILLED_RE.search(rest):
+            try:
+                ts = datetime.fromisoformat(stamp).timestamp()
+            except ValueError:
+                continue
+            pid = m.group("pid")
+            out.append(
+                OomVictim(
+                    ts=ts,
+                    pid=pid,
+                    comm=m.group("comm"),
+                    owner=owners.get(pid, "?"),
+                    anon_kb=int(m.group("anon")),
+                    adj=int(m.group("adj")),
+                )
+            )
+    return out
+
+
+def read_kernel_oom(days: int = OOM_WINDOW_DAYS) -> list[OomVictim]:
+    """The kernel's own kill record. Never raises: an absent journal, a missing
+    binary or an unreadable buffer degrades to "no attribution", never to a
+    digest that fails to print. (The 09-06 lesson: a new reader must not be
+    able to take the checks around it down.)"""
+    try:
+        proc = subprocess.run(
+            ["journalctl", "-k", "-o", "short-iso", "--no-pager", "--since", f"-{days}d"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_kernel_oom(proc.stdout)
+
+
+def oom_attribution(victims: list[OomVictim], unit: str) -> str:
+    """Was this unit the memory, or was it the sacrifice? Pure.
+
+    Reports the unit's own anon-rss next to the biggest thing that died in the
+    same episode, because that comparison is the whole decision: a unit that
+    was the largest victim is a leak to fix, and a unit dwarfed by a stranger
+    is a scheduling-policy cost to price.
+    """
+    mine = [v for v in victims if v.owner == unit]
+    if not mine:
+        return ""
+    last = max(mine, key=lambda v: v.ts)
+    peers = [v for v in victims if abs(v.ts - last.ts) <= OOM_EPISODE_S]
+    worst = max(peers, key=lambda v: v.anon_kb)
+    if worst.pid == last.pid:
+        return f"largest victim of its own OOM episode at {_gib(last.anon_kb)} anon — this unit WAS the memory"
+    return (
+        f"OOM BYSTANDER: held {_gib(last.anon_kb)} anon (adj={last.adj}) when killed; "
+        f"the episode's largest victim was {worst.comm} at {_gib(worst.anon_kb)} "
+        f"(adj={worst.adj}, {worst.owner})"
+    )
+
+
+def judge(
+    unit: str,
+    svc: dict[str, str],
+    timer: dict[str, str] | None,
+    now: float,
+    oom_note: str = "",
+) -> UnitHealth:
     """One unit's state, as a pure function of what the manager reported.
 
     Pure so the field semantics measured above are asserted against strings
@@ -291,7 +422,10 @@ def judge(unit: str, svc: dict[str, str], timer: dict[str, str] | None, now: flo
             return UnitHealth(
                 unit,
                 "DOWN",
-                f"{svc.get('ActiveState')}/{svc.get('SubState')}, result={svc.get('Result')}",
+                _with_oom(
+                    f"{svc.get('ActiveState')}/{svc.get('SubState')}, result={svc.get('Result')}",
+                    oom_note,
+                ),
             )
         restarts = svc.get("NRestarts") or "0"
         return UnitHealth(unit, "OK", f"up since {_age(started, now)}, {restarts} restarts")
@@ -307,7 +441,9 @@ def judge(unit: str, svc: dict[str, str], timer: dict[str, str] | None, now: flo
 
     if svc.get("Result") != "success":
         return UnitHealth(
-            unit, "FAILED", f"result={svc.get('Result')}, exit={svc.get('ExecMainStatus')}"
+            unit,
+            "FAILED",
+            _with_oom(f"result={svc.get('Result')}, exit={svc.get('ExecMainStatus')}", oom_note),
         )
     # (2) ExecMainStatus is only a measurement once the unit has actually exited.
     if exited is not None and (svc.get("ExecMainStatus") or "0") != "0":
@@ -519,11 +655,23 @@ def judge_qa(state: dict, qa_svc: dict[str, str], now: datetime) -> str:
 
 def report(now: float | None = None) -> list[UnitHealth]:
     now = now if now is not None else datetime.now(UTC).timestamp()
-    out = []
-    for svc_name, has_timer in discover_units():
-        timer = show(f"{Path(svc_name).stem}.timer") if has_timer else None
-        out.append(judge(svc_name, show(svc_name), timer, now))
-    return out
+    seen = [
+        (svc_name, show(f"{Path(svc_name).stem}.timer") if has_timer else None, show(svc_name))
+        for svc_name, has_timer in discover_units()
+    ]
+    # The kernel journal is read at most once per digest, and only when the
+    # manager already says something was oom-killed. No fault, no cost.
+    victims = read_kernel_oom() if any(s.get("Result") == "oom-kill" for _, _, s in seen) else []
+    return [
+        judge(
+            svc_name,
+            svc_props,
+            timer,
+            now,
+            oom_attribution(victims, svc_name) if svc_props.get("Result") == "oom-kill" else "",
+        )
+        for svc_name, timer, svc_props in seen
+    ]
 
 
 def drift_exit_code(drift: list[UnitDrift]) -> int:

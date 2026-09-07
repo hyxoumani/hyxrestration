@@ -75,16 +75,63 @@ def _field(text, key):
     return out
 
 
+# The user manager's default, which every hyxlab process inherits unless its
+# unit says otherwise. Unprivileged units cannot go BELOW it (the 2026-07-20
+# note), so this is the floor the capture daemons sit at.
+OOM_MANAGER_FLOOR = 100
+OOM_BATCH = 110
+BOX_RAM_BYTES = 60 * 1024**3  # the deployment this fleet runs on
+
+
+def oom_handicap_bytes(adj_delta: int, mem_total: int) -> int:
+    """What an OOMScoreAdjust delta is WORTH, in bytes of pretend footprint.
+
+    `oom_badness()` adds `oom_score_adj * totalpages / 1000` to a process's real
+    RSS. So the adjust is not a priority label, it is a quantity of imaginary
+    memory -- and comparing it against the footprints it is meant to order is
+    the only way to know whether it is a tie-break or an override.
+    """
+    return adj_delta * mem_total // 1000
+
+
 def test_oneshot_units_are_preferred_oom_victims():
     services = _services()
     assert services, "no unit files found"
     for name, text in services.items():
         if "Type=oneshot" in text:
-            assert "OOMScoreAdjust=500" in text, (
+            assert _field(text, "OOMScoreAdjust") == [str(OOM_BATCH)], (
                 f"{name}: timer-driven oneshot units must carry "
-                "OOMScoreAdjust=500 so the kernel kills restartable batch "
+                f"OOMScoreAdjust={OOM_BATCH} so the kernel kills restartable batch "
                 "work before the capture daemons"
             )
+
+
+def test_oom_handicap_is_a_tiebreak_and_not_an_override():
+    """The 2026-09-07 falsification, kept as arithmetic.
+
+    `OOMScoreAdjust=500` was shipped 2026-07-20 to rank batch work below live
+    capture. It does that -- and, unremarked, it also ranks the batch units
+    below EVERY OTHER PROCESS ON THE BOX up to ~30G, because the handicap is a
+    fraction of total RAM and not a fraction of the footprints being ordered.
+    On 2026-09-07 a 333 MiB poly-sweep, a 266 MiB breadth and a 30 MiB collect
+    were all killed ahead of a 24.0 GiB stranger, which the kernel then killed
+    anyway one second later: the sacrifice freed 2.5% of the deficit and
+    resolved nothing.
+
+    The handicap has to be big enough to order hyxlab's own processes (batch
+    30-350 MiB vs daemons 68-270 MiB) and small enough to lose to any real hog.
+    """
+    handicap = oom_handicap_bytes(OOM_BATCH - OOM_MANAGER_FLOOR, BOX_RAM_BYTES)
+    assert handicap > 300 * 1024**2, (
+        "handicap must exceed the largest capture daemon's measured anon "
+        f"footprint (~270 MiB) or it cannot order them at all; got {handicap}"
+    )
+    assert handicap < 1024**3, (
+        "handicap must stay under 1 GiB: above that it stops breaking ties "
+        f"between hyxlab processes and starts outranking strangers; got {handicap}"
+    )
+    # The falsified value, stated so it cannot be reintroduced as a round number.
+    assert oom_handicap_bytes(500 - OOM_MANAGER_FLOOR, BOX_RAM_BYTES) > 20 * 1024**3
 
 
 def test_daemons_are_not_oom_deprioritized():

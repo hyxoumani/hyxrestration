@@ -497,7 +497,7 @@ def test_env_overrides_are_read_and_bad_values_fall_back(monkeypatch):
 def test_breadth_unit_exists_and_follows_repo_convention():
     svc = (UNIT_DIR / "hyxlab-breadth.service").read_text()
     timer = (UNIT_DIR / "hyxlab-breadth.timer").read_text()
-    assert "Type=oneshot" in svc and "OOMScoreAdjust=500" in svc
+    assert "Type=oneshot" in svc and "OOMScoreAdjust=110" in svc
     assert "hyxrestration-stable" in svc
     assert "writer.lock" not in svc, "no unit-level flock; bursts are taken in python"
     assert f"Environment={breadth.ENABLE_ENV}=1" in svc, (

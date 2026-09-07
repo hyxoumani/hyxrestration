@@ -516,3 +516,71 @@ def test_the_digest_exits_zero_even_with_a_failing_unit(monkeypatch: pytest.Monk
         health, "report", lambda *a, **k: [health.UnitHealth("hyxlab-x.service", "FAILED", "exit=1")]
     )
     health.main()  # must not raise SystemExit
+
+
+# --- OOM attribution -------------------------------------------------------
+# `Result=oom-kill` names the verb, never the culprit. These arms are the real
+# kernel lines from 2026-09-07 12:50:38-39, when a global OOM killed three
+# hyxlab batch units and then the 24 GiB stranger that had actually exhausted
+# the box. The digest reported "FAILED result=oom-kill, exit=9" and nothing
+# else, and reading that as a poly-sweep fault cost a whole pass.
+
+OOM_LINES = """\
+2026-09-07T12:50:38-05:00 hyz kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/hyxlab-poly-sweep.service,task=python,pid=3235032,uid=1000
+2026-09-07T12:50:38-05:00 hyz kernel: Out of memory: Killed process 3235032 (python) total-vm:8630308kB, anon-rss:341160kB, file-rss:8kB, shmem-rss:0kB, UID:1000 pgtables:2520kB oom_score_adj:500
+2026-09-07T12:50:39-05:00 hyz kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/hyxlab-breadth.service,task=python,pid=3991282,uid=1000
+2026-09-07T12:50:39-05:00 hyz kernel: Out of memory: Killed process 3991282 (python) total-vm:559068kB, anon-rss:272276kB, file-rss:8kB, shmem-rss:0kB, UID:1000 pgtables:848kB oom_score_adj:500
+2026-09-07T12:50:39-05:00 hyz kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.chromium.Chromium-305403.scope,task=python,pid=3990817,uid=1000
+2026-09-07T12:50:39-05:00 hyz kernel: Out of memory: Killed process 3990817 (python) total-vm:26683232kB, anon-rss:25213472kB, file-rss:8kB, shmem-rss:0kB, UID:1000 pgtables:51152kB oom_score_adj:0
+"""
+
+
+def test_parse_kernel_oom_joins_cgroup_and_footprint_on_pid():
+    victims = health.parse_kernel_oom(OOM_LINES)
+    assert [v.owner for v in victims] == [
+        "hyxlab-poly-sweep.service",
+        "hyxlab-breadth.service",
+        "app-org.chromium.Chromium-305403.scope",
+    ]
+    assert [v.anon_kb for v in victims] == [341160, 272276, 25213472]
+    assert [v.adj for v in victims] == [500, 500, 0]
+
+
+def test_bystander_is_named_as_one():
+    """The whole point: the failing unit's footprint next to the episode's real hog."""
+    note = health.oom_attribution(health.parse_kernel_oom(OOM_LINES), "hyxlab-poly-sweep.service")
+    assert note.startswith("OOM BYSTANDER: held 333 MiB anon (adj=500)")
+    assert "24.0 GiB" in note and "app-org.chromium.Chromium-305403.scope" in note
+
+
+def test_a_unit_that_was_the_memory_is_not_excused():
+    """Symmetry arm: the attribution must be able to convict, or it is a whitewash."""
+    note = health.oom_attribution(
+        health.parse_kernel_oom(OOM_LINES), "app-org.chromium.Chromium-305403.scope"
+    )
+    assert "this unit WAS the memory" in note and "24.0 GiB" in note
+
+
+def test_a_separate_episode_is_not_borrowed_as_an_excuse():
+    """A stranger's kill hours later must not be quoted as this unit's alibi."""
+    later = OOM_LINES.replace("2026-09-07T12:50:39", "2026-09-07T18:50:39")
+    note = health.oom_attribution(health.parse_kernel_oom(later), "hyxlab-poly-sweep.service")
+    assert "this unit WAS the memory" in note, note
+
+
+def test_attribution_is_silent_rather_than_wrong_when_the_journal_is_gone():
+    """Journald rotates. No record must mean no claim -- not an invented one."""
+    assert health.parse_kernel_oom("") == []
+    assert health.oom_attribution([], "hyxlab-poly-sweep.service") == ""
+    assert health.oom_attribution(health.parse_kernel_oom(OOM_LINES), "hyxlab-qa.service") == ""
+
+
+def test_judge_appends_attribution_only_to_the_failure_it_explains():
+    victims = health.parse_kernel_oom(OOM_LINES)
+    note = health.oom_attribution(victims, "hyxlab-poly-sweep.service")
+    h = health.judge(
+        "hyxlab-poly-sweep.service", svc(Result="oom-kill", ExecMainStatus="9"), timer(), NOW, note
+    )
+    assert h.state == "FAILED" and "OOM BYSTANDER" in h.detail
+    # A healthy unit carries no note even if the kernel log is full of them.
+    assert health.judge("hyxlab-poly-sweep.service", svc(), timer(), NOW).state == "OK"

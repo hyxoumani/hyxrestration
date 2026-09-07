@@ -2,6 +2,12 @@
 Description=hyxlab daily signal pull (ALFRED econ vintages + GDELT news)
 [Service]
 Type=oneshot
-OOMScoreAdjust=500
+# 110, not 500: OOMScoreAdjust is a per-mille-of-RAM handicap, so on this 60G
+# box 500 adds ~30G of pretend footprint and makes this unit outrank essentially
+# ANY other process. Measured 2026-09-07, when a 333 MiB poly-sweep was killed
+# ahead of the 24.0 GiB stranger that actually exhausted the box. 110 still
+# outranks the capture daemons (they inherit the manager's 100) without
+# outranking a real hog -- see tests/test_systemd_units.py for the arithmetic.
+OOMScoreAdjust=110
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.signals
