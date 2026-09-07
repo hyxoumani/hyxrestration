@@ -15,8 +15,25 @@ Mechanism (one HTTP pass per cycle, no per-market calls):
 `/markets?status=open` already carries top-of-book (yes/no bid/ask +
 displayed sizes) AND `volume_24h_fp` for every market it lists, so a
 single paginated enumeration both RANKS the universe and IS the snapshot.
-Ranking is therefore exact rather than sampled, and top-N costs the same
-requests as top-1.
+Ranking is exact rather than sampled ONLY WHILE THE WALK IS EXHAUSTIVE,
+and top-N then costs the same requests as top-1.
+
+THAT PREMISE IS CONDITIONAL, and the exchange falsified it on
+2026-09-06T23:32Z. The 24h-close universe crossed `MAX_PAGES * PAGE_LIMIT`
+(60,000) — a mass listing of KXMVECROSSCATEGORY parlay legs; a probe of
+the first 3,000 markets on 2026-09-07 found 2,274 of them and only 157
+markets with any 24h volume. Every cycle for the next 15 hours truncated,
+and a truncated walk returns the API's own enumeration order, which is NOT
+volume order: the volume-bearing markets sat beyond the cap, `top_n`
+correctly rejected the dead legs in front of them, and coverage fell from
+~990 to as low as 3 rows/cycle. The collector reported success throughout.
+So truncation is now returned in-band (`fetch_universe`), recorded per
+cycle (`breadth_cycles`) and failed by QA — see `collector/qa.py`.
+WIDENING `MAX_PAGES` OR EXCLUDING THE PARLAY FAMILY ARE BOTH REAL OPTIONS
+AND BOTH ARE COST/SCOPE DECISIONS, NOT BUG FIXES: the first spends a rate
+budget shared with a live trading loop every 5 minutes (200 pages measured
+at 140 s with 2x HTTP 429 on 2026-08-03), and the second contradicts this
+module's reason to exist — see docs/wiki/status.md.
 
 MEASURED 2026-08-03, and the reason CLOSE_WINDOW_H exists: the
 UNFILTERED open universe is **>200,000 markets** (the walk truncated at
@@ -125,14 +142,21 @@ def fetch_universe(
     pause_s: float = MARKETS_PAUSE_S,
     close_window_h: int = CLOSE_WINDOW_H,
     now: datetime | None = None,
-) -> list[dict]:
-    """Every OPEN market closing within `close_window_h`, with its book.
+) -> tuple[list[dict], bool]:
+    """Every OPEN market closing within `close_window_h`, with its book,
+    as `(markets, truncated)`.
 
     One paginated pass, paced between pages by `kalshi.get_markets`
     itself (429s handled there via `_get_with_429_retry`). No
     series_ticker filter and NO CATEGORY ALLOWLIST — that is the point;
     the only filter is the close-time horizon, which is about cost and
     usefulness rather than about which families we are willing to study.
+
+    `truncated` is returned rather than discarded because it invalidates
+    this module's central claim. Ranking is exact ONLY over an exhaustive
+    enumeration; a truncated walk returns the first `max_pages` pages in
+    the API's own order, which is not volume order, so `top_n` over it is
+    a head slice wearing a ranking's name.
     """
     sess = session or requests.Session()
     now = now or datetime.now(UTC)
@@ -144,6 +168,7 @@ def fetch_universe(
         session=sess,
         pause_s=pause_s,
         max_close_ts=max_close_ts,
+        with_truncated=True,
     )
 
 
@@ -215,25 +240,35 @@ def collect_breadth_once(
 ) -> dict:
     """One cycle: enumerate (no lock held), then write in one burst."""
     t0 = time.monotonic()
-    markets = fetch_universe(session=session, pause_s=pause_s, close_window_h=close_window_h)
+    markets, truncated = fetch_universe(
+        session=session, pause_s=pause_s, close_window_h=close_window_h
+    )
     fetch_s = time.monotonic() - t0
 
     ts = datetime.now(UTC)
     picked = top_n(markets, n)
     rows = [breadth_row(kalshi.to_snapshot(m, ts), v, r) for m, v, r in picked]
     infos = [kalshi.to_market_info(m) for m, _, _ in picked]
+    cutoff = picked[-1][1] if picked else 0.0
 
+    # A truncated cycle still WRITES. The rows it did find are real quotes,
+    # and quotes are unrecoverable after the fact — refusing to write would
+    # convert a degraded tape into an absent one, which is strictly worse
+    # (the 2026-09-06 event still captured 3-700 genuine markets/cycle).
+    # What truncation destroys is the RANKING CLAIM, not the rows, so it is
+    # recorded next to them and escalated by QA rather than by dropping data.
     # --- lock held from here; no HTTP below this line -------------------
     with writer_burst(db, lock_file=lock_file) as store:
         store.upsert_markets(infos)
         inserted = store.insert_breadth_snapshots(rows)
+        store.insert_breadth_cycle(ts, len(markets), len(picked), inserted, truncated, cutoff)
     # --------------------------------------------------------------------
 
-    cutoff = picked[-1][1] if picked else 0.0
     return {
         "universe": len(markets),
         "picked": len(picked),
         "inserted": inserted,
+        "truncated": truncated,
         "cutoff_volume_24h": cutoff,
         "fetch_s": round(fetch_s, 1),
         "total_s": round(time.monotonic() - t0, 1),

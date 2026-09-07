@@ -1575,3 +1575,126 @@ def test_a_truncated_sweeps_candles_still_count(tmp_path):
     _cycles(db, [5 * i for i in range(0, 24 * 12)])
     _sweeps(db, [(2, 1, "ok"), (3, 9000, "truncated")])
     assert _CANDLES not in _run(None, tmp_path, archive=db)
+
+
+# --- breadth truncation (2026-09-07) ----------------------------------
+# The 09-06 event: Kalshi's 24h-close universe crossed the 60k page cap, so
+# every breadth cycle ranked an arbitrary head slice of the enumeration and
+# coverage fell ~990 -> 3 rows/cycle for 15 hours. Cadence never faltered,
+# so _BFRESH and _BCONT read green throughout. These drive the check that
+# reads CONTENT rather than cadence.
+
+_BTRUNC = "breadth universe enumerated exhaustively over last 24h"
+
+
+def _breadth_cycle_records(db, ages_min, truncated=False, universe=8718, picked=1000):
+    """Seed one `breadth_cycles` row per entry, `ages_min` minutes before NOW."""
+    store = Store(db)
+    for a in ages_min:
+        store.insert_breadth_cycle(
+            NOW - timedelta(minutes=a),
+            universe,
+            picked,
+            picked,
+            truncated,
+            5.0,
+        )
+    store.close()
+
+
+def test_exhaustive_breadth_enumeration_passes(tmp_path):
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycle_records(db, [5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    assert _BTRUNC not in failed
+
+
+def test_a_truncated_walk_fails_while_cadence_reads_green(tmp_path):
+    """THE 2026-09-06 REGRESSION, end to end. Every cycle lands exactly on
+    schedule with rows in it, so freshness and continuity — the only two
+    breadth checks that existed — both PASS. The tape is nonetheless a head
+    slice of an unranked enumeration. Only the truncation check can say so."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycle_records(
+        db, [5 * i for i in range(0, 24 * 12)], truncated=True, universe=60000, picked=3
+    )
+    failed = _run(None, tmp_path, archive=db)
+    assert _BTRUNC in failed
+    assert _BFRESH not in failed and _BCONT not in failed, (
+        "the cadence checks must still read green — that is why this check exists"
+    )
+
+
+def test_one_truncated_cycle_is_already_a_failure(tmp_path):
+    """No rate threshold: a single truncated walk makes that cycle's ranking
+    unsound, and a 'mostly fine' ranking is not a thing."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycle_records(db, [5 * i for i in range(1, 24 * 12)])
+    _breadth_cycle_records(db, [0], truncated=True, universe=60000, picked=3)
+    failed = _run(None, tmp_path, archive=db)
+    assert _BTRUNC in failed
+
+
+def test_truncation_outside_the_window_is_not_todays_problem(tmp_path):
+    """A healed flood must clear, or the check latches and stops being read."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycle_records(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycle_records(db, [26 * 60], truncated=True, universe=60000, picked=3)
+    failed = _run(None, tmp_path, archive=db)
+    assert _BTRUNC not in failed
+
+
+def test_an_archive_predating_the_cycle_table_is_unmeasured_not_green(tmp_path, capsys):
+    """`breadth_cycles` landed after `breadth_snapshots`. An archive with a
+    breadth tape but no cycle records has not been checked, and must say so
+    rather than bank a free pass (mistakes #28)."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    out = capsys.readouterr().out
+    assert _BTRUNC not in failed
+    assert f"WATCH {_BTRUNC}" in out
+    assert f"PASS  {_BTRUNC}" not in out
+
+
+def test_never_enabled_breadth_says_nothing_about_truncation(tmp_path, capsys):
+    """Breadth is default-disabled; the guard on an empty tape must cover
+    this check too, or installing nothing starts reporting a fault."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    failed = _run(None, tmp_path, archive=db)
+    out = capsys.readouterr().out
+    assert _BTRUNC not in failed and _BTRUNC not in out
+
+
+def test_an_archive_without_the_cycle_table_does_not_abort_the_run(tmp_path, capsys):
+    """QA is READ-ONLY and cannot create the table it reads, so between
+    promoting this check and breadth's next 5-min cycle the table is absent.
+    An unguarded query raises CatalogException and kills every OTHER check in
+    the run — a new check that can take down the suite is worse than the gap
+    it closes. Reproduces the real archive state measured 2026-09-07."""
+    import duckdb
+
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    _breadth_cycles(db, [5 * i for i in range(0, 24 * 12)])
+    con = duckdb.connect(str(db))
+    con.execute("DROP TABLE breadth_cycles")
+    con.close()
+
+    failed = _run(None, tmp_path, archive=db)
+    out = capsys.readouterr().out
+    assert _BTRUNC not in failed
+    assert "no breadth_cycles table" in out
+    assert _BFRESH not in failed and _BCONT not in failed, (
+        "the rest of the archive section must still have run"
+    )

@@ -507,3 +507,125 @@ def test_breadth_unit_exists_and_follows_repo_convention():
         "the unit must pin the close window: unwindowed is a ~22x request rate"
     )
     assert "OnCalendar=*:2/5" in timer, "must be offset from hyxlab-collect's *:0/5"
+
+
+# ---------------------------------------------------------------------------
+# 7. truncation is in-band, not a print (2026-09-06)
+# ---------------------------------------------------------------------------
+
+
+def _truncated_pages(markets):
+    """One page of `markets` with the cursor still live, then an empty page.
+    get_markets breaks out on the empty page with the cursor set — truncation,
+    without seeding all MAX_PAGES pages."""
+    return [
+        {"markets": markets, "cursor": "still-live"},
+        {"markets": [], "cursor": "still-live"},
+    ]
+
+
+def test_get_markets_reports_truncation_in_band(monkeypatch):
+    """The TRUNCATED print existed since day one and nothing read it, so a
+    15-hour outage reported success. Callers must be able to ASK."""
+    pages = iter([{"markets": [_mkt("A", 1)], "cursor": "still-live"}] * 3)
+    monkeypatch.setattr(kalshi, "_get_with_429_retry", lambda s, u, p, **k: _FakeResp(next(pages)))
+    out, truncated = kalshi.get_markets(status="open", max_pages=3, with_truncated=True)
+    assert truncated is True and len(out) == 3
+
+
+def test_get_markets_reports_a_complete_walk_as_untruncated(monkeypatch):
+    """Discrimination control: a flag hardwired to True would pass above."""
+    pages = iter([{"markets": [_mkt("A", 1)], "cursor": ""}])
+    monkeypatch.setattr(kalshi, "_get_with_429_retry", lambda s, u, p, **k: _FakeResp(next(pages)))
+    out, truncated = kalshi.get_markets(status="open", max_pages=3, with_truncated=True)
+    assert truncated is False and len(out) == 1
+
+
+def test_narrow_callers_keep_the_bare_list_return(monkeypatch):
+    """Four per-series callers unpack this as a list; the default must not
+    change shape under them."""
+    pages = iter([{"markets": [_mkt("A", 1)], "cursor": ""}])
+    monkeypatch.setattr(kalshi, "_get_with_429_retry", lambda s, u, p, **k: _FakeResp(next(pages)))
+    out = kalshi.get_markets(series_ticker="KXHIGHNY", max_pages=3)
+    assert isinstance(out, list) and out and isinstance(out[0], dict)
+
+
+def test_a_truncated_cycle_still_writes_its_rows(tmp_path):
+    """Quotes are unrecoverable after the fact. Refusing to write on
+    truncation would turn a degraded tape into an absent one — strictly
+    worse than the fault it responds to."""
+    db = str(tmp_path / "t.duckdb")
+    sess = _PagedSession(_truncated_pages([_mkt("A", 9), _mkt("B", 5)]))
+    counts = breadth.collect_breadth_once(
+        db, n=5, session=sess, lock_file=str(tmp_path / "w.lock"), pause_s=0.0
+    )
+    assert counts["truncated"] is True
+    assert counts["inserted"] == 2
+    store = Store(db)
+    try:
+        assert store.conn.execute("SELECT count(*) FROM breadth_snapshots").fetchone()[0] == 2
+    finally:
+        store.close()
+
+
+def test_every_cycle_records_what_it_saw(tmp_path):
+    """The discriminator between 'quiet exchange' and 'truncated walk' must
+    live in the ARCHIVE. It lived in journald, and that is why the 09-06
+    event ran 15 hours unnoticed by QA, which reads DuckDB."""
+    db = str(tmp_path / "t.duckdb")
+    sess = _PagedSession(_truncated_pages([_mkt("A", 9), _mkt("B", 5)]))
+    breadth.collect_breadth_once(
+        db, n=1, session=sess, lock_file=str(tmp_path / "w.lock"), pause_s=0.0
+    )
+    store = Store(db)
+    try:
+        row = store.conn.execute(
+            "SELECT universe, picked, inserted, truncated, cutoff_volume_24h FROM breadth_cycles"
+        ).fetchone()
+        assert row == (2, 1, 1, True, 9.0)
+    finally:
+        store.close()
+
+
+def test_a_cycle_that_picked_nothing_still_leaves_a_record(tmp_path):
+    """THE 09-06 SHAPE. picked=0 writes no snapshot rows at all, so the
+    snapshot tape cannot distinguish it from a cycle that never ran. The
+    cycle record is the only witness that the collector was alive and
+    looking at 60,000 markets."""
+    db = str(tmp_path / "t.duckdb")
+    sess = _PagedSession(_truncated_pages([_mkt("A", 0), _mkt("B", 0)]))
+    counts = breadth.collect_breadth_once(
+        db, n=100, session=sess, lock_file=str(tmp_path / "w.lock"), pause_s=0.0
+    )
+    assert counts["picked"] == 0 and counts["inserted"] == 0
+    store = Store(db)
+    try:
+        assert store.conn.execute("SELECT count(*) FROM breadth_snapshots").fetchone()[0] == 0
+        assert store.conn.execute(
+            "SELECT universe, picked, truncated FROM breadth_cycles"
+        ).fetchone() == (2, 0, True)
+    finally:
+        store.close()
+
+
+def test_the_cycle_record_is_written_inside_the_same_burst(tmp_path):
+    """One lock acquisition, not two: a second burst per cycle doubles this
+    writer's contention with hyxlab-collect for a six-column row."""
+    import collector.sweep as _sweep
+
+    bursts = []
+    real = _sweep.writer_burst
+
+    def counting(*a, **k):
+        bursts.append(1)
+        return real(*a, **k)
+
+    db = str(tmp_path / "t.duckdb")
+    sess = _PagedSession([{"markets": [_mkt("A", 9)], "cursor": ""}])
+    import unittest.mock as _m
+
+    with _m.patch.object(breadth, "writer_burst", counting):
+        breadth.collect_breadth_once(
+            db, n=1, session=sess, lock_file=str(tmp_path / "w.lock"), pause_s=0.0
+        )
+    assert bursts == [1]

@@ -378,6 +378,7 @@ def test_the_mutator_set_is_derived_and_complete():
     silently making every write site invisible."""
     found = archive_mutators()
     assert found == {
+        "insert_breadth_cycle",
         "insert_breadth_snapshots",
         "insert_candles",
         "insert_forecasts",

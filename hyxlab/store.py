@@ -73,6 +73,22 @@ CREATE TABLE IF NOT EXISTS breadth_snapshots (
     volume_24h    DOUBLE,
     rank          INTEGER
 );
+-- One row per breadth cycle: what the cycle SAW, next to what it wrote.
+-- `breadth_snapshots` alone cannot distinguish "few rows because the
+-- exchange is quiet" from "few rows because the enumeration truncated and
+-- we ranked an arbitrary head slice" — and on 2026-09-06T23:32Z that
+-- distinction was the whole story: coverage fell 990 -> 3 rows/cycle for
+-- 15 hours while freshness and 24h-continuity both read green, because
+-- cycles kept landing ON TIME with almost nothing in them. The
+-- discriminator existed only as a journald print. It lives here now.
+CREATE TABLE IF NOT EXISTS breadth_cycles (
+    ts         TIMESTAMP NOT NULL,
+    universe   INTEGER NOT NULL,  -- markets the enumeration returned
+    picked     INTEGER NOT NULL,  -- survivors of the top-N volume floor
+    inserted   INTEGER NOT NULL,
+    truncated  BOOLEAN NOT NULL,  -- page budget exhausted, cursor still live
+    cutoff_volume_24h DOUBLE
+);
 CREATE TABLE IF NOT EXISTS nws_forecasts (
     station     VARCHAR NOT NULL,
     fetched_at  TIMESTAMP NOT NULL,
@@ -500,6 +516,26 @@ class Store:
         """
         rows = [(r[0], r[1], _naive_utc(r[2]), *r[3:]) for r in rows]
         return self.insert_new("breadth_snapshots", rows, ["venue", "market_id", "ts"])
+
+    def insert_breadth_cycle(
+        self,
+        ts: datetime,
+        universe: int,
+        picked: int,
+        inserted: int,
+        truncated: bool,
+        cutoff_volume_24h: float,
+    ) -> None:
+        """One breadth cycle's own account of itself (see _SCHEMA).
+
+        Written even when the cycle picked NOTHING — that is the case the
+        table exists for. `ts` is normalised here for the same reason
+        `insert_breadth_snapshots` does it (mistakes #1/#10).
+        """
+        self.conn.execute(
+            "INSERT INTO breadth_cycles VALUES (?,?,?,?,?,?)",
+            [_naive_utc(ts), universe, picked, inserted, truncated, cutoff_volume_24h],
+        )
 
     def upsert_series(self, rows: list[tuple]) -> None:
         """(venue, ticker, title, category, fee_type, fee_multiplier, frequency)."""

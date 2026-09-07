@@ -115,8 +115,9 @@ def get_markets(
     max_pages: int = 10,
     session: requests.Session | None = None,
     pause_s: float = 0.0,
+    with_truncated: bool = False,
     **extra_params: Any,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], bool]:
     """Paginated /markets. `pause_s` paces BETWEEN pages.
 
     Pacing lives here rather than in the caller because a caller can only
@@ -125,6 +126,18 @@ def get_markets(
     back-to-back at whatever the network allows, and this client shares
     Kalshi's rate budget with a live trading loop. Default 0.0 keeps the
     existing narrow per-series callers byte-identical.
+
+    `with_truncated=True` returns `(markets, truncated)` instead of a bare
+    list, matching `get_markets_ascending`'s existing shape. It exists
+    because the TRUNCATED print below is not a signal any check can read:
+    on 2026-09-06T23:32Z Kalshi's 24h-close universe crossed 60k markets,
+    this function truncated on EVERY cycle for the next 15 hours, and
+    `collector.breadth` — whose entire value rests on ranking an exhaustive
+    enumeration — went on reporting success while it silently ranked an
+    arbitrary head slice and dropped ~97% of its tape. Nothing consumed the
+    print, so nothing could fail. A caller whose correctness depends on the
+    walk being COMPLETE must be able to ask, in-band, whether it was.
+    Default False keeps the four per-series callers byte-identical.
     """
     import time as _time
 
@@ -145,13 +158,14 @@ def get_markets(
         cursor = body.get("cursor") or ""
         if not cursor or not body.get("markets"):
             break
-    if cursor:  # pages exhausted with more upstream — the Gamma-offset class
+    truncated = bool(cursor)  # pages exhausted with more upstream — Gamma-offset class
+    if truncated:
         print(
             f"[kalshi] get_markets TRUNCATED at {len(out)} rows"
             f" (max_pages={max_pages} exhausted, cursor live)",
             flush=True,
         )
-    return out
+    return (out, truncated) if with_truncated else out
 
 
 # Starting (and maximum) close-time window for get_markets_ascending. The

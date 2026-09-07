@@ -60,6 +60,7 @@ STAMP: dict[str, str | None] = {
     "markets": "updated_at",
     "snapshots": "ts",
     "breadth_snapshots": "ts",
+    "breadth_cycles": "ts",
     "nws_forecasts": "fetched_at",
     "candles": None,  # end_ts is the candle's period end, not its ingest
     "observations": None,  # obs_date is the observation's day
@@ -78,6 +79,17 @@ STAMP: dict[str, str | None] = {
 # Tables whose staleness QA does not ask directly. Each names the WITNESS
 # that makes the question redundant — not a reason it is hard.
 WITNESS: dict[str, str] = {
+    "breadth_cycles": (
+        "Written inside the SAME writer_burst as the cycle's breadth_snapshots "
+        "rows -- one lock acquisition, both writes or neither -- so it cannot go "
+        "stale while 'breadth fresh (snapshots < 20 min old)' passes. That "
+        "coupling is the witness and it is pinned, not assumed: "
+        "tests/test_hyxlab_breadth.py::test_the_cycle_record_is_written_inside_"
+        "the_same_burst fails if a second burst appears. The coupling matters "
+        "more here than elsewhere because a silently unwritten cycle table would "
+        "send the truncation check to WATCH (unmeasured) rather than FAIL, which "
+        "is the one way it could go quiet on a real fault."
+    ),
     "markets": (
         "Written in the same transaction, from the same fetch, as the "
         "snapshots that witness it: collect.py's per-series try block builds "

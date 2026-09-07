@@ -624,6 +624,68 @@ def _check_continuity(conn, name: str, table: str, col: str, now: datetime, noun
     )
 
 
+BREADTH_TRUNCATION_CHECK = "breadth universe enumerated exhaustively over last 24h"
+
+
+def _check_breadth_truncation(conn, now: datetime) -> None:
+    """Did the breadth walk actually SEE the universe it claims to rank?
+
+    THE CHECK THE 2026-09-06 EVENT NEEDED AND NOBODY HAD. Between 23:32Z
+    on 09-06 and 14:00Z on 09-07 `breadth_snapshots` fell from ~990 to as
+    low as 3 rows per cycle — a ~97% loss of the archive's only
+    exchange-wide quote history — and BOTH existing breadth checks stayed
+    green the whole time, necessarily: cycles kept landing every 5 minutes
+    exactly on schedule, so freshness passed and 24h-continuity passed.
+    They measure CADENCE. Nothing measured CONTENT. The one failure that
+    did fire was an accident of arithmetic — a 65-minute stretch where the
+    count was exactly zero tripped the gap budget — and had the flood been
+    5% smaller it would never have fired at all.
+
+    Row COUNT is deliberately not the signal here. A genuinely quiet hour
+    has few volume-bearing markets, so a count threshold is a guess that
+    either misses the event or cries wolf on a Sunday — the alarm fatigue
+    `STANDING_SKIPS` exists to prevent. Truncation is not a guess: the
+    cursor was live when the page budget ran out, which is a fact about the
+    walk, and it makes every ranking claim in the window unsound whatever
+    the counts look like.
+
+    Reported per cycle rather than as a rate, because ONE truncated cycle
+    is already a ranking that cannot be trusted.
+    """
+    # QA connects READ-ONLY, so it cannot create the table it reads: the
+    # schema lands only when a WRITER next opens the archive. Between
+    # promoting this code and breadth's next 5-min cycle the table does not
+    # exist, and an unguarded query raises CatalogException and takes the
+    # whole QA run down with it — a new check that can abort every OTHER
+    # check is a worse fault than the one it was added to catch.
+    exists = conn.execute(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name = 'breadth_cycles'"
+    ).fetchone()[0]
+    if not exists:
+        print(f"WATCH {BREADTH_TRUNCATION_CHECK} — no breadth_cycles table in this archive",
+              flush=True)
+        return
+
+    row = conn.execute(
+        "SELECT count(*), sum(CASE WHEN truncated THEN 1 ELSE 0 END), max(universe)"
+        " FROM breadth_cycles WHERE ts >= ?",
+        [now - timedelta(hours=24)],
+    ).fetchone()
+    cycles, n_trunc, widest = row[0], row[1] or 0, row[2]
+    if not cycles:
+        # `breadth_cycles` landed 2026-09-07, after breadth_snapshots. An
+        # archive with breadth rows but no cycle records predates it and has
+        # NOT been measured — say so rather than banking a free pass
+        # (mistakes #28, the idiom _check_continuity uses).
+        print(f"WATCH {BREADTH_TRUNCATION_CHECK} — no breadth cycle records in window", flush=True)
+        return
+    check(
+        BREADTH_TRUNCATION_CHECK,
+        n_trunc == 0,
+        f"{n_trunc}/{cycles} cycles truncated, widest universe {widest}",
+    )
+
+
 def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     """Returns the econ pull's age in days (see `qa_econ_pull_live`), or
     None when the archive was unreachable or has never been pulled — the
@@ -678,6 +740,7 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
         _check_continuity(
             conn, "breadth continuous over last 24h", "breadth_snapshots", "ts", now, "breadth"
         )
+        _check_breadth_truncation(conn, now)
 
     # THE SECOND UNWATCHED LIVE WRITER, found 2026-09-04 by the derived
     # coverage test (tests/test_qa_table_coverage.py) rather than by hand —
