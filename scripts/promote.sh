@@ -34,6 +34,7 @@ STABLE=/home/devs/workspace/hyxrestration-stable
 
 FORCE_RESTART=0
 RESTART_YOUNG=0
+UNITS_ONLY=0
 DEFER=""
 for arg in "$@"; do
     case "$arg" in
@@ -55,11 +56,59 @@ for arg in "$@"; do
         # a settlement — the third pass forced to decompose by hand, so
         # the exception is now stated to the script, not run around it).
         --defer=*) DEFER="${arg#--defer=}" ;;
+        # --units-only: re-install the unit FILES and reload, nothing else.
+        # The unit-drift check (collector.health, 2026-09-06) detects four ways
+        # the manager's loaded units can disagree with this repo and repaired
+        # none of them: the repair was `cp` + `daemon-reload` buried in the
+        # happy path below, so fixing a hand-edited unit meant promoting CODE --
+        # tests, a fast-forward of stable, and a daemon restart that costs days
+        # of shadow span. This mode is that repair with nothing else attached.
+        --units-only) UNITS_ONLY=1 ;;
     esac
 done
 
-echo "== tests (dev tree) =="
+install_units() {
+    echo "== install systemd units (repo scripts/systemd/ is canonical) =="
+    cp "$DEV"/scripts/systemd/hyxlab-* ~/.config/systemd/user/
+    systemctl --user daemon-reload
+}
+
 cd "$DEV"
+
+if ((UNITS_ONLY)); then
+    # The gate here is deliberately NOT the full suite. What this mode installs
+    # is unit FILES, and the two suites that read unit files are the ones that
+    # gate them; the full suite is the gate on CODE, which this mode does not
+    # move. And it deliberately EXCLUDES tests/test_unit_drift.py, whose live
+    # arm asserts the installed units already match the repo: a repair that
+    # gates on the check it exists to satisfy can only ever run on a box that
+    # does not need it.
+    echo "== unit-file gates (dev tree) =="
+    .venv/bin/python -m pytest tests/test_systemd_units.py tests/test_systemd_verify.py -q
+    install_units
+    # A `cp` that exits 0 is not evidence the box is fixed. Two of the four
+    # drift states -- SHADOWED (the winning copy is in a directory this script
+    # does not own) and DROP-IN (an override that survives every fragment
+    # rewrite) -- are untouched by the copy above, so a mode that stopped here
+    # would report success on a box still running units nothing has read.
+    # It asks the judge again instead, and reports what SURVIVED the repair.
+    echo "== verify: does the manager now hold what the repo contains? =="
+    rc=0
+    .venv/bin/python -m collector.health --drift-only || rc=$?
+    case "$rc" in
+        0) echo "   units-only: clean — the manager holds this repo's units" ;;
+        2) echo "   units-only: FAILED — the states above CANNOT be cleared by a"
+           echo "               re-install (a shadowing copy lives outside"
+           echo "               ~/.config/systemd/user; a drop-in overrides the"
+           echo "               fragment without touching it). Operator decision:"
+           echo "               deleting a file this repo did not install." ;;
+        *) echo "   units-only: FAILED — repairable drift SURVIVED its own repair;"
+           echo "               the cp or the daemon-reload did not take." ;;
+    esac
+    exit "$rc"
+fi
+
+echo "== tests (dev tree) =="
 .venv/bin/python -m pytest tests/ -q
 
 echo "== what this promotion moves =="
@@ -98,9 +147,7 @@ echo "== sync stable venv deps =="
 echo "== smoke-import in stable venv =="
 (cd "$STABLE" && .venv/bin/python -c "import collector.streamd, collector.collect, collector.sweep, simulator.shadow, simulator.simui.server")
 
-echo "== install systemd units (repo scripts/systemd/ is canonical) =="
-cp "$DEV"/scripts/systemd/hyxlab-* ~/.config/systemd/user/
-systemctl --user daemon-reload
+install_units
 
 echo "== restart daemons whose code moved (timers pick up new code on next run) =="
 RESTART=()

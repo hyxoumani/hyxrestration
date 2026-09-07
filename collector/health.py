@@ -87,13 +87,18 @@ reason this module exists: another verdict nothing reads is not a check.
 The digest opens no DuckDB. A health report that took the archive lock to
 say things look fine would be able to hurt the thing it watches (ops rule,
 mistakes #20); everything here comes from the manager and from one JSON
-file. It exits 0 unconditionally: a gate whose failure nothing reads is the
-defect this pass exists to answer, and the digest's only job is to be READ.
+file. The digest exits 0 unconditionally: a gate whose failure nothing reads
+is the defect this pass exists to answer, and the digest's only job is to be
+READ. Its one sub-command does not, and the difference is the same rule read
+forward -- `--drift-only` exists BECAUSE it has a caller that branches on the
+status (`promote.sh --units-only`, 2026-09-07), which is what separates a gate
+from another unread verdict.
 """
 
 from __future__ import annotations
 
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -128,6 +133,43 @@ PROPS = (
 # `hyxlab-autoloop.service` sets `WorkingDirectory` to the DEV tree -- the same tree
 # promote.sh copies FROM -- so the digest's reader compares against the right source.
 INSTALL_DIR = Path.home() / ".config/systemd/user"
+
+# WHICH DRIFT STATES A RE-INSTALL CAN ACTUALLY CLEAR (2026-09-07).
+# The unit-drift pass detected four states and repaired none: the repair --
+# `cp` + `daemon-reload` -- existed only inside `promote.sh`'s happy path, so
+# the only way to fix drift was to promote CODE. `promote.sh --units-only` is
+# that repair on its own, and the point of naming these sets is that it must
+# not claim to have done more than it did.
+#   DRIFT            the installed file's text is wrong -> the `cp` rewrites it.
+#   STALE-IN-MEMORY  the manager holds older text than the disk -> `daemon-reload`
+#                    re-reads it. This is precisely the state a promote whose
+#                    reload failed leaves behind, so re-running the reload IS the
+#                    repair.
+# and the two it cannot, both for structural reasons, not for want of trying:
+#   SHADOWED         the winning copy is in a HIGHER-priority search-path
+#                    directory that this repo does not own -- copying into
+#                    INSTALL_DIR again leaves exactly the same file loaded. The
+#                    repair is deleting someone else's file, which is an operator
+#                    decision, not a script's.
+#   DROP-IN          a `<unit>.d/*.conf` overrides directives WITHOUT touching
+#                    the fragment, so it survives every fragment rewrite by
+#                    construction. Same call, same reason.
+#   UNREADABLE       the loaded fragment could not be read at all; a script that
+#                    overwrites a path it cannot read is guessing.
+# A naive `--units-only` would run the `cp`, reload, exit 0, and leave a SHADOWED
+# box reporting success -- the same shape of lie the digest was built to stop
+# telling. So the repair re-runs the judge and reports what SURVIVED it.
+REPAIRABLE = ("DRIFT", "STALE-IN-MEMORY")
+UNREPAIRABLE = ("SHADOWED", "DROP-IN", "UNREADABLE")
+
+# `--drift-only` exit codes. The digest itself still exits 0 unconditionally --
+# it is a report -- but this mode has a CALLER that reads the status
+# (`promote.sh --units-only`), which is the whole difference between a gate and
+# an unread verdict.
+DRIFT_CLEAN, DRIFT_REPAIRABLE, DRIFT_OPERATOR = 0, 1, 2
+# A usage error is not a drift verdict. Sharing `2` would make a mistyped flag
+# print promote.sh's "needs an operator" paragraph about a box that is fine.
+USAGE_ERROR = 64  # EX_USAGE
 
 # The unit whose record carries qa's verdict, and the record itself. `QA_STATE`
 # is imported rather than spelled out so the path cannot drift from the writer's.
@@ -331,11 +373,24 @@ def judge_drift(
     text (`Description=probe` while the file said `EDITED BY HAND`), with
     `NeedDaemonReload=yes`. So repo == disk can be true while the manager runs
     older text -- the exact state a `promote.sh` whose `daemon-reload` failed
-    would leave behind, and the one state no file comparison can see. Note the
-    complement, also measured: for an INACTIVE unit the field always reads
-    `no`, because systemd garbage-collects the unreferenced unit and re-reads
-    the file on demand. That is not a hole -- an inactive unit has nothing
-    stale in memory to be wrong about.
+    would leave behind, and the one state no file comparison can see.
+
+    CORRECTED 2026-09-07, by editing the installed copy of a real unit and
+    reading the manager back. 09-06's complement said an INACTIVE unit always
+    reads `no`, because systemd garbage-collects it and re-reads on demand.
+    Too strong: it GCs the UNREFERENCED unit. `hyxlab-backup.service` was
+    inactive/dead and still reported `NeedDaemonReload=yes` after its installed
+    file was touched, because `hyxlab-backup.timer` references it (`TriggeredBy`)
+    and it therefore stays loaded. Since every timer-backed service on this box
+    is referenced by its timer, that is nearly all of them, and the arm is doing
+    real work on units 09-06 thought it could not.
+
+    Measured in the same pass: a hand edit to an installed file reads
+    STALE-IN-MEMORY, not DRIFT, for as long as the unit stays loaded -- `show`
+    reports the text the manager holds, so the fragment comparison below is
+    comparing the OLD text to the repo and would say OK. The two repairable
+    states are two phases of one fault, which is why the reload comes before
+    the re-read in the repair and why both are in `REPAIRABLE`.
 
     **DROP-IN.** `DropInPaths` lists `<unit>.d/*.conf` files that override
     directives without touching the fragment; an `ExecStart=` reset there
@@ -471,6 +526,46 @@ def report(now: float | None = None) -> list[UnitHealth]:
     return out
 
 
+def drift_exit_code(drift: list[UnitDrift]) -> int:
+    """Clean / repairable-by-script / needs-an-operator, in that order of mercy.
+
+    A single unrepairable state outranks any number of repairable ones: the
+    useful thing to tell the caller is the WORST thing it cannot fix, because
+    that is the one that needs a human.
+    """
+    bad = [d for d in drift if d.state != "SKIP" and not d.ok]
+    if any(d.state not in REPAIRABLE for d in bad):
+        return DRIFT_OPERATOR
+    return DRIFT_REPAIRABLE if bad else DRIFT_CLEAN
+
+
+def drift_main() -> int:
+    """The drift section alone, with a status a shell script can branch on."""
+    drift = drift_report()
+    checked = [d for d in drift if d.state != "SKIP"]
+    bad = [d for d in checked if not d.ok]
+    for d in bad:
+        remedy = "promote.sh --units-only" if d.state in REPAIRABLE else "OPERATOR — see health.py"
+        print(f"{d.state:<16} {d.unit}  {d.detail}  [{remedy}]", flush=True)
+    code = drift_exit_code(drift)
+    print(
+        f"[drift] {len(checked) - len(bad)}/{len(checked)} loaded unit files "
+        f"match the repo (exit {code})",
+        flush=True,
+    )
+    return code
+
+
+def cli(argv: list[str]) -> int:
+    if argv == ["--drift-only"]:
+        return drift_main()
+    if argv:
+        print("usage: python -m collector.health [--drift-only]", file=sys.stderr)
+        return USAGE_ERROR
+    main()
+    return 0
+
+
 def main() -> None:
     now = datetime.now(UTC)
     print(f"[health] {now:%Y-%m-%d %H:%M}Z — persisted state only; no checks re-run", flush=True)
@@ -499,4 +594,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(cli(sys.argv[1:]))
