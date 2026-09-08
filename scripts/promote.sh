@@ -149,6 +149,22 @@ echo "== smoke-import in stable venv =="
 
 install_units
 
+# The full path installed unit files and never looked back -- the same defect
+# `--units-only` was built to answer on 2026-09-07, left in place on the one
+# mode that moves units as a SIDE EFFECT of moving code. It is asked here, and
+# BEFORE the restarts: a daemon restarted onto new code while its unit did not
+# take is the expensive way to learn that the `cp` or the reload failed
+# (EXP-961 prices a needless restart in days of shadow span).
+echo "== verify: does the manager now hold what was just promoted? =="
+if ! .venv/bin/python -m collector.health --drift-only; then
+    echo "   ABORT — the units above are NOT what this promotion installed."
+    echo "           \`stable\` is already fast-forwarded and the code is in place;"
+    echo "           NO daemon was restarted, so they still run the old code."
+    echo "           Fix the units (promote.sh --units-only, or the operator case"
+    echo "           it prints) and re-run this script."
+    exit 1
+fi
+
 echo "== restart daemons whose code moved (timers pick up new code on next run) =="
 RESTART=()
 needs_restart collector.streamd '^(collector|hyxlab)/' && RESTART+=(hyxlab-stream.service)

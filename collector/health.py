@@ -135,6 +135,22 @@ PROPS = (
 # promote.sh copies FROM -- so the digest's reader compares against the right source.
 INSTALL_DIR = Path.home() / ".config/systemd/user"
 
+# WHAT THE BOX IS SUPPOSED TO BE RUNNING (2026-09-08).
+# `promote.sh` installs from the DEV tree, but only AFTER fast-forwarding the
+# `stable` branch, so between an edit and its promotion the correct contents of
+# INSTALL_DIR are `stable`'s copies, not this working tree's. Judging the box
+# against the dev tree alone made every unpromoted unit edit read DRIFT -- and
+# since `tests/test_unit_drift.py` has a live arm on that verdict and
+# `promote.sh` gates on the full suite, the only way to install a unit change
+# was through a suite that could not go green until it was installed. Measured
+# 2026-09-08 by appending one comment line to `scripts/systemd/hyxlab-backup.service`:
+# the live arm failed instantly, uncommitted, with no daemon involved.
+# The ref, not the worktree path: `git show stable:...` answers "what was last
+# promoted" from either checkout, needs no hardcoded second path, and in the
+# STABLE worktree itself resolves to that tree's own HEAD -- so there, where any
+# difference really IS a fault, PENDING-PROMOTE cannot fire at all.
+DEPLOY_REF = "stable"
+
 # WHICH DRIFT STATES A RE-INSTALL CAN ACTUALLY CLEAR (2026-09-07).
 # The unit-drift pass detected four states and repaired none: the repair --
 # `cp` + `daemon-reload` -- existed only inside `promote.sh`'s happy path, so
@@ -162,6 +178,12 @@ INSTALL_DIR = Path.home() / ".config/systemd/user"
 # telling. So the repair re-runs the judge and reports what SURVIVED it.
 REPAIRABLE = ("DRIFT", "STALE-IN-MEMORY")
 UNREPAIRABLE = ("SHADOWED", "DROP-IN", "UNREADABLE")
+# The states that are not a fault to be repaired at all: agreement, an
+# uninstalled unit, and a box correctly running the last promotion while this
+# checkout is ahead of it. PENDING-PROMOTE is REPORTED (it is the "committed but
+# not promoted" fact you want at cold start) and is not counted as agreement --
+# it is simply not something a repair could act on, because nothing is broken.
+NOT_A_FAULT = ("OK", "SKIP", "PENDING-PROMOTE")
 
 # `--drift-only` exit codes. The digest itself still exits 0 unconditionally --
 # it is a report -- but this mode has a CALLER that reads the status
@@ -207,7 +229,20 @@ class UnitDrift:
 
     @property
     def ok(self) -> bool:
+        """The manager holds THIS REPO's text. Deliberately narrower than
+        `fault`: the digest counts `ok` under the words "match the repo", and a
+        PENDING-PROMOTE unit does not match it -- it matches what was promoted."""
         return self.state == "OK"
+
+    @property
+    def fault(self) -> bool:
+        """Something the repo did not do happened to this unit.
+
+        The gate reads THIS, not `not ok`. A unit whose installed text is
+        exactly what `promote.sh` last shipped is not a fault however far the
+        dev tree has moved ahead of it; calling it one is what deadlocked the
+        promote (see DEPLOY_REF)."""
+        return self.state not in NOT_A_FAULT
 
 
 @dataclass(frozen=True)
@@ -486,8 +521,32 @@ def _read(path: Path) -> str | None:
         return None
 
 
+def deployed_text(unit: str) -> str | None:
+    """The unit file as of the last promotion, read from the `stable` ref.
+
+    None when the ref or the file is not there -- a fresh clone, a tree with no
+    deployment, or a unit added since. None means "no deployed baseline", and
+    the judge then falls back to the repo-only comparison, which is the 09-06
+    behaviour: strictly more suspicious, never less.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(REPO), "show", f"{DEPLOY_REF}:scripts/systemd/{unit}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
 def judge_drift(
-    unit: str, props: dict[str, str], loaded_text: str | None, vendored: str
+    unit: str,
+    props: dict[str, str],
+    loaded_text: str | None,
+    vendored: str,
+    deployed: str | None = None,
 ) -> UnitDrift:
     """Whether the unit the MANAGER holds is the unit this repo contains.
 
@@ -537,10 +596,18 @@ def judge_drift(
     without a reload reads `DropInPaths=` empty and `NeedDaemonReload=yes`, so
     the two arms cover each other's blind window.
 
-    **DRIFT.** The loaded fragment's text differs from the repo's copy. In the
-    DEV tree -- the tree `promote.sh` copies FROM and the tree the autoloop
-    runs the digest in -- this reads as "committed but not promoted", which is
-    the fact you want at cold start, not a false positive.
+    **DRIFT / PENDING-PROMOTE.** The loaded fragment's text differs from the
+    repo's copy, and until 2026-09-08 that was one verdict covering two opposite
+    facts. In the DEV tree -- the tree `promote.sh` copies FROM and the tree the
+    autoloop runs the digest in -- the ordinary cause is "edited here, not
+    promoted yet", where the box is exactly where the last promotion left it and
+    nothing is wrong with it. The alarming cause is that something outside this
+    repo wrote to the installed file. `deployed` (the `stable` ref's copy, see
+    DEPLOY_REF) separates them: matching it is PENDING-PROMOTE, matching neither
+    is DRIFT. Conflating the two deadlocked the promote -- the live arm in
+    `tests/test_unit_drift.py` went red the moment a unit file was edited, and
+    the full suite it belongs to is the gate `promote.sh` must pass to install
+    that very file.
     """
     if props.get("LoadState") != "loaded":
         # `judge` already reports this unit as UNLOADED; saying it twice is noise.
@@ -571,10 +638,23 @@ def judge_drift(
     if loaded_text is None:
         return UnitDrift(unit, "UNREADABLE", f"cannot read {frag}")
     if loaded_text != vendored:
+        # "unpromoted" and "hand-edited" were one verdict until 2026-09-08, and
+        # they are opposite facts: one says the box is exactly where the last
+        # promote left it, the other says something outside this repo wrote to
+        # it. Only the second is a fault, and only the second should be able to
+        # stop a promote.
+        if deployed is not None and loaded_text == deployed:
+            return UnitDrift(
+                unit,
+                "PENDING-PROMOTE",
+                f"box holds the promoted ({DEPLOY_REF}) copy; scripts/systemd/{unit} "
+                "in this tree is ahead of it — promote.sh installs it",
+            )
         return UnitDrift(
             unit,
             "DRIFT",
-            f"{frag} differs from scripts/systemd/{unit} (unpromoted, or hand-edited)",
+            f"{frag} matches neither scripts/systemd/{unit} nor {DEPLOY_REF}'s copy "
+            "(written by something outside this repo)",
         )
     return UnitDrift(unit, "OK", frag)
 
@@ -586,7 +666,11 @@ def drift_report() -> list[UnitDrift]:
         frag = (props.get("FragmentPath") or "").strip()
         out.append(
             judge_drift(
-                unit, props, _read(Path(frag)) if frag else None, _read(UNIT_DIR / unit) or ""
+                unit,
+                props,
+                _read(Path(frag)) if frag else None,
+                _read(UNIT_DIR / unit) or "",
+                deployed_text(unit),
             )
         )
     return out
@@ -681,7 +765,7 @@ def drift_exit_code(drift: list[UnitDrift]) -> int:
     useful thing to tell the caller is the WORST thing it cannot fix, because
     that is the one that needs a human.
     """
-    bad = [d for d in drift if d.state != "SKIP" and not d.ok]
+    bad = [d for d in drift if d.fault]
     if any(d.state not in REPAIRABLE for d in bad):
         return DRIFT_OPERATOR
     return DRIFT_REPAIRABLE if bad else DRIFT_CLEAN
@@ -691,13 +775,18 @@ def drift_main() -> int:
     """The drift section alone, with a status a shell script can branch on."""
     drift = drift_report()
     checked = [d for d in drift if d.state != "SKIP"]
-    bad = [d for d in checked if not d.ok]
+    bad = [d for d in checked if d.fault]
     for d in bad:
         remedy = "promote.sh --units-only" if d.state in REPAIRABLE else "OPERATOR — see health.py"
         print(f"{d.state:<16} {d.unit}  {d.detail}  [{remedy}]", flush=True)
+    # Printed even though it is not a fault: a caller told only "clean" would
+    # read that as "the box runs what I am looking at", which is the one thing
+    # a pending promotion means it does not.
+    for d in (d for d in checked if d.state == "PENDING-PROMOTE"):
+        print(f"{d.state:<16} {d.unit}  {d.detail}  [promote.sh]", flush=True)
     code = drift_exit_code(drift)
     print(
-        f"[drift] {len(checked) - len(bad)}/{len(checked)} loaded unit files "
+        f"[drift] {sum(d.ok for d in checked)}/{len(checked)} loaded unit files "
         f"match the repo (exit {code})",
         flush=True,
     )
@@ -725,11 +814,16 @@ def main() -> None:
     print(judge_qa(_load_state(qa_record_path(qa_svc)), qa_svc, now), flush=True)
     drift = drift_report()
     checked = [d for d in drift if d.state != "SKIP"]
-    drifted = [d for d in checked if not d.ok]
-    for d in drifted:
+    # `ok` is the count's subject, `fault` is the headline's: a pending promotion
+    # is neither a match nor an alarm, and collapsing it into either loses the
+    # only fact it carries.
+    drifted = [d for d in checked if d.fault]
+    pending = [d for d in checked if d.state == "PENDING-PROMOTE"]
+    for d in drifted + pending:
         print(f"{d.state:<10} {d.unit:<{width}}  {d.detail}", flush=True)
     print(
-        f"[health] {len(checked) - len(drifted)}/{len(checked)} loaded unit files match the repo"
+        f"[health] {sum(d.ok for d in checked)}/{len(checked)} loaded unit files match the repo"
+        + (f"; PENDING-PROMOTE: {[d.unit for d in pending]}" if pending else "")
         + (f"; DRIFT: {[d.unit for d in drifted]}" if drifted else ""),
         flush=True,
     )

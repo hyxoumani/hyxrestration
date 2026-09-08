@@ -238,7 +238,7 @@ def test_the_installed_units_on_this_box_match_the_repo():
     are not installed and every one reads SKIP, which is vacuous but not wrong.
     Here, a non-OK verdict means the manager is running something no test in the
     tree has ever read."""
-    bad = [(d.unit, d.state, d.detail) for d in health.drift_report() if not (d.ok or d.state == "SKIP")]
+    bad = [(d.unit, d.state, d.detail) for d in health.drift_report() if d.fault]
     assert not bad, f"units systemd has loaded do not match this repo: {bad}"
 
 
@@ -290,8 +290,8 @@ def test_every_state_the_judge_can_emit_is_classified():
     src = inspect.getsource(health.judge_drift)
     emitted = set(re.findall(r'UnitDrift\(\s*\n?\s*unit,\s*\n?\s*"([A-Z-]+)"', src))
     emitted |= set(re.findall(r'"(SKIP|OK|SHADOWED|STALE-IN-MEMORY|DROP-IN|DRIFT|UNREADABLE)",', src))
-    assert {"SHADOWED", "STALE-IN-MEMORY", "DROP-IN", "DRIFT", "UNREADABLE"} <= emitted, emitted
-    unclassified = emitted - {"OK", "SKIP"} - set(health.REPAIRABLE) - set(health.UNREPAIRABLE)
+    assert {"SHADOWED", "STALE-IN-MEMORY", "DROP-IN", "DRIFT", "UNREADABLE", "PENDING-PROMOTE"} <= emitted, emitted
+    unclassified = emitted - set(health.NOT_A_FAULT) - set(health.REPAIRABLE) - set(health.UNREPAIRABLE)
     assert not unclassified, f"judge_drift can emit {unclassified}, which no set classifies"
     assert not set(health.REPAIRABLE) & set(health.UNREPAIRABLE)
 
@@ -404,3 +404,120 @@ def test_units_only_moves_no_code_and_restarts_no_daemon():
     assert "needs_restart" not in UNITS_ONLY_CODE
     # and it must return before reaching any of them.
     assert PROMOTE.index("if ((UNITS_ONLY)); then") < PROMOTE.index("merge --ff-only")
+
+
+# --------------------------------------------------------------------------
+# The promote deadlock (2026-09-08). One verdict was covering two opposite facts.
+# --------------------------------------------------------------------------
+#
+# MEASURED, not reasoned: appending a single comment line to
+# `scripts/systemd/hyxlab-backup.service` in the dev tree -- uncommitted, no
+# daemon touched -- made the live arm above fail with DRIFT. That arm is in
+# `tests/`, `promote.sh`'s full path gates on `pytest tests/`, and `promote.sh`
+# is the only thing that installs units. So the suite could not go green until
+# the units were installed and the units could not be installed until the suite
+# went green. The same red also fires the repo's stop hook, so the deadlock
+# started at the EDIT, not at the promote.
+#
+# The fix is not a narrower gate (that was 09-07's answer, correct for
+# `--units-only` because that mode moves no code). It is that the box was being
+# judged against the wrong baseline: `promote.sh` installs from the dev tree
+# only AFTER fast-forwarding `stable`, so what INSTALL_DIR is SUPPOSED to hold
+# between two promotes is `stable`'s copy. Matching it is PENDING-PROMOTE and
+# is not a fault; matching neither it nor the working tree is DRIFT and still is.
+
+DEPLOYED = "[Unit]\nDescription=probe\n[Service]\nExecStart=/bin/true\n"
+AHEAD = DEPLOYED + "# an unpromoted edit\n"
+FOREIGN = "[Unit]\nDescription=EDITED BY HAND\n"
+
+
+def judge_vs_deploy(loaded: str, vendored: str = AHEAD) -> health.UnitDrift:
+    """The dev tree is AHEAD of the deployment; `loaded` is what the box holds."""
+    return health.judge_drift("hyxlab-probe.service", props(), loaded, vendored, DEPLOYED)
+
+
+def test_a_box_holding_the_last_promotion_is_not_a_fault_while_the_tree_moves_ahead():
+    """The deadlock, in one line. The dev tree has an unpromoted unit edit and
+    the box holds exactly what was last promoted: nothing is wrong with it, and
+    a verdict that stops the promote here can only be cleared by the promote."""
+    d = judge_vs_deploy(DEPLOYED)
+    assert d.state == "PENDING-PROMOTE"
+    assert not d.fault
+    assert health.drift_exit_code([d]) == health.DRIFT_CLEAN
+
+
+def test_the_pending_state_is_not_counted_as_agreement():
+    """`ok` is the count's subject ("N/M match the repo") and the box does NOT
+    match the repo here -- it matches what was shipped. Folding PENDING-PROMOTE
+    into `ok` would buy a green gate with a false count, which is the trade
+    `collector.health` exists to refuse."""
+    assert not judge_vs_deploy(DEPLOYED).ok
+
+
+def test_text_matching_neither_the_tree_nor_the_deployment_is_still_drift():
+    """The discrimination control. If the new baseline let ANY difference pass,
+    the check would be decoration -- so the state it exists to keep catching is
+    asserted against the same setup, one string apart."""
+    d = judge_vs_deploy(FOREIGN)
+    assert d.state == "DRIFT" and d.fault
+    assert health.drift_exit_code([d]) == health.DRIFT_REPAIRABLE
+    assert "outside this repo" in d.detail, "the verdict must say what it now means"
+
+
+def test_a_missing_deployment_baseline_falls_back_to_the_stricter_answer():
+    """Off this box -- a fresh clone, no `stable` ref -- `deployed_text` returns
+    None. The judge must then behave exactly as it did before this pass:
+    suspicious, never more permissive."""
+    d = health.judge_drift("hyxlab-probe.service", props(), DEPLOYED, AHEAD, None)
+    assert d.state == "DRIFT"
+
+
+def test_in_the_deployed_tree_the_pending_state_cannot_fire():
+    """Run from the stable worktree (where the timers run the digest), the ref
+    resolves to that tree's own HEAD, so vendored == deployed and any difference
+    is a fault again. That is the property that keeps this from being a hole:
+    the leniency exists only in the tree that is allowed to be ahead."""
+    d = health.judge_drift("hyxlab-probe.service", props(), FOREIGN, DEPLOYED, DEPLOYED)
+    assert d.state == "DRIFT"
+
+
+def test_the_deployment_baseline_is_read_from_the_ref_promote_fast_forwards():
+    """`promote.sh` moves `stable` and health reads `stable`; two spellings of
+    "what is deployed" is how the baseline silently becomes a constant."""
+    assert 'git -C "$STABLE" merge --ff-only main' in PROMOTE
+    branch = [ln for ln in PROMOTE.splitlines() if "STABLE=" in ln and ln.startswith("STABLE=")]
+    assert branch, "promote.sh must name the stable worktree"
+    assert health.DEPLOY_REF == "stable"
+
+
+def test_the_pending_state_is_reported_not_swallowed(capsys, monkeypatch):
+    """A caller told only "clean" would read it as "the box runs what I am
+    looking at", which is the one thing a pending promotion means it does not.
+    Both readers -- the digest and the shell-facing mode -- must print it."""
+    rows = [health.UnitDrift("a.service", "PENDING-PROMOTE", "box holds the promoted copy")]
+    monkeypatch.setattr(health, "drift_report", lambda: rows)
+    assert health.drift_main() == health.DRIFT_CLEAN
+    out = capsys.readouterr().out
+    assert "PENDING-PROMOTE" in out and "a.service" in out
+    assert "0/1 loaded unit files match the repo" in out
+
+    monkeypatch.setattr(health, "report", lambda now=None: [])
+    monkeypatch.setattr(health, "show", lambda unit: {})
+    monkeypatch.setattr(health, "_load_state", lambda path: {})
+    health.main()
+    out = capsys.readouterr().out
+    assert "PENDING-PROMOTE: ['a.service']" in out
+    assert "DRIFT:" not in out, "a pending promotion is not an alarm"
+
+
+def test_the_full_promote_verifies_the_install_it_just_did():
+    """`--units-only` re-asks the judge after its `cp` (2026-09-07); the FULL
+    path installed units and never looked back, so the one mode that moves unit
+    files as a side effect of moving code was the one with no verification.
+    And it must verify BEFORE restarting daemons: a restart onto new code under
+    units that did not take is the expensive way to find out."""
+    full = PROMOTE.split("if ((UNITS_ONLY)); then", 1)[0] + PROMOTE.split("\nfi\n", 1)[-1]
+    assert "--drift-only" in full, "the full promote must re-ask the judge after installing"
+    assert PROMOTE.rindex("collector.health --drift-only") < PROMOTE.index("systemctl --user restart"), (
+        "verify the units before paying for a daemon restart"
+    )
