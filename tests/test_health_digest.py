@@ -91,7 +91,12 @@ def test_a_running_unit_that_previously_failed_still_reads_running() -> None:
     the result arm, every retry of a failing unit would read FAILED forever."""
     h = health.judge(
         "hyxlab-sweep.service",
-        svc(ActiveState="activating", Result="exit-code", ExecMainStatus="1", ExecMainExitTimestamp=""),
+        svc(
+            ActiveState="activating",
+            Result="exit-code",
+            ExecMainStatus="1",
+            ExecMainExitTimestamp="",
+        ),
         timer(NextElapseUSecRealtime=""),
         NOW,
     )
@@ -178,7 +183,9 @@ def test_the_late_slack_is_one_period_of_the_fastest_timer() -> None:
         for line in f.read_text().splitlines()
         if line.startswith("OnCalendar=")
     ]
-    assert "*:0/5" in cadences, f"the 5-minute cadence this slack is derived from is gone: {cadences}"
+    assert "*:0/5" in cadences, (
+        f"the 5-minute cadence this slack is derived from is gone: {cadences}"
+    )
     assert health.LATE_SLACK_S == 300.0
 
 
@@ -196,7 +203,9 @@ def test_a_unit_the_manager_never_heard_of_reads_unloaded() -> None:
     """`systemctl show` on an unknown name exits 0 with LoadState=not-found.
     Since the set is discovered from the REPO, a unit committed but never
     promoted must read UNLOADED rather than silently drop out of the digest."""
-    h = health.judge("hyxlab-new.service", {"LoadState": "not-found", "ActiveState": "inactive"}, timer(), NOW)
+    h = health.judge(
+        "hyxlab-new.service", {"LoadState": "not-found", "ActiveState": "inactive"}, timer(), NOW
+    )
     assert h.state == "UNLOADED"
 
 
@@ -213,10 +222,17 @@ def test_show_on_an_unknown_unit_does_not_raise() -> None:
 
 
 def test_a_daemon_is_judged_by_activestate_alone() -> None:
-    up = health.judge("hyxlab-stream.service", svc(ActiveState="active", SubState="running", ExecMainExitTimestamp=""), None, NOW)
+    up = health.judge(
+        "hyxlab-stream.service",
+        svc(ActiveState="active", SubState="running", ExecMainExitTimestamp=""),
+        None,
+        NOW,
+    )
     assert up.state == "OK"
     assert "restarts" in up.detail
-    down = health.judge("hyxlab-stream.service", svc(ActiveState="failed", Result="oom-kill"), None, NOW)
+    down = health.judge(
+        "hyxlab-stream.service", svc(ActiveState="failed", Result="oom-kill"), None, NOW
+    )
     assert down.state == "DOWN"
     assert "oom-kill" in down.detail
 
@@ -233,13 +249,17 @@ def test_the_qa_record_is_read_from_the_units_working_directory() -> None:
     never wrote -- and the dev copy is the one a naive reader prints."""
     p = health.qa_record_path(svc(WorkingDirectory="/home/devs/workspace/hyxrestration-stable"))
     assert p == Path("/home/devs/workspace/hyxrestration-stable/reports/qa/sections.json")
-    assert str(p).startswith("/home/devs/workspace/hyxrestration-stable"), "must not fall back to CWD"
+    assert str(p).startswith("/home/devs/workspace/hyxrestration-stable"), (
+        "must not fall back to CWD"
+    )
 
 
 def test_an_optional_working_directory_prefix_is_stripped() -> None:
     """systemd prefixes WorkingDirectory with `-` when the directory is allowed
     to be missing. Left in place it makes every path relative and wrong."""
-    assert health.qa_record_path(svc(WorkingDirectory="-/tmp/x")) == Path("/tmp/x/reports/qa/sections.json")
+    assert health.qa_record_path(svc(WorkingDirectory="-/tmp/x")) == Path(
+        "/tmp/x/reports/qa/sections.json"
+    )
 
 
 def test_a_unit_without_a_working_directory_falls_back_to_this_repo() -> None:
@@ -301,7 +321,9 @@ def test_the_qa_verdict_reports_an_unexpected_skip_as_not_a_full_pass() -> None:
     now = datetime(2026, 9, 6, 14, 20, tzinfo=UTC)
     start = f"@{datetime(2026, 9, 6, 10, 0, tzinfo=UTC).timestamp()}"
     skipped = health.judge_qa(
-        _record("2026-09-06T10:00:00+00:00", skipped=["fade-window"]), svc(ExecMainStartTimestamp=start), now
+        _record("2026-09-06T10:00:00+00:00", skipped=["fade-window"]),
+        svc(ExecMainStartTimestamp=start),
+        now,
     )
     assert "NOT a full pass" in skipped and "fade-window" in skipped
     failed = health.judge_qa(
@@ -347,9 +369,13 @@ def test_the_standing_set_is_exactly_the_skip_qa_never_ages() -> None:
     is the only site deliberately exempt from `_skip_age_h`. Read from the source
     so a fifth skip added tomorrow fails here instead of being silently quieted."""
     src = Path(qa.__file__).read_text()
-    appended = set(re.findall(r"_skipped\.append\(\s*(?:\"([^\"]+)\"|([A-Z_][A-Z_0-9]*))\s*\)", src))
+    appended = set(
+        re.findall(r"_skipped\.append\(\s*(?:\"([^\"]+)\"|([A-Z_][A-Z_0-9]*))\s*\)", src)
+    )
     names = {a or b for a, b in appended}
-    assert "COLLECT_SKIP_SECTION" in names, "the standing skip must be appended by its constant, not a literal"
+    assert "COLLECT_SKIP_SECTION" in names, (
+        "the standing skip must be appended by its constant, not a literal"
+    )
     assert frozenset({qa.COLLECT_SKIP_SECTION}) == qa.STANDING_SKIPS
     assert len(names) > 1, "the scan must actually be finding the other skip sites"
 
@@ -375,7 +401,9 @@ def test_the_unit_set_is_discovered_not_enumerated() -> None:
 def test_every_timer_backed_service_is_paired_with_its_timer() -> None:
     paired = dict(health.discover_units())
     for t in (REPO / "scripts/systemd").glob("hyxlab-*.timer"):
-        assert paired.get(f"{t.stem}.service") is True, f"{t.name} has no service, or it was not paired"
+        assert paired.get(f"{t.stem}.service") is True, (
+            f"{t.name} has no service, or it was not paired"
+        )
 
 
 def test_the_digest_opens_no_database() -> None:
@@ -418,14 +446,25 @@ def test_nothing_in_this_tree_notifies_off_box() -> None:
     inherited. Asserted over CODE -- see `_code_only` for why that matters."""
     files = subprocess.run(
         ["git", "ls-files", "*.py", "*.sh", "*.service", "*.timer"],
-        cwd=REPO, capture_output=True, text=True, check=True,
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.split()
     hits = []
     for f in files:
         if f.startswith("phase0/"):
             continue
         low = _code_only(REPO / f).lower()
-        for token in ("smtplib", "sendmail", "webhook", "ntfy.sh", "pushover", "api.telegram", "hooks.slack"):
+        for token in (
+            "smtplib",
+            "sendmail",
+            "webhook",
+            "ntfy.sh",
+            "pushover",
+            "api.telegram",
+            "hooks.slack",
+        ):
             if token in low:
                 hits.append((f, token))
     assert not hits, f"something notifies off-box now; the digest's premise has changed: {hits}"
@@ -450,9 +489,9 @@ def test_checker_output_cannot_ride_the_push() -> None:
     assert "/data/" in ignore and "/reports/" in ignore
     from collector.qa import STATE
 
-    assert subprocess.run(
-        ["git", "check-ignore", "-q", str(STATE)], cwd=REPO
-    ).returncode == 0, "qa's record is committed now — the digest's premise has changed"
+    assert subprocess.run(["git", "check-ignore", "-q", str(STATE)], cwd=REPO).returncode == 0, (
+        "qa's record is committed now — the digest's premise has changed"
+    )
 
 
 def test_the_autoloop_prompt_reads_the_digest() -> None:
@@ -513,7 +552,9 @@ def test_the_digest_exits_zero_even_with_a_failing_unit(monkeypatch: pytest.Monk
     """It is a report, not a gate. A gate whose failure nothing reads is the
     defect this pass exists to answer."""
     monkeypatch.setattr(
-        health, "report", lambda *a, **k: [health.UnitHealth("hyxlab-x.service", "FAILED", "exit=1")]
+        health,
+        "report",
+        lambda *a, **k: [health.UnitHealth("hyxlab-x.service", "FAILED", "exit=1")],
     )
     health.main()  # must not raise SystemExit
 
@@ -584,3 +625,187 @@ def test_judge_appends_attribution_only_to_the_failure_it_explains():
     assert h.state == "FAILED" and "OOM BYSTANDER" in h.detail
     # A healthy unit carries no note even if the kernel log is full of them.
     assert health.judge("hyxlab-poly-sweep.service", svc(), timer(), NOW).state == "OK"
+
+
+# --------------------------------------------------------------------------
+# (7) The faults that left no trace: a cadenced unit's failure is erased by its
+#     own next success, so the digest's six-hour reader finds nothing to read.
+#     Fixtures are VERBATIM records from this box's journal, 2026-09-08.
+# --------------------------------------------------------------------------
+
+FAIL_ID = "d9b373ed55a64feb8242e02dbe79a49c"
+START_FAIL_ID = "be02cf6855d2428ba40df7e9d022f03d"
+# 2026-09-08 14:19Z, the moment the section below was measured.
+FAIL_NOW = datetime(2026, 9, 8, 14, 19, tzinfo=UTC)
+
+
+def jrec(unit: str, us: int, result: str = "exit-code", mid: str = FAIL_ID) -> str:
+    return json.dumps(
+        {
+            "MESSAGE_ID": mid,
+            "USER_UNIT": unit,
+            "MESSAGE": f"{unit}: Failed with result '{result}'.",
+            "__REALTIME_TIMESTAMP": str(us),
+        }
+    )
+
+
+# The real 24h window: five in-scope failures, two strangers, one duplicate id.
+JOURNAL = "\n".join(
+    [
+        jrec("hyxlab-poly-sweep.service", 1788803438908394, "oom-kill"),
+        jrec("hyxlab-breadth.service", 1788803438966480, "oom-kill"),
+        jrec("hyxlab-collect.service", 1788803438979683, "oom-kill"),
+        jrec("app-org.chromium.Chromium-305403.scope", 1788803440647878, "oom-kill"),
+        jrec("hylshi-cli-products.service", 1788858086720797),
+        jrec("hyxlab-qa.service", 1788861607714922),
+        jrec("hyxlab-breadth.service", 1788871650593392),
+    ]
+)
+HYXLAB_UNITS = {u for u, _ in health.discover_units()}
+
+
+def test_a_failure_a_later_success_erased_is_still_reported():
+    """THE DEFECT, end to end. `hyxlab-breadth` timed out against Kalshi at
+    09-08 12:47Z and succeeded five minutes later, so `Result` reads success and
+    the unit row says OK -- correctly. Measured on this box: five in-scope
+    failures in 24h, of which the digest showed ONE. Four were unrecoverable."""
+    failures = health.parse_unit_failures(JOURNAL, HYXLAB_UNITS)
+    assert len(failures) == 5
+    # The box as it actually read: breadth back to OK, qa still in ATTENTION.
+    rows = [
+        health.UnitHealth("hyxlab-breadth.service", "OK", ""),
+        health.UnitHealth("hyxlab-qa.service", "FAILED", "result=exit-code"),
+    ]
+    lines = health.failure_history_lines(failures, rows, FAIL_NOW)
+    breadth = next(ln for ln in lines if "hyxlab-breadth" in ln)
+    assert "2x in 24h" in breadth and "CLEARED" in breadth
+    assert "exit-code 09-08 12:47Z" in breadth and "oom-kill 09-07 17:50Z" in breadth
+    assert "4 on units now healthy (invisible above)" in lines[-1]
+
+
+def test_each_failure_is_counted_once_though_systemd_logs_it_twice():
+    """(1) Every failure emits BOTH `Failed with result` and `Failed to start`.
+    Reading both -- or matching the word "Failed" -- doubles every count, which
+    would turn one flaky night into a fabricated trend."""
+    doubled = JOURNAL + "\n" + jrec("hyxlab-qa.service", 1788861607714999, mid=START_FAIL_ID)
+    assert len(health.parse_unit_failures(doubled, HYXLAB_UNITS)) == 5
+
+
+def test_attribution_reads_user_unit_because_the_manager_is_the_logger():
+    """(2) The user manager logs ABOUT the unit, so `_SYSTEMD_USER_UNIT` is
+    `init.scope` and `UNIT` is unset. A reader keying on either sees nothing."""
+    rec = json.dumps(
+        {
+            "MESSAGE_ID": FAIL_ID,
+            "USER_UNIT": "hyxlab-qa.service",
+            "UNIT": None,
+            "_SYSTEMD_USER_UNIT": "init.scope",
+            "MESSAGE": "hyxlab-qa.service: Failed with result 'exit-code'.",
+            "__REALTIME_TIMESTAMP": "1788861607714922",
+        }
+    )
+    (only,) = health.parse_unit_failures(rec, HYXLAB_UNITS)
+    assert only.unit == "hyxlab-qa.service" and only.result == "exit-code"
+
+
+def test_another_projects_units_are_not_this_projects_health():
+    """(3) The same journal holds `hylshi-*` and a Chromium scope. Both are in
+    the fixture and neither may appear -- the `SYSTEMD_UNIT_PATH` lesson."""
+    names = {f.unit for f in health.parse_unit_failures(JOURNAL, HYXLAB_UNITS)}
+    assert not any("hylshi" in n or "chromium" in n.lower() for n in names)
+    # And the scope is DISCOVERED, so a unit added tomorrow is covered by it.
+    assert {u for u, _ in health.discover_units()} == HYXLAB_UNITS
+
+
+def test_a_clean_count_states_the_window_it_actually_covered():
+    """(4) journald vacuums. Reporting an empty buffer as a quiet night is the
+    lie this module exists to stop telling, so a floor inside the window
+    downgrades the claim instead of the count."""
+    floor = FAIL_NOW.replace(hour=12)  # 12:19Z, so 2.0h of retention
+    (line,) = health.failure_history_lines([], [], FAIL_NOW, floor)
+    assert "0 unit failures" in line and "last 2.0h ONLY" in line
+    # Retention wider than the window makes the full claim, unqualified.
+    wide = FAIL_NOW.replace(day=6)
+    (full,) = health.failure_history_lines([], [], FAIL_NOW, wide)
+    assert "last 24h" in full and "ONLY" not in full
+
+
+def test_the_window_is_at_least_the_readers_own_interval():
+    """A window shorter than the six-hour autoloop would drop faults through the
+    same hole this section closes. Derived from the timer, not asserted at it."""
+    fires = re.findall(
+        r"OnCalendar=[^\n]*?(\d\d(?:,\d\d)*):",
+        (REPO / "scripts/systemd/hyxlab-autoloop.timer").read_text(),
+    )
+    hours = sorted(int(h) for h in fires[0].split(","))
+    gap = max(b - a for a, b in zip(hours, hours[1:] + [hours[0] + 24], strict=True))
+    assert gap <= health.FAILURE_WINDOW_H, f"reader fires every {gap}h"
+
+
+def test_a_still_failed_unit_is_recurrence_not_a_second_alarm():
+    """`hyxlab-qa` is already in ATTENTION. The line must not restate the fault
+    -- what it adds is how OFTEN, which the unit row cannot carry."""
+    failures = health.parse_unit_failures(JOURNAL, HYXLAB_UNITS)
+    rows = [health.UnitHealth("hyxlab-qa.service", "FAILED", "result=exit-code")]
+    qa_line = next(
+        ln for ln in health.failure_history_lines(failures, rows, FAIL_NOW) if "hyxlab-qa" in ln
+    )
+    assert "still failed" in qa_line and "CLEARED" not in qa_line
+
+
+def test_the_section_prints_even_when_nothing_failed():
+    """An absent section and a broken reader look identical. Zero is a fact."""
+    assert "0 unit failures" in health.failure_history_lines([], [], FAIL_NOW)[-1]
+
+
+def test_an_unparseable_record_is_skipped_not_raised():
+    """The 09-06 rule: a new reader must not be able to take the digest down."""
+    junk = "\n".join(
+        [
+            "not json at all",
+            json.dumps({"MESSAGE_ID": FAIL_ID, "USER_UNIT": "hyxlab-qa.service"}),  # no timestamp
+            json.dumps({"MESSAGE_ID": FAIL_ID}),  # no unit
+            jrec("hyxlab-qa.service", 1788861607714922),
+        ]
+    )
+    assert len(health.parse_unit_failures(junk, HYXLAB_UNITS)) == 1
+    assert health.parse_unit_failures("", HYXLAB_UNITS) == []
+
+
+def test_a_result_systemd_words_differently_is_kept_not_dropped():
+    """The result is a label, not a whitelist: an unrecognised message must
+    still be COUNTED. Losing a failure to a wording change is the bug."""
+    odd = json.dumps(
+        {
+            "MESSAGE_ID": FAIL_ID,
+            "USER_UNIT": "hyxlab-qa.service",
+            "MESSAGE": "hyxlab-qa.service: something new systemd says.",
+            "__REALTIME_TIMESTAMP": "1788861607714922",
+        }
+    )
+    (only,) = health.parse_unit_failures(odd, HYXLAB_UNITS)
+    assert only.result == "failed"
+
+
+def test_the_journal_read_asks_for_the_field_it_filters_on():
+    """Caught in production 2026-09-08: `--output-fields` restricts what comes
+    BACK, so a list without MESSAGE_ID makes every record arrive missing the key
+    the parser branches on -- and the section reports a clean box, silently."""
+    src = (REPO / "collector/health.py").read_text()
+    fields = re.search(r'"--output-fields=([A-Z_,a-z]+)"', src).group(1).split(",")
+    assert "MESSAGE_ID" in fields and "USER_UNIT" in fields
+    assert "__REALTIME_TIMESTAMP" in fields
+
+
+def test_the_message_id_match_is_pushed_down_to_journalctl():
+    """It is an INDEXED field. Filtering in Python instead makes the cheapest
+    fact in the digest cost a full journal scan."""
+    src = (REPO / "collector/health.py").read_text()
+    assert 'f"MESSAGE_ID={UNIT_FAILURE_MESSAGE_ID}"' in src
+
+
+def test_the_digest_still_exits_zero_with_failures_in_the_window():
+    """This section adds no gate. A report that starts failing is a report that
+    stops being read (and `promote.sh` branches on `--drift-only`, not on this)."""
+    assert health.cli([]) == 0

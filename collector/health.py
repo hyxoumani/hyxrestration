@@ -97,6 +97,7 @@ from another unread verdict.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -676,6 +677,218 @@ def drift_report() -> list[UnitDrift]:
     return out
 
 
+# THE FAULTS THAT LEFT NO TRACE (2026-09-08).
+# The digest reads `Result`, and `Result` is ONE run's -- the last one. Every
+# timer unit here reruns on a cadence (collect every 5 min, breadth every 5,
+# qa daily), so a unit that fails and then succeeds is reported OK and its
+# failure is gone from the digest permanently. Not a latency problem, a LOSS
+# problem: the six-hour reader arrives and there is nothing left to read.
+# Measured 2026-09-08 against this box's own journal -- five in-scope unit
+# failures in the trailing 24h, of which the digest showed exactly ONE
+# (`hyxlab-qa`, the only one still failed):
+#   09-07 17:50Z  poly-sweep / breadth / collect  oom-kill   (the system-wide
+#                 event whose fourth victim was Chromium -- all four cleared)
+#   09-08 10:00Z  qa                              exit-code  (still failed)
+#   09-08 12:47Z  breadth                         exit-code  (a Kalshi
+#                 ReadTimeout; one lost cycle, recovered on the next run, and
+#                 nothing anywhere would ever have named it)
+# The last one is the class this section exists for: individually benign,
+# invisible by construction, and the only place a rising rate could show up.
+#
+# Four things had to be measured before this could be reported honestly.
+#
+# **(1) SYSTEMD LOGS EACH FAILURE TWICE, UNDER TWO MESSAGE IDS.** Every failure
+# emits `d9b373ed...` ("Failed with result 'X'") AND `be02cf68...` ("Failed to
+# start <Description>"). Matching on the word "Failed", or on both ids, doubles
+# every count. Only the first is read -- it is the one that carries the RESULT,
+# and the result is the difference between "this unit is broken" and "the box
+# ran out of memory and this unit was standing there" (the 09-07 lesson).
+#
+# **(2) THE ATTRIBUTION FIELD IS `USER_UNIT`, NOT `UNIT`.** The message is
+# emitted BY the user manager ABOUT the unit, so `_SYSTEMD_USER_UNIT` reads
+# `init.scope` and `UNIT` is unset entirely. A reader keying on either gets
+# nothing, or gets everything filed under `init.scope`. Parsing the unit name
+# back out of the message text would work and is not done: the structured field
+# is there, and a regex over an operator-facing string is a promise about
+# systemd's prose.
+#
+# **(3) THIS JOURNAL IS NOT THIS PROJECT'S.** The same 24h window holds
+# `hylshi-cli-products.service` and an `app-org.chromium...scope` -- two of the
+# seven records. The set is intersected with `discover_units()`, the repo's own
+# vendored units, for the same reason `SYSTEMD_UNIT_PATH` is pinned on the
+# verify command: a health report for THIS project that reports another
+# project's faults is noise that trains an operator to stop reading.
+#
+# **(4) "0 FAILURES IN 24h" IS A CLAIM ABOUT THE JOURNAL, NOT ABOUT THE BOX.**
+# journald vacuums. If retention is shorter than the window, a clean count is
+# reporting an empty buffer as a quiet night -- the exact shape of lie this
+# module exists to stop telling. The floor is measured (oldest retained entry,
+# 09-06 14:42Z here, ~48h) and the summary states the window it ACTUALLY
+# covered whenever that is less than the one asked for.
+#
+# This section adds NO gate and moves no headline. The unread-verdict rule
+# cuts both ways: a unit already printed in ATTENTION must not be printed as a
+# second alarm for the same fact, so what the line adds there is RECURRENCE --
+# how often, and whether this is the first time.
+UNIT_FAILURE_MESSAGE_ID = "d9b373ed55a64feb8242e02dbe79a49c"
+
+# The window must be at least the reader's interval or faults fall through it
+# exactly as they do now: `hyxlab-autoloop.timer` fires 02/08/14/20:15 UTC, so
+# six hours is the floor. 24h is four periods of margin, matches the window qa's
+# own continuity checks use, and sits inside this box's measured retention.
+FAILURE_WINDOW_H = 24
+
+
+@dataclass(frozen=True)
+class UnitFailure:
+    """One `Failed with result` record: which unit, when, and which result."""
+
+    unit: str
+    at: datetime
+    result: str
+
+
+_RESULT_RE = re.compile(r"Failed with result '(?P<result>[^']+)'")
+
+
+def parse_unit_failures(stdout: str, units: set[str]) -> list[UnitFailure]:
+    """Journal JSON -> in-scope failures, oldest first. Pure, and forgiving by
+    design: a record that cannot be parsed is skipped, never guessed at, and
+    never raised out of a digest whose job is to print."""
+    out = []
+    for line in stdout.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("MESSAGE_ID") != UNIT_FAILURE_MESSAGE_ID:
+            continue
+        unit = rec.get("USER_UNIT")
+        if unit not in units:
+            continue
+        try:
+            at = datetime.fromtimestamp(int(rec["__REALTIME_TIMESTAMP"]) / 1e6, UTC)
+        except (KeyError, TypeError, ValueError):
+            continue
+        m = _RESULT_RE.search(str(rec.get("MESSAGE", "")))
+        out.append(UnitFailure(unit, at, m.group("result") if m else "failed"))
+    return sorted(out, key=lambda f: f.at)
+
+
+def read_unit_failures(units: set[str], hours: int = FAILURE_WINDOW_H) -> list[UnitFailure]:
+    """The manager's own failure log for the window. The `MESSAGE_ID=` match is
+    given to journalctl rather than filtered in Python -- it is an indexed field,
+    so the read stays proportional to the number of FAILURES and not to the size
+    of the journal. Never raises (see `read_kernel_oom`)."""
+    try:
+        proc = subprocess.run(
+            [
+                "journalctl",
+                "--user",
+                "--no-pager",
+                "--since",
+                f"-{hours}h",
+                f"MESSAGE_ID={UNIT_FAILURE_MESSAGE_ID}",
+                "-o",
+                "json",
+                # MESSAGE_ID is in this list even though it is also the server-side
+                # match, and that is not redundancy: `--output-fields` restricts
+                # what comes BACK, so omitting it makes every record arrive with
+                # the field the parser keys on absent, and the section silently
+                # reports a clean box. Caught here 2026-09-08 by a "0 failures"
+                # against five that had just been measured by hand.
+                "--output-fields=MESSAGE_ID,USER_UNIT,MESSAGE,__REALTIME_TIMESTAMP",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_unit_failures(proc.stdout, units)
+
+
+def journal_floor() -> datetime | None:
+    """Oldest entry journald still holds, or None if it cannot be read.
+
+    Read by streaming and stopping after ONE line: `journalctl` emits
+    oldest-first and this journal is large, so capturing it whole to look at its
+    head would make the cheapest fact in the digest the most expensive. The
+    first record is a lower bound on retention rather than retention itself --
+    it is the oldest entry, and the true vacuum point is somewhere at or before
+    it -- which is the safe direction: it can only make the reported window
+    SHORTER than what was really covered.
+    """
+    try:
+        proc = subprocess.Popen(
+            [
+                "journalctl",
+                "--user",
+                "--no-pager",
+                "-o",
+                "json",
+                "--output-fields=__REALTIME_TIMESTAMP",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        line = proc.stdout.readline() if proc.stdout else ""
+        rec = json.loads(line)
+        return datetime.fromtimestamp(int(rec["__REALTIME_TIMESTAMP"]) / 1e6, UTC)
+    except (KeyError, TypeError, ValueError):
+        return None
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def failure_history_lines(
+    failures: list[UnitFailure],
+    rows: list[UnitHealth],
+    now: datetime,
+    floor: datetime | None = None,
+    hours: int = FAILURE_WINDOW_H,
+    width: int = 0,
+) -> list[str]:
+    """The recent-failure section: per-unit recurrence, then one summary.
+
+    Printed even when the count is zero. An absent section and a broken reader
+    look identical, and "nothing failed since yesterday" is a fact worth having
+    at cold start -- it is the one the digest could not previously state.
+    """
+    still_bad = {r.unit for r in rows if not r.ok}
+    by_unit: dict[str, list[UnitFailure]] = {}
+    for f in failures:
+        by_unit.setdefault(f.unit, []).append(f)
+    lines = []
+    for unit in sorted(by_unit):
+        hits = by_unit[unit]
+        # CLEARED is the whole point of the section: it is the state in which the
+        # unit rows above say nothing at all. `still failed` is not a second
+        # alarm -- the count beside it is recurrence, which the row cannot carry.
+        status = "still failed" if unit in still_bad else "CLEARED"
+        when = ", ".join(f"{h.result} {h.at:%m-%d %H:%M}Z" for h in hits)
+        lines.append(f"{'RECENT':<10} {unit:<{width}}  {len(hits)}x in {hours}h, {status}: {when}")
+    covered = hours
+    if floor is not None:
+        covered = min(covered, (now - floor).total_seconds() / 3600.0)
+    window = (
+        f"last {hours}h"
+        if covered >= hours
+        else f"last {covered:.1f}h ONLY — journald retains no further back"
+    )
+    cleared = sum(1 for f in failures if f.unit not in still_bad)
+    lines.append(
+        f"[health] {len(failures)} unit failure{'' if len(failures) == 1 else 's'} in the "
+        f"{window}" + (f"; {cleared} on units now healthy (invisible above)" if cleared else "")
+    )
+    return lines
+
+
 def qa_record_path(qa_svc: dict[str, str]) -> Path:
     """WHERE the timer's qa run writes its record.
 
@@ -810,6 +1023,11 @@ def main() -> None:
     width = max((len(r.unit) for r in rows), default=0)
     for r in sorted(rows, key=lambda r: (r.ok, r.unit)):
         print(f"{r.state:<10} {r.unit:<{width}}  {r.detail}", flush=True)
+    units = {u for u, _ in discover_units()}
+    for line in failure_history_lines(
+        read_unit_failures(units), rows, now, journal_floor(), width=width
+    ):
+        print(line, flush=True)
     qa_svc = show(QA_UNIT)
     print(judge_qa(_load_state(qa_record_path(qa_svc)), qa_svc, now), flush=True)
     drift = drift_report()

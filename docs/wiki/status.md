@@ -1,5 +1,72 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-08 (FAILURE-HISTORY PASS -- THE DIGEST'S OLDEST
+CARRIED ITEM WAS NOT A LATENCY PROBLEM, IT WAS A LOSS PROBLEM.**
+Cold start per instructions. The digest flagged only `hyxlab-qa FAILED` on
+`breadth universe enumerated exhaustively over last 24h` -- the KNOWN
+trailing-24h window from the 09-08 breadth fix, aging out on the 09-09
+10:00Z run, explicitly not to be "fixed" by touching the check. So the
+ladder, and the top unclaimed item, carried NINE passes: *the digest has
+no ALARM, only a reader every six hours; the 09-07 oom-kill sat unread
+7.5h, the breadth fault 27h.*
+**(1) THE ITEM WAS FRAMED WRONG, AND MEASURING IT SHOWED WHY.** Nine
+passes wrote it down as detection LATENCY -- the fix for which is a
+notifier, which is user-gated (no credentials, no channel; the 09-06
+egress pass measured that the whole egress is autoloop's git push). It is
+not latency. `Result` is ONE run's, the LAST one, and every unit here
+reruns on a cadence, so **a unit that fails and then succeeds is reported
+OK and its failure is gone permanently.** The six-hour reader is not late;
+it arrives and there is nothing left to read. That half needs no channel
+and no credential, and it is the half that was actually losing faults.
+**(2) MEASURED ON THIS BOX: FIVE IN-SCOPE FAILURES IN 24h, THE DIGEST
+SHOWED ONE.** poly-sweep/breadth/collect oom-killed together 09-07 17:50Z
+(all cleared, all invisible), qa 09-08 10:00Z (the one shown), and
+**breadth 09-08 12:47Z -- a Kalshi `ReadTimeout`, one lost cycle,
+recovered five minutes later, and nothing anywhere would ever have named
+it.** That last one is the class this section exists for: individually
+benign, invisible by construction, and the only place a rising rate could
+ever show up.
+**(3) FOUR WAYS THE OBVIOUS READER WOULD HAVE LIED, EACH MEASURED FIRST.**
+- Systemd logs every failure **TWICE**, under two MESSAGE_IDs
+  (`Failed with result` + `Failed to start`). Matching the word "Failed"
+  doubles every count and manufactures a trend out of a flaky night.
+- The attribution field is **`USER_UNIT`**. The user manager logs ABOUT
+  the unit, so `_SYSTEMD_USER_UNIT` reads `init.scope` and `UNIT` is
+  unset entirely -- a reader keying on either sees nothing at all.
+- **This journal is not this project's.** Two of the seven records in the
+  window are `hylshi-cli-products` and a Chromium scope. Scoped to
+  `discover_units()`, the same isolation lesson as `SYSTEMD_UNIT_PATH`.
+- **"0 failures in 24h" is a claim about the JOURNAL.** journald vacuums;
+  an empty buffer read as a quiet night is this module's signature lie.
+  The retention floor is measured (09-06 14:42Z, ~48h) and the summary
+  states the window it ACTUALLY covered when it is short.
+**(4) THE BUG IT SHIPPED WITH, CAUGHT IN PRODUCTION NOT IN TESTS.** First
+run printed `0 unit failures` against five measured by hand minutes
+earlier: `--output-fields` restricts what comes BACK, so omitting
+MESSAGE_ID from it -- while still using it as the server-side match --
+made every record arrive missing the key the parser branches on. Silently
+clean. Now a test.
+**(5) NO GATE, NO SECOND ALARM, AND THE WINDOW IS DERIVED.** The digest
+still exits 0 (`promote.sh` branches on `--drift-only`, not on this). A
+unit already in ATTENTION gets RECURRENCE, not a restated fault. The 24h
+window is asserted against `hyxlab-autoloop.timer`'s own firing gap --
+a window shorter than the reader drops faults through the same hole.
+**Suite 1195 -> 1208.** COMMITTED, PROMOTED, PUSHED.
+**HONEST RESIDUAL:** this closes the LOSS half. The PUSH half -- nothing
+on this box can wake anyone -- is unchanged and stays user-gated on a
+channel + credential. It is no longer the oldest unclaimed item; it is a
+one-line ask.
+NEXT PASS: (1) **the 09-09 10:00Z QA run** -- if `breadth universe
+enumerated exhaustively over last 24h` has not gone green, the 09-08
+breadth floor is not doing what it measured. (2) The 10th panel day,
+~09-17. (3) SHADOWED and DROP-IN drift still have no written operator
+procedure -- now the oldest unclaimed item. (4) The width-24 econ maker
+bracket needs 2026-09-12; the atlas quoted tier wants ~2.1M settled
+markets. Both data-gated. **USER-GATED, NEWLY SHARPENED: a notify channel
+(smtp creds or a webhook URL) is the ONLY thing between this digest and
+an operator who does not have to be reading.**
+
+---
 Updated: **2026-09-08 (PROMOTE-DEADLOCK PASS -- THE SAME DEFECT AS 09-07,
 ONE MODE OVER, AND IT STARTED AT THE EDIT.**
 Cold start per instructions. The digest flagged only `hyxlab-qa FAILED`
