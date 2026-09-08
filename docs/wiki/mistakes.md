@@ -1165,3 +1165,42 @@ trusted; CALLER (the only locally-unverifiable one) must open nothing
 and must NAME a caller that is resolved in the source and shown to hold
 the lock. The mutator set is derived from `hyxlab/store.py`, not
 listed, so a new writing method cannot enter invisible.
+
+---
+
+Recurrence audit (2026-09-08, breadth-floor pass): the 09-06 pass closed
+a real defect — a truncation guard wired to a `print` — and then wrote
+down the remaining decision as a choice between three options: widen
+`MAX_PAGES`, exclude the parlay family, or narrow the close window. All
+three were dead, and one was dead STRUCTURALLY rather than on cost.
+Measuring them took one probe. Three things generalise.
+
+**(1) A written-down option is not a measured one, and listing three
+makes the set look surveyed.** The status page framed this as a
+COST/SCOPE DECISION awaiting a judgement call, which is what kept it open
+for 27 hours while the tape ran at 1 row/cycle. It was never a judgement
+call; it was an unmeasured one. **An open decision that has been open for
+more than a pass should be re-read as a missing measurement, not as a
+hard trade-off** — the tell is that no option in the list carries a
+number for the thing it is supposed to fix.
+
+**(2) The trap option: a filter on the RESULT cannot fix a limit on the
+WALK.** "Exclude the KXMVE* parlay family" reads like the targeted fix —
+it names the exact culprit — but truncation happens during pagination,
+and a client-side ticker filter removes rows from the result while
+removing zero requests from the walk. It would have shipped as a fix,
+changed the numbers not at all, and looked like a deeper mystery.
+Generalising: **when the fault is "we ran out of budget before reaching
+X", only a change to what the SERVER enumerates can be a fix.** Ask where
+in the pipeline the constraint binds before asking which filter to write.
+
+**(3) The fix was in a field nobody had looked at.** The universe was 65%
+markets whose `close_time` had already PASSED and which the exchange had
+not cleared. Every option on the list was about volume, family or
+horizon-length; none was about whether the market was still tradeable at
+all. The measurement that ended the debate — zero of 400,000 markets with
+any 24h volume closes in the past — also proved the fix free, converting
+an apparent scope cut into a defect fix. **Before trading scope away to
+afford an enumeration, check what is in it that should never have been
+there.** The useful universe had not grown at all: 8,586 markets against
+8,718 measured five weeks earlier.

@@ -1,5 +1,81 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-08 (BREADTH-FLOOR PASS -- ALL THREE OPTIONS THE LAST
+PASS WROTE DOWN WERE DEAD, AND THE REAL FIX COST NOTHING.**
+Cold start per instructions. The digest flagged `hyxlab-qa FAILED` on
+`breadth continuous over last 24h` -- the CARRIED open decision, now 27
+hours old and still losing tape (universe pinned at 60,000, `truncated`
+on every cycle, as few as **1 row/cycle** against a normal ~990). That is
+the chronic item the last pass warned not to let become chronic, so it
+outranked the ladder.
+**(1) THE OPEN DECISION WAS A FALSE CHOICE. I MEASURED INSTEAD OF PICKING.**
+One exhaustive probe (400 pages / 284 s / 02:16Z) killed all three
+recorded options:
+- **Widen `MAX_PAGES`** -- dead. The 24h universe is not 60k, it is
+  **>400,000 with the cursor still live**. No cap is both affordable every
+  5 min and above a number the exchange raises at will.
+- **Exclude the parlay family client-side** -- dead, and the trap of the
+  three. A ticker filter CANNOT FIX TRUNCATION: the legs must still be
+  PAGED THROUGH to be discarded. It removes rows from the result, not
+  requests from the walk. The status page had this listed as a real
+  option; it never was.
+- **Narrow `CLOSE_WINDOW_H`** -- dead. A **1-hour** window still holds
+  **282,295** markets. The legs close on the same clock the real ones do,
+  so the ceiling cannot separate them.
+**(2) THE UNIVERSE WAS 65% ALREADY-CLOSED MARKETS.** `status=open`
+includes markets whose `close_time` has PASSED and which the exchange has
+not cleared: **260,662 of the 391,414 KXMVECROSSCATEGORY legs**. Adding
+`min_close_ts = now` drops 65% of the walk. **Information cost measured at
+exactly ZERO: of all 400,000 markets, every one of the 1,598 with any 24h
+volume closes in the FUTURE**, as do all 8,586 non-parlay markets. A market
+past its close cannot be traded, so its book was never "a price a strategy
+could have traded at" -- the module's whole reason to exist. So this is a
+**DEFECT FIX, NOT THE SCOPE CUT the open decision assumed it had to be**,
+and the thing blocking it was that nobody had looked at `close_time`.
+**(3) THE USEFUL UNIVERSE NEVER CHANGED.** 8,586 non-parlay markets on
+09-08 against **8,718 measured on 08-03**. Nothing about what this
+collector is for grew; only the noise around it did. That is why no scope
+had to be traded away to afford it.
+**(4) VERIFIED AGAINST THE LIVE EXCHANGE, NOT ONLY IN TESTS.** universe
+**139,634, `truncated=False`** -- the first terminating walk in 27 hours --
+140 pages in **71 s**, 1,634 volume-bearing markets, and `top_n` filling
+all 1,000 slots at **cutoff volume 92.75 against the 08-03 pre-flood
+baseline of 99**. The ranking premise is restored, not merely unbroken.
+**(5) `MAX_PAGES` 60 -> 250, RESIZED AGAINST THE MEASUREMENT** (140 pages)
+at ~1.8x -- deliberately NOT against the unfiltered universe, which is
+unbounded. It stays a LOUD GUARD, not a budget: steady cost is 140 req /
+71 s = ~2 req/s against a ~30 req/s public limit. `CLOSE_WINDOW_H` stays
+**24**, because it is the FLOOR, not the ceiling, that pays for the walk.
+**(6) THE DEAD OPTIONS ARE NOW TESTS, SO THEY ARE NOT RETRIED.** Each of
+the three carries its measurement in a test or docstring, and the floor
+has a discrimination control (it must TRACK `now`; a pinned floor would
+let the past-close backlog grow back underneath it). Residual, stated in
+the docstring: the floor assumes the exchange keeps clearing real markets
+promptly, so lingering past-close markets stay parlay legs.
+**Suite 1184 -> 1187.** COMMITTED, PROMOTED, PUSHED. Zero shadow span --
+breadth is a TIMER, so promote restarted no daemon and it picks the new
+code up on its next run; `hyxlab-stream`/`hyxlab-shadow` keep their 11.8h
+clocks.
+**NOT YET GREEN, AND HONESTLY SO:** QA's `breadth continuous over last
+24h` reads a 24-HOUR WINDOW, so it will keep failing until the truncated
+stretch ages out (~09-09 10:00Z run). The fault is fixed at the source;
+the check is a trailing one. Do not "fix" it by touching the check.
+NEXT PASS: (1) **confirm QA goes green on its own** at the 09-09 run --
+if it does not, the floor is not doing what this pass measured.
+(2) **The promote deadlock, carried from last pass and untouched here**: a
+FULL promote carrying a unit-file change gates on a suite whose live drift
+arm cannot pass until the units are installed, and only promote installs
+them. Same shape 09-06 closed for `--units-only`. Ordering is still tribal
+knowledge. (3) The 10th panel day, ~09-17. (4) Oldest item, carried eight
+passes: the digest has no ALARM, only a reader every six hours -- the
+09-07 oom-kill sat unread 7.5h and this breadth fault sat 27h.
+(5) SHADOWED and DROP-IN drift have no written operator procedure.
+(6) The width-24 econ maker bracket needs 2026-09-12; the atlas quoted
+tier wants ~2.1M settled markets. Both data-gated.
+NOTHING IS USER-GATED THIS PASS.**
+
+---
+
 Updated: **2026-09-07 (OOM-ATTRIBUTION PASS -- THE UNIT THE DIGEST BLAMED
 WAS THE ONE PROCESS THAT WAS INNOCENT.**
 Cold start per instructions. The digest flagged `hyxlab-poly-sweep FAILED
