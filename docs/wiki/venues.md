@@ -29,6 +29,20 @@ markets/candles are unrecoverable. Streams are unrecoverable everywhere.
   auth. `/series` returns all ~11,170 series in ONE response (category,
   fee_type, fee_multiplier). Candlesticks endpoint 429s hard: ~2 rps safe
   with Retry-After backoff (documented 30 rps does not hold).
+- **Two retry budgets, and they are not the same failure.** A 429 is a
+  RESPONSE (`kalshi._get_with_429_retry`, status-code branch, Retry-After
+  honoured, 4 tries). A `ReadTimeout`/`ConnectionError` raises before any
+  response exists, so that branch cannot see one — it gets its own budget
+  (`_TransportBudget`, 2 retries, 2s/4s backoff), spent PER WALK so a
+  multi-page enumeration cannot multiply the worst case by its page count.
+  Measured 2026-09-08: two `ReadTimeout`s killed two whole `breadth` cycles,
+  each discarding 8 pages that had already succeeded, each recovering
+  unaided on the next 5-minute firing (~5.7s/page typical vs a 30s timeout —
+  a blip, not a budget that is too small). Retries are counted and surfaced
+  as `http_retries` on the cycle summary, because a retried timeout no
+  longer fails the unit and would otherwise be invisible to the health
+  digest's failure history. Only transport errors are retried: `HTTPError`
+  and `TooManyRedirects` are answers, not lost packets.
 - Kalshi WS `.../trade-api/ws/v2`: **auth required** — RSA-PSS(SHA256)
   over `ts_ms + "GET" + path`, headers KALSHI-ACCESS-{KEY,TIMESTAMP,
   SIGNATURE}. Creds: `.env` + `.secrets/kalshi.pem`. `trade` channel =

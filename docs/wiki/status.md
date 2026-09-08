@@ -1,5 +1,78 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-08 (TRANSPORT-RETRY PASS -- THE NEW FAILURE READER
+EARNED ITSELF IN UNDER SIX HOURS.**
+Cold start per instructions. The digest still flags `hyxlab-qa FAILED` on
+`breadth universe enumerated exhaustively over last 24h` -- the KNOWN
+trailing-24h window from the 09-08 breadth floor, aging out on the 09-09
+10:00Z run, explicitly not to be "fixed" by touching the check. But this
+time it printed a second line, and that line was the work:
+`RECENT hyxlab-breadth.service 2x in 24h, CLEARED: 12:47Z, 18:47Z`.
+**Both invisible to every digest before this morning's. Same root cause,
+and it was a one-line hole in a wrapper that has been there since 08-02.**
+**(1) THE RETRY WRAPPER COULD NOT SEE THE THING THAT HAPPENED.**
+`kalshi._get_with_429_retry` branches on `resp.status_code`. A
+`requests.ReadTimeout` raises BEFORE any response object exists, so that
+branch is STRUCTURALLY incapable of seeing one -- there is nothing to read
+a status off. The exception escaped the page loop and killed the whole
+cycle, **discarding the 8 pages that had already come back**. Every
+Kalshi caller in the repo went through this wrapper and none of them had
+a transport retry at all.
+**(2) IT IS A BLIP, NOT A BUDGET THAT IS TOO SMALL -- MEASURED.** The
+recovering cycle 4.5 min later fetched 9 pages in 51.5s: ~5.7s/page
+against a 30s timeout. A 30s read is 5x the typical latency, and the next
+firing succeeded unaided BOTH times. Raising the timeout would have been
+the wrong fix; the request needed re-issuing, which is safe here because
+every one is a GET with an explicit cursor.
+**(3) THE BUDGET IS PER WALK, AND THAT IS THE WHOLE COST ARGUMENT.**
+breadth walks ~9 pages on a 5-minute oneshot. A per-request budget makes
+the worst case 9x, and systemd will not run two copies of a oneshot
+concurrently -- so overrunning does not duplicate the cycle, it DELAYS the
+next one, stamping a late quote, which is the one thing this tape exists
+not to do. One budget covers the enumeration: marginal worst case 66s,
+asserted in a test against `hyxlab-breadth.timer`'s own `OnCalendar`
+rather than a hardcoded 300.
+**(4) THREE DISCRIMINATIONS, EACH A TEST.** `HTTPError`/
+`TooManyRedirects` are ANSWERS, not lost packets -- retrying them burns
+the budget on a request that cannot succeed, so the catch is
+`(Timeout, ConnectionError)` and never `RequestException`. A persistent
+outage still RAISES; a retry that gave up quietly would convert a dead
+network into a silently empty tape, strictly worse than the lost cycle it
+replaces. And the 429 budget stays SEPARATE -- one shared counter would
+let three 429s, the case handled correctly since 08-02, leave a later
+timeout with no retry at all.
+**(5) THE FIX WOULD OTHERWISE HAVE BLINDED THE READER THAT FOUND IT.** A
+retried timeout no longer fails the unit, so it drops straight out of
+this morning's failure history. Buying the cycle back by making the
+network fault invisible is the 09-06 truncation mistake wearing new
+clothes -- a print nothing consumed, 15h of 97% data loss reported as
+success. `http_retries` now rides on the cycle summary line the operator
+already reads, zeroed per cycle so the loop mode cannot report the first
+bad hour forever. Live probe on a throwaway DB: universe 83,536,
+`http_retries` 0, 42.9s.
+**Suite 1208 -> 1217.** COMMITTED, PROMOTED, PUSHED. The promote verified
+its own install (`21/21, exit 0`) and restarted `hyxlab-stream` --
+streamd executes `kalshi.py` -- which reconnected clean, losing a 1d5h
+clock; `hyxlab-shadow` was untouched.
+**HONEST RESIDUAL:** `http_retries` is a PRINT, not a column. A rising
+retry RATE is legible to a human reading the journal and to nothing else;
+making it a check means a `breadth_cycles` column and a migration, which
+is the right next move only if the rate is ever nonzero for a sustained
+stretch. Recorded here rather than pre-built.
+NEXT PASS: (1) **the 09-09 10:00Z QA run** -- if `breadth universe
+enumerated exhaustively over last 24h` has not gone green, the 09-08
+breadth floor is not doing what it measured. (2) Watch `http_retries` in
+the breadth journal for a few days; a sustained nonzero rate promotes the
+residual above into a real check. (3) The 10th panel day, ~09-17. (4)
+SHADOWED and DROP-IN drift still have no written operator procedure --
+the oldest unclaimed item. (5) The width-24 econ maker bracket needs
+2026-09-12; the atlas quoted tier wants ~2.1M settled markets. Both
+data-gated. **USER-GATED: a notify channel (smtp creds or a webhook URL)
+is still the ONLY thing between this digest and an operator who does not
+have to be reading.**
+
+---
+
 Updated: **2026-09-08 (FAILURE-HISTORY PASS -- THE DIGEST'S OLDEST
 CARRIED ITEM WAS NOT A LATENCY PROBLEM, IT WAS A LOSS PROBLEM.**
 Cold start per instructions. The digest flagged only `hyxlab-qa FAILED` on
