@@ -1204,3 +1204,42 @@ an apparent scope cut into a defect fix. **Before trading scope away to
 afford an enumeration, check what is in it that should never have been
 there.** The useful universe had not grown at all: 8,586 markets against
 8,718 measured five weeks earlier.
+
+---
+
+Recurrence audit (2026-09-08, promote-deadlock pass): the 09-07 pass
+found that a drift REPAIR must not gate on the check it repairs, fixed it
+for `promote.sh --units-only`, and wrote the deadlock down as tribal
+knowledge for the full path — where it was still live. It is the same
+defect, one mode over, and it survived because the fix was written as a
+property of a MODE ("units-only excludes test_unit_drift.py") instead of a
+property of the CHECK.
+
+**(1) A gate that only the gated action can satisfy is a deadlock, and it
+is invisible until someone edits the file.** `tests/test_unit_drift.py`'s
+live arm asserts the installed units match this repo. `promote.sh` gates
+on the full suite; `promote.sh` is the only thing that installs units. So
+the suite went red the instant a unit file was edited — uncommitted, no
+daemon involved, measured with one appended comment line — and the only
+way to clear it was the promote that could not run. The repo's stop hook
+reads the same suite, so the block landed on the EDIT, not on the ship.
+**Whenever a check asserts something about the box that only one script
+can change, ask whether that script has to pass the check to run.**
+
+**(2) The 09-07 fix was scoped to a mode; the defect was in the verdict.**
+Narrowing the gate (deselect the arm) is right for `--units-only`, which
+moves no code, and would have been a lie for the full path, which does.
+The real error was that DRIFT covered two OPPOSITE facts — "something
+outside this repo wrote to the installed file" and "this checkout is ahead
+of what was promoted" — with the same word and the same severity. Splitting
+them (PENDING-PROMOTE) made the gate correct in every mode at once.
+**When two causes with opposite remedies share one verdict, the fix
+belongs in the verdict, not in each caller's exception list.**
+
+**(3) The baseline was the giveaway, and it was already written down.**
+`promote.sh` installs from the dev tree only AFTER fast-forwarding
+`stable`, so between two promotes the correct contents of the install
+directory are `stable`'s, not the working tree's. The checker compared
+against the working tree because that is the tree it lives in. **A
+checker judging a DEPLOYED artifact must read the deployed baseline; the
+tree it happens to run in is not evidence of anything.**

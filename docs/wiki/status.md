@@ -1,5 +1,64 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-08 (PROMOTE-DEADLOCK PASS -- THE SAME DEFECT AS 09-07,
+ONE MODE OVER, AND IT STARTED AT THE EDIT.**
+Cold start per instructions. The digest flagged only `hyxlab-qa FAILED`
+on `breadth continuous over last 24h` -- the KNOWN trailing 24h window
+from the 09-08 breadth fix, whose next run (09-08 10:00Z) had not yet
+happened at 08:15Z; not actionable, and explicitly not to be "fixed" by
+touching the check. So the ladder, and the top carried item was next-pass
+(2): the promote deadlock, carried two passes as TRIBAL KNOWLEDGE.
+**(1) IT WAS NOT TRIBAL KNOWLEDGE, IT WAS A LIVE BLOCK, AND I MEASURED
+IT IN ONE LINE.** Appending a single comment line to
+`scripts/systemd/hyxlab-backup.service` -- uncommitted, no daemon touched
+-- turned `tests/test_unit_drift.py`'s live arm red with DRIFT.
+`promote.sh` gates on `pytest tests/`; `promote.sh` is the ONLY thing that
+installs units. The suite could not go green until the units were
+installed and the units could not be installed until the suite went
+green. The repo's stop hook reads the same suite, so the block landed on
+the EDIT, not on the ship.
+**(2) ONE VERDICT WAS COVERING TWO OPPOSITE FACTS.** DRIFT meant both
+"something outside this repo wrote to the installed file" (a fault) and
+"this checkout is ahead of what was promoted" (a normal Tuesday). Its own
+detail string said so: `(unpromoted, or hand-edited)`.
+**(3) THE BASELINE WAS WRONG, NOT THE GATE.** `promote.sh` installs from
+the dev tree only AFTER fast-forwarding `stable`, so what the install
+directory is SUPPOSED to hold between two promotes is `stable`'s copy.
+health now reads it -- `git show stable:scripts/systemd/<unit>`, a REF and
+not a second hardcoded path -- and splits the verdict: matching it is
+**PENDING-PROMOTE**, matching NEITHER is DRIFT.
+**(4) NOT BOUGHT WITH A FALSE COUNT.** PENDING-PROMOTE is printed by both
+readers, and is NOT counted as agreement -- the digest still says
+`20/21 loaded unit files match the repo`, because the box does not match
+this checkout; it matches what was shipped. `ok` (does the box match this
+tree) and `fault` (did something outside this repo write to it) are now
+two properties, and the gate reads the second.
+**(5) THE LENIENCY EXISTS ONLY WHERE IT IS EARNED.** From the STABLE
+worktree -- where the timers run the digest -- the ref resolves to that
+tree's own HEAD, so vendored == deployed and PENDING-PROMOTE cannot fire
+at all: any difference there is a fault again. With no `stable` ref (a
+fresh clone) the judge falls back to the stricter 09-06 answer. Both are
+tests, as is the discrimination control: text matching neither the tree
+nor the deployment is still DRIFT.
+**(6) AND THE FULL PROMOTE NOW VERIFIES ITS OWN INSTALL.**
+`--units-only` has re-asked the judge after its `cp` since 09-07; the one
+mode that moves unit files as a SIDE EFFECT of moving code did not. It
+does now, BEFORE the restarts -- a daemon restarted onto new code under
+units that did not take is the expensive way to find out (EXP-961).
+**Suite 1187 -> 1195.** COMMITTED, PROMOTED, PUSHED. The promote ran its
+own new verify (`21/21, exit 0`) and restarted NOTHING -- no daemon's code
+moved -- so `hyxlab-stream`/`hyxlab-shadow` keep their ~19h clocks.
+NEXT PASS: (1) **the 09-08 10:00Z QA run** -- if `breadth continuous over
+last 24h` has not gone green by the 09-09 run, the breadth floor is not
+doing what 09-08 measured. (2) The 10th panel day, ~09-17. (3) Oldest
+item, carried NINE passes: the digest has no ALARM, only a reader every
+six hours -- the 09-07 oom-kill sat unread 7.5h, the breadth fault 27h.
+This is now the top unclaimed item. (4) SHADOWED and DROP-IN drift still
+have no written operator procedure. (5) The width-24 econ maker bracket
+needs 2026-09-12; the atlas quoted tier wants ~2.1M settled markets. Both
+data-gated. NOTHING IS USER-GATED THIS PASS.**
+
+---
 Updated: **2026-09-08 (BREADTH-FLOOR PASS -- ALL THREE OPTIONS THE LAST
 PASS WROTE DOWN WERE DEAD, AND THE REAL FIX COST NOTHING.**
 Cold start per instructions. The digest flagged `hyxlab-qa FAILED` on
