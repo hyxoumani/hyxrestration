@@ -276,9 +276,15 @@ def collect_breadth_once(
 ) -> dict:
     """One cycle: enumerate (no lock held), then write in one burst."""
     t0 = time.monotonic()
+    # Zeroed here and read below so `http_retries` describes THIS cycle. A
+    # retried timeout is invisible everywhere else: it no longer fails the
+    # unit, so the health digest's failure history cannot see it, and a
+    # silently-degrading network would look exactly like a healthy one.
+    kalshi.reset_transport_retries()
     markets, truncated = fetch_universe(
         session=session, pause_s=pause_s, close_window_h=close_window_h
     )
+    http_retries = kalshi.transport_retries()
     fetch_s = time.monotonic() - t0
 
     ts = datetime.now(UTC)
@@ -306,6 +312,7 @@ def collect_breadth_once(
         "inserted": inserted,
         "truncated": truncated,
         "cutoff_volume_24h": cutoff,
+        "http_retries": http_retries,
         "fetch_s": round(fetch_s, 1),
         "total_s": round(time.monotonic() - t0, 1),
     }

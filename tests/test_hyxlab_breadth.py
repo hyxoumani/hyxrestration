@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import requests
 
 import collector.breadth as breadth
 import collector.sweep as sweep
@@ -683,3 +684,202 @@ def test_the_cycle_record_is_written_inside_the_same_burst(tmp_path):
             db, n=1, session=sess, lock_file=str(tmp_path / "w.lock"), pause_s=0.0
         )
     assert bursts == [1]
+
+
+# ---------------------------------------------------------------------------
+# 8. transport-error retry (2026-09-08: two ReadTimeouts, two lost cycles)
+# ---------------------------------------------------------------------------
+
+
+class _FlakySession:
+    """Raises the queued exceptions, then serves the queued pages."""
+
+    def __init__(self, errors, pages):
+        self.errors = list(errors)
+        self.pages = list(pages)
+        self.calls = 0
+
+    def get(self, url, params=None, timeout=None):
+        self.calls += 1
+        if self.errors:
+            raise self.errors.pop(0)
+        return _FakeResp(self.pages.pop(0))
+
+
+@pytest.fixture(autouse=True)
+def _zero_transport_retries():
+    kalshi.reset_transport_retries()
+    yield
+    kalshi.reset_transport_retries()
+
+
+def test_a_read_timeout_does_not_throw_away_the_pages_that_succeeded(monkeypatch):
+    """THE 2026-09-08 defect. `_get_with_429_retry` branches on a status
+    CODE; a ReadTimeout raises before any response exists, so that branch is
+    structurally incapable of seeing it and the exception escaped to main().
+    Measured twice (12:47Z, 18:47Z): one blip discarded a whole cycle whose
+    other 8 pages had already been fetched, and the very next firing 5
+    minutes later succeeded unaided."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    sess = _FlakySession(
+        [requests.exceptions.ReadTimeout("read timed out")],
+        [{"markets": [_mkt("A", 1)], "cursor": ""}],
+    )
+
+    out = kalshi.get_markets(status="open", session=sess, pause_s=0.0)
+
+    assert [m["ticker"] for m in out] == ["A"]
+    assert sess.calls == 2, "the timed-out page was not re-issued"
+
+
+def test_a_connection_error_is_retried_too(monkeypatch):
+    """The class is 'the packets were lost', not 'ReadTimeout'. DNS and
+    refused sockets are the same recovery, and pinning the fix to the one
+    exception that happened to be observed is how the next variant gets a
+    second incident."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    sess = _FlakySession(
+        [requests.exceptions.ConnectionError("dns")],
+        [{"markets": [_mkt("A", 1)], "cursor": ""}],
+    )
+
+    assert len(kalshi.get_markets(status="open", session=sess, pause_s=0.0)) == 1
+
+
+def test_an_http_error_is_not_retried_as_if_it_were_a_lost_packet():
+    """DISCRIMINATION. An HTTPError is an ANSWER — retrying it burns the
+    budget on a request that will never succeed and hides the real status
+    behind a timeout-shaped delay. Only transport errors are retryable."""
+    sess = _FlakySession([requests.exceptions.HTTPError("400")], [])
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        kalshi.get_markets(status="open", session=sess, pause_s=0.0)
+    assert sess.calls == 1, "an HTTP answer was retried"
+
+
+def test_a_persistent_outage_still_fails_the_unit(monkeypatch):
+    """Bounded, then re-raised. A retry that eventually gives up quietly
+    would convert a dead network into a silently empty tape, which is
+    strictly worse than the lost cycle this replaces."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    sess = _FlakySession([requests.exceptions.ReadTimeout("t")] * 10, [])
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        kalshi.get_markets(status="open", session=sess, pause_s=0.0)
+    assert sess.calls == kalshi.TRANSPORT_TRIES + 1
+
+
+def test_the_retry_budget_is_per_walk_not_per_page(monkeypatch):
+    """THE COST GUARD, and the reason this is not a per-request `tries=`.
+    breadth walks ~9 pages on a 5-minute oneshot; a per-page budget makes
+    the worst case 9x and pushes a bad cycle past the next firing, and
+    systemd will not run two copies of a oneshot at once, so the next cycle
+    is DELAYED — stamping a late quote, the one thing this tape must not
+    do. One budget covers the whole enumeration."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    # page 1 ok, page 2 burns both retries, page 3 has none left.
+    calls = {"n": 0}
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            calls["n"] += 1
+            if calls["n"] in (2, 3, 5):
+                raise requests.exceptions.ReadTimeout("t")
+            if calls["n"] == 1:
+                return _FakeResp({"markets": [_mkt("A", 1)], "cursor": "c1"})
+            return _FakeResp({"markets": [_mkt("B", 1)], "cursor": "c2"})
+
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        kalshi.get_markets(status="open", session=S(), max_pages=5, pause_s=0.0)
+    assert calls["n"] == 5, "the budget refilled per page instead of per walk"
+
+
+def test_the_marginal_worst_case_fits_inside_the_breadth_timer_period(monkeypatch):
+    """ARITHMETIC, asserted against the unit files rather than a constant:
+    the retries this adds must not, on their own, push a cycle past the
+    next firing of hyxlab-breadth.timer."""
+    period_s = 5 * 60  # OnCalendar=*:2/5
+    assert "OnCalendar=*:2/5" in (UNIT_DIR / "hyxlab-breadth.timer").read_text()
+
+    backoff = kalshi._TransportBudget()
+    waits = []
+    while (w := backoff.take()) is not None:
+        waits.append(w)
+    marginal = kalshi.TRANSPORT_TRIES * 30 + sum(waits)  # 30s read timeout each
+
+    assert marginal < period_s / 2, f"retries add {marginal}s to a {period_s}s period"
+
+
+def test_the_retry_is_counted_so_a_rising_rate_is_not_invisible(monkeypatch):
+    """A retried timeout no longer fails the unit, so the health digest's
+    failure history — the 2026-09-08 reader built for exactly this class of
+    fault — can no longer see it. Buying the cycle back by making the
+    network fault invisible is the truncation mistake again (a print that
+    nothing consumed, 15h of 97% data loss reported as success), so the
+    count rides on the cycle summary the operator already reads."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    sess = _FlakySession(
+        [requests.exceptions.ReadTimeout("t")],
+        [{"markets": [_mkt("A", 1)], "cursor": ""}],
+    )
+
+    kalshi.get_markets(status="open", session=sess, pause_s=0.0)
+    assert kalshi.transport_retries() == 1
+
+    kalshi.reset_transport_retries()
+    assert kalshi.transport_retries() == 0
+
+
+def test_the_cycle_summary_reports_this_cycles_retries_only(tmp_path, monkeypatch):
+    """Per-CYCLE, not cumulative: breadth's loop mode reuses the process, so
+    a counter that only ever grows would report the first bad hour forever
+    and make every later cycle look equally sick."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    db = str(tmp_path / "b.duckdb")
+
+    flaky = _FlakySession(
+        [requests.exceptions.ReadTimeout("t")],
+        [{"markets": [_mkt("A", 5)], "cursor": ""}],
+    )
+    first = breadth.collect_breadth_once(db, n=10, session=flaky, lock_file=str(tmp_path / "l"))
+    assert first["http_retries"] == 1
+
+    clean = _PagedSession([{"markets": [_mkt("A", 5)], "cursor": ""}])
+    second = breadth.collect_breadth_once(db, n=10, session=clean, lock_file=str(tmp_path / "l"))
+    assert second["http_retries"] == 0, "the count carried over from the previous cycle"
+
+
+def test_the_429_budget_and_the_transport_budget_are_separate(monkeypatch):
+    """Sharing one counter would let 429s — the case already handled
+    correctly since 08-02 — leave a subsequent timeout with no retry."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    seq = [
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        requests.exceptions.ReadTimeout("t"),
+        _FakeResp({"markets": [_mkt("A", 1)], "cursor": ""}),
+    ]
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            item = seq.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    out = kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+    assert [m["ticker"] for m in out] == ["A"]

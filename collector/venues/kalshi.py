@@ -72,14 +72,110 @@ def _log_429_headers(resp: Any, url: str) -> None:
         print(f"[kalshi] WARNING: failed to log 429 headers for {url}: {e}", flush=True)
 
 
+# A transport error is not a 429. `requests` raises these BEFORE any response
+# object exists, so the status-code branch in _get_with_429_retry — which can
+# only run once a response has come back — is structurally incapable of seeing
+# them. Measured 2026-09-08: two `ReadTimeout`s (12:47Z, 18:47Z) each killed a
+# whole `collector.breadth` cycle, discarding the 8 pages that had already
+# succeeded, and each recovered unaided on the next 5-minute firing. Retrying
+# is safe because every request here is a GET with an explicit cursor: re-
+# issuing the same page returns the same page.
+#
+# Timeout covers ReadTimeout/ConnectTimeout; ConnectionError covers DNS and
+# refused/reset sockets. Deliberately NOT RequestException — that would also
+# swallow HTTPError and TooManyRedirects, which are answers, not lost packets.
+_TRANSPORT_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+
+# Retries are budgeted per WALK, not per request, and this is why: breadth is a
+# oneshot on a 5-minute timer walking ~9 pages, so a per-request budget makes
+# the worst case 9x the retry cost and a network-wide outage would push a cycle
+# past the next firing. Two retries per walk bounds the MARGINAL cost at
+# 2x30s reads + 2s + 4s backoff = 66s over what the same walk costs today.
+# systemd will not run two copies of a oneshot concurrently, so overrunning
+# delays the next cycle rather than duplicating it — but a delayed cycle stamps
+# a late quote, which is the thing this collector exists not to do.
+TRANSPORT_TRIES = 2
+_TRANSPORT_BACKOFF_S = 2.0
+
+# Count of transport retries actually spent. A retried timeout no longer fails
+# the unit, so it vanishes from the health digest's failure history — the rate
+# has to surface SOMEWHERE or this fix buys the lost cycle back by making the
+# underlying network fault invisible, which is the 2026-09-06 truncation
+# mistake wearing new clothes. Callers reset it and report it per cycle. Safe
+# as module state only because every reader here is a single-threaded oneshot.
+_TRANSPORT_RETRIES = 0
+
+
+def transport_retries() -> int:
+    """Transport retries spent since the last `reset_transport_retries()`."""
+    return _TRANSPORT_RETRIES
+
+
+def reset_transport_retries() -> None:
+    global _TRANSPORT_RETRIES
+    _TRANSPORT_RETRIES = 0
+
+
+class _TransportBudget:
+    """A retry allowance shared by every request in one walk."""
+
+    def __init__(self, tries: int = TRANSPORT_TRIES) -> None:
+        self.remaining = tries
+        self.delay = _TRANSPORT_BACKOFF_S
+
+    def take(self) -> float | None:
+        """Consume one retry, returning how long to wait; None when spent."""
+        if self.remaining <= 0:
+            return None
+        self.remaining -= 1
+        wait = self.delay
+        self.delay *= 2
+        return wait
+
+
+def _get_transport_retrying(
+    sess: requests.Session,
+    url: str,
+    params: dict[str, Any],
+    timeout: int,
+    budget: _TransportBudget,
+) -> requests.Response:
+    """One GET, retrying lost packets until `budget` is spent, then raising.
+
+    Bounded and then re-raised, never swallowed: a persistent outage must
+    still fail the unit. What this removes is the case where one blip in a
+    multi-page walk throws away every page that already succeeded.
+    """
+    import time as _time
+
+    global _TRANSPORT_RETRIES
+    while True:
+        try:
+            return sess.get(url, params=params, timeout=timeout)
+        except _TRANSPORT_ERRORS as e:
+            wait = budget.take()
+            if wait is None:
+                raise
+            _TRANSPORT_RETRIES += 1
+            print(
+                f"[kalshi] WARNING: transport retry in {wait:.0f}s"
+                f" ({budget.remaining} left this walk) for {url}:"
+                f" {type(e).__name__}: {e}",
+                flush=True,
+            )
+            _time.sleep(wait)
+
+
 def _get_with_429_retry(
     sess: requests.Session,
     url: str,
     params: dict[str, Any],
     timeout: int = 30,
     tries: int = 4,
+    transport_budget: _TransportBudget | None = None,
 ) -> requests.Response:
-    """GET honoring 429 Retry-After with capped exponential fallback.
+    """GET honoring 429 Retry-After with capped exponential fallback, and
+    retrying transport errors against a separate, per-walk budget.
 
     Measured live defect (sweep audit 2026-08-02): a 429 inside the
     get_markets page loop escaped to run_sweep's except, so the sweep of
@@ -87,12 +183,17 @@ def _get_with_429_retry(
     4,947 closed markets unarchived while inside Kalshi's ~60-90d purge
     window. The candles path had per-request 429 handling; the markets page
     loop did not.
+
+    The two budgets are separate on purpose: sharing one counter would let
+    three 429s — the case it was already handling correctly — leave a
+    subsequent timeout with no retry at all.
     """
     import time as _time
 
+    budget = transport_budget if transport_budget is not None else _TransportBudget()
     delay = 5.0
     for attempt in range(tries):
-        resp = sess.get(url, params=params, timeout=timeout)
+        resp = _get_transport_retrying(sess, url, params, timeout, budget)
         if resp.status_code == 429:
             _log_429_headers(resp, url)  # EXP-1333: capture only, no behavior change
         if resp.status_code != 429 or attempt == tries - 1:
@@ -144,6 +245,7 @@ def get_markets(
     sess = session or requests.Session()
     out: list[dict[str, Any]] = []
     cursor = ""
+    budget = _TransportBudget()  # shared by every page: the WALK is the unit
     for page in range(max_pages):
         if page and pause_s:
             _time.sleep(pause_s)
@@ -152,7 +254,7 @@ def get_markets(
             params["series_ticker"] = series_ticker
         if cursor:
             params["cursor"] = cursor
-        resp = _get_with_429_retry(sess, f"{BASE}/markets", params)
+        resp = _get_with_429_retry(sess, f"{BASE}/markets", params, transport_budget=budget)
         body = resp.json()
         out.extend(body.get("markets", []))
         cursor = body.get("cursor") or ""
