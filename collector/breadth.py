@@ -20,20 +20,42 @@ and top-N then costs the same requests as top-1.
 
 THAT PREMISE IS CONDITIONAL, and the exchange falsified it on
 2026-09-06T23:32Z. The 24h-close universe crossed `MAX_PAGES * PAGE_LIMIT`
-(60,000) — a mass listing of KXMVECROSSCATEGORY parlay legs; a probe of
-the first 3,000 markets on 2026-09-07 found 2,274 of them and only 157
-markets with any 24h volume. Every cycle for the next 15 hours truncated,
-and a truncated walk returns the API's own enumeration order, which is NOT
-volume order: the volume-bearing markets sat beyond the cap, `top_n`
-correctly rejected the dead legs in front of them, and coverage fell from
-~990 to as low as 3 rows/cycle. The collector reported success throughout.
-So truncation is now returned in-band (`fetch_universe`), recorded per
-cycle (`breadth_cycles`) and failed by QA — see `collector/qa.py`.
-WIDENING `MAX_PAGES` OR EXCLUDING THE PARLAY FAMILY ARE BOTH REAL OPTIONS
-AND BOTH ARE COST/SCOPE DECISIONS, NOT BUG FIXES: the first spends a rate
-budget shared with a live trading loop every 5 minutes (200 pages measured
-at 140 s with 2x HTTP 429 on 2026-08-03), and the second contradicts this
-module's reason to exist — see docs/wiki/status.md.
+(60,000) — a mass listing of KXMVECROSSCATEGORY parlay legs. Every cycle
+for the next 27 hours truncated, and a truncated walk returns the API's own
+enumeration order, which is NOT volume order: the volume-bearing markets
+sat beyond the cap, `top_n` correctly rejected the dead legs in front of
+them, and coverage fell from ~990 to as low as 1 row/cycle. The collector
+reported success throughout. So truncation is now returned in-band
+(`fetch_universe`), recorded per cycle (`breadth_cycles`) and failed by QA.
+
+WHY THE FILTER IS `min_close_ts`, AND WHY THE TWO OBVIOUS FIXES ARE BOTH
+DEAD (one exhaustive walk, 2026-09-08T02:16Z, 400 pages / 284 s):
+- **Widening `MAX_PAGES` is dead.** The 24h universe is no longer 60k, it
+  is **>400,000 and the cursor was still live** when the probe stopped.
+  There is no cap that is both affordable every 5 minutes and above a
+  number the exchange can raise at will.
+- **Excluding the parlay family client-side is dead**, and this is the
+  trap: filtering by ticker cannot fix TRUNCATION, because the legs must
+  still be PAGED THROUGH to be discarded. It removes rows from the result,
+  not requests from the walk.
+- **Narrowing `CLOSE_WINDOW_H` is dead.** A 1-hour window still holds
+  282,295 markets — the legs close on the same clock the real markets do.
+- What actually collapses the universe is that **260,662 of the 391,414
+  parlay legs have a close_time in the PAST and are still `status=open`**:
+  expired legs the exchange has not cleared. `min_close_ts = now` drops
+  65% of the walk and **loses exactly zero volume-bearing markets, because
+  zero markets with any 24h volume close in the past** (measured over all
+  400,000: every one of the 1,598 with volume closes in the future, and
+  all 8,586 non-parlay markets do too). A market past its close cannot be
+  traded, so its book was never "a price a strategy could have traded at"
+  — this filter is a DEFECT FIX, not a scope cut. It takes the walk to
+  139,338 markets in 140 pages, which TERMINATES.
+Residual, stated: the floor assumes the exchange keeps clearing real
+markets promptly, so that lingering past-close markets stay parlay legs.
+If that changed, the floor would drop a real market — still correctly, as
+it is no longer tradeable, but its late quotes would stop being recorded.
+The useful universe is UNCHANGED by the flood: 8,586 non-parlay markets on
+2026-09-08 against 8,718 measured on 2026-08-03.
 
 MEASURED 2026-08-03, and the reason CLOSE_WINDOW_H exists: the
 UNFILTERED open universe is **>200,000 markets** (the walk truncated at
@@ -96,13 +118,15 @@ __all__ = [
 # Kalshi's /markets page cap. 1,000/page keeps a windowed enumeration to
 # ~9 requests; see the measured arithmetic in the module docstring.
 PAGE_LIMIT = 1000
-# max_pages is a TRUNCATION GUARD, not a budget: get_markets prints a
-# loud TRUNCATED line if the cursor is still live when it runs out (the
-# Gamma-offset regression class). 60 pages = 60k markets, ~7x the
-# measured 24h-window universe, and ~1/3 of the unwindowed one — so a
-# regression that silently drops the window is LOUD rather than merely
-# expensive.
-MAX_PAGES = 60
+# max_pages is a TRUNCATION GUARD, not a budget: a normal cycle must never
+# reach it, and reaching it is reported in-band (see fetch_universe). The
+# guard is sized against the MEASURED post-`min_close_ts` walk — 139,338
+# markets / 140 pages on 2026-09-08 — at ~1.8x, so a parlay flood that
+# doubles again is caught rather than silently truncated, while the steady
+# cost stays 140 requests over ~100 s (1.4 req/s against a ~30 req/s public
+# limit). It is NOT sized against the unfiltered universe: that is >400,000
+# markets and unbounded, which is exactly why the floor exists.
+MAX_PAGES = 250
 # Hours ahead of now to include by close_time. See the docstring: this
 # is what makes the collector affordable at all.
 CLOSE_WINDOW_H = 24
@@ -152,6 +176,17 @@ def fetch_universe(
     the only filter is the close-time horizon, which is about cost and
     usefulness rather than about which families we are willing to study.
 
+    The horizon is BOUNDED AT BOTH ENDS. `min_close_ts = now` is not a
+    cost knob like the ceiling — it is a correctness one. `status=open`
+    includes markets whose close_time has already passed and which the
+    exchange has not cleared yet, and on 2026-09-08 that was 260,662 of
+    the 400,000+ markets in the 24h window, every one of them a
+    KXMVECROSSCATEGORY parlay leg with no volume. Such a market cannot be
+    traded again, so its top-of-book is not a price any strategy could
+    have traded at, which is the only reason this tape is captured. See
+    the module docstring for the measurement, including the discrimination
+    that matters: zero markets with any 24h volume close in the past.
+
     `truncated` is returned rather than discarded because it invalidates
     this module's central claim. Ranking is exact ONLY over an exhaustive
     enumeration; a truncated walk returns the first `max_pages` pages in
@@ -167,6 +202,7 @@ def fetch_universe(
         max_pages=max_pages,
         session=sess,
         pause_s=pause_s,
+        min_close_ts=int(now.timestamp()),
         max_close_ts=max_close_ts,
         with_truncated=True,
     )

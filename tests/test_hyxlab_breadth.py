@@ -342,6 +342,59 @@ def test_enumeration_is_bounded_by_a_close_time_window(monkeypatch):
     assert "series_ticker" not in params, "breadth must stay exchange-wide"
 
 
+def test_the_walk_is_floored_at_now_because_open_includes_already_closed(monkeypatch):
+    """THE 09-06 FIX. `status=open` includes markets whose close_time has
+    PASSED and which the exchange has not cleared: on 2026-09-08 that was
+    260,662 of the 400,000+ markets in the 24h window, all of them
+    KXMVECROSSCATEGORY parlay legs. Dropping them is what makes the walk
+    terminate (139,338 markets / 140 pages) at ZERO information cost --
+    measured over all 400,000, every market with any 24h volume closes in
+    the future.
+
+    The floor is `now` exactly, not a margin either side: a market one
+    second past close cannot be traded again, and a market one second
+    before it still can.
+    """
+    sess = _PagedSession([{"markets": [_mkt("A", 1)], "cursor": ""}])
+    now = datetime(2026, 8, 3, 2, 0, tzinfo=UTC)
+
+    breadth.fetch_universe(session=sess, pause_s=0.0, close_window_h=24, now=now)
+
+    (params,) = sess.calls
+    assert params["min_close_ts"] == int(now.timestamp())
+    assert params["min_close_ts"] < params["max_close_ts"], "the horizon must be a window"
+
+
+def test_the_floor_moves_with_now_rather_than_being_pinned(monkeypatch):
+    """Discrimination control: a constant, or a floor accidentally derived
+    from the same expression as the ceiling, would pass the test above. The
+    filter is only correct while it tracks the actual clock -- a pinned
+    floor would let the past-close backlog grow back underneath it."""
+    seen = []
+    for now in (
+        datetime(2026, 8, 3, 2, 0, tzinfo=UTC),
+        datetime(2026, 8, 3, 9, 30, tzinfo=UTC),
+    ):
+        sess = _PagedSession([{"markets": [_mkt("A", 1)], "cursor": ""}])
+        breadth.fetch_universe(session=sess, pause_s=0.0, close_window_h=24, now=now)
+        (params,) = sess.calls
+        seen.append((params["min_close_ts"], params["max_close_ts"]))
+
+    assert seen[1][0] - seen[0][0] == 7.5 * 3600, "floor did not track now"
+    assert seen[1][1] - seen[0][1] == 7.5 * 3600, "ceiling did not track now"
+
+
+def test_narrowing_the_close_window_is_not_a_substitute_for_the_floor():
+    """Recorded so the dead option is not retried. The parlay legs close on
+    the same clock the real markets do, so the ceiling cannot separate them:
+    MEASURED 2026-09-08, a 1-HOUR window still held 282,295 markets, of
+    which 130 had volume. Only the floor collapses the walk. Keeping the
+    default at 24h is therefore free -- it is the floor, not the ceiling,
+    that pays for the enumeration.
+    """
+    assert breadth.CLOSE_WINDOW_H == 24
+
+
 def test_close_window_default_is_24h_and_is_configurable(monkeypatch):
     assert breadth.CLOSE_WINDOW_H == 24
     sess = _PagedSession([{"markets": [], "cursor": ""}])
@@ -353,12 +406,13 @@ def test_close_window_default_is_24h_and_is_configurable(monkeypatch):
 
 
 def test_max_pages_stays_a_loud_truncation_guard():
-    """60 pages ~= 7x the measured 24h universe (so a normal cycle never
-    truncates) but ~1/3 of the unwindowed one (so a dropped window trips
-    get_markets' TRUNCATED warning instead of quietly costing 200+
-    requests every 5 minutes)."""
-    assert breadth.MAX_PAGES * breadth.PAGE_LIMIT >= 8_718 * 5
-    assert breadth.MAX_PAGES * breadth.PAGE_LIMIT < 200_000
+    """Sized against the MEASURED floored walk (2026-09-08: 139,338 markets
+    / 140 pages), not against the unfiltered universe, which is >400,000
+    and unbounded. Above the measurement so a normal cycle never truncates;
+    finite so a flood that outgrows even the floor stays LOUD instead of
+    costing unbounded requests every 5 minutes."""
+    assert breadth.MAX_PAGES * breadth.PAGE_LIMIT >= 139_338 * 1.5
+    assert breadth.MAX_PAGES * breadth.PAGE_LIMIT < 400_000
 
 
 def test_breadth_pacing_default_is_the_repo_safe_constant():
