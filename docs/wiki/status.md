@@ -1,5 +1,69 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-09 (DRIFT-RUNBOOK PASS -- THE OLDEST UNCLAIMED ITEM
+COULD NOT BE WRITTEN BECAUSE THE CHECKER HAD DECLINED TO DO ITS HALF.**
+Cold start per instructions. The digest is quiet in the way that matters:
+`hyxlab-qa FAILED` is still the KNOWN trailing-24h breadth window aging
+out at the 09-09 10:00Z run, and both `RECENT hyxlab-breadth` failures
+(12:47Z, 18:47Z) PRE-DATE yesterday's transport-retry promote (20:21Z) --
+every cycle since reports `http_retries: 0`, so residual (2) stays a
+residual. Queue data-gated, so: ladder item 4, the top unclaimed item for
+NINE passes -- *SHADOWED and DROP-IN drift have no written operator
+procedure.*
+**(1) THE ITEM WAS UNWRITEABLE AS STATED, AND THAT WAS THE FINDING.**
+Both states are handed to a human by construction (a re-install cannot
+clear either), and what they handed over was a PATH: "manager loaded
+/etc/systemd/user/x" and "1 override: o.conf". So step one of any
+procedure written for them is *open the file and work out whether it
+matters* -- the investigation the checker had just declined to do, moved
+into prose. A runbook that is the checker's missing half is not a
+procedure.
+**(2) SHADOWED IS ONE WORD FOR TWO OPPOSITE NIGHTS.** A stale duplicate
+in a higher-priority directory that is BYTE-IDENTICAL to ours: behaviour
+correct today, and the box will silently ignore every future promotion.
+One whose text DIFFERS: systemd is executing a unit this repo does not
+contain, right now. The verdict now says which. Both files were already
+read for the DRIFT arm, so the comparison costs no I/O -- it was simply
+never said. An unreadable winning fragment says so rather than rendering
+as agreement, which would answer the urgency question with a guess in the
+reassuring direction.
+**(3) DROP-IN NOW NAMES THE DIRECTIVES, AND THE RESET.** `Key=` with an
+empty value is systemd's reset; on a list-valued directive like ExecStart
+that is the difference between ADDING a command and REPLACING the unit's
+command -- the measured hijack. A conf that sets `MemoryMax=2G` and one
+that resets `ExecStart=` were the same word. Live probe on a throwaway
+`hyxprobe-drift.service` (never a hyxlab unit, removed after):
+`o.conf sets ExecStart(reset), ExecStart, MemoryMax [RESET of the unit's
+command]`. An UNREADABLE conf never renders as "sets no directive" -- the
+09-06 truncation and 09-08 failure-history lie, one layer down.
+**(4) THE REMEDY POINTED AT SOURCE.** `drift_main` printed
+`OPERATOR -- see health.py`: derive the steps from the code that just
+declined to take them. It now names `docs/wiki/unit-drift-runbook.md`,
+which preserves the intruder instead of `rm`-ing the only evidence of what
+someone was trying to do, checks `pacman -Qo` before deleting a file a
+package will reinstall, refuses the in-place hand-fix the next promote
+reverts, ends by re-asking the judge, and restarts no daemon reflexively
+(stream/shadow hold multi-day spans). A test asserts the page exists and
+names both states and both escapes: a pointer to a missing procedure is
+worse than none.
+**Suite 1217 -> 1223.** COMMITTED, PROMOTED, PUSHED. No daemon's import
+closure moved, so nothing restarted -- shadow keeps its 1d20h, stream its
+5.9h.
+**HONEST LIMIT:** neither state has ever fired in production (21/21 clean
+since 09-06). Detection was built from a throwaway probe and so was this;
+its value is prospective, and the runbook says so on its own last line.
+NEXT PASS: (1) **the 09-09 10:00Z QA run** -- if `breadth universe
+enumerated exhaustively over last 24h` has not gone green, the 09-08
+breadth floor is not doing what it measured. (2) `http_retries` in the
+breadth journal: a sustained nonzero rate promotes the print to a
+`breadth_cycles` column. (3) The 10th panel day, ~09-17. (4) The
+width-24 econ maker bracket needs 2026-09-12; the atlas quoted tier wants
+~2.1M settled markets. Both data-gated. **USER-GATED: a notify channel
+(smtp creds or a webhook URL) is still the ONLY thing between this digest
+and an operator who does not have to be reading.**
+
+---
+
 Updated: **2026-09-08 (TRANSPORT-RETRY PASS -- THE NEW FAILURE READER
 EARNED ITSELF IN UNDER SIX HOURS.**
 Cold start per instructions. The digest still flags `hyxlab-qa FAILED` on
