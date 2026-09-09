@@ -1,5 +1,91 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-09 (DIVERGENCE-DEFAULT PASS -- THE STANDING REPORT
+COULD NOT SEE NEW EVIDENCE, BECAUSE ITS DEFAULT RANKED INSTEAD OF DATED.**
+Cold start per instructions. The digest's one failure resolves to NO
+ACTION and was checked, not assumed: `hyxlab-qa FAILED` is the 09-09
+10:00Z run, whose failure list was exactly `['stream disk under 20 GB']`
+-- the check retired by the previous pass. The fix landed AFTER that run,
+so the next scheduled run (09-10 10:00Z) is the first one that can show
+it. Ladder item 1 then: re-run the standing reports. The first one ran,
+and reported on the wrong thing.
+**(1) `simulator.divergence` HAD BEEN ANSWERING A MONTH-OLD QUESTION.**
+It picked its subject with `ORDER BY count(*) DESC` -- the run with the
+MOST fills. An argmax over a record that only grows moves only when a
+BIGGER member appears, and bigger members get rarer as the record grows:
+the identical one-way construction as #45's level check on a monotone
+series, wearing a default's clothes instead of a threshold's. Measured:
+the default had pointed at `20260810T081931` (54,007 fills, ended 08-20,
+already reported 1.0/1.0 on 08-25) for THREE WEEKS while eight later
+runs went unmeasured -- among them `20260829T191841`, 38,143 fills over
+8.8 days, the second-largest run in the record and never reported.
+**(2) THE PREVIOUS PASS LAUNCHED THIS REPORT AND WATCHED IT PRINT THE
+WRONG RUN.** The queued item was "a background run with a real budget";
+the budget was the whole diagnosis, and the line
+`[divergence] run 20260810T081931` scrolled past unread. A report that
+names its subject on line one is not hiding anything -- it just has to
+be read against what the subject SHOULD have been.
+**(3) STALE WAS THE MILD FAILURE.** The live run is always
+`max(started_at)` (one daemon, one owner lock), so the first time a live
+run outgrew the record the argmax would have selected IT -- replaying a
+moving `end` against a stream archive being written at that same
+boundary. The default was stale until the day it became unsound.
+**(4) RECENCY, AND "FINISHED" READ OFF THE TABLE.**
+`latest_complete_run`: newest run that is finished and produced fills. A
+strictly later run existing PROVES the daemon restarted past this one --
+no heartbeat, no new column, and the live run excluded by construction.
+It conservatively skips the newest run when the daemon is stopped for
+good, and the asymmetry is deliberate: skipping a measurable run costs a
+`--run` flag, replaying a live one costs the measurement. Zero-fill runs
+are skipped -- a fill comparison over zero fills is not a zero
+divergence, it is no measurement (two such probe restarts sit in the
+live record at 08-26 08:24).
+**(5) SIBLINGS GREPPED, PER #45's OWN RULE -- AND THERE WERE NONE.**
+`prioritycheck` and `queuescore` both rank by `count(*) DESC` too, and
+both bound it with `recv_ts > since`. Rank inside a rolling window
+advances with the data; rank over an unwindowed history pins itself to
+the past. Neither needed changing, and that is a measurement, not an
+assumption.
+**(6) THE FIXTURE BUILDS THE SCHEMA FROM `ShadowLedger`,** not a
+hand-copied `CREATE TABLE` -- and that immediately caught a bug the
+hand-copy had hidden, because the real schema makes `run_id` a PRIMARY
+KEY and the hand-copy did not. It also cut the new tests from ~5 minutes
+to 0.84s (row-by-row inserts -> one `range()` insert).
+**Suite 1239 -> 1244. COMMITTED, PROMOTED, PUSHED.** Promote restarted
+NOTHING -- `divergence` is in no daemon's import closure (shadow.py does
+not import it; the dependency runs the other way) -- so `hyxlab-shadow`
+keeps its run, now ~54h of the 72h a scorable run needs. Mistake **#46**
+logged.
+**IN FLIGHT AS THIS WAS WRITTEN:** the report itself, on
+`20260829T191841` -- the run the fixed default now selects -- as the
+transient unit `hyxlab-divergence-adhoc` (systemd-run, per mistakes #19,
+so it outlives the session), `MemoryMax` raised 4G -> 8G mid-run when it
+passed 1.9G on a 60G box. Its result is the first divergence measurement
+on post-08-20 data and lands in `reports/shadow_divergence/`; write it
+into `simulation-honesty.md` next pass if it has not been written by
+then.
+NEXT PASS: (1) **read the in-flight report's numbers** and record them --
+this is the first calibration-haircut measurement in three weeks. (2)
+The 09-10 10:00Z QA run should be GREEN; the 09-09 list was one entry,
+now retired. Third consecutive pass predicting green -- the first was
+defeated by an unread check, the second by nothing (breadth did clear).
+(3) A NEW, SMALL, CONCRETE ITEM, found while waiting: a full suite run
+leaves `x.duckdb.tmp/` untracked in the REPO ROOT -- a real spill
+directory with an owner lock in it, from a test that passes a
+cwd-relative db name. It survives the run. `test_atlas_archive_attach`
+monkeypatches `duckdb.connect` so it is NOT the source; the source was
+not traced because tracing it means running pytest concurrently with the
+suite, and two processes in one spill directory is EXP-1373 exactly.
+Trace it with the suite stopped. (4) The 10th panel day, ~09-17. (5)
+Width-24 econ maker bracket needs 2026-09-12; atlas quoted tier wants
+~2.1M settled markets. Both data-gated. **USER-GATED (unchanged):**
+`HYXLAB_BACKUP_DIR` off-box is still the standing item and still the 8x
+burn cut (252 d -> ~2,000 d); a notify channel (smtp creds or a webhook
+URL) is still the only thing between this digest and an operator who
+does not have to be reading.
+
+---
+
 Updated: **2026-09-09 (DISK-HEADROOM PASS -- QA'S PREDICTED GREEN CAME
 TRUE AND THE RUN STILL FAILED, ON A CHECK THAT COULD NEVER GO GREEN.**
 Cold start per instructions. Last pass predicted the 09-09 10:00Z QA run
