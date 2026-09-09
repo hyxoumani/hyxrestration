@@ -1,5 +1,79 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-09 (ATLAS-ATTACH PASS -- THE ESCAPE HATCH BOUGHT BACK
+THE DEFAULT IT WAS EXCUSING.**
+Cold start per instructions. Both items this pass inherited RESOLVE TO NO
+ACTION, and both were checked rather than assumed: (1) `hyxlab-qa FAILED`
+is still the trailing-24h breadth window, and it will clear -- evaluated
+the check's own query on the live archive: **0 of 287 cycles truncated in
+24h**, the two truncated cycles are from 09-08 02:00Z and have aged out.
+(2) `http_retries` is 0 on every breadth cycle in 24h, so the residual (2)
+stays a residual and does NOT get promoted to a column. So: ladder item 1,
+re-run the standing reports -- and the first one refused to run.
+**(1) `simulator.atlas` DIED ON A TRACEBACK AFTER EXACTLY 30 SECONDS**
+while `hyxlab-poly-sweep` was 4h into a ~7h run. It hand-rolled a 15x2.0s
+flat wait loop, which is `connect_retry`'s DEFAULT budget copied by hand --
+the budget that helper's OWN DOCSTRING already calls inadequate against a
+long-lived writer.
+**(2) THE ALLOWLIST HAD RECORDED THIS VERBATIM AND NOBODY READ IT THAT
+WAY.** `test_connect_discipline.ALLOWED` admits a bare attach only for a
+budget or a diagnostic the helper cannot serve, and every other RETRY entry
+says which ("must not silently skip a database it was asked to back up",
+"a UI must fail fast, not hang for the helper's 30s"). Atlas's said
+`15x2s report attach` -- a DESCRIPTION of the numbers it was excusing. The
+one entry that did not answer the table's question was the one site with no
+answer. REMOVED, not reworded: it routes through the helper now and is
+invisible to the guard by construction, and set equality enforces that.
+**(3) 30s WAS NEVER A MARGIN, IT WAS THE TAIL -- MEASURED BOTH SIDES.**
+24 reader attaches sampled AFTER the sweep released: p50 0.0s, p90 7.6s,
+max 22.6s. A QUIET archive already spends three quarters of the old budget
+on its worst attach. And in the same hour the breadth collector -- a
+WRITER, so a stricter test -- waited 39s for the same file AND GOT IN. The
+archive is held in bursts longer than 30s, not continuously, so a longer
+budget wins where the old one could only lose. 20 x 1.0s x 1.3 capped at
+20s (~3.6 min), backoff because the docstring asks for it: a flat period
+can beat against a fixed flush period instead of sampling it. It costs
+nothing where the lock is free.
+**(4) BOUNDED ON PURPOSE, SO EXHAUSTION IS AN ANSWER.** Silently waiting
+out a 7h sweep inside a report reads as a hang. So the budget stays short
+and the EXIT carries the decision, discriminating two opposite facts that
+`duckdb.IOException` states with the same words: a live writer holds the
+file (routine -- come back later) versus NOTHING holds it (unreachable;
+waiting cannot help). A lock naming a PID that is GONE is the second case
+wearing the first one's message, so `lock_holder` checks `/proc` before
+believing it. `collector.qa` had both halves right and atlas had re-derived
+neither -- the discriminator now lives once, in `hyxlab.store`, and qa
+routes through it.
+**Suite 1223 -> 1230.** COMMITTED, PROMOTED, PUSHED. Atlas then RAN: report
+written, `tier_stability` flagged size 168 vs prior 146, churn 26 over 38
+priors. Promote restarted `hyxlab-stream` (store.py is in its closure,
+lost an 11.9h clock); `hyxlab-shadow` was DEFERRED by the young-run guard
+at 42h of the 72h a scorable run needs, and `hyxlab-simui` by its own
+notice -- both run old code until their next natural restart. **Record
+that.**
+**ALSO VERIFIED, NO CHANGE SHIPPED:** the `min_close_ts` floor's stated
+residual ("if the exchange stopped clearing real markets promptly the floor
+would drop one"). Live walk of the past-close open set: **96,318 markets,
+100% KXMVECROSSCATEGORY, ZERO with any 24h volume** -- the same answer as
+09-08's 260,662, now across a 2.7x smaller flood. The 7.5x universe
+collapse in the digest window (108,659 -> 14,034) is the parlay backlog
+CLEARING, not the floor biting: the tape's content is unchanged to richer
+across it (markets with volume>=100 per hour ~630-1,000 before and after
+the 09-08 promote). Probe-before-build says the residual is not binding and
+a daily mechanism for it would be speculative. Not built.
+NEXT PASS: (1) **the 09-09 10:00Z QA run** -- predicted GREEN above from
+its own query; if it is not, the prediction is wrong and that is the work.
+(2) `simulator.divergence` was NOT run this pass -- it exceeded a 5-min
+budget and was killed; its `STREAM_ATTACH` alone is ~10.5 min, so it needs
+a background run with a real budget. It is now the top unclaimed item.
+(3) The 10th panel day, ~09-17. (4) The width-24 econ maker bracket needs
+2026-09-12; the atlas quoted tier wants ~2.1M settled markets. Both
+data-gated. **USER-GATED: a notify channel (smtp creds or a webhook URL)
+is still the ONLY thing between this digest and an operator who does not
+have to be reading.**
+
+---
+
 Updated: **2026-09-09 (DRIFT-RUNBOOK PASS -- THE OLDEST UNCLAIMED ITEM
 COULD NOT BE WRITTEN BECAUSE THE CHECKER HAD DECLINED TO DO ITS HALF.**
 Cold start per instructions. The digest is quiet in the way that matters:
