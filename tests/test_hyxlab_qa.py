@@ -703,7 +703,7 @@ def test_completed_section_records_its_completion(tmp_path):
     assert "last_ok" in json.loads(qa.STATE.read_text())["archive"]
 
 
-def test_retry_budget_outlasts_the_collector_lock_cycle(monkeypatch):
+def test_retry_budget_outlasts_the_collector_lock_cycle(monkeypatch, tmp_path):
     """The race, in isolation. `hyxlab-collect` (*:0/5) and `hyxlab-qa`
     (07:00:00 UTC) start in the same second and the collector holds the write
     lock ~11s; the old 5-attempt x 2s budget gave up ~1s early. Simulate a
@@ -722,10 +722,15 @@ def test_retry_budget_outlasts_the_collector_lock_cycle(monkeypatch):
 
     monkeypatch.setattr(qa.time, "sleep", lambda s: None)
     monkeypatch.setattr(qa.duckdb, "connect", fake_connect)
-    assert qa._connect_ro("x.duckdb") is sentinel
+    # Absolute, though this test never opens a real database: `duck_connect`
+    # runs `private_spill` BEFORE the connection is used, so a relative name
+    # would create `x.duckdb.tmp/pid-<pid>` (+ owner lock) in the repo root
+    # even with `duckdb.connect` patched out. See the conftest guard.
+    db = str(tmp_path / "x.duckdb")
+    assert qa._connect_ro(db) is sentinel
     # and the old budget provably would NOT have gotten there
     calls["n"] = 0
-    assert qa._connect_ro("x.duckdb", wait_s=10.0) is None
+    assert qa._connect_ro(db, wait_s=10.0) is None
 
 
 def test_healthy_archive_passes_and_unswept_tape_trips(tmp_path):

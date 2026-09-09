@@ -52,7 +52,7 @@ def test_lock_holder_is_none_for_an_unrelated_error():
     assert lock_holder(duckdb.Error("Catalog Error: Table with name x does not exist")) is None
 
 
-def test_attach_budget_outlasts_a_burst_the_old_loop_lost(monkeypatch):
+def test_attach_budget_outlasts_a_burst_the_old_loop_lost(monkeypatch, tmp_path):
     """The regression, in isolation. Simulate a writer that releases after
     35 seconds of holding -- longer than the 30s the old loop allowed, and
     shorter than the 39s wait the breadth collector actually served. The
@@ -68,12 +68,16 @@ def test_attach_budget_outlasts_a_burst_the_old_loop_lost(monkeypatch):
     # `connect_retry` imports `time` inside its body, so this is its sleep.
     monkeypatch.setattr(time, "sleep", lambda s: slept.__setitem__("s", slept["s"] + s))
 
-    assert connect_retry("x.duckdb", read_only=True, **atlas.ARCHIVE_ATTACH) is not None
+    # Absolute even though `duckdb.connect` is faked: on SUCCESS
+    # `connect_retry` runs `private_spill`, which builds `<db>.tmp/pid-<pid>`
+    # next to the database. A relative name puts that in the repo root.
+    db = str(tmp_path / "x.duckdb")
+    assert connect_retry(db, read_only=True, **atlas.ARCHIVE_ATTACH) is not None
 
     # ...and the budget the site used to hand-roll: 15 attempts x 2.0s flat.
     slept["s"] = 0.0
     with pytest.raises(duckdb.Error):
-        connect_retry("x.duckdb", read_only=True, retries=15, delay=2.0, backoff=1.0)
+        connect_retry(db, read_only=True, retries=15, delay=2.0, backoff=1.0)
 
 
 def test_budget_backs_off_rather_than_beating_against_a_flush_period():

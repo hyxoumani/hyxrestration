@@ -69,14 +69,27 @@ this is the first calibration-haircut measurement in three weeks. (2)
 The 09-10 10:00Z QA run should be GREEN; the 09-09 list was one entry,
 now retired. Third consecutive pass predicting green -- the first was
 defeated by an unread check, the second by nothing (breadth did clear).
-(3) A NEW, SMALL, CONCRETE ITEM, found while waiting: a full suite run
-leaves `x.duckdb.tmp/` untracked in the REPO ROOT -- a real spill
-directory with an owner lock in it, from a test that passes a
-cwd-relative db name. It survives the run. `test_atlas_archive_attach`
-monkeypatches `duckdb.connect` so it is NOT the source; the source was
-not traced because tracing it means running pytest concurrently with the
-suite, and two processes in one spill directory is EXP-1373 exactly.
-Trace it with the suite stopped. (4) The 10th panel day, ~09-17. (5)
+(3) TRACED AND FIXED IN THIS SAME PASS, once the suite had stopped and
+the EXP-1373 objection to running pytest beside it was gone: a full
+suite run left `x.duckdb.tmp/` untracked in the REPO ROOT -- a real
+spill directory holding a LIVE OWNER LOCK. `store.private_spill` builds
+`<db>.tmp/pid-<pid>` via `scratch.duck_scratch_dir` BEFORE the
+connection is used and swallows everything downstream, so a RELATIVE db
+path puts it in the cwd -- and it appears even when `duckdb.connect` is
+monkeypatched away. Two sources, `test_hyxlab_qa` and
+`test_atlas_archive_attach`, both now passing `tmp_path`. My first read
+cleared the atlas test on the grounds that it patches `duckdb.connect`;
+that was wrong -- patching the connect does not stop `private_spill`
+from running on what the fake returns, and the guard below is what
+caught it. The `nope.duckdb` sites in `test_hyxlab_store` always RAISE,
+so `private_spill` never runs and they leak nothing. Guard: an autouse
+fixture in `tests/conftest.py` fails any test that leaves a new
+`*.duckdb.tmp` in the repo root -- per-test, so the failure NAMES the
+culprit instead of starting a bisect. It sits beside the 429-sink
+fixture because it is the same family the file already exists to
+police: cwd-rooted state written into the DEV tree. Verified by
+reproducing the old call in a throwaway test and watching the guard
+fail it. (4) The 10th panel day, ~09-17. (5)
 Width-24 econ maker bracket needs 2026-09-12; atlas quoted tier wants
 ~2.1M settled markets. Both data-gated. **USER-GATED (unchanged):**
 `HYXLAB_BACKUP_DIR` off-box is still the standing item and still the 8x
