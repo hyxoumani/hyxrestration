@@ -10,7 +10,7 @@ import duckdb
 from hyxlab.models import MarketInfo
 from hyxlab.store import Store
 from hyxlab.streamstore import StreamStore
-from simulator.divergence import compare, replay_run
+from simulator.divergence import compare, latest_complete_run, replay_run
 from simulator.shadow import ShadowLedger, ShadowRunner
 from simulator.sim import Simulator
 from strategies.probe import TightSpreadProbe
@@ -708,3 +708,95 @@ def test_a_window_with_no_events_loads_no_metadata(tmp_path, monkeypatch):
     )
     assert fills == []
     assert seen["markets"] == {}
+
+
+def _runs_db(tmp_path, runs):
+    """(run_id, started_at, n_fills) -> a shadow db with just those facts.
+
+    Schema comes from `ShadowLedger`, not a hand-copy: the selection is
+    read off real columns, so a schema change must reach these tests.
+    """
+    db = tmp_path / f"runs{len(list(tmp_path.iterdir()))}" / "runs.duckdb"
+    ShadowLedger(db)
+    with duckdb.connect(str(db)) as conn:
+        for run_id, started_at, n_fills in runs:
+            conn.execute(
+                "INSERT INTO shadow_runs VALUES (?,?,2.0,'probe',?)",
+                [run_id, started_at, started_at],
+            )
+            conn.execute(
+                "INSERT INTO shadow_fills SELECT ?,'probe','kalshi','M1','yes',1,0.5,0,false,"
+                " ? + to_seconds(CAST(i AS BIGINT)) FROM range(?) t(i)",
+                [run_id, started_at, n_fills],
+            )
+    return db
+
+
+def _pick(tmp_path, runs):
+    """A fresh db per call — the real schema makes run_id a primary key,
+    so two scenarios in one test must not share a file."""
+    db = _runs_db(tmp_path, runs)
+    with duckdb.connect(str(db), read_only=True) as conn:
+        return latest_complete_run(conn)
+
+
+def test_default_run_is_the_newest_finished_one_not_the_biggest(tmp_path):
+    # The 2026-09-09 shape: a huge old run that had held the default for
+    # three weeks, and a later, smaller, never-reported one.
+    assert (
+        _pick(
+            tmp_path,
+            [
+                ("big_old", datetime(2026, 8, 10), 54007),
+                ("newer_smaller", datetime(2026, 8, 29), 38143),
+                ("live", datetime(2026, 9, 7), 9882),
+            ],
+        )
+        == "newer_smaller"
+    )
+
+
+def test_the_live_run_is_never_the_default_even_when_it_is_the_biggest(tmp_path):
+    # A running daemon always owns max(started_at); replaying it would
+    # race a moving `end` against an archive being written at that bound.
+    assert (
+        _pick(
+            tmp_path,
+            [
+                ("finished", datetime(2026, 8, 29), 10),
+                ("live", datetime(2026, 9, 7), 999999),
+            ],
+        )
+        == "finished"
+    )
+
+
+def test_a_finished_run_with_no_fills_is_skipped_not_reported_as_zero(tmp_path):
+    # Two probe restarts that traded nothing sit between the real runs
+    # (20260826T0824xx in the live record). Zero fills is no measurement.
+    assert (
+        _pick(
+            tmp_path,
+            [
+                ("real", datetime(2026, 8, 23), 14121),
+                ("empty_a", datetime(2026, 8, 26, 8, 24, 31), 0),
+                ("empty_b", datetime(2026, 8, 26, 8, 24, 52), 0),
+                ("live", datetime(2026, 9, 7), 5),
+            ],
+        )
+        == "real"
+    )
+
+
+def test_no_selectable_run_returns_none_rather_than_a_wrong_one(tmp_path):
+    assert _pick(tmp_path, [("only_live", datetime(2026, 9, 7), 500)]) is None
+    assert _pick(tmp_path, []) is None
+
+
+def test_default_selection_advances_when_a_newer_run_finishes(tmp_path):
+    # The property the old argmax lacked: re-running the report after new
+    # evidence accumulates must measure the NEW evidence.
+    before = [("a", datetime(2026, 8, 10), 54007), ("b", datetime(2026, 8, 29), 100)]
+    after = before + [("c", datetime(2026, 9, 7), 50)]
+    assert _pick(tmp_path, before) == "a"
+    assert _pick(tmp_path, after) == "b"

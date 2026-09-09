@@ -1096,6 +1096,52 @@ Format: what happened → root cause → error type → prevention tier
     including one that fails if any `check(...)` line in `qa.py` ever
     again names a fixed GB ceiling.
 
+46. **2026-09-09 -- the standing divergence report defaulted to the run
+    with the MOST fills, so re-running it could not see new evidence.**
+    The instruction that opens every autonomous pass says "re-run the
+    standing reports on newly accumulated data and chase drift", and
+    `simulator.divergence` -- the report that sets the fill-model
+    calibration haircut applied to every backtest number -- picked its
+    subject with `SELECT run_id FROM shadow_fills GROUP BY 1 ORDER BY
+    count(*) DESC LIMIT 1`. An argmax over a record that only grows
+    moves only when a BIGGER member appears, and bigger members get
+    rarer as the record grows: the same one-way construction as #45's
+    level check on a monotone series, wearing a default's clothes.
+    Measured: the report had pointed at `20260810T081931` (54,007
+    fills, ended 08-20, already reported 1.0/1.0 on 08-25) for THREE
+    WEEKS while eight later runs went unmeasured -- among them
+    `20260829T191841`, 38,143 fills over 8.8 days, the second-largest
+    run in the record, never reported. The pass before this one
+    launched the report, watched it print run `20260810T081931`, and
+    did not notice that the report it had queued as "new evidence" was
+    a re-run of a month-old window.
+    The top end was worse than stale. The live run is always
+    `max(started_at)` (one daemon, one owner lock), so once a live run
+    outgrew the record the argmax would have selected IT -- replaying a
+    moving `end` against a stream archive being written at that same
+    boundary. The default was stale until the day it became unsound.
+    Type: `argmax-over-a-growing-record`; the #45 monotone family.
+    **RULE: the subject of a standing report must be selected by
+    RECENCY, not by rank. A report whose job is drift has to advance
+    when the record advances, and any `ORDER BY <size> DESC LIMIT 1`
+    over an unwindowed history is a default that pins itself to the
+    past. Rank is legitimate only inside a rolling window -- checked:
+    `prioritycheck` and `queuescore` both bound theirs with
+    `recv_ts > since`, so they advance, and neither needed changing.**
+    Prevention: `latest_complete_run` -- newest run that is FINISHED
+    and produced fills. "Finished" is read off the table rather than a
+    heartbeat or a new column: a strictly later run existing proves the
+    daemon restarted past this one, which excludes the live run by
+    construction. It conservatively skips the newest run when the
+    daemon is stopped for good, and that asymmetry is deliberate --
+    skipping a measurable run costs a `--run` flag, replaying a live
+    one costs the measurement. Zero-fill runs are skipped: a fill
+    comparison over zero fills is not a zero divergence, it is no
+    measurement. Five tests, including one that asserts the selection
+    ADVANCES when a newer run finishes -- the property the argmax
+    lacked -- and one that refuses the live run even when it is the
+    biggest.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -2,6 +2,10 @@
 
     python -m simulator.divergence [--run RUN_ID] [--anchor ISO_TS]
 
+Defaults to the newest FINISHED shadow run that produced fills, so
+that re-running the report measures newly accumulated evidence
+(see `latest_complete_run`).
+
 Replays the exact stream-archive window a shadow run traded — same
 seeding procedure, same strategy, same latency model — and compares the
 two fill streams. Shadow decided while the future didn't exist; the
@@ -391,9 +395,49 @@ def _rows(by):
             yield m, side, qty, price, fee, maker
 
 
+def latest_complete_run(conn) -> str | None:
+    """The newest shadow run that is finished and produced fills.
+
+    The default used to be `ORDER BY count(*) DESC` — the run with the
+    MOST fills — which makes re-running this report a no-op by
+    construction: an argmax over a growing record only moves when a
+    bigger run appears, and bigger runs get rarer as the record grows.
+    Measured 2026-09-09: the report had defaulted to 20260810T081931
+    (54,007 fills, ended 08-20, already reported 1.0/1.0) for three
+    weeks while eight later runs went unmeasured, including
+    20260829T191841 — 38,143 fills over 8.8 days, the second-largest in
+    the record and never reported. The point of the report is
+    calibration drift over time; its default pointed at the past.
+
+    "Finished" is read off the table rather than a heartbeat or a new
+    column: exactly one shadow daemon can hold the archive's owner lock,
+    so the live run — if any — is always `max(started_at)`. A strictly
+    later run existing therefore proves the daemon restarted past this
+    one. That also conservatively skips the newest run when the daemon
+    is stopped for good; `--run` overrides, and the next restart makes
+    it selectable. The asymmetry is deliberate: skipping a measurable
+    run costs a flag, whereas replaying a LIVE run races a moving `end`
+    against a stream archive being written at that same boundary.
+
+    Runs with no fills are skipped — a fill comparison over zero fills
+    is not a zero divergence, it is no measurement at all.
+    """
+    row = conn.execute(
+        "SELECT r.run_id FROM shadow_runs r"
+        " WHERE EXISTS (SELECT 1 FROM shadow_runs l WHERE l.started_at > r.started_at)"
+        "   AND EXISTS (SELECT 1 FROM shadow_fills f WHERE f.run_id = r.run_id)"
+        " ORDER BY r.started_at DESC LIMIT 1"
+    ).fetchone()
+    return row[0] if row else None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="shadow-vs-replay divergence report")
-    ap.add_argument("--run", default=None, help="run_id (default: most fills)")
+    ap.add_argument(
+        "--run",
+        default=None,
+        help="run_id (default: the newest FINISHED run that produced fills)",
+    )
     ap.add_argument("--anchor", default=None, help="ISO ts override for the trading anchor")
     ap.add_argument("--shadow-db", default=SHADOW_DB)
     ap.add_argument("--stream-db", default=STREAM_DB)
@@ -408,12 +452,12 @@ def main() -> None:
     args = ap.parse_args()
 
     with connect_retry(args.shadow_db) as conn:
-        run_id = (
-            args.run
-            or conn.execute(
-                "SELECT run_id FROM shadow_fills GROUP BY 1 ORDER BY count(*) DESC LIMIT 1"
-            ).fetchone()[0]
-        )
+        run_id = args.run or latest_complete_run(conn)
+        if run_id is None:
+            raise SystemExit(
+                "no completed shadow run with fills to report on"
+                " (the only run with fills may still be live; pass --run to force)"
+            )
         started_at, latency, strategies, anchor = conn.execute(
             "SELECT started_at, latency_s, strategies, anchor FROM shadow_runs WHERE run_id=?",
             [run_id],
