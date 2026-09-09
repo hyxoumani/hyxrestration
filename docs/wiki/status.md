@@ -1,5 +1,80 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-09 (DISK-HEADROOM PASS -- QA'S PREDICTED GREEN CAME
+TRUE AND THE RUN STILL FAILED, ON A CHECK THAT COULD NEVER GO GREEN.**
+Cold start per instructions. Last pass predicted the 09-09 10:00Z QA run
+GREEN from breadth's own query. Breadth DID clear -- and the run failed
+anyway, on `['stream disk under 20 GB']`. The prediction was right about
+breadth and wrong about the run, which is the whole lesson: the digest
+says `hyxlab-qa FAILED` either way, so a permanently-red check is not a
+weak signal, it is a MASK, and it had been masking since it crossed.
+**(1) IT IS #29's DEFECT, THREE LINES BELOW #29's OWN COMMENT.** On
+08-23 the latency check was retired for bounding an unbounded drift with
+a constant, and the paragraph written to explain it -- "a threshold
+cannot absorb an unbounded drift ... each gets the bound its own failure
+mode earns" -- sits directly above
+`check("stream disk under 20 GB", size_gb < 20.0)`. A file that only
+grows is that drift with no nuisance term to separate out. It needed no
+measurement to condemn, only to be read. Crossed at **20.31 GB**. A
+level check on a monotone series is one-way by construction: not yet
+firing, or permanently firing, and a measurement in neither state.
+**(2) IT WAS NAMED `disk` AND WATCHED 8% OF ONE.** `collector.backup`
+keeps a SEVEN-slot rotation of every archive ON THE SAME FILESYSTEM, so
+every byte the tape gains is paid for eight times: 20.3 GB live sits
+inside a 262 GB `data/`. Measured off the rotation's own slots (the only
+growth history already on disk, so it costs no new state), 09-02 ->
+09-08: stream +353 MB/d, hyxlab +249 MB/d, shadow +0.2 MB/d = **0.60
+GB/d live, 4.82 GB/d of disk**, against 1.216 TB free = **252 days**.
+Cross-checked: the 7 slots sum to 227 GiB against `ls`'s 227.2 GiB.
+Free space was never in question and 20 GB was never the number.
+**(3) AND IT WAS INSIDE `qa_stream`,** which returns early when the
+stream archive is unreachable -- so the disk reading disappeared exactly
+on the days the box was in trouble. `qa_disk_headroom` touches no
+database and runs FIRST in `main()`, before anything a lock can gate.
+**(4) A HORIZON, NOT A LEVEL.** `free / burn`, floor 90d. It takes its
+file list from `backup.DBS` (a fourth archive cannot be missed), and
+multiplies the measured live rate by `1 + ROTATION_SLOTS` only while
+`st_dev` says the backups share the disk they would exhaust -- off-box,
+the standing user item, the SAME archive has a different honest horizon
+and the check must not assume the pessimistic one is always right. A
+partial series is `UNPROJECTED`, never an optimistic sum: summing only
+the archives that HAVE history understates the burn, and understating it
+is the reassuring direction -- the fallback still BOUNDS (can the disk
+hold one more full copy?) rather than shrugging. A rate also sees what a
+constant cannot: the tape grows with market activity, so a quiet 250-day
+horizon can become a 30-day one with no file size looking unusual.
+**(5) THE VERDICT IS COMPUTED IN FOUR BRANCHES AND PRINTED ONCE.** First
+cut printed in each branch; `test_qa_silent_guards` -- a standing test,
+not a new one -- rejected it, and it was right: four print sites are
+four chances for one to stop printing on the input it exists to notice.
+Single-emit makes "always printed" true by construction.
+**Suite 1230 -> 1239.** COMMITTED, PROMOTED, PUSHED. Live in BOTH trees:
+`252 d to full (floor 90) -- free 1216 GB, burn 4.82 GB/day = 0.60 live
+x8`. Promote restarted NOTHING -- qa.py is in no daemon's closure -- so
+`hyxlab-shadow` keeps its run (now 47.8h of the 72h a scorable run
+needs) and stream keeps its clock. Mistake **#45** logged.
+NEXT PASS: (1) **the 09-10 10:00Z QA run should be GREEN** -- the 09-09
+failure list was exactly `['stream disk under 20 GB']`, one entry, now
+retired and replaced by a check that passes live with 162 days of margin
+over its floor. If it is not green the residual is new and that is the
+work. Note this is the SECOND consecutive pass to predict green; the
+last one was defeated by a check it had not looked at, so the prediction
+is only as good as the failure list being complete -- and this time the
+list was read, not assumed. (2) `simulator.divergence` is STILL the top
+unclaimed item and still needs a background run with a real budget (its
+`STREAM_ATTACH` alone is ~10.5 min; a 5-min budget killed it last pass).
+(3) The 10th panel day, ~09-17. (4) The width-24 econ maker bracket needs
+2026-09-12; the atlas quoted tier wants ~2.1M settled markets. Both
+data-gated. **USER-GATED, and now with a number attached: pointing
+`HYXLAB_BACKUP_DIR` at an off-box mount is still the standing item, and
+it is also what would cut the burn 8x to 0.60 GB/day (252 d -> ~2,000 d)
+-- the backups currently guard corruption and fat-finger deletion, not
+disk loss, and they share the disk they would exhaust.** A notify channel
+(smtp creds or a webhook URL) remains the only thing between this digest
+and an operator who does not have to be reading.
+
+---
+
 Updated: **2026-09-09 (ATLAS-ATTACH PASS -- THE ESCAPE HATCH BOUGHT BACK
 THE DEFAULT IT WAS EXCUSING.**
 Cold start per instructions. Both items this pass inherited RESOLVE TO NO
