@@ -16,6 +16,8 @@ state, session findings, execution queue).
 
 ## Process
 
+- [Unit-drift runbook](unit-drift-runbook.md) — SHADOWED / DROP-IN: the two drift
+  states no script may clear, and what to do when one fires
 - [Mistakes log](mistakes.md) — root-caused failures with escalation tiers
 
 ## Historical (falsified L01 thesis — do not build on)

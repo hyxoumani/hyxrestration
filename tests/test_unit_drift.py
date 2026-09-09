@@ -521,3 +521,103 @@ def test_the_full_promote_verifies_the_install_it_just_did():
     assert PROMOTE.rindex("collector.health --drift-only") < PROMOTE.index("systemctl --user restart"), (
         "verify the units before paying for a daemon restart"
     )
+
+
+# --------------------------------------------------------------------------
+# WHAT THE UNREPAIRABLE VERDICTS OWE THE PERSON THEY ARE HANDED TO (2026-09-09).
+# SHADOWED and DROP-IN are the two states no script may clear, so both end at a
+# human -- and for nine passes what they handed over was a PATH. The oldest
+# unclaimed item on the status page was "SHADOWED and DROP-IN drift have no
+# written operator procedure", and the reason one could not be written is that
+# its first step would have been "open the file and work out whether it matters":
+# the investigation the checker had declined to do, moved into prose. These arms
+# pin the facts the runbook branches on, so the two cannot drift apart.
+# --------------------------------------------------------------------------
+
+
+def test_shadowed_says_whether_the_box_is_actually_running_other_text():
+    """The winning copy being IDENTICAL to the repo's (a stale duplicate in a
+    higher-priority directory) and the winning copy being DIFFERENT (systemd is
+    executing a unit this repo does not contain) are the same word and opposite
+    nights. `drift_report` has already read both files for the DRIFT arm, so
+    separating them costs no I/O -- it was simply never said."""
+    same = judge(VENDORED, FragmentPath="/etc/systemd/user/hyxlab-probe.service")
+    other = judge("[Unit]\nDescription=NOT OURS\n", FragmentPath="/etc/systemd/user/hyxlab-probe.service")
+    assert same.state == other.state == "SHADOWED"
+    assert "identical" in same.detail and "DIFFERS" not in same.detail
+    assert "DIFFERS" in other.detail
+
+
+def test_an_unreadable_shadowing_fragment_is_not_reported_as_agreement():
+    """`_read` returns None for a file this user cannot read. Rendering that as
+    "byte-identical" would answer the runbook's urgency question with a guess,
+    in the reassuring direction."""
+    d = judge(None, FragmentPath="/etc/systemd/user/hyxlab-probe.service")
+    assert d.state == "SHADOWED"
+    assert "could not read" in d.detail
+    assert "identical" not in d.detail
+
+
+def test_a_drop_in_verdict_names_the_directives_not_just_the_file():
+    """The measured hijack was `ExecStart=` + `ExecStart=/bin/echo hijacked`; a
+    drop-in that caps memory is the same word in the old report and a different
+    event. An empty assignment is systemd's RESET, which on a list-valued
+    directive replaces rather than appends -- so it is marked, not collapsed."""
+    conf = "/home/devs/.config/systemd/user/hyxlab-probe.service.d/o.conf"
+    d = health.judge_drift(
+        "hyxlab-probe.service",
+        props(DropInPaths=conf),
+        VENDORED,
+        VENDORED,
+        None,
+        {conf: "[Service]\nExecStart=\nExecStart=/bin/echo hijacked\n"},
+    )
+    assert d.state == "DROP-IN"
+    assert "o.conf" in d.detail, "the file must still be named so it can be read"
+    assert "ExecStart(reset)" in d.detail
+    assert "RESET of the unit's command" in d.detail
+
+    cap = health.judge_drift(
+        "hyxlab-probe.service", props(DropInPaths=conf), VENDORED, VENDORED, None,
+        {conf: "[Service]\nMemoryMax=2G\n"},
+    )
+    assert "MemoryMax" in cap.detail
+    assert "RESET" not in cap.detail, "a resource cap must not read as a command hijack"
+
+
+def test_an_unreadable_drop_in_does_not_render_as_overriding_nothing():
+    """The conf that cannot be read is the one that most deserves a human.
+    Printing an empty directive list for it is the "silently empty" shape of the
+    09-06 truncation and 09-08 failure-history bugs, one layer down."""
+    conf = "/etc/systemd/user/hyxlab-probe.service.d/o.conf"
+    d = health.judge_drift(
+        "hyxlab-probe.service", props(DropInPaths=conf), VENDORED, VENDORED, None, {conf: None}
+    )
+    assert "UNREADABLE" in d.detail
+    assert "sets no directive" not in d.detail
+
+
+def test_drop_in_parsing_ignores_what_is_not_a_directive():
+    """Section headers, comments and blank lines are not overrides. A parser
+    that counted `[Service]` would report a directive on every drop-in ever
+    written."""
+    keys = health._dropin_directives(
+        "# why\n; also why\n\n[Service]\nMemoryMax=2G\nEnvironment=A=1\nMemoryMax=4G\n"
+    )
+    assert keys == ["MemoryMax", "Environment"], keys
+
+
+def test_the_operator_remedy_points_at_a_procedure_that_exists():
+    """`drift_main` used to send the operator to "see health.py" -- deriving the
+    steps from the code that just declined to take them. The runbook is the
+    remedy; a pointer to a page that does not exist is worse than none."""
+    assert "health.py" not in health.OPERATOR_REMEDY
+    page = re.search(r"docs/\S+\.md", health.OPERATOR_REMEDY)
+    assert page, health.OPERATOR_REMEDY
+    runbook = REPO / page.group(0)
+    assert runbook.exists(), f"{page.group(0)} is promised to an operator and is not there"
+    text = runbook.read_text(encoding="utf-8")
+    for state in health.UNREPAIRABLE:
+        assert state in text or state == "UNREADABLE", f"{state} sends an operator here unaddressed"
+    assert "promote.sh --units-only" in text, "the repairable escape hatch must be named"
+    assert "--drift-only" in text, "the procedure must end by re-asking the judge"

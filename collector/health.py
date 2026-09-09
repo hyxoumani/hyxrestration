@@ -178,6 +178,10 @@ DEPLOY_REF = "stable"
 # box reporting success -- the same shape of lie the digest was built to stop
 # telling. So the repair re-runs the judge and reports what SURVIVED it.
 REPAIRABLE = ("DRIFT", "STALE-IN-MEMORY")
+# Where the person this verdict is handed to finds the procedure. A remedy that
+# points at source ("see health.py") asks the operator to derive the steps from
+# the code that just declined to take them.
+OPERATOR_REMEDY = "OPERATOR — docs/wiki/unit-drift-runbook.md"
 UNREPAIRABLE = ("SHADOWED", "DROP-IN", "UNREADABLE")
 # The states that are not a fault to be repaired at all: agreement, an
 # uninstalled unit, and a box correctly running the last promotion while this
@@ -542,12 +546,93 @@ def deployed_text(unit: str) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
+# WHAT THE TWO UNREPAIRABLE VERDICTS HAVE TO SAY TO BE ACTIONABLE (2026-09-09).
+# SHADOWED and DROP-IN are the states `promote.sh --units-only` cannot clear, so
+# both hand the box to a person -- and for nine passes the thing they handed over
+# was a PATH. "the manager loaded /etc/systemd/user/x" and "1 override: o.conf"
+# name a file and stop, which makes the first move of any operator procedure
+# written for them "go open it and work out whether it matters". A runbook whose
+# first step is the investigation the checker just declined to do is not a
+# procedure; it is the checker's missing half, written in prose.
+#
+# The decision each verdict has to support, and the fact it needs to support it:
+#
+#   SHADOWED -> is the box behaving differently RIGHT NOW, or is this only the
+#   wrong file winning? `drift_report` has already read the winning fragment
+#   (that read is what the DRIFT arm below runs on) and the repo's copy, so the
+#   comparison costs nothing and separates "someone left a stale copy in a
+#   higher-priority directory and it happens to be identical" -- ownership
+#   hygiene, fix at leisure -- from "systemd is running text this repo does not
+#   contain", which is an incident. Both are SHADOWED; they are not the same
+#   night's work, and the old wording could not tell them apart.
+#
+#   DROP-IN -> which directives were overridden. The measured hijack was
+#   `ExecStart=` + `ExecStart=/bin/echo hijacked`: an empty assignment RESETS the
+#   directive, and for a list-valued one like ExecStart that is the difference
+#   between adding a second command and replacing the unit's command outright.
+#   A drop-in that sets `MemoryMax=` and one that resets `ExecStart=` are one
+#   word in this report and opposite events on the box.
+#
+# Two things this must not do. It must not call a drop-in harmless -- it reports
+# the directive names and the reset, and the judgement of whether a MemoryMax
+# this repo did not write is fine stays with the operator. And an unreadable
+# override must never render as "sets nothing": a conf whose contents cannot be
+# read is the one that most deserves a human, and printing an empty directive
+# list for it would be the "silently empty" lie the 09-06 truncation and the
+# 09-08 failure-history passes each caught a different version of.
+
+
+def _shadow_effect(loaded_text: str | None, vendored: str) -> str:
+    """Whether the file that WON is running this repo's text anyway."""
+    if loaded_text is None:
+        return "could not read it — cannot say whether its text differs from the repo's"
+    if loaded_text == vendored:
+        return "its text is byte-identical to the repo's copy (wrong file wins, same behaviour)"
+    return "and its text DIFFERS from the repo's copy — the box is running a unit this repo does not contain"
+
+
+def _dropin_directives(text: str) -> list[str]:
+    """The directives a drop-in sets, in file order, deduped, resets marked.
+
+    `Key=` with an empty value is systemd's RESET for a list-valued directive,
+    which is what makes an ExecStart drop-in a replacement rather than an
+    addition -- so it is never collapsed with an ordinary assignment. Section
+    headers, comments and continuations are not directives.
+    """
+    out: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";", "[")):
+            continue
+        key, sep, val = line.partition("=")
+        key = key.strip()
+        if not sep or not key or " " in key:
+            continue
+        name = f"{key}(reset)" if not val.strip() else key
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def _dropin_effect(path: str, text: str | None) -> str:
+    """One override file, and what it changes."""
+    name = Path(path).name
+    if text is None:
+        return f"{name} UNREADABLE — cannot say what it overrides"
+    keys = _dropin_directives(text)
+    if not keys:
+        return f"{name} sets no directive"
+    hijack = " [RESET of the unit's command]" if "ExecStart(reset)" in keys else ""
+    return f"{name} sets {', '.join(keys)}{hijack}"
+
+
 def judge_drift(
     unit: str,
     props: dict[str, str],
     loaded_text: str | None,
     vendored: str,
     deployed: str | None = None,
+    dropin_texts: dict[str, str | None] | None = None,
 ) -> UnitDrift:
     """Whether the unit the MANAGER holds is the unit this repo contains.
 
@@ -622,7 +707,8 @@ def judge_drift(
         return UnitDrift(
             unit,
             "SHADOWED",
-            f"manager loaded {frag or '(no fragment path)'}, not {INSTALL_DIR}/{unit}",
+            f"manager loaded {frag or '(no fragment path)'}, not {INSTALL_DIR}/{unit}"
+            f" — {_shadow_effect(loaded_text, vendored)}",
         )
 
     if props.get("NeedDaemonReload") == "yes":
@@ -633,7 +719,10 @@ def judge_drift(
     drops = [d for d in (props.get("DropInPaths") or "").split() if d]
     if drops:
         return UnitDrift(
-            unit, "DROP-IN", f"{len(drops)} override(s) not in the repo: {' '.join(drops)}"
+            unit,
+            "DROP-IN",
+            f"{len(drops)} override(s) not in the repo: "
+            + "; ".join(_dropin_effect(d, (dropin_texts or {}).get(d)) for d in drops),
         )
 
     if loaded_text is None:
@@ -672,6 +761,7 @@ def drift_report() -> list[UnitDrift]:
                 _read(Path(frag)) if frag else None,
                 _read(UNIT_DIR / unit) or "",
                 deployed_text(unit),
+                {d: _read(Path(d)) for d in (props.get("DropInPaths") or "").split() if d},
             )
         )
     return out
@@ -990,7 +1080,7 @@ def drift_main() -> int:
     checked = [d for d in drift if d.state != "SKIP"]
     bad = [d for d in checked if d.fault]
     for d in bad:
-        remedy = "promote.sh --units-only" if d.state in REPAIRABLE else "OPERATOR — see health.py"
+        remedy = "promote.sh --units-only" if d.state in REPAIRABLE else OPERATOR_REMEDY
         print(f"{d.state:<16} {d.unit}  {d.detail}  [{remedy}]", flush=True)
     # Printed even though it is not a fault: a caller told only "clean" would
     # read that as "the box runs what I am looking at", which is the one thing

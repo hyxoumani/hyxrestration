@@ -101,7 +101,8 @@ if ((UNITS_ONLY)); then
            echo "               re-install (a shadowing copy lives outside"
            echo "               ~/.config/systemd/user; a drop-in overrides the"
            echo "               fragment without touching it). Operator decision:"
-           echo "               deleting a file this repo did not install." ;;
+           echo "               deleting a file this repo did not install."
+           echo "               Procedure: docs/wiki/unit-drift-runbook.md" ;;
         *) echo "   units-only: FAILED — repairable drift SURVIVED its own repair;"
            echo "               the cp or the daemon-reload did not take." ;;
     esac
