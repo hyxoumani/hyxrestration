@@ -1045,6 +1045,57 @@ Format: what happened → root cause → error type → prevention tier
     inferred -- and names WHAT followed, never WHO stopped it, because
     the ledger holds no exit reason (#32). Eleven mutants, all red.
 
+45. **2026-09-09 -- the fix for #29 rewrote the two checks above a third
+    one that had the SAME defect in its purest form, and left it.** On
+    2026-08-23 the latency check was retired for bounding an unbounded
+    drift with a constant, and the comment written to explain it -- "a
+    threshold cannot absorb an unbounded drift ... each gets the bound
+    its own failure mode earns" -- sits THREE LINES above
+    `check("stream disk under 20 GB", size_gb < 20.0)`. A file that only
+    grows is the unbounded drift with no nuisance term to separate out;
+    it needed no measurement to condemn, only to be read. It crossed at
+    **20.31 GB** and QA has been red ever since, and a check that can
+    never go green again is not a weak signal, it is a mask: the
+    breadth-truncation failure CLEARED in the same 10:00Z run, and the
+    digest said `hyxlab-qa FAILED` before and after. The prior pass had
+    predicted GREEN off breadth's own query and was right about breadth
+    and wrong about the run.
+    Two further errors were folded into the same line. (a) It was named
+    `disk` and watched **8% of the disk it named**: `collector.backup`
+    keeps a 7-slot rotation of every archive ON THE SAME FILESYSTEM, so
+    each byte the tape gains is paid for eight times -- 20.3 GB live of
+    a 262 GB `data/`. Measured off the rotation's own slots 09-02 ->
+    09-08: stream +353 MB/d, hyxlab +249 MB/d, shadow +0.2 MB/d = 0.60
+    GB/d live, **4.82 GB/d of disk**, against 1.216 TB free = **252
+    days**. Free space was never in question and 20 GB was never the
+    number. (b) It sat INSIDE `qa_stream`, which returns early when the
+    stream archive is unreachable -- so the disk reading vanished
+    exactly on the days the box was in trouble.
+    Type: `wrong-statistic`, the #25-27/#29 drift family, plus
+    `scope-blind-to-its-own-name`.
+    **RULE: a check on a quantity that only moves one way must be
+    bounded as a HORIZON, not a level -- `free / burn`, where burn
+    includes every copy the system makes of the thing being measured.
+    A level check on a monotone series is one-way by construction: it
+    is either not yet firing or permanently firing, and it is a
+    measurement in neither state. And when a fix retires one instance
+    of a defect, grep the file for the rest of them before committing
+    -- the sibling was three lines away for seventeen days.**
+    Prevention: `qa_disk_headroom` is a filesystem-only section called
+    FIRST in `main()`, before anything that can be gated by a lock. It
+    derives its file list from `backup.DBS` (a fourth archive cannot be
+    missed), multiplies the measured live rate by `1 + ROTATION_SLOTS`
+    only while `st_dev` says the backups share the disk they would
+    exhaust -- off-box, the standing user item, the same archive has a
+    different honest horizon -- and takes its growth history from the
+    rotation's own slots, so it adds no state. A partial series is
+    `UNPROJECTED`, never an optimistic sum, because summing only the
+    archives that HAVE history understates the burn and understating it
+    is the reassuring direction; the fallback still bounds (can the disk
+    hold one more full copy?) rather than shrugging. Nine tests,
+    including one that fails if any `check(...)` line in `qa.py` ever
+    again names a fixed GB ceiling.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -24,6 +26,7 @@ from pathlib import Path
 
 import duckdb
 
+from collector.backup import DBS
 from collector.venues import alfred
 from hyxlab.store import SCHEMA_VERSION, duck_connect, lock_holder
 
@@ -558,10 +561,131 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         " (box clock vs venue; NTP pending)",
     )
 
-    size_gb = Path(path).stat().st_size / 1e9
-    check("stream disk under 20 GB", size_gb < 20.0, f"{size_gb:.2f} GB")
     conn.close()
     _record_ok("stream", now)
+
+
+# ---------------------------------------------------------------------------
+# Disk headroom. The predecessor was `stream disk under 20 GB` — a CONSTANT
+# ceiling on a monotonically increasing quantity, which is mistake #29's exact
+# defect sitting three lines below the comment that named it. It crossed on
+# 2026-09-09 at 20.31 GB and could never go green again, and a check that can
+# only be red is not a signal: it masked the breadth failure that cleared in
+# the same run, because the digest says `hyxlab-qa FAILED` either way.
+#
+# It was also watching the wrong 8% of the thing it was named for. The stream
+# file is 20.3 GB of a 262 GB `data/`, because `collector.backup` keeps a
+# SEVEN-slot rotation of every archive on the same filesystem: each byte the
+# tape gains is eventually paid for eight times. Measured from the rotation's
+# own slots, 2026-09-02 → 09-08: stream +353 MB/day, hyxlab +249 MB/day,
+# shadow +0.2 MB/day — ~0.6 GB/day live, ~4.8 GB/day of disk. Against 1.216 TB
+# free that is ~250 days, so 20 GB was never the number and free space was
+# never in question.
+#
+# And it was INSIDE `qa_stream`, which returns early when the stream archive
+# is unreachable — so the disk signal vanished exactly when the box was in
+# trouble. This section touches no database on purpose.
+BACKUP_DIR = "data/backups"
+# `collector.backup` names each slot `<stem>.<%a>.duckdb`, so the rotation is
+# exactly one week deep. Read off that format, not chosen here.
+ROTATION_SLOTS = 7
+HEADROOM_MIN_DAYS = 90.0
+
+
+def _rotation_growth(live: list[Path], backup_dir: Path) -> tuple[float | None, float]:
+    """Bytes/day the LIVE archives are gaining, measured from the backup
+    rotation's own slot series, with the span it was measured over.
+
+    The rotation is the only growth history that already exists on disk, so
+    this costs no new state. Returns `(None, span)` when ANY live archive
+    lacks a two-slot series spanning a day: a partial sum would UNDERSTATE
+    the burn rate, and understating it is the optimistic direction — the one
+    that turns a headroom check into a reassurance.
+    """
+    total = 0.0
+    span = 0.0
+    for db in live:
+        slots = []
+        for p in backup_dir.glob(f"{db.stem}.*.duckdb"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            slots.append((st.st_mtime, st.st_size))
+        slots.sort()
+        days = 0.0 if len(slots) < 2 else (slots[-1][0] - slots[0][0]) / 86400.0
+        if days < 1.0:
+            return None, span
+        total += (slots[-1][1] - slots[0][1]) / days
+        span = max(span, days)
+    return total, span
+
+
+def qa_disk_headroom(
+    dbs: list[str] | None = None,
+    backup_dir: str | Path | None = None,
+    min_days: float = HEADROOM_MIN_DAYS,
+) -> None:
+    """Will the filesystem holding the archives still be there in `min_days`?
+
+    Bounded as a HORIZON rather than a level, so it tracks the failure it is
+    named for and can go green again. A rate also catches the shape a constant
+    cannot: the tape's growth follows market activity, so a quiet 250-day
+    horizon can become a 30-day one without any file size looking unusual.
+
+    Every branch below assigns `(ok, detail)` and the check is emitted ONCE, at
+    the end. A verdict computed in four places and printed in four places is
+    four chances for one of them to stop printing on the input it exists to
+    notice (`test_qa_silent_guards`); printed in one place it cannot.
+    """
+    live = [Path(p) for p in (DBS if dbs is None else dbs)]
+    live = [p for p in live if p.exists()]
+    if backup_dir is None:
+        backup_dir = os.environ.get("HYXLAB_BACKUP_DIR", BACKUP_DIR)
+    backup_dir = Path(backup_dir)
+
+    if not live:
+        ok, detail = False, "no archive present to measure"
+    else:
+        root = live[0].parent
+        free = shutil.disk_usage(root).free
+        footprint = sum(p.stat().st_size for p in live)
+
+        # The rotation multiplies the burn ONLY while it shares the filesystem
+        # it would exhaust. Off-box -- the standing user item -- it costs this
+        # disk nothing, so the same archive has two different honest horizons
+        # and the check must not assume the pessimistic one is always right.
+        try:
+            same_fs = backup_dir.stat().st_dev == root.stat().st_dev
+        except OSError:
+            same_fs = False
+        mult = 1 + ROTATION_SLOTS if same_fs else 1
+        where = "backups share this filesystem" if same_fs else "backups off-box"
+
+        rate, span = _rotation_growth(live, backup_dir)
+        burn = None if rate is None else rate * mult
+        if burn is None:
+            # No history, so no projection. Fall back to the one property that
+            # needs none and is still not a constant: can this disk hold one
+            # more full copy of what it is already carrying? Labelled
+            # UNPROJECTED so it is never read as the horizon it is not.
+            ok = free > footprint
+            detail = (
+                f"UNPROJECTED (no 2-slot rotation series in {backup_dir}) —"
+                f" free {free / 1e9:.0f} GB vs {footprint / 1e9:.0f} GB live"
+            )
+        elif burn <= 0:
+            ok = True
+            detail = f"free {free / 1e9:.0f} GB; archives not growing over {span:.1f}d"
+        else:
+            days = free / burn
+            ok = days > min_days
+            detail = (
+                f"{days:.0f} d to full (floor {min_days:.0f}) —"
+                f" free {free / 1e9:.0f} GB, burn {burn / 1e9:.2f} GB/day ="
+                f" {rate / 1e9:.2f} live x{mult} ({where}), measured over {span:.1f}d"
+            )
+    check("archive disk headroom", ok, detail)
 
 
 def _largest_gap(conn, table: str, col: str, lo: datetime) -> tuple | None:
@@ -660,8 +784,10 @@ def _check_breadth_truncation(conn, now: datetime) -> None:
         "SELECT count(*) FROM information_schema.tables WHERE table_name = 'breadth_cycles'"
     ).fetchone()[0]
     if not exists:
-        print(f"WATCH {BREADTH_TRUNCATION_CHECK} — no breadth_cycles table in this archive",
-              flush=True)
+        print(
+            f"WATCH {BREADTH_TRUNCATION_CHECK} — no breadth_cycles table in this archive",
+            flush=True,
+        )
         return
 
     row = conn.execute(
@@ -2059,6 +2185,7 @@ def main() -> None:
 
     now = datetime.now(UTC)
     print(f"[qa] {now:%Y-%m-%d %H:%M} window={args.hours}h", flush=True)
+    qa_disk_headroom()  # filesystem-only; must not be gated by an archive lock
     qa_stream(args.hours)
     pull_age_d = qa_archive(args.hours)
     qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
