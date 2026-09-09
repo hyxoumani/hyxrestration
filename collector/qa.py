@@ -25,7 +25,7 @@ from pathlib import Path
 import duckdb
 
 from collector.venues import alfred
-from hyxlab.store import SCHEMA_VERSION, duck_connect
+from hyxlab.store import SCHEMA_VERSION, duck_connect, lock_holder
 
 ARCHIVE = "data/hyxlab.duckdb"
 STREAM = "data/hyxstream.duckdb"
@@ -328,9 +328,7 @@ def _connect_ro(path: str, wait_s: float = LOCK_WAIT_S) -> duckdb.DuckDBPyConnec
         try:
             return duck_connect(path, read_only=True)
         except duckdb.Error as exc:
-            m = re.search(r"Conflicting lock is held in (\S+) \(PID (\d+)\)", str(exc))
-            if m and Path(f"/proc/{m.group(2)}").exists():
-                _lock_holder = f"{m.group(1)} pid {m.group(2)}"
+            _lock_holder = lock_holder(exc) or _lock_holder
             if attempt == attempts - 1:
                 return None
             time.sleep(RETRY_SLEEP_S)  # writer burst (collector/tradepass flush)

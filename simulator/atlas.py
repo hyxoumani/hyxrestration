@@ -195,13 +195,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 
-from hyxlab.store import duck_connect
+from hyxlab.store import connect_retry, lock_holder
 
 HORIZONS = [("1h", 1), ("6h", 6), ("24h", 24), ("72h", 72), ("7d", 168)]
 Z95 = 1.959963985
@@ -1000,21 +999,55 @@ def verdict_stability(out_dir: Path, current: dict) -> dict:
     return out
 
 
+#: Attach budget for the shared archive. NOT the helper's default, and the
+#: old hand-rolled loop here was that default copied by hand: 15 x 2.0s
+#: flat, which `connect_retry`'s own docstring already calls inadequate
+#: against a long-lived writer. MEASURED 2026-09-09, both sides of it:
+#: this report died on `duckdb.IOException` after exactly 30s while
+#: `hyxlab-poly-sweep` was 4h into a ~7h run, and in the same hour the
+#: breadth collector -- a WRITER, so a stricter test -- waited 39s for the
+#: same file and got in. The archive is not held continuously; it is held
+#: in bursts longer than 30 seconds, so 30 seconds is the one budget that
+#: is both long enough to look like patience and short enough to always
+#: lose. 20 attempts x 1.0s x 1.3, capped at 20s, is ~3.6 min. Backoff is
+#: what the docstring asks for: it detunes the retry from any fixed flush
+#: period instead of beating against it.
+#:
+#: The budget costs NOTHING in the common case and the tail is closer than
+#: it looks: 24 reader attaches sampled over 6 min AFTER the poly sweep had
+#: released gave p50 0.0s, p90 7.6s, max 22.6s. So a QUIET archive already
+#: spends three quarters of the old budget on its worst attach, with no
+#: multi-hour writer running at all -- 30s was not a margin, it was the
+#: tail. Raising it is free where the lock is free (the first attempt
+#: returns) and spends time only where the alternative is failing outright.
+#: It is bounded on purpose: a report that silently waited out a 7h sweep
+#: would read as a hang, so exhausting the budget is an ANSWER, printed
+#: with the holder's identity, not a stack trace.
+ARCHIVE_ATTACH = {"retries": 20, "delay": 1.0, "backoff": 1.3, "max_delay": 20.0}
+ATTACH_BUDGET_S = 214.0  # nominal; see the arithmetic above
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="calibration atlas: implied vs realized")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
     ap.add_argument("--out", default="reports/atlas")
     args = ap.parse_args()
 
-    conn = None
-    for attempt in range(15):
-        try:
-            conn = duck_connect(args.db, read_only=True)
-            break
-        except duckdb.IOException:
-            if attempt == 14:
-                raise
-            time.sleep(2)
+    try:
+        conn = connect_retry(args.db, read_only=True, **ARCHIVE_ATTACH)
+    except duckdb.Error as exc:
+        holder = lock_holder(exc)
+        if holder:
+            raise SystemExit(
+                f"[atlas] archive busy: a live writer holds {args.db} ({holder}).\n"
+                f"[atlas] waited {ATTACH_BUDGET_S:.0f}s; the poly sweep holds it for hours."
+                " Nothing is wrong — re-run when it finishes (collector.health"
+                " shows hyxlab-poly-sweep RUNNING)."
+            ) from exc
+        raise SystemExit(
+            f"[atlas] archive unreachable: {args.db} — and NO live process holds"
+            f" its lock, so waiting will not help. {exc}"
+        ) from exc
     atlas = build_atlas(conn)
     conn.close()
 

@@ -52,6 +52,14 @@ ALLOWED: dict[str, tuple[str, str]] = {
         "only production caller is collector.streamd, which owns the file",
     ),
     # -- hand-rolled retry, each for a reason the helper cannot serve -----
+    # EXP-1379 removed `simulator/atlas.py::main` from here rather than
+    # adding to it. Its disposition read "15x2s report attach", which is a
+    # DESCRIPTION and not a reason -- and the numbers it described were
+    # `connect_retry`'s own defaults, copied by hand. It took the escape
+    # hatch to buy back exactly what the helper already gave it, so the one
+    # entry in this table that did not answer the table's question was also
+    # the one site that had no answer. It now routes through the helper with
+    # a measured budget and is invisible to this guard by construction.
     "collector/backup.py::backup_one": (
         "RETRY",
         "30x2s; must not silently skip a database it was asked to back up",
@@ -61,7 +69,6 @@ ALLOWED: dict[str, tuple[str, str]] = {
         "names the lock holder from the error text, so QA can distinguish a"
         " live writer from an unreachable file instead of crying wolf",
     ),
-    "simulator/atlas.py::main": ("RETRY", "15x2s report attach"),
     "simulator/simui/session.py::_connect_ro": (
         "RETRY",
         "8x0.75s — a UI must fail fast, not hang for the helper's 30s",

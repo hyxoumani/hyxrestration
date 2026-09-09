@@ -11,6 +11,7 @@ rule) holds three tables:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -296,6 +297,37 @@ def spill_cap(conn, path: str | Path) -> None:
         conn.execute("SET max_temp_directory_size = ?", [f"{n}B"])
     except Exception:  # noqa: BLE001 — see above
         pass
+
+
+#: DuckDB's message when another process holds the file lock. The PID is
+#: the whole point: it is the difference between "come back later" and
+#: "the archive is broken", and those two want opposite reactions.
+_LOCK_HOLDER_RE = re.compile(r"Conflicting lock is held in (\S+) \(PID (\d+)\)")
+
+
+def lock_holder(exc: BaseException) -> str | None:
+    """Who holds this file's lock, from a failed attach — or None.
+
+    A reader that could not attach has learned ONE of two opposite facts,
+    and `duckdb.IOException` says both with the same words. Either a live
+    writer holds the file, which on this box is routine and expected (the
+    poly sweep holds the archive for ~7 hours, collect and tradepass in
+    bursts) and the answer is to come back later; or nothing holds it and
+    the file is unreachable, which is an incident. Reporting the first as
+    the second is alarm fatigue; reporting the second as the first loses
+    the archive quietly. The discriminator is already in the error text.
+
+    None when the message names no holder AND when it names a PID that is
+    no longer alive — a dead PID is a lock left behind, which is the
+    unreachable case wearing the routine one's message. That check is why
+    this is a function and not a regex at each call site: `collector.qa`
+    got it right, `simulator.atlas` re-derived neither half and printed
+    the traceback.
+    """
+    m = _LOCK_HOLDER_RE.search(str(exc))
+    if not m or not Path(f"/proc/{m.group(2)}").exists():
+        return None
+    return f"{m.group(1)} pid {m.group(2)}"
 
 
 def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
