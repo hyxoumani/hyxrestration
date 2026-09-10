@@ -809,3 +809,100 @@ def test_the_digest_still_exits_zero_with_failures_in_the_window():
     """This section adds no gate. A report that starts failing is a report that
     stops being read (and `promote.sh` branches on `--drift-only`, not on this)."""
     assert health.cli([]) == 0
+
+
+# --------------------------------------------------------------------------
+# The finding that reached no reader: qa's own `prior QA run was read`.
+#
+# `qa._own_findings` strips that check out of the record's `failures` list --
+# correctly, or one unread failure re-arms the report of itself, every day,
+# forever. `judge_qa` read `failures`. So the digest could not name that check
+# on ANY run, and the run it fires on is by construction the run where every
+# other check is green: `FAILED hyxlab-qa.service` from the unit line, `clean`
+# from the QA line, and no name between them.
+#
+# MEASURED, not hypothesised: the 2026-09-10 10:00Z run journalled 6 FAILURES
+# and recorded 5. The sixth was this one.
+# --------------------------------------------------------------------------
+
+
+def _unread_record(at: str, unread: str, **kw) -> dict:
+    rec = _record(at, **kw)
+    rec["run"]["unread"] = unread
+    return rec
+
+
+def test_the_digest_names_the_check_qa_keeps_off_its_own_failure_list() -> None:
+    """The whole defect, in the shape it lands in: every section green, the run
+    exits 1 on `prior QA run was read` alone, and `failures` is empty."""
+    now = datetime(2026, 9, 11, 14, 0, tzinfo=UTC)
+    line = health.judge_qa(
+        _unread_record(
+            "2026-09-11T10:00:00+00:00",
+            "prior run FAILED ['collection continuous over last 24h'] and is"
+            " green today — nothing read it",
+            skipped=["collect-skips"],
+        ),
+        svc(Result="exit-code", ExecMainStatus="1"),
+        now,
+    )
+    assert "UNREAD" in line
+    assert "prior QA run was read" in line
+    assert "collection continuous over last 24h" in line
+
+
+def test_a_run_that_exited_one_is_never_called_clean() -> None:
+    """`clean` sat directly under the unit line reading FAILED. The verdict word
+    must not contradict the two lines around it."""
+    line = health.judge_qa(
+        _unread_record("2026-09-11T10:00:00+00:00", "QA DID NOT RUN — ..."),
+        svc(Result="exit-code", ExecMainStatus="1"),
+        datetime(2026, 9, 11, 14, 0, tzinfo=UTC),
+    )
+    assert "clean" not in line
+    assert "no check failed" in line
+
+
+def test_the_unread_line_survives_a_run_that_also_failed_other_checks() -> None:
+    """Independent of what the other sections found, so it must not be
+    suppressed under a failure list -- that hides it on exactly the busy run
+    nobody re-reads."""
+    line = health.judge_qa(
+        _unread_record(
+            "2026-09-11T10:00:00+00:00",
+            "prior run SKIPPED ['collect-skips'] and ran today — nothing read it",
+            failures=["stream fresh (trades < 5 min old)"],
+        ),
+        svc(Result="exit-code", ExecMainStatus="1"),
+        datetime(2026, 9, 11, 14, 0, tzinfo=UTC),
+    )
+    assert "FAILURES ['stream fresh (trades < 5 min old)']" in line
+    assert "UNREAD" in line and "collect-skips" in line
+
+
+def test_a_run_with_nothing_unread_reads_exactly_as_before() -> None:
+    """The field is additive. An empty `unread` must not perturb the verdict."""
+    line = health.judge_qa(
+        _unread_record("2026-09-11T10:00:00+00:00", ""),
+        svc(),
+        datetime(2026, 9, 11, 14, 0, tzinfo=UTC),
+    )
+    assert "clean" in line
+    assert "UNREAD" not in line
+
+
+def test_a_record_predating_the_field_reads_as_a_pass_not_a_finding() -> None:
+    """Every record on disk today lacks the key. The conservative direction is a
+    digest that stays silent about one historical run, never one that invents a
+    finding for it -- which is how a check gets switched off."""
+    parsed = _prior_run(_record("2026-09-10T10:00:00+00:00"))
+    assert parsed is not None and parsed.unread == ""
+    assert "UNREAD" not in health.judge_qa(
+        _record("2026-09-10T10:00:00+00:00"), svc(), datetime(2026, 9, 10, 14, 0, tzinfo=UTC)
+    )
+
+
+def test_a_non_string_unread_does_not_crash_the_digest() -> None:
+    """Same posture as the rest of the parser: a hand-edited or older-format
+    record reads as absent rather than taking the only reader down with it."""
+    assert _prior_run({"run": {"last_run": "2026-09-10T10:00:00+00:00", "unread": 7}}).unread == ""

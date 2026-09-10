@@ -2192,18 +2192,34 @@ def _own_findings() -> list[str]:
     return [f for f in _failures if f != QA_RUN_CHECK]
 
 
-def _record_run(failures: list[str], skipped: list[str], now: datetime) -> None:
+def _record_run(failures: list[str], skipped: list[str], now: datetime, unread: str = "") -> None:
     """Persist WHAT THIS RUN FOUND, for the next run to read back.
 
     The two lists are stored rather than a single verdict word because the
     next run's question is not "did it pass" but "did anything it reported go
     unread" — and that is answered per NAME, against what is true today.
+
+    `unread` is THIS run's own `qa_prior_run` reason, and it is a THIRD field
+    rather than a sixth name in `failures` on purpose. The record has two
+    readers asking different questions, and one list cannot answer both:
+
+      next qa run  -> "did a name I reported go quiet?"  MUST NOT see this
+                      one. `_own_findings` explains why: an unread failure
+                      would re-arm the report of itself, every day, forever.
+      health digest -> "what did the last run find?"     MUST see it. It is
+                      the whole finding, and it is invisible in `failures` by
+                      the construction directly above.
+
+    Keeping it out of `failures` preserves the first answer exactly; putting
+    it on the record at all is what gives the second one a path. Nothing
+    compares against this field, so it cannot echo.
     """
     state = _load_state()
     state[QA_RUN_SECTION] = {
         "last_run": now.isoformat(),
         "failures": sorted(failures),
         "skipped": sorted(skipped),
+        "unread": unread,
     }
     _save_state(state)
 
@@ -2215,6 +2231,11 @@ class PriorRun:
     at: datetime
     failures: tuple[str, ...]
     skipped: tuple[str, ...]
+    #: The run's own `qa_prior_run` reason, "" if it passed. Absent on any
+    #: record written before this field existed, which reads the same as a
+    #: pass -- the conservative direction: a digest that stays silent about
+    #: one historical run, never one that invents a finding for it.
+    unread: str = ""
 
 
 def _prior_run(state: dict | None = None) -> PriorRun | None:
@@ -2243,15 +2264,26 @@ def _prior_run(state: dict | None = None) -> PriorRun | None:
         raw = entry.get(key)
         return tuple(str(x) for x in raw) if isinstance(raw, list) else ()
 
-    return PriorRun(at, _names("failures"), _names("skipped"))
+    raw_unread = entry.get("unread")
+    return PriorRun(
+        at,
+        _names("failures"),
+        _names("skipped"),
+        raw_unread if isinstance(raw_unread, str) else "",
+    )
 
 
 def qa_prior_run(
     now: datetime | None = None,
     failures: list[str] | None = None,
     skipped: list[str] | None = None,
-) -> None:
+) -> str:
     """Read back what the previous run reported, because nothing else does.
+
+    Returns the reason it FAILED on, or "" — so that `main` can put this
+    check's own finding on the record for the digest, which `_own_findings`
+    keeps out of `failures` and which therefore reached no reader at all.
+    See `_record_run`.
 
     Runs LAST, and is given this run's own findings, because both of its arms
     are comparisons against today:
@@ -2283,7 +2315,7 @@ def qa_prior_run(
     prior = _prior_run()
     if prior is None:
         check(QA_RUN_CHECK, True, "no prior run on record — nothing to read back")
-        return
+        return ""
     age_h = (now - prior.at).total_seconds() / 3600.0
     reasons = []
     if age_h > QA_RUN_GAP_BUDGET_H:
@@ -2298,8 +2330,9 @@ def qa_prior_run(
     if healed_s:
         reasons.append(f"prior run SKIPPED {healed_s} and ran today — nothing read it")
     if reasons:
-        check(QA_RUN_CHECK, False, "; ".join(reasons))
-        return
+        reason = "; ".join(reasons)
+        check(QA_RUN_CHECK, False, reason)
+        return reason
     still = sorted(set(prior.failures) | set(prior.skipped))
     check(
         QA_RUN_CHECK,
@@ -2307,6 +2340,7 @@ def qa_prior_run(
         f"prior run {prior.at:%m-%d %H:%M}Z was {age_h:.1f}h ago"
         + (f"; {still} still open today, reported by their own lines" if still else ", clean"),
     )
+    return ""
 
 
 def main() -> None:
@@ -2324,10 +2358,10 @@ def main() -> None:
     qa_collect_skips()  # sidecar journal; never gated by the archive lock
     qa_fade_window_capture()  # journal-only, for the same reason
     qa_batch_run_budget()  # journal-only, for the same reason
-    qa_prior_run(now, _own_findings(), _skipped)  # the only reader of the last run
+    unread = qa_prior_run(now, _own_findings(), _skipped)  # the only reader of the last run
     # Re-read AFTER the check rather than reusing the list above: the
     # exclusion is then a live filter, not an artifact of statement order.
-    _record_run(_own_findings(), _skipped, now)  # BEFORE either exit path below
+    _record_run(_own_findings(), _skipped, now, unread)  # BEFORE either exit path below
     if _failures:
         print(f"[qa] {len(_failures)} FAILURES: {_failures}", flush=True)
         sys.exit(1)

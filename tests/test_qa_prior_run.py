@@ -339,3 +339,114 @@ def test_recording_the_run_keeps_the_other_sections_clocks():
     state = json.loads(qa.STATE.read_text())
     assert state["archive"]["first_seen"] == "2026-08-02T08:20:31"
     assert state[qa.QA_RUN_SECTION]["failures"] == []
+
+
+# --------------------------------------------------------------------------
+# Giving this check's OWN finding a reader, without giving it an echo.
+#
+# `_own_findings` keeps `prior QA run was read` out of the record's `failures`
+# so an unread failure cannot re-arm the report of itself forever. That is
+# right, and it left the finding with no reader at all: `collector.health`
+# reads the same list, so the digest could not name this check on any run --
+# on the run where every other check is green (which is the run it fires on)
+# the operator saw a FAILED unit above a `clean` QA line.
+#
+# The record now carries the reason in a THIRD field. These arms pin both
+# halves: the digest can see it, and the comparison still cannot.
+# --------------------------------------------------------------------------
+
+
+def _prior(at, failures=(), skipped=()):
+    qa.STATE.parent.mkdir(parents=True, exist_ok=True)
+    qa.STATE.write_text(
+        json.dumps(
+            {
+                qa.QA_RUN_SECTION: {
+                    "last_run": at.isoformat(),
+                    "failures": list(failures),
+                    "skipped": list(skipped),
+                }
+            }
+        )
+    )
+
+
+def test_the_check_returns_the_reason_it_failed_on():
+    now = datetime.now(UTC)
+    _prior(now - timedelta(hours=24), failures=["stream fresh"])
+    reason = qa.qa_prior_run(now, [], [])
+    assert "stream fresh" in reason and "nothing read it" in reason
+
+
+def test_the_check_returns_empty_when_it_passes():
+    now = datetime.now(UTC)
+    _prior(now - timedelta(hours=24), failures=["stream fresh"])
+    assert qa.qa_prior_run(now, ["stream fresh"], []) == ""
+
+
+def test_the_check_returns_empty_when_there_is_no_prior_run():
+    assert qa.qa_prior_run(datetime.now(UTC), [], []) == ""
+
+
+def test_the_reason_lands_on_the_record_for_the_digest_to_read():
+    now = datetime.now(UTC)
+    _prior(now - timedelta(hours=24), failures=["stream fresh"])
+    reason = qa.qa_prior_run(now, [], [])
+    qa._record_run(qa._own_findings(), [], now, reason)
+    assert qa._prior_run().unread == reason
+
+
+def test_the_recorded_reason_does_not_re_arm_the_report_of_itself(capsys):
+    """The property `_own_findings` was written to protect, now that the finding
+    is on the record: one unread failure must be named ONCE, not every night
+    forever. Run day 2 (which reports it) and then day 3 against day 2's own
+    record -- day 3 must be green."""
+    day2 = datetime.now(UTC)
+    _prior(day2 - timedelta(hours=24), failures=["stream fresh"])
+    reason = qa.qa_prior_run(day2, [], [])
+    assert reason
+    qa._record_run(qa._own_findings(), [], day2, reason)
+    capsys.readouterr()
+
+    qa._failures.clear()
+    day3 = day2 + timedelta(hours=24)
+    assert qa.qa_prior_run(day3, [], []) == ""
+    assert qa.QA_RUN_CHECK not in qa._failures
+    assert "PASS" in capsys.readouterr().out
+
+
+def test_main_passes_the_checks_own_reason_through_to_the_record():
+    """Read off the source: `main` must hand `qa_prior_run`'s RETURN VALUE to
+    `_record_run`. Dropping it puts the digest back where it was, and no
+    behavioural test of `main` alone would notice -- both lists stay correct."""
+    tree = ast.parse(QA.read_text())
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "main")
+    assigned = {
+        t.id
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Call)
+        and getattr(n.value.func, "id", None) == "qa_prior_run"
+        for t in n.targets
+        if isinstance(t, ast.Name)
+    }
+    assert assigned, "main() discards qa_prior_run's reason"
+    call = next(
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_record_run"
+    )
+    passed = {a.id for a in call.args if isinstance(a, ast.Name)} | {
+        k.value.id for k in call.keywords if isinstance(k.value, ast.Name)
+    }
+    assert assigned & passed, "main() records the run without the reason"
+
+
+def test_the_record_keeps_carrying_both_lists_unchanged():
+    """The two comparison fields are frozen. A reader of an archived record must
+    not find their meaning changed by the field added beside them."""
+    now = datetime.now(UTC)
+    qa._record_run(["a"], ["b"], now, "some reason")
+    entry = json.loads(qa.STATE.read_text())[qa.QA_RUN_SECTION]
+    assert entry["failures"] == ["a"] and entry["skipped"] == ["b"]
+    assert entry["unread"] == "some reason"

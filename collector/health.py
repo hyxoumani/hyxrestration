@@ -105,6 +105,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from collector.qa import QA_RUN_CHECK as QA_UNREAD_CHECK
 from collector.qa import STANDING_SKIPS, _load_state, _prior_run
 from collector.qa import STATE as QA_STATE
 
@@ -1015,6 +1016,18 @@ def judge_qa(state: dict, qa_svc: dict[str, str], now: datetime) -> str:
     one layer down and `qa_prior_run` refuses one layer up. Standing names are
     still REPORTED -- unread is not the goal -- but as a parenthetical that does
     not move the verdict. Only a skip qa did NOT expect makes the run partial.
+
+    **`prior.unread` IS A FINDING, AND IT USED TO REACH NOBODY.** qa strips its
+    own `prior QA run was read` result out of `failures` before recording --
+    correctly, or one unread failure re-arms the report of itself forever
+    (`qa._own_findings`) -- and this line read `failures`. So the digest could
+    not name that check on any run, and the run it fires on is by construction
+    the run where every OTHER check is green: the operator got `FAILED
+    hyxlab-qa.service` from the unit above and `clean` from this line, with no
+    name anywhere between them. That is the shape the whole module exists to
+    close, one layer up from where it was closed. qa now records the reason in
+    its own field and this reads it; "clean" is withheld, because the run
+    exited 1 and the unit line says so.
     """
     prior = _prior_run(state)
     started = _epoch(qa_svc.get("ExecMainStartTimestamp", ""))
@@ -1028,9 +1041,16 @@ def judge_qa(state: dict, qa_svc: dict[str, str], now: datetime) -> str:
         verdict = f"FAILURES {list(prior.failures)}"
     elif unexpected:
         verdict = f"skipped {unexpected} — NOT a full pass"
+    elif prior.unread:
+        verdict = "no check failed"
     if standing:
         verdict += f" (standing skip{'s' if len(standing) > 1 else ''}: {', '.join(standing)})"
     line = f"QA         last run {prior.at:%m-%d %H:%M}Z ({age_h:.1f}h ago): {verdict}"
+    if prior.unread:
+        # Always, not only when the rest is green: it is independent of what
+        # the other sections found today, so suppressing it under a failure
+        # list would hide it on exactly the busy run nobody re-reads.
+        line += f"\nUNREAD     {QA_UNREAD_CHECK} — {prior.unread}"
     if started is not None and started - prior.at.timestamp() > QA_RECORD_LAG_S:
         gap_h = (started - prior.at.timestamp()) / 3600.0
         line += (
