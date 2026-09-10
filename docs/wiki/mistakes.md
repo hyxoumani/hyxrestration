@@ -1164,6 +1164,49 @@ Format: what happened → root cause → error type → prevention tier
     red check #29 and #45 turned out to be. That property is asserted
     directly, not argued.
 
+47. **2026-09-10 -- a promoted timer was installed, verified, drift-clean
+    and INERT.** `hyxlab-divergence.timer` was added to
+    `scripts/systemd/` and promoted. `systemd-analyze verify` passed,
+    `test_systemd_units.py` passed, and `collector.health --drift-only`
+    reported `23/23 loaded unit files match the repo`. `systemctl --user
+    is-enabled hyxlab-divergence.timer` said **disabled**. The unit
+    would never have fired, and the QA consumer shipped in the same pass
+    would have gone red 36h later blaming a report nothing was
+    scheduled to produce.
+    Nothing in the tree could have caught it. `promote.sh`'s
+    `install_units()` was `cp` + `daemon-reload`, and enablement is
+    neither -- it is the `timers.target.wants` symlink that only
+    `enable` writes. Every drift arm compares unit TEXT, and the text
+    was perfect; this is invisible to a file comparison by construction,
+    for the same reason the SHADOWED and DROP-IN arms exist. The gap had
+    been latent since the fleet was built and was never exercised,
+    because every existing timer was enabled BY HAND on the day it was
+    first written, and no timer had been added since.
+    Type: `installed-is-not-running`. **RULE: shipping a unit file is
+    not deploying a unit. A promotion must leave the manager in the
+    state the repo describes -- which for a timer means enabled, not
+    merely present -- and the gate on that cannot be a text comparison,
+    because the text is what was already right.**
+    Prevention: `install_units()` now globs `scripts/systemd/hyxlab-*.timer`
+    and runs `systemctl --user enable --now` over the discovered set
+    (idempotent on an already-enabled, already-active timer, so it
+    cannot disturb a running schedule or a `Persistent` catch-up).
+    Timers ONLY: enabling a timer-triggered `.service` would also start
+    it at boot, outside the schedule its timer exists to impose.
+    `tests/test_promote_enables_timers.py` pins all of it lexically --
+    including that the set is GLOBBED and not enumerated, since an
+    enumeration cannot fail when a new timer appears, which is this same
+    defect restated one level up. All three arms verified to fail
+    against the pre-fix `promote.sh`.
+    **OPEN, and named so the next pass does not have to rediscover it:**
+    `health.judge_drift` still has no INERT arm. The digest would report
+    a hand-`disable`d timer as clean, and the repair above only covers
+    units that arrive through a promotion. The arm needs `UnitFileState`
+    in the props and a rule for which repo units are SUPPOSED to be
+    enabled (timers yes, timer-backed services no) -- deliberately not
+    written in the pass that found it, so the shape gets designed rather
+    than bolted on.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -66,18 +66,44 @@ that SELECT is exactly how the two would come to disagree about which
 run is the subject. `simulator/shadow.py` was deliberately NOT touched
 -- it is in the live daemon's import closure and a promote would have
 cost `hyxlab-shadow` its 60h run.
-**Suite 1244 -> 1262. COMMITTED, PROMOTED, PUSHED.** Mistake #46 gains a
-FOLLOW-UP: a standing report is not standing until something other than
-a person re-runs it, and a measurement with no consumer is not a
-measurement -- when a pass finds a defect in what a report SAYS, ask in
-the same pass who reads it.
-NEXT PASS: (1) **the 09-10 10:00Z QA run is the first to carry the
+**(7) AND THE PROMOTION ITSELF FOUND ONE, mistake #47.** The new timer
+promoted clean by every gate the repo has -- `systemd-analyze verify`
+green, unit-file suite green, `--drift-only` reporting `23/23 loaded
+unit files match the repo` -- and `is-enabled` said **disabled**. It
+would never have fired, and the QA consumer shipped beside it would
+have gone red 36h later blaming a report nothing was scheduled to
+produce. `install_units()` was `cp` + `daemon-reload`; enablement is
+neither, it is the `timers.target.wants` symlink only `enable` writes,
+and every drift arm compares unit TEXT -- which was perfect. Latent
+since the fleet was built, never exercised because every existing timer
+was enabled by hand on the day it was written and no timer had been
+added since. Fixed: `install_units()` globs
+`scripts/systemd/hyxlab-*.timer` and `enable --now`s the discovered set
+(idempotent; timers only -- enabling a timer-backed oneshot would also
+fire it at boot). Four tests, three of them verified to fail against
+the pre-fix script. The timer is enabled on the box now: first fire
+**2026-09-11 01:20Z**.
+**LEFT UNDONE, deliberately, and named:** `health.judge_drift` has no
+INERT arm, so a hand-`disable`d timer still reads clean in the digest
+and the repair above only covers units arriving through a promotion.
+It needs `UnitFileState` plus a rule for which repo units are supposed
+to be enabled; that is a shape to design, not to bolt onto the pass
+that found it. It is the top item below.
+**Suite 1244 -> 1266. COMMITTED, PROMOTED, PUSHED (twice -- the second
+promotion is the one that enables the first's timer).** Mistake #46
+gains a FOLLOW-UP: a standing report is not standing until something
+other than a person re-runs it, and a measurement with no consumer is
+not a measurement -- when a pass finds a defect in what a report SAYS,
+ask in the same pass who reads it. Mistake **#47** logged: shipping a
+unit file is not deploying a unit.
+NEXT PASS: (1) **`health.judge_drift` INERT arm** (above).
+(2) **The 09-10 10:00Z QA run is the first to carry the
 divergence section** -- read its three lines; it should also be the
 first GREEN run since the disk check was retired (fourth consecutive
-pass predicting green, the first two defeated by that check). (2)
+pass predicting green, the first two defeated by that check). (3)
 `hyxlab-divergence.timer` first fires 09-11 01:20Z and should no-op in
-under a second; confirm from the journal, not by assuming. (3) The
-10th panel day, ~09-17. (4) Width-24 econ maker bracket needs
+under a second; confirm from the journal, not by assuming. (4) The
+10th panel day, ~09-17. (5) Width-24 econ maker bracket needs
 2026-09-12; atlas quoted tier wants ~2.1M settled markets. Both
 data-gated. **USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box is
 still the standing item and still the 8x burn cut (252 d -> ~2,000 d);

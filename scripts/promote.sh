@@ -71,6 +71,22 @@ install_units() {
     echo "== install systemd units (repo scripts/systemd/ is canonical) =="
     cp "$DEV"/scripts/systemd/hyxlab-* ~/.config/systemd/user/
     systemctl --user daemon-reload
+    # A NEW timer ships installed and INERT without this, and nothing catches
+    # it: `enable` is what writes the timers.target.wants symlink, and the
+    # unit-drift check compares unit TEXT, so it read 23/23 green on a box
+    # where the unit just installed would never fire. Measured 2026-09-10 --
+    # `hyxlab-divergence.timer` promoted clean, `is-enabled` said `disabled`,
+    # and it had to be enabled by hand.
+    #
+    # Timers only. A timer-triggered .service must NOT be enabled (it would
+    # then also start at boot, outside its schedule). `enable --now` is
+    # idempotent: on an already-enabled, already-active timer both halves are
+    # no-ops, so this cannot disturb a running schedule or a Persistent
+    # catch-up.
+    echo "== enable the repo's timers (idempotent; a new timer is inert until enabled) =="
+    local timers=()
+    for t in "$DEV"/scripts/systemd/hyxlab-*.timer; do timers+=("$(basename "$t")"); done
+    systemctl --user enable --now "${timers[@]}"
 }
 
 cd "$DEV"
