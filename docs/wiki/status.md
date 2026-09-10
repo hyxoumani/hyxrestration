@@ -1,116 +1,78 @@
 # Status & next steps (living page)
 
-Updated: **2026-09-10 (DIVERGENCE-CONSUMER PASS -- THE REPORT'S DEFAULT
-WAS FIXED AND STILL NOBODY READ IT.**
-Cold start per instructions. The digest's one failure resolves to NO
-ACTION and was checked, not assumed: `hyxlab-qa FAILED` is still the
-09-09 10:00Z run, whose failure list was `['stream disk under 20 GB']`
--- the check retired two passes ago. The next scheduled run (09-10
-10:00Z) is the first that can show the fix; it has not fired yet.
-**(1) THE QUEUED ITEM, DONE: the in-flight report landed and its
-numbers are recorded.** Run `20260829T191841` -- 8.8 days, 38,143
-fills, the second-largest in the record and the first measurement on
-post-08-20 data: **1.0/1.0 match both directions, zero unmatched in
-either stream, all four causes 0, every price delta 0, gross cash
-27,874.62 and fees 1,551.60 identical to the cent.** Taker haircut ~ 0
-now holds across four independent multi-day windows over two months.
-The fee rate did not drift underneath it either: 5.57% here vs 5.56%
-on the 08-10 run. It cost 30min 06s wall / 30min 20s CPU / 4G peak --
-written down because the next item spends it. Into
-`simulation-honesty.md`.
-**(2) AND THEN THE ACTUAL FINDING: #46 WAS TWO DEFECTS AND LAST PASS
-FIXED ONE.** That pass ended on "the line `[divergence] run
-20260810T081931` scrolled past unread" and filed it as a reading
-failure. It was not one. `simulator.divergence` -- the report that sets
-the calibration haircut under EVERY backtest verdict -- had no
-scheduler and no consumer: it ran when a human remembered, and wrote
-its result to a JSON file that nothing in this project read. A correct
-default still cannot be seen by anyone. Twelve reports over two months,
-zero readers.
-**(3) BOTH HALVES ARE MACHINERY NOW.** `hyxlab-divergence.timer`
-(daily 01:20Z) runs `simulator.divergence --if-new`, which exits 0 in
-under a second when the selected run is already reported -- the subject
-is `latest_complete_run`, which advances only when the shadow daemon
-restarts, so the 30-minute path runs about as often as the daemon does.
-Verified live: the flag no-opped on today's record without replaying.
-`qa_divergence` reads it 8h40m later in the 10:00Z run and asserts
-three things -- measured within 36h of becoming measurable, exact-tier
-match rate >= 0.99 both directions, mean |price delta| <= 1e-3. Also
-verified live against the real ledger and report dir: three PASS lines,
-zero failures.
-**(4) THE BOUNDS ARE THE RECORD, NOT ROUND NUMBERS.** 0.99 is the whole
-post-matcher-v2 history: worst benign window 0.9927 (08-03, all of it
-reclassified seed-settling) = ~1.4x headroom, and 45x clear of the
-pre-fix 07-09 regime at 0.6943/0.9337 it exists to catch. 1e-3 is 0.1%
-of fills disagreeing by a full Kalshi tick against a record whose
-largest value ever, broken era included, is 7e-6 -- deliberately the
-coarse arm, because a fill the replay never produced contributes no
-price delta at all and the match rate carries the sensitivity.
-**(5) WHY THIS ONE IS ALLOWED TO EXIST, given #29 and #45 were both
-retired for being one-way.** Its subject is the NEWEST finished run,
-never a fixed one. A run that becomes permanently unmeasurable (stream
-window aged out) stops being the subject the moment the daemon
-restarts, so the check goes green on the next run instead of staying
-red forever on the lost one. Asserted directly, not argued.
-**(6) A META-TEST CAUGHT ITS OWN BRITTLENESS.**
-`test_the_reachability_exits_are_credited` asserted `len(reach) == 2`
-and failed on the arrival of a third section behaving perfectly -- a
-test that punishes what it exists to encourage. The count is now
-DERIVED from qa.py's own `if not _reachable(` call sites, with a
-non-vacuity floor.
-**Kernel:** `hyxlab/shadowruns.py` -- `latest_complete_run` moved out of
-`simulator.divergence`, plus `run_completed_at`. In the kernel because
-the report and its consumer sit on opposite sides of the import
-boundary (`collector` cannot import `simulator`), and a second copy of
-that SELECT is exactly how the two would come to disagree about which
-run is the subject. `simulator/shadow.py` was deliberately NOT touched
--- it is in the live daemon's import closure and a promote would have
-cost `hyxlab-shadow` its 60h run.
-**(7) AND THE PROMOTION ITSELF FOUND ONE, mistake #47.** The new timer
-promoted clean by every gate the repo has -- `systemd-analyze verify`
-green, unit-file suite green, `--drift-only` reporting `23/23 loaded
-unit files match the repo` -- and `is-enabled` said **disabled**. It
-would never have fired, and the QA consumer shipped beside it would
-have gone red 36h later blaming a report nothing was scheduled to
-produce. `install_units()` was `cp` + `daemon-reload`; enablement is
-neither, it is the `timers.target.wants` symlink only `enable` writes,
-and every drift arm compares unit TEXT -- which was perfect. Latent
-since the fleet was built, never exercised because every existing timer
-was enabled by hand on the day it was written and no timer had been
-added since. Fixed: `install_units()` globs
-`scripts/systemd/hyxlab-*.timer` and `enable --now`s the discovered set
-(idempotent; timers only -- enabling a timer-backed oneshot would also
-fire it at boot). Four tests, three of them verified to fail against
-the pre-fix script. The timer is enabled on the box now: first fire
-**2026-09-11 01:20Z**, and the digest already carries it (13 units, not
-12). One thing measured rather than claimed: the digest is a NEAR-MISS,
-not a control. `collector.health` enumerates from `UNIT_DIR.glob`, so it
-DOES list an installed-but-disabled unit and its NEVER-RAN arm would
-have said `timer active but never triggered` on the next pass -- but it
-says exactly that for the correctly-enabled timer right now, so it
-cannot tell inert from first-fire-pending, and nobody reading that line
-would have had cause to look.
-**LEFT UNDONE, deliberately, and named:** `health.judge_drift` has no
-INERT arm, so a hand-`disable`d timer still reads clean in the digest
-and the repair above only covers units arriving through a promotion.
-It needs `UnitFileState` plus a rule for which repo units are supposed
-to be enabled; that is a shape to design, not to bolt onto the pass
-that found it. It is the top item below.
-**Suite 1244 -> 1266. COMMITTED, PROMOTED, PUSHED (twice -- the second
-promotion is the one that enables the first's timer).** Mistake #46
-gains a FOLLOW-UP: a standing report is not standing until something
-other than a person re-runs it, and a measurement with no consumer is
-not a measurement -- when a pass finds a defect in what a report SAYS,
-ask in the same pass who reads it. Mistake **#47** logged: shipping a
-unit file is not deploying a unit.
-NEXT PASS: (1) **`health.judge_drift` INERT arm** (above).
-(2) **The 09-10 10:00Z QA run is the first to carry the
-divergence section** -- read its three lines; it should also be the
-first GREEN run since the disk check was retired (fourth consecutive
-pass predicting green, the first two defeated by that check). (3)
-`hyxlab-divergence.timer` first fires 09-11 01:20Z and should no-op in
-under a second; confirm from the journal, not by assuming. (4) The
-10th panel day, ~09-17. (5) Width-24 econ maker bracket needs
+Updated: **2026-09-10 (SWEEP-BUSY PASS -- THE SWEEP DIED OF THE ONE
+FAILURE IT COULD HAVE SHRUGGED OFF.)**
+Cold start per instructions. The digest carried TWO failures that last
+pass did not have, and they are one story: `hyxlab-sweep` FAILED 09-10
+06:10Z, and `hyxlab-collect` failed 7x between 07:00 and 07:36Z.
+**(1) WHAT HAPPENED.** The daily incremental sweep ran 600 of 3,656
+series and then died with a bare `duckdb.IOException` out of
+`writer_burst` -- a reader held `data/hyxlab.duckdb` past the 300s open
+budget, `open_retry` re-raised, and the traceback went straight through
+`run_sweep` and `main`. Exit 1. ~3,000 series untouched. The collect
+failures are the mirror image and were CORRECT behaviour: while the
+sweep held the flock, collect skipped its cycle and exited 75, which is
+the designed skip and is already covered by QA's `collect-skips`
+section. Two writers, one file, opposite manners.
+**(2) THE ACTUAL DEFECT IS THE ASYMMETRY, NOT THE CRASH.** Nothing was
+corrupt and nothing was permanently lost: `sweep_series` advances the
+watermark only in its final burst and every intermediate write is
+idempotent -- both already written down in that docstring. Which is
+what makes it indefensible. The same loop handles VENUE degradation
+with real care (count, `sweep_log` row, break at `ABORT_CONSEC_ERRORS`,
+exit 75, resume tomorrow) -- and that is the failure the sweep can do
+NOTHING about. The held-file failure, which clears on its own in
+minutes, had no handler at all. `hyxlab-collect` meets the identical
+condition daily and calls it a skip.
+**(3) WHY IT SURVIVED: THE MITIGATION HAD A NAME.**
+`BURST_OPEN_RETRIES * BURST_OPEN_DELAY_S >= 300` is pinned by a test,
+and `writer_burst`'s comment says the budget was widened because
+"readers don't take the flock, so the open can still lose to one."
+Widening a budget does not bound a race -- it moves the point at which
+losing it becomes fatal. Two readers, or one slow one, and it is spent.
+**(4) FIXED.** `run_sweep` catches `duckdb.Error` per series, counts
+`lock_skips`, prints the ticker, and continues; the venue breaker never
+sees it. `ABORT_CONSEC_LOCK_SKIPS = 5`, deliberately shorter than the
+venue's 25 -- each skip has ALREADY burned the full 300s, so 5 unbroken
+is 25 min of solid contention (a held file, not an overlap) where 25
+would burn two hours before saying so. Two more escape hatches closed
+in passing: the venue branch's own `log_sweep` burst could disarm the
+breaker, and `main`'s closing census burst could retitle a fully
+completed run as a failure.
+**(5) #46 CARRIED FORWARD RATHER THAN REPEATED.** A partial sweep now
+reports GREEN, so the count could not be left in the journal for a
+human to notice. A skip cannot log itself -- the burst it needs is the
+one that failed -- so the tickers are DEFERRED and replayed into the
+closing burst as `sweep_log` rows with status `busy`, which `doctor`'s
+existing by-status census already reads. Deferred, not impossible:
+that is why this needed no `collect_skips.jsonl`-style sidecar of its
+own. `test_writer_lock_discipline.py`'s allowlist gained
+`sweep.py::main` with the disposition spelled out.
+`tests/test_hyxlab_sweep_busy.py`, ten arms, NINE verified to fail
+against the pre-fix module (the tenth pins the pre-existing exit-75
+contract the new abort rides on).
+**LEFT UNDONE, deliberately, and named:** the same journal shows the
+shadow daemon (PID 3806798) holding `data/hyxstream.duckdb` for several
+minutes on 09-10 while `hyxlab-stream` logged repeated `flush FAILED
+... rows held for retry`, backlog climbing 974 -> 3,228. streamd
+degraded correctly and lost nothing, so this is latency and memory
+pressure, not data -- but it is the same two-writers-one-file shape one
+archive over, and NOTHING currently measures how long that backlog
+gets. That is a measurement to design, not to bolt on here.
+**Suite 1266 -> 1276. COMMITTED, PROMOTED, PUSHED.** Mistake **#48**
+logged: a loop's graceful path must cover the CHEAPEST failure, not
+just the loudest; a retry budget is a bet on a deadline, never a
+guarantee, and for idempotent watermark-resumable work the answer when
+it runs out is "skip it," never "die."
+NEXT PASS: (1) **The 09-11 06:10Z sweep is the first run under the new
+handler** -- read its `done:` line for `lock_skips` and check
+`sweep_log` for `busy` rows; it should also clear the red. (2)
+**streamd flush backlog** (above) -- the unmeasured one. (3)
+`health.judge_drift` INERT arm (still open from #47). (4) The 09-10
+10:00Z QA run carries the divergence section for the first time --
+read its three lines. (5) `hyxlab-divergence.timer` first fires 09-11
+01:20Z and should no-op in under a second; confirm from the journal.
+(6) The 10th panel day, ~09-17. (7) Width-24 econ maker bracket needs
 2026-09-12; atlas quoted tier wants ~2.1M settled markets. Both
 data-gated. **USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box is
 still the standing item and still the 8x burn cut (252 d -> ~2,000 d);

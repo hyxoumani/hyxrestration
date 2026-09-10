@@ -125,6 +125,13 @@ EXCLUDED_SERIES_PREFIXES: tuple[str, ...] = ("KXMVE",)
 # every unfinished watermark untouched, so the next timer firing resumes
 # exactly where this one stopped: a delayed sweep, never a lost one.
 ABORT_CONSEC_ERRORS = 25
+# Lock contention is not venue degradation and gets its own, much shorter
+# fuse: every lock skip has ALREADY burned the full BURST_OPEN_RETRIES *
+# BURST_OPEN_DELAY_S budget (300s) waiting, so 5 unbroken skips is 25
+# minutes of solid contention -- a stuck reader or a broken file, not the
+# seconds-long overlap the budget exists to absorb. Reusing the venue's 25
+# would burn two hours before saying so.
+ABORT_CONSEC_LOCK_SKIPS = 5
 
 # Mid-series flush threshold, in buffered rows (candles + trades).
 # "All writes for the series land in a single writer_burst" assumed the
@@ -467,11 +474,23 @@ def run_sweep(
         "markets": 0,
         "candles": 0,
         "errors": 0,
+        "lock_skips": 0,
+        # Tickers behind `lock_skips`, popped by main and written to
+        # sweep_log in the CLOSING burst. A skip cannot log itself -- the
+        # burst it needs is the one that just failed -- but by the end of
+        # the run the reader that caused it is almost always gone, so the
+        # record is merely DEFERRED, not impossible (which is why this
+        # needs no `collect_skips.jsonl`-style sidecar of its own).
+        # Without it a partial sweep would report green with a count that
+        # lives only in the journal: mistake #46, a measurement no
+        # instrument reads. `doctor` already prints sweep_log by status.
+        "lock_skipped": [],
         "truncated": 0,
         "aborted": False,
     }
     t0 = time.monotonic()
     consec_errors = 0
+    consec_lock_skips = 0
     for i, ticker in enumerate(targets):
         # Per-series raises ride the DEFAULT budget only; an explicit
         # --max-markets (or 0 = unbounded) wins uniformly, so a --limit
@@ -490,17 +509,54 @@ def run_sweep(
             totals["candles"] += n_c
             totals["truncated"] += int(truncated)
             consec_errors = 0
+            consec_lock_skips = 0
             if truncated:
                 print(
                     f"[sweep] {ticker} TRUNCATED at {n_m} markets"
                     f" (per-series budget); logged non-ok, resumes next run",
                     flush=True,
                 )
+        except duckdb.Error as e:
+            # A lost writer open is the ONE failure this loop used to let
+            # kill the whole run: `writer_burst` raised straight through
+            # run_sweep and main, and the 09-10 06:10Z sweep died at series
+            # ~600 of 3,656 because a reader held data/hyxlab.duckdb past
+            # the 300s budget. Nothing was corrupt and nothing was lost --
+            # the watermark advances only in the final burst, so the series
+            # simply re-runs -- yet 3,000 untouched series waited a day for
+            # a contention that had already cleared. `hyxlab-collect` hits
+            # the identical condition and treats it as a SKIP; this is the
+            # same rule for the other writer. Deliberately no sweep_log row:
+            # writing one needs the burst that just failed.
+            totals["lock_skips"] += 1
+            totals["lock_skipped"].append((ticker, str(e)[:200]))
+            consec_lock_skips += 1
+            print(
+                f"[sweep] {ticker} SKIPPED: archive busy"
+                f" ({type(e).__name__}: {str(e)[:120]}) —"
+                f" watermark unmoved, next run resumes",
+                flush=True,
+            )
+            if consec_lock_skips >= ABORT_CONSEC_LOCK_SKIPS:
+                totals["aborted"] = True
+                print(
+                    f"[sweep] ABORT after {consec_lock_skips} consecutive"
+                    f" archive-busy skips at {ticker} — the DB is held, not"
+                    f" contended; watermarks intact, next run resumes",
+                    flush=True,
+                )
+                break
         except requests.RequestException as e:
             totals["errors"] += 1
             consec_errors += 1
-            with writer_burst(db) as store:
-                store.log_sweep(ticker, None, None, 0, 0, "error", str(e)[:200])
+            try:
+                with writer_burst(db) as store:
+                    store.log_sweep(ticker, None, None, 0, 0, "error", str(e)[:200])
+            except duckdb.Error:
+                # The breaker must not be disarmed by the archive being
+                # busy: losing the audit row is worse than not counting
+                # this failure, but letting the open kill the run is worst.
+                totals["lock_skips"] += 1
             if consec_errors >= ABORT_CONSEC_ERRORS:
                 totals["aborted"] = True
                 print(
@@ -629,9 +685,18 @@ def main() -> None:
             refetch_from=args.refetch_from,
             refetch_to=args.refetch_to,
         )
+        skipped = totals.pop("lock_skipped", [])
         print(f"[sweep] done: {totals}")
-        with writer_burst(args.db) as store:
-            print(f"[sweep] db={store.counts()}")
+        try:
+            with writer_burst(args.db) as store:
+                for ticker, why in skipped:
+                    store.log_sweep(ticker, None, None, 0, 0, "busy", why)
+                print(f"[sweep] db={store.counts()}")
+        except duckdb.Error as e:
+            # A closing-census open that loses to a reader must not retitle
+            # a completed run as a failed one — every series is already
+            # persisted at this point and the census is a journal nicety.
+            print(f"[sweep] db=busy ({type(e).__name__}: {str(e)[:120]})", flush=True)
         if totals.get("aborted"):
             # Nonzero so systemd records a failed run — today's outage run
             # said "Finished" with an 82%-error pass only the journal knew

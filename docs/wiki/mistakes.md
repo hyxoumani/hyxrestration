@@ -1216,6 +1216,70 @@ Format: what happened → root cause → error type → prevention tier
     written in the pass that found it, so the shape gets designed rather
     than bolted on.
 
+48. **2026-09-10 -- the sweep had a graceful path for the failure it
+    cannot recover from and none for the one it can.** The 06:10Z
+    incremental sweep died at series ~600 of 3,656 with a bare
+    `duckdb.IOException` out of `writer_burst`: a reader held
+    `data/hyxlab.duckdb` past the 300s open budget, `open_retry`
+    re-raised, and the traceback went straight through `run_sweep` and
+    `main`. Exit 1, unit red, ~3,000 series untouched for a contention
+    that cleared in minutes.
+    Nothing was corrupt and nothing was permanently lost --
+    `sweep_series` advances the watermark only in its final burst and
+    every intermediate write is idempotent, both facts already written
+    down in that docstring -- which is exactly what makes the crash
+    indefensible. The same loop already handled VENUE degradation with
+    care: count it, log a `sweep_log` row, break at
+    `ABORT_CONSEC_ERRORS`, exit 75, resume from the watermarks
+    tomorrow. That is the failure the sweep can do nothing about. The
+    held-file failure, which clears on its own, got no handler at all.
+    `hyxlab-collect` meets the identical condition every day and calls
+    it a skip.
+    The reason the gap survived is that the mitigation had a name and
+    looked like a fix. `BURST_OPEN_RETRIES * BURST_OPEN_DELAY_S >= 300`
+    is pinned by a test, and `writer_burst`'s own comment explains that
+    the budget was WIDENED because "readers don't take the flock, so the
+    open can still lose to one." Widening a budget does not bound a
+    race; it only moves the point at which losing it becomes fatal. Two
+    readers, or one slow one, and the 300s is spent.
+    Type: `recoverable-failure-handled-worse-than-unrecoverable-one`.
+    **RULE: when a loop has a graceful degradation path, check that it
+    covers the CHEAPEST failure and not just the loudest. A retry budget
+    is a bet on a deadline, never a guarantee; every budget needs an
+    answer for what happens when it runs out, and for an idempotent,
+    watermark-resumable unit of work that answer is "skip it," never
+    "die."**
+    Prevention: `run_sweep` catches `duckdb.Error` per series, counts
+    `lock_skips`, prints the ticker, and continues; the venue breaker
+    never sees it. `ABORT_CONSEC_LOCK_SKIPS = 5` is a deliberately
+    shorter fuse than the venue's 25 because each skip has already spent
+    the full 300s budget -- 5 unbroken skips is 25 minutes of solid
+    contention, i.e. a held file rather than an overlap, and reusing 25
+    would burn two hours before saying so. The venue branch's own
+    `log_sweep` burst and `main`'s closing census burst are both guarded
+    too: the first used to disarm the breaker, the second used to
+    retitle a fully completed run as a failure.
+    Carrying #46 forward rather than repeating it: a partial sweep now
+    reports GREEN, so the skip count could not be left in the journal
+    for a human to notice. A skip cannot log itself -- the burst it
+    needs is the burst that just failed -- so the tickers are DEFERRED
+    and replayed into the closing burst as `sweep_log` rows with status
+    `busy`, which `doctor`'s existing by-status census reads. Deferred,
+    not impossible, which is why this needed no
+    `collect_skips.jsonl`-style sidecar of its own.
+    `tests/test_hyxlab_sweep_busy.py` has ten arms; nine verified to
+    fail against the pre-fix module (the tenth pins the pre-existing
+    exit-75 contract the new abort rides on).
+    **OPEN, found in the same journal and not chased:** the shadow
+    daemon (PID 3806798) held `data/hyxstream.duckdb` across several
+    minutes on 09-10, and `hyxlab-stream` logged repeated `flush FAILED
+    ... rows held for retry` with the backlog climbing 974 -> 3,228.
+    streamd degraded correctly and lost nothing, so this is a latency
+    and memory-pressure question, not a data one -- but it is the same
+    two-writers-one-file shape one archive over, and nothing currently
+    measures how long that backlog gets.
+
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

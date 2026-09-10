@@ -65,6 +65,12 @@ ALLOWED: dict[str, tuple[str, str]] = {
     ),
     "collector/sweep.py::sweep_series": ("BURST", "the H1 fix itself (2026-08-02)"),
     "collector/sweep.py::run_sweep": ("BURST", "per-series error rows"),
+    "collector/sweep.py::main": (
+        "BURST",
+        "the closing census burst, replaying the run's deferred `busy` rows"
+        " (2026-09-10): a series skipped for a held archive cannot log"
+        " itself, since the burst it needs is the one that failed",
+    ),
     # -- FLOCK: takes the writer lock in the writing function -------------
     "collector/poly_sweep.py::_flush": ("FLOCK", "the ~7h sweep's short write bursts"),
     "collector/trades_backfill.py::_flush": ("FLOCK", "short write burst per market batch"),
