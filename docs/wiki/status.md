@@ -1,83 +1,69 @@
 # Status & next steps (living page)
 
-Updated: **2026-09-10 (SWEEP-BUSY PASS -- THE SWEEP DIED OF THE ONE
-FAILURE IT COULD HAVE SHRUGGED OFF.)**
-Cold start per instructions. The digest carried TWO failures that last
-pass did not have, and they are one story: `hyxlab-sweep` FAILED 09-10
-06:10Z, and `hyxlab-collect` failed 7x between 07:00 and 07:36Z.
-**(1) WHAT HAPPENED.** The daily incremental sweep ran 600 of 3,656
-series and then died with a bare `duckdb.IOException` out of
-`writer_burst` -- a reader held `data/hyxlab.duckdb` past the 300s open
-budget, `open_retry` re-raised, and the traceback went straight through
-`run_sweep` and `main`. Exit 1. ~3,000 series untouched. The collect
-failures are the mirror image and were CORRECT behaviour: while the
-sweep held the flock, collect skipped its cycle and exited 75, which is
-the designed skip and is already covered by QA's `collect-skips`
-section. Two writers, one file, opposite manners.
-**(2) THE ACTUAL DEFECT IS THE ASYMMETRY, NOT THE CRASH.** Nothing was
-corrupt and nothing was permanently lost: `sweep_series` advances the
-watermark only in its final burst and every intermediate write is
-idempotent -- both already written down in that docstring. Which is
-what makes it indefensible. The same loop handles VENUE degradation
-with real care (count, `sweep_log` row, break at `ABORT_CONSEC_ERRORS`,
-exit 75, resume tomorrow) -- and that is the failure the sweep can do
-NOTHING about. The held-file failure, which clears on its own in
-minutes, had no handler at all. `hyxlab-collect` meets the identical
-condition daily and calls it a skip.
-**(3) WHY IT SURVIVED: THE MITIGATION HAD A NAME.**
-`BURST_OPEN_RETRIES * BURST_OPEN_DELAY_S >= 300` is pinned by a test,
-and `writer_burst`'s comment says the budget was widened because
-"readers don't take the flock, so the open can still lose to one."
-Widening a budget does not bound a race -- it moves the point at which
-losing it becomes fatal. Two readers, or one slow one, and it is spent.
-**(4) FIXED.** `run_sweep` catches `duckdb.Error` per series, counts
-`lock_skips`, prints the ticker, and continues; the venue breaker never
-sees it. `ABORT_CONSEC_LOCK_SKIPS = 5`, deliberately shorter than the
-venue's 25 -- each skip has ALREADY burned the full 300s, so 5 unbroken
-is 25 min of solid contention (a held file, not an overlap) where 25
-would burn two hours before saying so. Two more escape hatches closed
-in passing: the venue branch's own `log_sweep` burst could disarm the
-breaker, and `main`'s closing census burst could retitle a fully
-completed run as a failure.
-**(5) #46 CARRIED FORWARD RATHER THAN REPEATED.** A partial sweep now
-reports GREEN, so the count could not be left in the journal for a
-human to notice. A skip cannot log itself -- the burst it needs is the
-one that failed -- so the tickers are DEFERRED and replayed into the
-closing burst as `sweep_log` rows with status `busy`, which `doctor`'s
-existing by-status census already reads. Deferred, not impossible:
-that is why this needed no `collect_skips.jsonl`-style sidecar of its
-own. `test_writer_lock_discipline.py`'s allowlist gained
-`sweep.py::main` with the disposition spelled out.
-`tests/test_hyxlab_sweep_busy.py`, ten arms, NINE verified to fail
-against the pre-fix module (the tenth pins the pre-existing exit-75
-contract the new abort rides on).
-**LEFT UNDONE, deliberately, and named:** the same journal shows the
-shadow daemon (PID 3806798) holding `data/hyxstream.duckdb` for several
-minutes on 09-10 while `hyxlab-stream` logged repeated `flush FAILED
-... rows held for retry`, backlog climbing 974 -> 3,228. streamd
-degraded correctly and lost nothing, so this is latency and memory
-pressure, not data -- but it is the same two-writers-one-file shape one
-archive over, and NOTHING currently measures how long that backlog
-gets. That is a measurement to design, not to bolt on here.
-**Suite 1266 -> 1276. COMMITTED, PROMOTED, PUSHED.** Mistake **#48**
-logged: a loop's graceful path must cover the CHEAPEST failure, not
-just the loudest; a retry budget is a bet on a deadline, never a
-guarantee, and for idempotent watermark-resumable work the answer when
-it runs out is "skip it," never "die."
-NEXT PASS: (1) **The 09-11 06:10Z sweep is the first run under the new
-handler** -- read its `done:` line for `lock_skips` and check
-`sweep_log` for `busy` rows; it should also clear the red. (2)
-**streamd flush backlog** (above) -- the unmeasured one. (3)
-`health.judge_drift` INERT arm (still open from #47). (4) The 09-10
-10:00Z QA run carries the divergence section for the first time --
-read its three lines. (5) `hyxlab-divergence.timer` first fires 09-11
-01:20Z and should no-op in under a second; confirm from the journal.
-(6) The 10th panel day, ~09-17. (7) Width-24 econ maker bracket needs
-2026-09-12; atlas quoted tier wants ~2.1M settled markets. Both
-data-gated. **USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box is
-still the standing item and still the 8x burn cut (252 d -> ~2,000 d);
-a notify channel (smtp creds or a webhook URL) is still the only thing
-between this digest and an operator who does not have to be reading.
+Updated: **2026-09-10 (UNREAD-CHECK PASS -- THE CHECK THAT READS THE LAST
+QA RUN COULD NOT BE READ ITSELF.)**
+Cold start per instructions. The digest carried three ATTENTION units.
+Two resolve without work and were CHECKED, not assumed: `hyxlab-sweep`
+FAILED is the 09-10 07:45Z abort the previous pass diagnosed and fixed
+(the fix landed after, so 09-11 06:10Z is the first run that can clear
+it), and `hyxlab-divergence` NEVER-RAN is its timer waiting for its
+first fire at 09-11 01:20Z. The third, `hyxlab-qa`, is where the pass
+went -- and the finding was not in the failure list, it was the one
+missing FROM it.
+**(1) THE JOURNAL SAID 6 FAILURES. THE RECORD SAID 5.**
+`qa_prior_run` -- the check written last week to be the only reader of
+the previous QA run -- FAILED on 09-10, and `collector.health` could not
+show it. `_own_findings` strips that check's own result out of the
+record's `failures` before persisting, which is CORRECT: including it
+lets one unread failure re-arm the report of itself, every day, forever.
+`judge_qa` read that same list.
+**(2) BLIND EXACTLY WHERE IT MATTERS.** The run `qa_prior_run` fires on
+is, by construction, the run where every OTHER check is green. So the
+digest prints `FAILED hyxlab-qa.service` from the unit line and `clean`
+from the QA line, adjacent, with no name between them. The reader loop
+`collector.health` exists to close, reopened one layer up from where it
+was closed.
+**(3) IMMINENT, NOT THEORETICAL.** The sweep fix should heal all five of
+09-10's failures on 09-11, leaving `prior QA run was read` as the SOLE
+failure -- the digest at its blindest, tomorrow.
+**(4) WHY IT SURVIVED REVIEW TWICE: EACH HALF WAS RIGHT.** The record
+has two readers asking different questions ("did a name I reported go
+quiet?" and "what did the last run find?") and one list was answering
+both. Whichever side you read, that side's rationale is sound and
+written down; the mismatch is visible only from outside both.
+**(5) FIXED.** `qa_prior_run` returns its reason, `main` passes it to
+`_record_run`, and it persists in a THIRD field nothing compares
+against -- so it cannot echo, and `failures`/`skipped` keep their
+meaning for archived records. Absent or non-string reads as a pass (a
+digest silent about one historical run beats one inventing a finding
+for it -- verified live: today's pre-field record correctly shows no
+UNREAD line). `judge_qa` withholds "clean" when set and prints the
+UNREAD line even beside other failures, since suppressing it would hide
+it on exactly the busy run nobody re-reads. Class swept:
+`_own_findings` is the only record-side filter in `qa.py`, and
+`STANDING_SKIPS` classifies rather than drops.
+**Suite 1276 -> 1289. COMMITTED, PROMOTED, PUSHED.** Twelve of thirteen
+new arms verified to fail against the pre-fix modules; the thirteenth is
+the control pinning the field as additive. Mistake **#49** logged: a
+field deliberately narrowed for reader A is not thereby correct for
+reader B, and the narrowing looks fully justified from inside the only
+rationale written down.
+NEXT PASS: (1) **09-11 is a triple first** -- the 06:10Z sweep under the
+new busy handler (read `lock_skips` and `sweep_log` `busy` rows), the
+01:20Z first fire of `hyxlab-divergence` (should no-op in under a
+second), and the 10:00Z QA run, which is the first that can carry an
+`unread` field AND the first test of whether the divergence section goes
+green. (2) **streamd flush backlog** -- still the unmeasured one: shadow
+held `hyxstream.duckdb` for minutes on 09-10 while streamd's retry
+backlog climbed 974 -> 3,228; it degraded correctly and lost nothing,
+but nothing measures how long that backlog gets. A measurement to
+design. (3) `health.judge_drift` INERT arm (open since #47). (4) The
+10th panel day, ~09-17. (5) Width-24 econ maker bracket needs 2026-09-12;
+atlas quoted tier wants ~2.1M settled markets. Both data-gated.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box is still the
+standing item and still the 8x burn cut (252 d -> ~2,000 d); a notify
+channel (smtp creds or a webhook URL) is still the only thing between
+this digest and an operator who does not have to be reading.
 
 ---
 

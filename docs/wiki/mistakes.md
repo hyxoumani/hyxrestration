@@ -1279,6 +1279,52 @@ Format: what happened → root cause → error type → prevention tier
     two-writers-one-file shape one archive over, and nothing currently
     measures how long that backlog gets.
 
+49. **2026-09-10 -- the check that reads the last QA run could not be
+    read itself.** `qa_prior_run` exists to name the one state nothing
+    else in the project can see: a failure that healed between two
+    10:00Z runs, leaving yesterday's FAIL in a journal nobody reads and
+    today's run green. `_own_findings` strips that check's own result
+    out of the record's `failures` list before persisting it, and that
+    is CORRECT -- including it lets one unread failure re-arm the report
+    of itself, every day, forever.
+    `collector.health` reads the same list. So the digest -- the
+    operator's only reader, and the module written specifically to close
+    this loop -- could not name that check on any run. Worse, the run it
+    fires on is by construction the run where every OTHER check is
+    green, so the digest printed `FAILED hyxlab-qa.service` from the
+    unit line and `clean` from the QA line, with no name between them: a
+    red unit and a green verdict, adjacent, and nowhere to go.
+    Measured, not inferred: the 09-10 10:00Z run journalled 6 FAILURES
+    and recorded 5. The sixth was this one.
+    Neither half was a careless decision. Each was right about ITS
+    reader, and the defect is that the record has two readers asking
+    different questions -- "did a name I reported go quiet?" and "what
+    did the last run find?" -- while one list was being asked to answer
+    both. That is why it survived review twice: whichever side you read,
+    the reasoning on that side is sound.
+    Type: `one-field-serving-two-readers-with-opposite-needs`.
+    **RULE: when a record is written for a specific consumer and a
+    SECOND consumer is later pointed at it, re-derive what each one
+    needs from it separately. A field deliberately narrowed for reader A
+    is not thereby correct for reader B, and the narrowing will look
+    fully justified from inside reader A's rationale -- which is the
+    only rationale written down. Add a field for the new question;
+    never widen the old one, and never make the new reader infer.**
+    Prevention: `qa_prior_run` returns its reason, `main` hands it to
+    `_record_run`, and it is persisted in a THIRD field that no
+    comparison reads -- so it cannot echo, and `failures`/`skipped` keep
+    their meaning for every archived record. Absent or non-string reads
+    as a pass, the conservative direction for the records already on
+    disk (a digest silent about one historical run, never one inventing
+    a finding for it). `judge_qa` withholds "clean" when it is set and
+    prints the UNREAD line even alongside other failures, since it is
+    independent of what the sections found and suppressing it would hide
+    it on exactly the busy run nobody re-reads. Twelve of thirteen new
+    arms verified to fail against the pre-fix modules; the thirteenth is
+    the control pinning the field as additive. The class was swept:
+    `_own_findings` is the only record-side filter in `qa.py`, and
+    `STANDING_SKIPS` classifies rather than drops.
+
 
 ## Pattern analysis (Step 5)
 
