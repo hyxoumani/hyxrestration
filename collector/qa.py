@@ -28,10 +28,13 @@ import duckdb
 
 from collector.backup import DBS
 from collector.venues import alfred
+from hyxlab.shadowruns import latest_complete_run, run_completed_at
 from hyxlab.store import SCHEMA_VERSION, duck_connect, lock_holder
 
 ARCHIVE = "data/hyxlab.duckdb"
 STREAM = "data/hyxstream.duckdb"
+SHADOW = "data/hyxshadow.duckdb"
+DIVERGENCE_REPORTS = Path("reports/shadow_divergence")
 
 # Per-section completion record, so a skip can be BOUNDED. Without it a
 # locked archive skips silently forever and the journal still reads green.
@@ -563,6 +566,134 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
 
     conn.close()
     _record_ok("stream", now)
+
+
+# ---------------------------------------------------------------------------
+# The shadow-vs-replay calibration haircut, given a consumer.
+#
+# `simulator.divergence` is the report that decides whether Tier-3 shadow and
+# Tier-2 replay are still ONE semantics -- the number every backtest verdict
+# rests on. Until 2026-09-10 it was written to a JSON file that NOTHING read.
+# Mistake #46 is what that costs: the report defaulted to a run that had ended
+# three weeks earlier, was launched, printed its subject on line one, and the
+# line scrolled past unread. Fixing the default fixed the SELECT; it did not
+# give the measurement a reader, and an unread measurement is not one.
+#
+# This is the reader. It cannot re-run the report (30 min, 4G peak on the
+# 08-29 run -- `hyxlab-divergence.timer` runs it daily), so it asserts the
+# only two things a reader can: that the newest measurable run HAS been
+# measured, and that what the measurement says is still inside the bounds the
+# equivalence claim needs.
+#
+# It cannot pin itself to an unrepairable past, which is the property that
+# distinguishes it from the checks retired as mistakes #29 and #45. Its
+# subject is `latest_complete_run`, which always advances to the NEWEST
+# finished run: a run that becomes permanently unmeasurable (its stream window
+# aged out of the archive) stops being the subject the moment the shadow
+# daemon restarts, so the check goes green on the next run rather than staying
+# red on the lost one.
+
+#: Hours a finished shadow run may go unmeasured. `hyxlab-divergence.timer` is
+#: daily, so consecutive attempts sit 24h apart and one missed slot is 48h; 36h
+#: trips on a single miss with 12h of slack, the same arithmetic (and the same
+#: number) as QA_RUN_GAP_BUDGET_H and the sweep's 36h tolerance. The clock
+#: starts when the run became MEASURABLE -- the successor's start -- not when
+#: it last wrote, so a daemon that stays down owes nothing.
+DIVERGENCE_GAP_BUDGET_H = 36.0
+
+#: Floor on the exact-tier fill match rate, both directions. MEASURED against
+#: the whole post-matcher-v2 record (07-13 onward): 0.9982, 0.9984, 0.9927,
+#: 0.9992 and eight runs at 1.0 exactly. The worst benign shortfall is 0.0073,
+#: so a 0.01 budget carries ~1.4x headroom over the worst window the machinery
+#: has actually produced -- and the failure it exists to catch is not a nudge
+#: past that, it is the pre-fix 2026-07-09 regime at 0.6943/0.9337, which this
+#: clears by 45x. A rate in [0, 1] is not a monotone series, so a constant is
+#: the bound this failure mode earns (the #29 test).
+DIVERGENCE_MATCH_FLOOR = 0.99
+
+#: Ceiling on mean |price delta| over MATCHED fills, in dollars. Kalshi prices
+#: in whole cents, so this is 0.1% of fills disagreeing by a full tick -- a
+#: systematic fill-model mispricing, not a stray. Observed maximum over the
+#: entire record, broken era included, is 7e-6: 140x under. Deliberately the
+#: coarse arm; the match rate above carries the sensitivity, because a fill the
+#: replay never produced has no price delta to contribute at all.
+DIVERGENCE_PRICE_DELTA_MAX = 1e-3
+
+DIVERGENCE_FRESH_CHECK = "shadow-vs-replay divergence measured on the newest complete run"
+
+
+def _divergence_report(run_id: str, reports: Path) -> dict | None:
+    """`run_id`'s report, or None. Unparseable reads as absent, so the day a
+    truncated write lands is a "not measured" (repairable by re-running) and
+    not a crash inside QA."""
+    path = reports / f"{run_id}.json"
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def qa_divergence(
+    now: datetime | None = None, path: str = SHADOW, reports: Path = DIVERGENCE_REPORTS
+) -> None:
+    conn = _connect_ro(path)
+    now = now or datetime.now(UTC).replace(tzinfo=None)
+    if not _reachable(conn, "shadow ledger reachable", "divergence", now):
+        return
+
+    run_id = latest_complete_run(conn)
+    if run_id is None:
+        # One live run, or none. Nothing is measurable yet, and a free pass
+        # here is how the section would read green on an empty ledger
+        # forever (mistakes #28) -- say so instead of banking it.
+        print(
+            "WATCH " + DIVERGENCE_FRESH_CHECK + " — no finished shadow run with fills to measure",
+            flush=True,
+        )
+        conn.close()
+        return
+    completed = run_completed_at(conn, run_id)
+    conn.close()
+
+    report = _divergence_report(run_id, reports)
+    if report is None:
+        have = sorted(p.stem for p in reports.glob("*.json")) if reports.is_dir() else []
+        # run_ids are UTC stamps, so lexical order IS chronological.
+        newest = have[-1] if have else "none"
+        age_h = (now - completed).total_seconds() / 3600.0 if completed else 0.0
+        check(
+            DIVERGENCE_FRESH_CHECK,
+            age_h <= DIVERGENCE_GAP_BUDGET_H,
+            f"run {run_id} finished {age_h:.1f}h ago, unmeasured (budget"
+            f" {DIVERGENCE_GAP_BUDGET_H:.0f}h); newest report on file is {newest}."
+            " Repair: `python -m simulator.divergence` (~30 min), or read why"
+            " hyxlab-divergence.service last failed",
+        )
+        _record_ok("divergence", now)
+        return
+
+    check(
+        DIVERGENCE_FRESH_CHECK,
+        True,
+        f"run {run_id} measured {report.get('generated_at')}",
+    )
+
+    rates = [report.get("match_rate_vs_shadow"), report.get("match_rate_vs_replay")]
+    check(
+        "shadow-vs-replay fill match rate",
+        all(r is not None and r >= DIVERGENCE_MATCH_FLOOR for r in rates),
+        f"{rates[0]} vs shadow, {rates[1]} vs replay (floor {DIVERGENCE_MATCH_FLOOR}),"
+        f" unexplained {report.get('unmatched_shadow_by_cause', {}).get('unexplained')}"
+        f"/{report.get('unmatched_replay_by_cause', {}).get('unexplained')}"
+        f" of {report.get('shadow_fills')}/{report.get('replay_fills')} fills",
+    )
+    delta = report.get("price_delta_abs_mean")
+    check(
+        "shadow-vs-replay fill price agreement",
+        delta is not None and abs(delta) <= DIVERGENCE_PRICE_DELTA_MAX,
+        f"mean |price delta| {delta} (max {DIVERGENCE_PRICE_DELTA_MAX:g})",
+    )
+    _record_ok("divergence", now)
 
 
 # ---------------------------------------------------------------------------
@@ -2187,6 +2318,7 @@ def main() -> None:
     print(f"[qa] {now:%Y-%m-%d %H:%M} window={args.hours}h", flush=True)
     qa_disk_headroom()  # filesystem-only; must not be gated by an archive lock
     qa_stream(args.hours)
+    qa_divergence()  # sidecar ledger + report dir; never gated by the archive lock
     pull_age_d = qa_archive(args.hours)
     qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
     qa_collect_skips()  # sidecar journal; never gated by the archive lock

@@ -3,10 +3,13 @@ recording must reproduce its fills exactly — the zero baseline that
 makes nonzero divergence on real runs attributable to infrastructure
 (late archive rows, gaps unknown live) rather than method noise."""
 
+import json
+import sys
 from datetime import datetime, timedelta
 
 import duckdb
 
+import simulator.divergence as mod
 from hyxlab.models import MarketInfo
 from hyxlab.store import Store
 from hyxlab.streamstore import StreamStore
@@ -800,3 +803,54 @@ def test_default_selection_advances_when_a_newer_run_finishes(tmp_path):
     after = before + [("c", datetime(2026, 9, 7), 50)]
     assert _pick(tmp_path, before) == "a"
     assert _pick(tmp_path, after) == "b"
+
+
+def _main_with(monkeypatch, argv, replay=None):
+    """Run `divergence.main()` with argv, counting replays."""
+    calls = []
+
+    def _replay(*a, **k):
+        calls.append(a)
+        return (replay if replay is not None else [], [])
+
+    monkeypatch.setattr(mod, "replay_run", _replay)
+    monkeypatch.setattr(sys, "argv", ["divergence", *argv])
+    mod.main()
+    return calls
+
+
+def test_if_new_skips_the_replay_when_the_run_is_already_reported(tmp_path, monkeypatch):
+    """What the daily timer runs.
+
+    The subject only advances when the shadow daemon restarts, so on
+    almost every day the report already exists. A daily unit that
+    re-derived it anyway would burn 30 minutes and 4G beside the live
+    capture daemons to rewrite a file it already had.
+    """
+    db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "done.json").write_text("{}")
+    calls = _main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])
+    assert calls == []
+    assert (out / "done.json").read_text() == "{}"  # untouched, not rewritten
+
+
+def test_if_new_still_measures_a_run_that_has_no_report(tmp_path, monkeypatch):
+    db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
+    out = tmp_path / "reports"
+    calls = _main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])
+    assert len(calls) == 1
+    assert json.loads((out / "done.json").read_text())["run_id"] == "done"
+
+
+def test_without_if_new_the_report_is_recomputed(tmp_path, monkeypatch):
+    """The flag is opt-in: a hand run must still be able to refresh a
+    report whose inputs changed (a late-landing archive backfill)."""
+    db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "done.json").write_text("{}")
+    calls = _main_with(monkeypatch, ["--shadow-db", str(db), "--out", str(out)])
+    assert len(calls) == 1
+    assert json.loads((out / "done.json").read_text())["run_id"] == "done"

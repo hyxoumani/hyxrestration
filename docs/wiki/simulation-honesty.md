@@ -117,6 +117,62 @@ run's sub-0.2% residual was start-of-run noise, and that taker
 haircut ≈ 0 is a property of the machinery, not one lucky window.
 Report: `reports/shadow_divergence/20260716T130721.json`.
 
+**2026-09-09 — the first measurement in three weeks, and the first on
+post-08-20 data.** Run 20260829T191841 (8.8 days, 38,143 fills, the
+second-largest in the record): **100.00% match both directions, zero
+unmatched in either stream, every cause 0, all price deltas 0, gross
+cash 27,874.62 and fees 1,551.60 identical to the cent.** Taker haircut
+≈ 0 now holds across four independent multi-day windows spanning two
+months. The delay is the finding as much as the number: the report
+defaulted to the run with the MOST fills, so it had been re-answering
+the 08-20 question for three weeks while eight later runs went
+unmeasured (mistake #46). Fee rate is stable across the gap — 1,551.60
+/ 27,874.62 = 5.57% here vs 2,235.14 / 40,178.82 = 5.56% on the 08-10
+run — so nothing in the fee model drifted underneath the equivalence
+either. Report: `reports/shadow_divergence/20260829T191841.json`.
+
+**The measurement now has a scheduler and a reader (2026-09-10).** Both
+halves of mistake #46 were structural, and fixing the default fixed only
+one. The report ran when a human remembered to run it, and its result
+landed in a JSON file that nothing in the project read — so a haircut
+that stopped being ≈ 0 would have been visible only to whoever happened
+to open the file.
+
+  * `hyxlab-divergence.timer` (daily 01:20Z) runs
+    `simulator.divergence --if-new`, which exits 0 in under a second when
+    the selected run is already reported. The subject is
+    `latest_complete_run`, which advances only when the shadow daemon
+    restarts, so the expensive path runs about as often as the daemon
+    does. Cost of the expensive path, MEASURED on the 08-29 run: 30min
+    06s wall, 30min 20s CPU, 4G peak.
+  * `qa_divergence` (in the daily 10:00Z run, 8h40m after the timer)
+    asserts three things: the newest FINISHED run has been measured
+    within `DIVERGENCE_GAP_BUDGET_H` = 36h of becoming measurable, the
+    exact-tier match rate is ≥ 0.99 in both directions, and mean
+    |price delta| over matched fills is ≤ 1e-3.
+
+Where the bounds come from, since a bound nobody can justify is the
+defect this project keeps retiring. The 0.99 floor is the whole
+post-matcher-v2 record: worst benign window 0.9927 (the 08-03 run, all
+of it reclassified seed-settling), so ~1.4x headroom over anything the
+machinery has produced, and 45x clear of the pre-fix 07-09 regime at
+0.6943/0.9337 it exists to catch. A rate in [0, 1] is not a monotone
+series, so a constant is the bound this failure mode earns — the test
+mistakes #29 and #45 failed. The 1e-3 price ceiling is 0.1% of fills
+disagreeing by a full Kalshi tick; the largest value the record holds,
+broken era included, is 7e-6. It is deliberately the coarse arm — a fill
+the replay never produced contributes no price delta at all, so the
+match rate carries the sensitivity.
+
+**Why this check cannot become the mask that #29 and #45 became.** Its
+subject is the NEWEST finished run, not a fixed one. A run that becomes
+permanently unmeasurable — its stream window aged out of the archive —
+stops being the subject the moment the daemon restarts, so the check
+goes green on the next run instead of staying red forever on the lost
+one. That property is asserted directly
+(`tests/test_qa_divergence.py::test_the_subject_advances_past_a_run_that_can_no_longer_be_measured`),
+because it is the only reason this check is allowed to exist.
+
 ## The settlement leg (2026-08-02)
 
 Until 5f05302 the shadow daemon had **no settlement path at all**.

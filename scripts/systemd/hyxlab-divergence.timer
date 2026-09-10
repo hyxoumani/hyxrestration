@@ -1,0 +1,7 @@
+[Unit]
+Description=hyxlab divergence report daily 01:20 UTC (clear of autoloop 02:15; 8h40m before QA reads it)
+[Timer]
+OnCalendar=*-*-* 01:20:00 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target

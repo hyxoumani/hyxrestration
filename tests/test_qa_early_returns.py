@@ -47,6 +47,7 @@ its budget is right — only that no section can leave without saying so.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -267,13 +268,27 @@ def test_the_declared_silent_exit_is_the_monotone_one():
 
 
 def test_the_reachability_exits_are_credited():
-    """Non-vacuity, one end. `qa_stream` and `qa_archive` both return through
-    `if not _reachable(...)`, where the only emitter is in the CONDITION. If
-    these stop being credited the file is demanding declarations for the two
-    best-bounded exits it has, and the declarations would drown the finding."""
+    """Non-vacuity, one end. Every section that opens its own DB returns
+    through `if not _reachable(...)`, where the only emitter is in the
+    CONDITION. If these stop being credited the file is demanding
+    declarations for the best-bounded exits it has, and the declarations
+    would drown the finding.
+
+    The expected count is DERIVED from qa.py's own call sites, not written
+    down as a literal: this file already learned once (2026-09-10, the
+    divergence section) that a hard-coded `== 2` fails on the arrival of a
+    third section that is behaving perfectly, which is a test that punishes
+    the thing it exists to encourage.
+    """
+    src = QA.read_text()
+    sites = len(re.findall(r"\bif not _reachable\(", src))
+    assert sites >= 2, "the guard shape itself is gone; this test is now vacuous"
     by_fn = {(r["fn"], r["line"]): r for r in section_returns()}
     reach = [r for r in by_fn.values() if r["guard"] and "_reachable" in r["guard"]]
-    assert len(reach) == 2, f"expected qa_stream and qa_archive's reachability exits, got {reach}"
+    assert len(reach) == sites, (
+        f"qa.py has {sites} `if not _reachable(...)` section guards but only "
+        f"{len(reach)} are credited as bounded exits: {reach}"
+    )
     assert all(r["bounded"] for r in reach)
 
 

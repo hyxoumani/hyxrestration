@@ -1141,6 +1141,28 @@ Format: what happened → root cause → error type → prevention tier
     ADVANCES when a newer run finishes -- the property the argmax
     lacked -- and one that refuses the live run even when it is the
     biggest.
+    **FOLLOW-UP 2026-09-10 -- fixing the SELECT fixed one of the two
+    defects.** The pass above ends with "the line `[divergence] run
+    20260810T081931` scrolled past unread", and treated that as a
+    reading failure. It was not. The report had no scheduler and no
+    consumer: it ran when a human remembered, and wrote its result to a
+    JSON file that NOTHING in the project read, so the only reader that
+    could ever notice a haircut ceasing to be zero was whoever opened
+    the file. A correct default still cannot be seen by anyone. Both
+    halves are now machinery -- `hyxlab-divergence.timer` (daily 01:20Z,
+    `--if-new`, a sub-second no-op unless the shadow daemon has
+    restarted) produces the measurement, and `collector.qa`'s
+    `divergence` section reads it 8h40m later. **RULE: a standing report
+    is not standing until something OTHER than a person re-runs it, and
+    a measurement with no consumer is not a measurement. When a pass
+    finds a defect in what a report SAYS, ask in the same pass who reads
+    what it says; the answer was "nobody" here and the fix looked
+    complete without it.** The consumer is allowed to exist only because
+    its subject is `latest_complete_run` and therefore advances: a run
+    that becomes permanently unmeasurable stops being the subject at the
+    next daemon restart, so this cannot become the kind of permanently
+    red check #29 and #45 turned out to be. That property is asserted
+    directly, not argued.
 
 ## Pattern analysis (Step 5)
 

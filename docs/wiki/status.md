@@ -1,5 +1,91 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-10 (DIVERGENCE-CONSUMER PASS -- THE REPORT'S DEFAULT
+WAS FIXED AND STILL NOBODY READ IT.**
+Cold start per instructions. The digest's one failure resolves to NO
+ACTION and was checked, not assumed: `hyxlab-qa FAILED` is still the
+09-09 10:00Z run, whose failure list was `['stream disk under 20 GB']`
+-- the check retired two passes ago. The next scheduled run (09-10
+10:00Z) is the first that can show the fix; it has not fired yet.
+**(1) THE QUEUED ITEM, DONE: the in-flight report landed and its
+numbers are recorded.** Run `20260829T191841` -- 8.8 days, 38,143
+fills, the second-largest in the record and the first measurement on
+post-08-20 data: **1.0/1.0 match both directions, zero unmatched in
+either stream, all four causes 0, every price delta 0, gross cash
+27,874.62 and fees 1,551.60 identical to the cent.** Taker haircut ~ 0
+now holds across four independent multi-day windows over two months.
+The fee rate did not drift underneath it either: 5.57% here vs 5.56%
+on the 08-10 run. It cost 30min 06s wall / 30min 20s CPU / 4G peak --
+written down because the next item spends it. Into
+`simulation-honesty.md`.
+**(2) AND THEN THE ACTUAL FINDING: #46 WAS TWO DEFECTS AND LAST PASS
+FIXED ONE.** That pass ended on "the line `[divergence] run
+20260810T081931` scrolled past unread" and filed it as a reading
+failure. It was not one. `simulator.divergence` -- the report that sets
+the calibration haircut under EVERY backtest verdict -- had no
+scheduler and no consumer: it ran when a human remembered, and wrote
+its result to a JSON file that nothing in this project read. A correct
+default still cannot be seen by anyone. Twelve reports over two months,
+zero readers.
+**(3) BOTH HALVES ARE MACHINERY NOW.** `hyxlab-divergence.timer`
+(daily 01:20Z) runs `simulator.divergence --if-new`, which exits 0 in
+under a second when the selected run is already reported -- the subject
+is `latest_complete_run`, which advances only when the shadow daemon
+restarts, so the 30-minute path runs about as often as the daemon does.
+Verified live: the flag no-opped on today's record without replaying.
+`qa_divergence` reads it 8h40m later in the 10:00Z run and asserts
+three things -- measured within 36h of becoming measurable, exact-tier
+match rate >= 0.99 both directions, mean |price delta| <= 1e-3. Also
+verified live against the real ledger and report dir: three PASS lines,
+zero failures.
+**(4) THE BOUNDS ARE THE RECORD, NOT ROUND NUMBERS.** 0.99 is the whole
+post-matcher-v2 history: worst benign window 0.9927 (08-03, all of it
+reclassified seed-settling) = ~1.4x headroom, and 45x clear of the
+pre-fix 07-09 regime at 0.6943/0.9337 it exists to catch. 1e-3 is 0.1%
+of fills disagreeing by a full Kalshi tick against a record whose
+largest value ever, broken era included, is 7e-6 -- deliberately the
+coarse arm, because a fill the replay never produced contributes no
+price delta at all and the match rate carries the sensitivity.
+**(5) WHY THIS ONE IS ALLOWED TO EXIST, given #29 and #45 were both
+retired for being one-way.** Its subject is the NEWEST finished run,
+never a fixed one. A run that becomes permanently unmeasurable (stream
+window aged out) stops being the subject the moment the daemon
+restarts, so the check goes green on the next run instead of staying
+red forever on the lost one. Asserted directly, not argued.
+**(6) A META-TEST CAUGHT ITS OWN BRITTLENESS.**
+`test_the_reachability_exits_are_credited` asserted `len(reach) == 2`
+and failed on the arrival of a third section behaving perfectly -- a
+test that punishes what it exists to encourage. The count is now
+DERIVED from qa.py's own `if not _reachable(` call sites, with a
+non-vacuity floor.
+**Kernel:** `hyxlab/shadowruns.py` -- `latest_complete_run` moved out of
+`simulator.divergence`, plus `run_completed_at`. In the kernel because
+the report and its consumer sit on opposite sides of the import
+boundary (`collector` cannot import `simulator`), and a second copy of
+that SELECT is exactly how the two would come to disagree about which
+run is the subject. `simulator/shadow.py` was deliberately NOT touched
+-- it is in the live daemon's import closure and a promote would have
+cost `hyxlab-shadow` its 60h run.
+**Suite 1244 -> 1262. COMMITTED, PROMOTED, PUSHED.** Mistake #46 gains a
+FOLLOW-UP: a standing report is not standing until something other than
+a person re-runs it, and a measurement with no consumer is not a
+measurement -- when a pass finds a defect in what a report SAYS, ask in
+the same pass who reads it.
+NEXT PASS: (1) **the 09-10 10:00Z QA run is the first to carry the
+divergence section** -- read its three lines; it should also be the
+first GREEN run since the disk check was retired (fourth consecutive
+pass predicting green, the first two defeated by that check). (2)
+`hyxlab-divergence.timer` first fires 09-11 01:20Z and should no-op in
+under a second; confirm from the journal, not by assuming. (3) The
+10th panel day, ~09-17. (4) Width-24 econ maker bracket needs
+2026-09-12; atlas quoted tier wants ~2.1M settled markets. Both
+data-gated. **USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box is
+still the standing item and still the 8x burn cut (252 d -> ~2,000 d);
+a notify channel (smtp creds or a webhook URL) is still the only thing
+between this digest and an operator who does not have to be reading.
+
+---
+
 Updated: **2026-09-09 (DIVERGENCE-DEFAULT PASS -- THE STANDING REPORT
 COULD NOT SEE NEW EVIDENCE, BECAUSE ITS DEFAULT RANKED INSTEAD OF DATED.**
 Cold start per instructions. The digest's one failure resolves to NO

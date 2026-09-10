@@ -154,7 +154,16 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 - `simulator/features.py` — FeatureView as-of gate (P1): econ vintage
   semantics, news windows, forecast index; Context delegates.
 - `simulator/divergence.py` — shadow-vs-replay report (exact
-  convergence proven post-fixes; qty-weighted v2 matching).
+  convergence proven post-fixes; qty-weighted v2 matching). Scheduled
+  daily by `hyxlab-divergence.timer` as `--if-new`, which no-ops unless
+  the shadow daemon has restarted; `collector.qa`'s `divergence` section
+  is the reader that makes the result an alarm rather than a file.
+- `hyxlab/shadowruns.py` — which shadow run a report should measure
+  (`latest_complete_run`) and when it became measurable
+  (`run_completed_at`). In the kernel because the report and its QA
+  consumer sit on opposite sides of the import boundary and a second
+  copy of that SELECT is how they would come to disagree about the
+  subject.
 - `simulator/queuebounds.py` + `simulator/queuescore.py` — FIFO maker
   queue-position bounds and the crossing-rule calibration bracket.
 - `simulator/atlas.py` — calibration atlas (implied vs realized,

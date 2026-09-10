@@ -1,0 +1,29 @@
+[Unit]
+Description=hyxlab shadow-vs-replay divergence report (fill-model calibration haircut)
+After=network-online.target
+[Service]
+Type=oneshot
+# 220, not 500: OOMScoreAdjust is a per-mille-of-RAM handicap, not a priority
+# label, so on this 60G box 500 adds ~30G of pretend footprint and makes this
+# unit outrank essentially ANY other process -- measured 2026-09-07, when a
+# 333 MiB poly-sweep was killed ahead of the 24.0 GiB stranger that actually
+# exhausted the box. The baseline is the manager's DefaultOOMScoreAdjust=200,
+# which the capture daemons inherit; 220 is 20 per-mille (~1.2G) above it.
+# Measured oom_score: batch 350 MiB @220 = 816 and batch 30 MiB @220 = 813,
+# both above live stream/shadow @200 = 803/802 (so batch still dies first, the
+# 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
+# See tests/test_systemd_units.py for the arithmetic.
+OOMScoreAdjust=220
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+# --if-new is what makes this daily unit affordable. The subject is
+# `latest_complete_run`, which advances only when the shadow daemon restarts,
+# so on almost every day the report already exists and the unit exits 0 in
+# under a second without replaying anything.
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m simulator.divergence --if-new
+# MEASURED, not guessed: the 2026-09-09 run of 20260829T191841 (38,143 fills
+# over 8.8 days, the second-largest in the record) consumed 30min 20s of CPU
+# over 30min 06s wall at a 4G peak. Both bounds are that measurement with room
+# for a run several times longer, and neither is a target -- a replay that
+# needs more than 2h has stopped being a daily report.
+TimeoutStartSec=2h
+MemoryMax=8G
