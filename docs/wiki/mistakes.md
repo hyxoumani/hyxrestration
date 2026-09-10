@@ -1173,12 +1173,21 @@ Format: what happened → root cause → error type → prevention tier
     would never have fired, and the QA consumer shipped in the same pass
     would have gone red 36h later blaming a report nothing was
     scheduled to produce.
-    Nothing in the tree could have caught it. `promote.sh`'s
-    `install_units()` was `cp` + `daemon-reload`, and enablement is
-    neither -- it is the `timers.target.wants` symlink that only
-    `enable` writes. Every drift arm compares unit TEXT, and the text
-    was perfect; this is invisible to a file comparison by construction,
-    for the same reason the SHADOWED and DROP-IN arms exist. The gap had
+    No GATE could have caught it. `promote.sh`'s `install_units()` was
+    `cp` + `daemon-reload`, and enablement is neither -- it is the
+    `timers.target.wants` symlink that only `enable` writes. Every drift
+    arm compares unit TEXT, and the text was perfect; this is invisible
+    to a file comparison by construction, for the same reason the
+    SHADOWED and DROP-IN arms exist. The digest is the near-miss and is
+    recorded as one rather than claimed away: `collector.health`
+    enumerates from `UNIT_DIR.glob`, so it DOES list an
+    installed-but-disabled unit, and its NEVER-RAN arm would have said
+    `timer active but never triggered` on the next pass. But it says
+    exactly that for a correctly-enabled timer whose first fire has not
+    come yet -- which this one now is -- so it cannot tell inert from
+    pending, and the reader who saw that line would have had no reason
+    to look. Late, ambiguous, and dependent on someone reading it: a
+    near-miss, not a control. The gap had
     been latent since the fleet was built and was never exercised,
     because every existing timer was enabled BY HAND on the day it was
     first written, and no timer had been added since.

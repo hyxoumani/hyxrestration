@@ -82,7 +82,14 @@ added since. Fixed: `install_units()` globs
 (idempotent; timers only -- enabling a timer-backed oneshot would also
 fire it at boot). Four tests, three of them verified to fail against
 the pre-fix script. The timer is enabled on the box now: first fire
-**2026-09-11 01:20Z**.
+**2026-09-11 01:20Z**, and the digest already carries it (13 units, not
+12). One thing measured rather than claimed: the digest is a NEAR-MISS,
+not a control. `collector.health` enumerates from `UNIT_DIR.glob`, so it
+DOES list an installed-but-disabled unit and its NEVER-RAN arm would
+have said `timer active but never triggered` on the next pass -- but it
+says exactly that for the correctly-enabled timer right now, so it
+cannot tell inert from first-fire-pending, and nobody reading that line
+would have had cause to look.
 **LEFT UNDONE, deliberately, and named:** `health.judge_drift` has no
 INERT arm, so a hand-`disable`d timer still reads clean in the digest
 and the repair above only covers units arriving through a promotion.
