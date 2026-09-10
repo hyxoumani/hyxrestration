@@ -1326,6 +1326,69 @@ Format: what happened → root cause → error type → prevention tier
     `STANDING_SKIPS` classifies rather than drops.
 
 
+50. **2026-09-10 -- a rationale outlived the code path it was written
+    about, and seven recoverable cycles were thrown away.**
+    `acquire_writer_lock` has said since 2026-08-02 that "a dropped cycle
+    is an unrecoverable hole in the 5-min tape; the collector cannot
+    backfill a snapshot it never took," and `qa_collect_skips` repeats it.
+    True as written: the `flock -n` wrapper it describes dropped the cycle
+    BEFORE python started. EXP-957 then moved the fetch ahead of the lock
+    -- for an unrelated reason, to stop holding the archive across ~29 s of
+    HTTP -- and from that day the sentence was false of the only skip path
+    left. A cycle that loses the wait now has its rows already in hand,
+    complete and stamped at fetch time.
+    Measured: on 09-10 between 07:08 and 07:36Z the daily sweep held
+    `data/hyxlab.duckdb` and seven consecutive cycles each discarded 426
+    Kalshi snapshots, 5,649 market infos and 35 NWS forecasts (~1.8 MB,
+    EXP-957's own figure) for a contention that cleared in minutes. The
+    holes were counted correctly by two instruments and healed by none.
+    Type: `stale-rationale-surviving-the-refactor-that-falsified-it`.
+    **RULE: when a change moves WHERE a failure can occur, re-read every
+    docstring that explains WHY that failure is unavoidable. Those
+    sentences are load-bearing -- they are what stops the next reader from
+    fixing it -- and unlike code they do not break when the premise
+    moves. A comment asserting an impossibility is a claim with a date on
+    it; grep the claim, not just the caller.**
+    Prevention: `collector/spool.py` buffers the fetched rows beside the
+    archive and the next successful cycle drains them oldest-first inside
+    the lock it already holds; `qa_collect_spool` decides whether recovery
+    actually happened, including an inert-producer arm witnessed against
+    the skip sidecar (a recovery mechanism nobody witnesses is #43/#46
+    again). Both stale docstrings now carry the distinction rather than
+    the obsolete half. Two of twenty-five arms verified against the
+    pre-fix `collect.py`; one arm found a live bug in the codec while
+    being written (`str(date | None)` contains the substring "datetime",
+    so every `date` field was decoding to midnight).
+
+51. **2026-09-10 -- the dev repo's `data/` IS production's, and a new
+    sidecar leaked into it on its first suite run.** `hyxrestration-
+    stable/data` is a symlink to `hyxrestration/data`, so a test that
+    drives real code with the repo as its cwd does not litter a scratch
+    tree; it appends to live telemetry that the QA checks then read as
+    evidence. `tests/test_hyxlab_writer_lock.py` runs the real
+    `collect.main()` against a held lock -- that is its purpose -- and
+    wrote eight fabricated `spooled`/`drained` events plus two cycle
+    payloads into exactly the file `qa_collect_spool` counts. Third
+    instance: EXP-1333's 429 header sink was the first, each fixed by
+    hand, each as one member.
+    The instructive part is the guard that does NOT work. Snapshotting
+    `data/` around every test and failing on a change was written first
+    and is unsound at the root: the live collector writes those same
+    files every five minutes from the other end of the symlink, and no
+    stat separates our append from its append.
+    Type: `shared-production-state-reachable-from-a-test-default`.
+    **RULE: when a leak's detector would have to distinguish our writes
+    from a live process's, move the invariant off the artifact and onto
+    the PATH -- assert that no default can reach production, rather than
+    that production did not change.**
+    Prevention: `conftest.SIDECAR_CONSTANTS` redirects every cwd-rooted
+    `data/` sidecar constant per test, and
+    `tests/test_sidecar_redirect_coverage.py` DERIVES that set from the
+    source by AST so the twelfth sidecar reddens on entry, with a
+    staleness arm so a renamed constant cannot leave a dead entry
+    protecting a name that no longer exists.
+
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

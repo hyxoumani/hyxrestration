@@ -1,24 +1,63 @@
 """Shared fixtures.
 
-EXP-1333 (hylshi): the kalshi venue client appends the headers of any 429 it
-observes to `data/rate_limit_headers.jsonl` (relative, cwd-rooted). Several
-tests simulate 429s through the real code paths; without redirection they
-would write fake header rows into the DEV repo's real sink — poisoning the
-very telemetry the capture exists to collect. Redirect it per-test.
+Two families, both about state a test writes WITHOUT MEANING TO, and both
+sharper here than they look: `hyxrestration-stable/data` is a symlink to
+this repo's `data/`, so the dev tree's sidecars are production's.
 """
 
 from pathlib import Path
 
 import pytest
 
+#: Every cwd-rooted sidecar this repo WRITES, redirected per-test.
+#:
+#: `hyxrestration-stable/data` is a SYMLINK to this repo's `data/`, so the
+#: dev tree's sidecar files are not a copy of production's -- they ARE
+#: production's. A test that drives real code with the repo as its cwd
+#: does not litter, it forges telemetry, and the instruments read it: the
+#: 2026-09-10 spool leak put eight fabricated `spooled`/`drained` events
+#: where `qa_collect_spool` would have counted them as evidence that
+#: recovery works.
+#:
+#: This list is not the guard -- `tests/test_sidecar_redirect_coverage.py`
+#: DERIVES the set from the source and fails if a new sidecar constant is
+#: missing here, because a list maintained by hand cannot fail when
+#: someone adds the twelfth one.
+SIDECAR_CONSTANTS: tuple[tuple[str, str], ...] = (
+    ("collector.collect", "SKIP_LOG"),
+    ("collector.qa", "BACKUP_DIR"),
+    ("collector.qa", "COLLECT_SKIP_LOG"),
+    ("collector.qa", "COLLECT_SPOOL_DIR"),
+    ("collector.qa", "COLLECT_SPOOL_LOG"),
+    ("collector.qa", "SIGNALS_FETCH_LOG"),
+    ("collector.reconcile", "SUMMARY_PATH"),
+    ("collector.signals", "FETCH_LOG"),
+    ("collector.spool", "SPOOL_DIR"),
+    ("collector.spool", "SPOOL_LOG"),
+    ("collector.venues.kalshi", "RATE_LIMIT_HEADERS_LOG"),
+)
+
 
 @pytest.fixture(autouse=True)
-def _redirect_429_header_sink(tmp_path, monkeypatch):
-    from collector.venues import kalshi
+def _redirect_sidecars(tmp_path, monkeypatch):
+    """Point every sidecar constant into this test's tmp_path.
 
-    monkeypatch.setattr(
-        kalshi, "RATE_LIMIT_HEADERS_LOG", str(tmp_path / "rate_limit_headers.jsonl")
-    )
+    EXP-1333 (hylshi) redirected the first of these by hand -- the kalshi
+    client appends the headers of any 429 to `data/rate_limit_headers.jsonl`,
+    and tests that simulate 429s through the real code path were poisoning
+    the very telemetry the capture exists to collect. Two more leaks
+    followed, each found by eye. Redirecting the class costs the same as
+    redirecting a member.
+
+    A test that WANTS the real file passes the path explicitly; every
+    check and writer here takes one.
+    """
+    import importlib
+
+    for mod_name, attr in SIDECAR_CONSTANTS:
+        mod = importlib.import_module(mod_name)
+        original = Path(getattr(mod, attr))
+        monkeypatch.setattr(mod, attr, str(tmp_path / "data" / original.name))
 
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent

@@ -175,9 +175,7 @@ def _patch_trades(monkeypatch, session, per_market=3):
     )
 
 
-def test_giant_series_flushes_mid_loop_so_no_burst_carries_the_whole_series(
-    tmp_path, monkeypatch
-):
+def test_giant_series_flushes_mid_loop_so_no_burst_carries_the_whole_series(tmp_path, monkeypatch):
     """Regression (2026-08-07): KXBTC's recovery backlog buffered ~3.85M
     trade rows and the single end-of-series burst held the writer lock
     for ~21 min — four consecutive collect cycles skipped, a 20-min
@@ -523,9 +521,7 @@ def test_a_skip_bills_the_lock_wait_not_the_fetch(tmp_path, monkeypatch):
         fcntl.flock(holder, fcntl.LOCK_UN)
         holder.close()
 
-    waited = json.loads(Path(str(tmp_path / "skips.jsonl")).read_text().splitlines()[0])[
-        "waited_s"
-    ]
+    waited = json.loads(Path(str(tmp_path / "skips.jsonl")).read_text().splitlines()[0])["waited_s"]
     assert waited < 0.6, (
         f"skip record billed {waited:.2f}s to the lock on a cycle that spent "
         "0.6s of its 1.0s budget fetching — the fetch is being charged as "
@@ -682,7 +678,7 @@ def test_absent_sidecar_with_journalled_skips_is_a_dead_producer(tmp_path):
 
 
 def test_stale_sidecar_with_journalled_skips_is_also_a_dead_producer(tmp_path):
-    """"Present and clean" must not read OK either."""
+    """ "Present and clean" must not read OK either."""
     path = str(tmp_path / "skips.jsonl")
     _write_skips(path, 5, age_h=200.0)  # rows, but all outside the window
     qa.qa_collect_skips(path=path, journal_skips=4)
@@ -760,8 +756,9 @@ def test_journal_witness_query_is_read_only(monkeypatch):
 
 
 def test_journal_witness_returns_none_when_journalctl_is_unusable(monkeypatch):
-    monkeypatch.setattr(qa.subprocess, "run",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+    monkeypatch.setattr(
+        qa.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("nope"))
+    )
     assert qa.journal_skip_exits() is None
 
 
@@ -793,9 +790,7 @@ def test_a_truncated_sweep_is_logged_non_ok(tmp_path, monkeypatch):
     markets = [_market("KXA-1", 10), _market("KXA-2", 11)]
     session = _FakeSession(lock_path, markets)
     _patch_kalshi(monkeypatch, session, markets)
-    monkeypatch.setattr(
-        sweep.kalshi, "get_markets_ascending", lambda *a, **k: (markets, True)
-    )
+    monkeypatch.setattr(sweep.kalshi, "get_markets_ascending", lambda *a, **k: (markets, True))
 
     n_markets, _, truncated = sweep.sweep_series(db, "KXA", days=60, session=session)
     assert (n_markets, truncated) == (2, True)
@@ -831,7 +826,13 @@ def test_cycle_print_carries_the_phase_decomposition(tmp_path, monkeypatch, caps
     write 15.8s) stopped reconciling with production within a day, so the
     cycle prints where its seconds went (fetch/wait/open/write/close/total)
     and journald keeps the series. The fetch must be billed to fetch_s —
-    not to the lock wait or the write."""
+    not to the lock wait or the write.
+
+    The key set is EXACT rather than a subset: a phase that stops being
+    printed is how the decomposition quietly stops reconciling, and a
+    phase that appears unannounced is a second of the cycle nobody
+    budgeted. `drain_s` (the spool replay, 2026-09-10) was added here as
+    the second kind."""
     import ast
     import re
 
@@ -842,9 +843,17 @@ def test_cycle_print_carries_the_phase_decomposition(tmp_path, monkeypatch, caps
     m = re.search(r"timings=(\{.*\})", out)
     assert m, f"cycle print carries no timings: {out!r}"
     t = ast.literal_eval(m.group(1))
-    assert set(t) == {"fetch_s", "wait_s", "open_s", "write_s", "close_s", "total_s"}
+    assert set(t) == {
+        "fetch_s",
+        "wait_s",
+        "open_s",
+        "drain_s",
+        "write_s",
+        "close_s",
+        "total_s",
+    }
     assert t["fetch_s"] >= 0.6, t  # 0.3s x 2 get_markets calls land in fetch_s
-    assert t["wait_s"] + t["write_s"] < 0.6, t  # ...and nowhere else
+    assert t["wait_s"] + t["write_s"] + t["drain_s"] < 0.6, t  # ...and nowhere else
     assert t["total_s"] >= t["fetch_s"]
 
 
@@ -940,8 +949,12 @@ def _patch_backfill(monkeypatch, session, n_markets=4, n_candles=2):
         return [
             {
                 "end_period_ts": int(datetime(2026, 7, 10, i, tzinfo=UTC).timestamp()),
-                "price": {"open_dollars": "0.5", "high_dollars": "0.5",
-                          "low_dollars": "0.5", "close_dollars": "0.5"},
+                "price": {
+                    "open_dollars": "0.5",
+                    "high_dollars": "0.5",
+                    "low_dollars": "0.5",
+                    "close_dollars": "0.5",
+                },
                 "yes_bid": {"close_dollars": "0.49", "high_dollars": "0.49"},
                 "yes_ask": {"close_dollars": "0.51", "low_dollars": "0.51"},
                 "volume_fp": 1.0,
@@ -977,8 +990,7 @@ def test_backfill_releases_the_writer_lock_across_every_rest_call(tmp_path, monk
 
     assert session.held_during_http, "fixture made no HTTP calls"
     assert not any(session.held_during_http), (
-        "the writer lock was held across a REST call — the fetch loop runs "
-        "for hours between writes"
+        "the writer lock was held across a REST call — the fetch loop runs for hours between writes"
     )
     assert not any(session.db_held_during_http), (
         "an archive CONNECTION was open across a REST call. That is the lock "

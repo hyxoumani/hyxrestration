@@ -1,5 +1,71 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-10 (SPOOL PASS -- THE HOLE WAS RECOVERABLE AND THE
+DOCSTRING SAYING OTHERWISE WAS WRITTEN ABOUT A CODE PATH THAT NO LONGER
+EXISTS.)**
+Cold start per instructions. The digest's three ATTENTION units all
+resolve to the previous pass's work and were re-checked, not assumed:
+`hyxlab-sweep` FAILED and `hyxlab-qa` FAILED are the 09-10 07:45Z /
+10:00Z runs already diagnosed and fixed (09-11 is the first run that can
+clear either), and `hyxlab-divergence` NEVER-RAN is still waiting for
+its 01:20Z first fire. What the digest ALSO carried, on the line that
+reads as cleared, was the finding: `hyxlab-collect` 7x in 24h,
+"CLEARED".
+**(1) SEVEN CYCLES OF DATA, FETCHED AND THROWN AWAY.** 07:08-07:36Z the
+daily sweep held `data/hyxlab.duckdb`; seven consecutive collector
+cycles waited out the full 240s budget, exited 75, and each DISCARDED a
+complete fetch -- 426 Kalshi snapshots, 5,649 market infos, 35 NWS
+forecasts, ~1.8 MB already in memory and already stamped at fetch time.
+Two instruments counted the holes correctly (`record_skip`,
+`qa_collect_skips`). Neither could heal one, and nothing asked whether
+they were healable.
+**(2) THE SENTENCE THAT STOPPED ANYONE ASKING.** `acquire_writer_lock`:
+"a dropped cycle is an unrecoverable hole in the 5-min tape; the
+collector cannot backfill a snapshot it never took" -- TRUE of the
+`flock -n` wrapper it was written about, which dropped the cycle before
+python started. EXP-957 then moved the fetch ahead of the lock for an
+unrelated reason (stop holding the archive across ~29s of HTTP), and
+from that day the claim was false of the only skip path left. A comment
+asserting an impossibility does not break when its premise moves.
+Mistake **#50**: grep the CLAIM, not just the caller.
+**(3) SPOOL, DRAIN, AND A CONSUMER FOR BOTH.** `collector/spool.py`
+writes the unwritable cycle beside the archive (tmp+rename, cap 24 =
+2h, oldest dropped and recorded); the next successful cycle drains it
+oldest-first inside the lock it already holds, 60s budget, always at
+least one file. Decode is STRICT -- promote.sh can install new code
+under a spooled file, so reader and writer are routinely different
+versions, and a tolerant decode would write a row quietly missing a
+field. `qa_collect_spool` decides recovery on four arms (inert
+producer, stuck drain, dropped at cap, quarantined payload), the first
+witnessed against the skip sidecar because a recovery mechanism nobody
+witnesses is #43/#46 again.
+**(4) THE SUITE FOUND ITS OWN BUG, TWICE.** The date/datetime arm caught
+a live codec defect while being written (`str(date | None)` contains the
+substring "datetime", so every `date` field decoded to midnight), and
+the first full run showed the new sidecar leaking into `data/` -- which
+is PRODUCTION's, because `hyxrestration-stable/data` is a symlink to the
+dev tree's. Eight fabricated `spooled`/`drained` events landed in
+exactly the file the new check counts. Mistake **#51**, third instance
+of the class after EXP-1333's 429 sink. The obvious guard (snapshot
+`data/`, fail on change) is unsound at the root -- the live collector
+writes those files every 5 min from the other end of the symlink -- so
+the invariant moved to the PATH: `conftest.SIDECAR_CONSTANTS` redirects
+all eleven, and `tests/test_sidecar_redirect_coverage.py` derives the
+set by AST so the twelfth reddens on entry.
+**Suite 1289 -> 1318. COMMITTED, PROMOTED, PUSHED.**
+NEXT PASS: (1) **09-11 is now a QUADRUPLE first** -- 06:10Z sweep under
+the new busy handler, 01:20Z first divergence fire, 10:00Z QA carrying
+both an `unread` field and the new spool section, and the first
+contention that can prove the drain in production (`spooled=` prints on
+every cycle, zeros included). (2) streamd flush backlog -- still the
+unmeasured one. (3) `health.judge_drift` INERT arm (open since #47).
+(4) The 10th panel day, ~09-17. (5) Width-24 econ maker bracket needs
+2026-09-12; atlas quoted tier wants ~2.1M settled markets.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box, and a notify
+channel (smtp creds or a webhook URL).
+
+---
+
 Updated: **2026-09-10 (UNREAD-CHECK PASS -- THE CHECK THAT READS THE LAST
 QA RUN COULD NOT BE READ ITSELF.)**
 Cold start per instructions. The digest carried three ATTENTION units.

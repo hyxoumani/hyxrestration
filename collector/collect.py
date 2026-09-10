@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import functools
 import json
 import sys
 import time
@@ -29,6 +30,7 @@ from pathlib import Path
 
 import requests
 
+from collector import spool
 from collector.venues import kalshi, nws, polymarket
 from hyxlab.lockid import note_holder, read_holder
 from hyxlab.models import Forecast, MarketInfo, Snapshot
@@ -66,7 +68,10 @@ def acquire_writer_lock(lock_file: str | None = None, wait_s: float | None = Non
     cycle that found the lock held was DROPPED — and dropped before
     python started (3ms CPU), which is why nothing in the archive ever
     recorded it. A dropped cycle is an unrecoverable hole in the 5-min
-    tape; the collector cannot backfill a snapshot it never took. Waiting
+    tape; the collector cannot backfill a snapshot it never took. That still
+    holds for the cycle dropped BEFORE the fetch and only for it: since
+    EXP-957 the fetch runs first, so a cycle that loses this wait
+    already HAS its rows, and `collector.spool` keeps them. Waiting
     is almost always right here, because every other writer touches the
     DB in short bursts (poly_sweep, trades_backfill, signals, and since
     this change collector.sweep too).
@@ -244,6 +249,18 @@ def write_cycle(store: Store, cyc: Cycle) -> dict:
     return counts
 
 
+def _write_spooled(store: Store, kwargs: dict) -> bool:
+    """`spool.drain` callback: write one recovered cycle, True on success.
+
+    `write_cycle` never raises -- it rolls back and reports -- so success
+    is read off `errors`, and a cycle whose FETCH recorded errors is not
+    thereby a failed write. Only the delta counts, or a spooled cycle
+    with one bad series would be retried until the cap dropped it.
+    """
+    before = kwargs.get("errors", 0)
+    return write_cycle(store, Cycle(**kwargs))["errors"] <= before
+
+
 def collect_once(store: Store, watchlist: dict, session: requests.Session | None = None) -> dict:
     """Fetch then write, against an ALREADY-OPEN store.
 
@@ -288,6 +305,22 @@ def main() -> None:
             waited = time.monotonic() - t_lock
             holder = read_holder(LOCK_FILE)
             record_skip("writer lock held", waited, holder=holder)
+            # The rows are already IN HAND and stamped at fetch time, so
+            # this hole is recoverable -- unlike the pre-python cycle the
+            # `flock -n` wrapper used to drop. See collector/spool.py; a
+            # spool failure must never mask the skip, which is why it is
+            # caught rather than allowed to replace the exit below.
+            try:
+                spool.spool_cycle(
+                    cyc.ts,
+                    cyc.errors,
+                    infos=cyc.infos,
+                    kalshi_snaps=cyc.kalshi_snaps,
+                    poly_snaps=cyc.poly_snaps,
+                    forecasts=cyc.forecasts,
+                )
+            except (OSError, ValueError) as e:
+                print(f"[collect] spool failed, cycle LOST: {type(e).__name__}: {e}")
             # Nonzero so systemd records it, AND a durable record so an
             # instrument that never sees systemd can still count the hole.
             who = (
@@ -313,6 +346,12 @@ def main() -> None:
         store = open_retry(args.db, retries=5)
         open_s = time.monotonic() - t_open
         try:
+            # Oldest first, and BEFORE the live cycle: the spool holds
+            # strictly earlier observations, and a drain that ran after
+            # would write the tape out of order for no reason.
+            t_drain = time.monotonic()
+            drained = spool.drain(functools.partial(_write_spooled, store))
+            drain_s = time.monotonic() - t_drain
             t_write = time.monotonic()
             counts = write_cycle(store, cyc)
             write_s = time.monotonic() - t_write
@@ -326,11 +365,18 @@ def main() -> None:
             "fetch_s": round(fetch_s, 1),
             "wait_s": round(lock_wait_s, 1),
             "open_s": round(open_s, 1),
+            "drain_s": round(drain_s, 1),
             "write_s": round(write_s, 1),
             "close_s": round(time.monotonic() - t_close, 1),
             "total_s": round(time.monotonic() - t0, 1),
         }
-        print(f"[collect] {datetime.now(UTC).isoformat()} {counts} db={db_counts} timings={timings}")
+        # `spooled=` prints every cycle, zeros included: a recovery
+        # mechanism that only speaks when it fires is one nobody can tell
+        # apart from a dead one (#46).
+        print(
+            f"[collect] {datetime.now(UTC).isoformat()} {counts} db={db_counts} "
+            f"spooled={drained} timings={timings}"
+        )
         if args.once:
             break
         time.sleep(args.interval)

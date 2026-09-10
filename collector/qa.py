@@ -125,6 +125,30 @@ _SIGNALS_FETCH_SECTION = "signals-fetch"
 COLLECT_SKIP_SECTION = "collect-skips"
 STANDING_SKIPS: frozenset[str] = frozenset({COLLECT_SKIP_SECTION})
 
+# The RECOVERY half of the same hole. A skipped cycle stopped being an
+# unrecoverable one on 2026-09-10: the rows are fetched before the lock is
+# reached for, so `collector.spool` writes them beside the archive and the
+# next successful cycle drains them. `qa_collect_skips` above still counts
+# the contention (that is a real signal about the box); this check asks the
+# different question of whether the recovery actually happened.
+COLLECT_SPOOL_LOG = "data/collect_spool.jsonl"
+COLLECT_SPOOL_DIR = "data/collect_spool"
+# A spooled cycle drains on the NEXT successful cycle, i.e. within ~5 min.
+# 2h is 24 consecutive failures to drain -- by then the spool is at its cap
+# and dropping data, so a budget larger than the cap's own horizon would
+# announce the loss after it happened.
+COLLECT_SPOOL_STALE_H = 2.0
+# THE INERT-PRODUCER WITNESS, and why it is a date. Every skip row and every
+# `spooled` event are written by the same branch of `collect.main`, one line
+# apart, so a skip in the window with no spool event beside it means the
+# spool is not running (or its write failed, which prints "cycle LOST" and
+# is the same finding). The 17 skip rows already on disk predate the spool,
+# so the comparison starts here. The constant is load-bearing for exactly
+# one window's width and then INERT BY CONSTRUCTION -- once it falls out of
+# the `hours` window it can no longer exclude anything -- which is the only
+# form of hardcoded date this file will take.
+COLLECT_SPOOL_ARMED_AT = datetime(2026, 9, 10, 20, 0, tzinfo=UTC)
+
 # EXP-1381 — the poly enumeration tripwire's own liveness. Its guard reads a
 # WINDOWED slice of poly_market_stats, so it stops being emitted at all on
 # exactly the input a dead stats writer produces (see qa_archive). The floor
@@ -1580,6 +1604,120 @@ def journal_skip_exits(hours: float = 24.0, unit: str = COLLECT_UNIT) -> int | N
 _QUERY_JOURNAL = object()
 
 
+def qa_collect_spool(
+    hours: float = 24.0,
+    log_path: str = COLLECT_SPOOL_LOG,
+    spool_dir: str = COLLECT_SPOOL_DIR,
+    skip_path: str = COLLECT_SKIP_LOG,
+    now: datetime | None = None,
+) -> None:
+    """Fail when a skipped cycle's rows were NOT recovered.
+
+    `qa_collect_skips` counts the contention and always will. This counts
+    the DATA, and the two answers differ: on 2026-09-10 seven cycles
+    skipped between 07:08 and 07:36Z while the daily sweep held the
+    archive, and all seven discarded a complete, correctly stamped fetch
+    (426 Kalshi snapshots + 5,649 infos + 35 forecasts each) that a drain
+    would have written minutes later.
+
+    Four ways the recovery can be broken, and each is a FAILURE rather
+    than a warning because each one means rows are gone:
+
+      inert    a skip in the window with no `spooled` event beside it --
+               `collector.spool` is not running, or its write failed and
+               the cycle was lost at the source
+      stuck    the oldest spooled cycle is older than
+               COLLECT_SPOOL_STALE_H -- nothing is draining, and the cap
+               will start dropping cycles
+      dropped  the spool hit MAX_FILES and threw the oldest away
+      bad      a payload could not be decoded against the live models and
+               was quarantined (see collector/spool.py on why a partial
+               apply is not offered)
+
+    A quiet box passes cleanly and says so: an empty spool with no skips
+    is the correct state, and unlike `qa_collect_skips` this check needs
+    no UNVERIFIED rung, because the inert arm above decides the producer
+    against a witness that a dead producer cannot write.
+    """
+    now = now or datetime.now(UTC)
+    name = "skipped collector cycles are recovered from the spool"
+    cutoff = now - timedelta(hours=hours)
+
+    events = []
+    malformed = 0
+    lp = Path(log_path)
+    if lp.exists():
+        for line in lp.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                at = datetime.fromisoformat(rec["at"])
+            except (ValueError, KeyError, json.JSONDecodeError):
+                malformed += 1
+                continue
+            if at >= cutoff:
+                events.append((at, rec.get("event"), rec))
+    tail = f", {malformed} malformed rows" if malformed else ""
+
+    n = {e: sum(1 for _, ev, _ in events if ev == e) for e in ("spooled", "drained", "dropped")}
+
+    # Skips are counted only from the moment the spool shipped; see
+    # COLLECT_SPOOL_ARMED_AT for why that bound expires on its own.
+    armed_cutoff = max(cutoff, COLLECT_SPOOL_ARMED_AT)
+    skips = 0
+    sp = Path(skip_path)
+    if sp.exists():
+        for line in sp.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                at = datetime.fromisoformat(json.loads(line)["at"])
+            except (ValueError, KeyError, json.JSONDecodeError):
+                continue
+            if at >= armed_cutoff:
+                skips += 1
+
+    d = Path(spool_dir)
+    pending = sorted(d.glob("cycle-*.json")) if d.is_dir() else []
+    quarantined = sorted(d.glob("*.bad")) if d.is_dir() else []
+    oldest_age_h = None
+    if pending:
+        try:
+            oldest_age_h = (now.timestamp() - pending[0].stat().st_mtime) / 3600
+        except OSError:
+            oldest_age_h = None
+
+    problems = []
+    if skips > n["spooled"]:
+        problems.append(
+            f"PRODUCER INERT: {skips} skipped cycle(s) recorded in {skip_path} since "
+            f"the spool shipped but only {n['spooled']} spooled event(s) in {log_path}"
+            + ("" if lp.exists() else f" ({log_path} does not exist)")
+        )
+    if n["dropped"]:
+        problems.append(f"{n['dropped']} cycle(s) DROPPED at the spool cap -- rows lost")
+    if quarantined:
+        problems.append(
+            f"{len(quarantined)} unreadable payload(s) quarantined: "
+            f"{', '.join(f.name for f in quarantined[:3])}"
+        )
+    if oldest_age_h is not None and oldest_age_h > COLLECT_SPOOL_STALE_H:
+        problems.append(
+            f"oldest spooled cycle is {oldest_age_h:.1f}h old (budget "
+            f"{COLLECT_SPOOL_STALE_H:g}h) -- nothing is draining"
+        )
+
+    detail = (
+        "; ".join(problems)
+        if problems
+        else (
+            f"{n['spooled']} spooled / {n['drained']} drained in {hours:g}h, {len(pending)} pending"
+        )
+    )
+    check(name, not problems, detail + tail)
+
+
 def qa_collect_skips(
     hours: float = 24.0,
     path: str = COLLECT_SKIP_LOG,
@@ -1587,7 +1725,11 @@ def qa_collect_skips(
 ) -> None:
     """Fail when 5-min capture cycles are being dropped for the writer lock.
 
-    Each skipped cycle is an unrecoverable hole in the snapshot tape. Over
+    Each skipped cycle is a hole in the snapshot tape AT THE TIME IT FELL --
+    since 2026-09-10 a recoverable one (`collector.spool` buffers the fetched
+    rows and the next cycle drains them), which changes nothing about this
+    check: contention is a fact about the box worth failing on whether or not
+    the rows were later replayed. Whether they WERE is `qa_collect_spool`. Over
     the 14 days to 2026-08-02 the collector's `flock -n` wrapper dropped
     421 of 3,706 cycles (11.4%) while the daily sweep held the lock across
     its whole multi-hour run, and NOTHING recorded it: the wrapper failed
@@ -2356,6 +2498,7 @@ def main() -> None:
     pull_age_d = qa_archive(args.hours)
     qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
     qa_collect_skips()  # sidecar journal; never gated by the archive lock
+    qa_collect_spool()  # the recovery half of the same hole; also sidecar-only
     qa_fade_window_capture()  # journal-only, for the same reason
     qa_batch_run_budget()  # journal-only, for the same reason
     unread = qa_prior_run(now, _own_findings(), _skipped)  # the only reader of the last run
