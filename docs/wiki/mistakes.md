@@ -1453,6 +1453,51 @@ Format: what happened → root cause → error type → prevention tier
     it is a claim that needs a reason written next to it.
 
 
+53. **2026-09-11 -- the reader that exists to catch a silent heal read
+    "no FAIL recorded" as "passed", and announced two unlooked-at checks
+    as green.** `qa_prior_run` compares yesterday's failures against
+    today's and reports any name that went quiet, because a defect that
+    repairs itself between two 10:00Z runs is otherwise invisible. It
+    derived "green today" from ABSENCE: `set(prior.failures) -
+    today_failed`. A name is absent from today's failures for two
+    opposite reasons -- it passed, or it never reached a verdict at all.
+    Both were live in the SAME RUN, the 09-11 10:00Z one, which is where
+    this was found: it reported five healed names and exactly two of
+    them were false.
+    `collector cycles are not skipped for the lock` FAILED on 09-10 (7
+    skipped cycles) and on 09-11 printed `SKIP ... UNVERIFIED` -- no
+    cycle waited out the lock, so nothing was measured. `batch units
+    within measured run budget` FAILED on 09-10 naming the 09-10 07:45Z
+    sweep abort, and on 09-11 printed `WATCH ... (already reported)` and
+    returned: the abort had not gone away, the REPORT of it had been
+    acknowledged. Neither is a repair, and the check called both green.
+    The namespaces are why it could not self-catch. The record carries
+    `skipped` (SECTION names, "collect-skips") and `failures` (CHECK
+    names), so a skipped section's check name lands in a set the skip arm
+    cannot see -- and in the WATCH case no section is skipped at all, so
+    no section-level rule would have caught it either. The same file's
+    exit path already states the principle it was violating: "A skipped
+    section is NOT a passed one."
+    Type: `absence-of-a-negative-read-as-a-positive`.
+    **RULE: a claim about today can only be made about a check that RAN
+    today. Never infer "passed" from "not in the failure list" -- track
+    EXECUTION as its own evidence, at the one place a verdict is actually
+    reached, so every present and future no-verdict path (skip, watch,
+    early return) is covered without being enumerated.**
+    Prevention: `qa._ran`, appended by `check()` itself and by nothing
+    else, so a path that prints without a verdict cannot land in it;
+    `healed_f` intersected with it (and `today_failed` folded in, since a
+    name that failed today ran by construction, so the two inputs cannot
+    disagree); the unrun names reported as a non-failing `not re-checked
+    today` clause rather than dropped -- failing on them would fire every
+    night forever on a healthy box, which is the same alarm-fatigue trap
+    the healed-only rule exists to avoid, and how long a section may go
+    unrun is already owned by its own `<section> checks completed within
+    36h` line. Seven arms verified red against the exact pre-fix logic,
+    including the two no-verdict paths driven through the real production
+    functions rather than simulated.
+
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

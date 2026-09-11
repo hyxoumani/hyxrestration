@@ -272,6 +272,12 @@ TAPE_SWEEP_STALL_H = 26.0
 
 _failures: list[str] = []
 _skipped: list[str] = []
+#: Every check name this run actually EXECUTED, pass or fail. A SKIPPED section
+#: never calls `check()` at all, so its names appear in neither `_failures` nor
+#: here -- and that absence is the only evidence in the process that separates
+#: "went green" from "was not looked at". `qa_prior_run` is the reader; see the
+#: healed-set derivation there for what went wrong without it.
+_ran: list[str] = []
 _passes = 0
 _lock_holder: str | None = None  # set by _connect_ro when a live writer holds the file
 
@@ -280,6 +286,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     global _passes
     line = f"{'PASS' if ok else 'FAIL'}  {name}" + (f" — {detail}" if detail else "")
     print(line, flush=True)
+    _ran.append(name)  # executed, whatever the verdict — see `_ran`
     if ok:
         _passes += 1
     else:
@@ -2426,6 +2433,7 @@ def qa_prior_run(
     now: datetime | None = None,
     failures: list[str] | None = None,
     skipped: list[str] | None = None,
+    ran: list[str] | None = None,
 ) -> str:
     """Read back what the previous run reported, because nothing else does.
 
@@ -2440,7 +2448,7 @@ def qa_prior_run(
       record too old  -> the run did not HAPPEN. The archive went unwatched
                          across the gap, whatever the last run said.
       unread + healed -> a name the prior run FAILED or SKIPPED that is green
-                         today. That is the state nothing else in the project
+                         today AND was actually re-run today (`ran`). That is the state nothing else in the project
                          can see: the checks are instantaneous (EXP-1359), so
                          a defect that repairs itself between two 10:00Z runs
                          leaves yesterday's line in a journal nobody reads and
@@ -2461,6 +2469,9 @@ def qa_prior_run(
     """
     now = now or datetime.now(UTC)
     today_failed, today_skipped = set(failures or ()), set(skipped or ())
+    # A name that FAILED today ran today, by construction — folded in so the
+    # execution evidence cannot disagree with the findings it is filtering.
+    today_ran = set(_ran if ran is None else ran) | today_failed
     prior = _prior_run()
     if prior is None:
         check(QA_RUN_CHECK, True, "no prior run on record — nothing to read back")
@@ -2472,22 +2483,58 @@ def qa_prior_run(
             f"QA DID NOT RUN — last run {prior.at:%Y-%m-%d %H:%M}Z, {age_h:.1f}h ago "
             f"(budget {QA_RUN_GAP_BUDGET_H:.0f}h)"
         )
-    healed_f = sorted(set(prior.failures) - today_failed)
+    # HEALED IS A CLAIM ABOUT TODAY, SO ONLY TODAY'S EXECUTED CHECKS CAN MAKE IT.
+    # A name absent from `today_failed` does not mean it passed — it means no
+    # FAIL was recorded for it, and a check that never reached a verdict records
+    # none. Both no-verdict paths were live on the 09-11 10:00Z run, and this
+    # arm announced BOTH as "green today":
+    #
+    #   SKIP  — `collector cycles are not skipped for the lock` FAILED on 09-10
+    #           and printed SKIP/UNVERIFIED on 09-11 (no cycle waited out the
+    #           lock), in the same file whose exit path already says a skipped
+    #           section is NOT a passed one.
+    #   WATCH — `batch units within measured run budget` FAILED on 09-10 naming
+    #           the 09-10 07:45Z sweep abort, and on 09-11 printed
+    #           `WATCH ... (already reported)` and RETURNED. The abort had not
+    #           gone away; the report of it had been acknowledged.
+    #
+    # The section namespace could not catch either: the record's `skipped` list
+    # holds SECTION names ("collect-skips") and its `failures` list holds CHECK
+    # names, so the check name crossed into an arm that could not see the skip
+    # — and no section is skipped at all in the WATCH case. `_ran` is fed from
+    # `check()`, the one place a verdict is reached, so it covers both paths and
+    # whatever third one is written next without being told about it.
+    unwatched = sorted(set(prior.failures) - today_ran)
+    healed_f = sorted((set(prior.failures) & today_ran) - today_failed)
     healed_s = sorted(set(prior.skipped) - today_skipped)
     if healed_f:
         reasons.append(f"prior run FAILED {healed_f} and is green today — nothing read it")
     if healed_s:
         reasons.append(f"prior run SKIPPED {healed_s} and ran today — nothing read it")
+    # Reported as CONTEXT on whatever verdict the arms above reach, never as a
+    # reason of its own. A prior failure whose section skips again today is the
+    # normal shape of a chronic skip (`collect-skips` is UNVERIFIED on every run
+    # of a healthy box), so failing on it would fire every night forever — the
+    # same trap the healed-only rule above exists to avoid. How long a section
+    # may go unrun is already owned, and bounded, by its own
+    # `<section> checks completed within 36h` line.
+    tail = (
+        f"; {unwatched} not re-checked today — the section did not run, so "
+        "neither healed nor still-failing can be claimed"
+        if unwatched
+        else ""
+    )
     if reasons:
-        reason = "; ".join(reasons)
+        reason = "; ".join(reasons) + tail
         check(QA_RUN_CHECK, False, reason)
         return reason
-    still = sorted(set(prior.failures) | set(prior.skipped))
+    still = sorted((set(prior.failures) | set(prior.skipped)) - set(unwatched))
     check(
         QA_RUN_CHECK,
         True,
         f"prior run {prior.at:%m-%d %H:%M}Z was {age_h:.1f}h ago"
-        + (f"; {still} still open today, reported by their own lines" if still else ", clean"),
+        + (f"; {still} still open today, reported by their own lines" if still else ", clean")
+        + tail,
     )
     return ""
 
@@ -2508,7 +2555,9 @@ def main() -> None:
     qa_collect_spool()  # the recovery half of the same hole; also sidecar-only
     qa_fade_window_capture()  # journal-only, for the same reason
     qa_batch_run_budget()  # journal-only, for the same reason
-    unread = qa_prior_run(now, _own_findings(), _skipped)  # the only reader of the last run
+    # `_ran` is read here for the same reason the findings are: it must be the
+    # LIVE set at the moment of the comparison, not one captured earlier.
+    unread = qa_prior_run(now, _own_findings(), _skipped, _ran)  # the only reader of the last run
     # Re-read AFTER the check rather than reusing the list above: the
     # exclusion is then a live filter, not an artifact of statement order.
     _record_run(_own_findings(), _skipped, now, unread)  # BEFORE either exit path below

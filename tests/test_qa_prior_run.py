@@ -58,11 +58,21 @@ def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(qa, "STATE", tmp_path / "sections.json")
     qa._failures.clear()
     qa._skipped.clear()
+    qa._ran.clear()
     qa._passes = 0
     yield
     qa._failures.clear()
     qa._skipped.clear()
+    qa._ran.clear()
     qa._passes = 0
+
+
+def _ran_today(*names: str) -> None:
+    """Today's run EXECUTED these checks and they passed. Stating it is the
+    point: a name absent here did not run, and `qa_prior_run` must not read
+    that as green."""
+    for name in names:
+        qa.check(name, True)
 
 
 def _write_record(at: datetime, failures=(), skipped=()) -> None:
@@ -182,6 +192,8 @@ def test_first_run_ever_is_quiet_but_not_silent(capsys):
 def test_a_healed_failure_is_named_by_the_next_run(capsys):
     now = datetime.now(UTC)
     _write_record(now - timedelta(hours=24), failures=["stream fresh"])
+    _ran_today("stream fresh")
+    capsys.readouterr()
     qa.qa_prior_run(now, [], [])
     out = capsys.readouterr().out
     assert out.startswith("FAIL") and "stream fresh" in out and "green today" in out
@@ -374,6 +386,7 @@ def _prior(at, failures=(), skipped=()):
 def test_the_check_returns_the_reason_it_failed_on():
     now = datetime.now(UTC)
     _prior(now - timedelta(hours=24), failures=["stream fresh"])
+    _ran_today("stream fresh")
     reason = qa.qa_prior_run(now, [], [])
     assert "stream fresh" in reason and "nothing read it" in reason
 
@@ -391,7 +404,9 @@ def test_the_check_returns_empty_when_there_is_no_prior_run():
 def test_the_reason_lands_on_the_record_for_the_digest_to_read():
     now = datetime.now(UTC)
     _prior(now - timedelta(hours=24), failures=["stream fresh"])
+    _ran_today("stream fresh")
     reason = qa.qa_prior_run(now, [], [])
+    assert reason
     qa._record_run(qa._own_findings(), [], now, reason)
     assert qa._prior_run().unread == reason
 
@@ -403,6 +418,7 @@ def test_the_recorded_reason_does_not_re_arm_the_report_of_itself(capsys):
     record -- day 3 must be green."""
     day2 = datetime.now(UTC)
     _prior(day2 - timedelta(hours=24), failures=["stream fresh"])
+    _ran_today("stream fresh")
     reason = qa.qa_prior_run(day2, [], [])
     assert reason
     qa._record_run(qa._own_findings(), [], day2, reason)
@@ -450,3 +466,139 @@ def test_the_record_keeps_carrying_both_lists_unchanged():
     entry = json.loads(qa.STATE.read_text())[qa.QA_RUN_SECTION]
     assert entry["failures"] == ["a"] and entry["skipped"] == ["b"]
     assert entry["unread"] == "some reason"
+
+
+# --- a skipped check is not a green one -------------------------------------
+#
+# WHY THIS SECTION EXISTS (2026-09-11, read off production). The healed arm
+# asked "is this name absent from today's failures?" and called the answer
+# green. Absence has two opposite causes: the check passed, or its SECTION
+# SKIPPED and the check never ran. The 09-11 10:00Z run hit the second and
+# announced `collector cycles are not skipped for the lock` -- which printed
+# SKIP/UNVERIFIED that very run -- as "green today", a false all-clear for a
+# check nobody had looked at. The namespaces are why it could not self-catch:
+# the record's `skipped` list holds SECTION names and its `failures` list holds
+# CHECK names, so the check name crossed into the arm that could not see the
+# skip. Execution is now the evidence: only a name that ran today can be judged
+# by today.
+#
+# The same run carried a SECOND no-verdict path, which is why the rule is keyed
+# on `check()` rather than on section skips: `batch units within measured run
+# budget` FAILED on 09-10 naming a sweep abort, and on 09-11 printed
+# `WATCH ... (already reported)` and returned. No section was skipped; the
+# abort had not gone away; the report of it had been acknowledged. A
+# section-level rule would have missed it entirely.
+
+
+def _skip_check_name(capsys) -> str:
+    """The check name PRODUCTION prints on the UNVERIFIED path, read off the
+    real function rather than typed here -- a literal would keep passing after
+    the name changed, which is the day the bug returns."""
+    qa.qa_collect_skips(24.0, path="/nonexistent/collect_skips.jsonl", journal_skips=0)
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("SKIP  "), line
+    return line[len("SKIP  ") :].split(" — ")[0]
+
+
+def test_a_prior_failure_whose_section_skipped_today_is_not_called_green(capsys):
+    """The exact 09-11 shape: FAILED yesterday, SKIP today, no check() call."""
+    now = datetime.now(UTC)
+    name = _skip_check_name(capsys)
+    assert name not in qa._ran and name not in qa._failures
+    _write_record(now - timedelta(hours=24), failures=[name])
+
+    qa.qa_prior_run(now, qa._own_findings(), qa._skipped)
+    out = capsys.readouterr().out
+    assert "green today" not in out
+    assert not qa._failures, "a check that did not run must not be reported as healed"
+
+
+def test_the_unwatched_name_is_reported_rather_than_silently_dropped(capsys):
+    """Not green, but not invisible either: the reader is told the name went
+    unwatched. Suppressing it would trade a false all-clear for a silence."""
+    now = datetime.now(UTC)
+    name = _skip_check_name(capsys)
+    _write_record(now - timedelta(hours=24), failures=[name])
+    qa.qa_prior_run(now, qa._own_findings(), qa._skipped)
+    out = capsys.readouterr().out
+    assert out.startswith("PASS") and name in out and "not re-checked today" in out
+
+
+def test_an_unwatched_name_is_not_listed_as_still_open_today(capsys):
+    """The PASS line's `still open today` clause promises those names are
+    `reported by their own lines`. An unrun check has no line to be reported
+    by, so it must not ride in that list."""
+    now = datetime.now(UTC)
+    _write_record(now - timedelta(hours=24), failures=["stream fresh"])
+    qa.qa_prior_run(now, [], [], ran=[])
+    out = capsys.readouterr().out
+    assert "still open today" not in out and "not re-checked today" in out
+
+
+def test_a_healed_failure_and_an_unwatched_one_are_reported_together(capsys):
+    """One arm must not swallow the other: the healed name still FAILS the
+    check, and the unwatched name still rides along as context."""
+    now = datetime.now(UTC)
+    _write_record(now - timedelta(hours=24), failures=["stream fresh", "kalshi mirror invariant"])
+    qa.qa_prior_run(now, [], [], ran=["stream fresh"])
+    out = capsys.readouterr().out
+    assert out.startswith("FAIL")
+    assert "['stream fresh'] and is green today" in out
+    assert "['kalshi mirror invariant'] not re-checked today" in out
+
+
+def test_a_name_that_failed_today_counts_as_having_run(capsys):
+    """Folded in rather than trusted from the caller: a FAILING name ran, by
+    construction, and the two inputs must not be able to disagree."""
+    now = datetime.now(UTC)
+    _write_record(now - timedelta(hours=24), failures=["stream fresh"])
+    qa.qa_prior_run(now, ["stream fresh"], [], ran=[])
+    assert not qa._failures
+    assert "still open today" in capsys.readouterr().out
+
+
+def test_check_records_every_name_it_executes(capsys):
+    """`_ran` is the evidence the healed arm reads; it is worth nothing if a
+    verdict can be printed without landing in it."""
+    qa.check("passed one", True)
+    qa.check("failed one", False)
+    capsys.readouterr()
+    assert qa._ran == ["passed one", "failed one"]
+
+
+def test_main_hands_the_live_executed_set_to_the_check(monkeypatch):
+    """Read off the source, like the reason-assignment guard above: `main` must
+    pass `_ran` through, or the filter silently reads an empty set in
+    production while every unit test that passes `ran=` keeps passing."""
+    call = [
+        n
+        for n in ast.walk(ast.parse(QA.read_text()))
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "qa_prior_run"
+    ]
+    assert call, "qa_prior_run is not called from qa.py"
+    args = {getattr(a, "id", None) for a in call[0].args}
+    assert "_ran" in args, f"main() does not pass the executed set: {args}"
+
+
+def test_a_prior_failure_that_only_reaches_WATCH_today_is_not_called_green(capsys):
+    """The second no-verdict path, driven through the real function. An
+    already-reported abort prints WATCH and returns: the abort is still on the
+    books, so yesterday's FAIL of the same name has not healed."""
+    now = datetime.now(UTC)
+    abort = qa.BatchRun("hyxlab-sweep.timer", now - timedelta(hours=6), 1.59, ok=False)
+    qa.qa_batch_run_budget(now=now, runs={"hyxlab-sweep.timer": [abort]})
+    name = "batch units within measured run budget"
+    assert qa._failures == [name], "first sighting must FAIL"
+
+    qa._failures.clear()
+    qa._ran.clear()
+    qa.qa_batch_run_budget(now=now, runs={"hyxlab-sweep.timer": [abort]})
+    out = capsys.readouterr().out
+    assert f"WATCH {name}" in out and "already reported" in out
+    assert name not in qa._ran and not qa._skipped, "no verdict, and no section skipped"
+
+    _write_record(now - timedelta(hours=24), failures=[name])
+    qa.qa_prior_run(now, qa._own_findings(), qa._skipped)
+    out = capsys.readouterr().out
+    assert "green today" not in out and "not re-checked today" in out
+    assert not qa._failures

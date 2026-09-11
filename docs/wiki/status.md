@@ -1,5 +1,69 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-11 (UNREAD-ARM PASS -- "NOT IN THE FAILURE LIST"
+IS NOT "PASSED", AND TODAY'S OWN RUN PROVED IT TWICE.)**
+Cold start per instructions. The digest's one ATTENTION unit is
+`hyxlab-qa` FAILED at 09-11 10:00Z -- and this time it IS today's run,
+so the pass began by doing what the ladder's item (1) asks: reading the
+09-11 firsts. **They are green.** Every fix from the last four passes
+landed in production: `shadow-vs-replay divergence measured on the
+newest complete run` PASS (the worktree-reports fix -- the unit's
+command now exits in 0.088s), `collection continuous` 5.2 min gap and
+`nws forecasts continuous` 5.3 min (the sweep busy-handler), the new
+`skipped collector cycles are recovered from the spool` PASS, and the
+sweep abort demoted from FAIL to WATCH. QA's ONLY failure today is its
+own `prior QA run was read` -- the unread line, which is how it reports
+a heal. Reading it is what found the defect.
+**(1) FIVE HEALED NAMES, TWO OF THEM FALSE.** `qa_prior_run` derived
+"green today" from ABSENCE: `set(prior.failures) - today_failed`. A
+name is absent from today's failures for two OPPOSITE reasons -- it
+passed, or it never reached a verdict. Both were live in the same run.
+`collector cycles are not skipped for the lock` FAILED 09-10 and
+printed `SKIP ... UNVERIFIED` on 09-11 (no cycle waited out the lock).
+`batch units within measured run budget` FAILED 09-10 naming the sweep
+abort and printed `WATCH ... (already reported)` and RETURNED on 09-11
+-- the abort had not gone away, the REPORT of it had been acknowledged.
+The check announced both as repaired.
+**(2) THE NAMESPACES ARE WHY IT COULD NOT SELF-CATCH.** The record
+carries `skipped` (SECTION names) and `failures` (CHECK names), so a
+skipped section's check name lands in a set the skip arm cannot see --
+and in the WATCH case no section is skipped at all. A section-level
+rule would have fixed exactly half of it. The same file's exit path
+already says the principle out loud: "A skipped section is NOT a
+passed one."
+**(3) EXECUTION IS THE EVIDENCE, TAKEN WHERE THE VERDICT IS.** `qa._ran`
+is appended by `check()` and by nothing else -- the one place a verdict
+exists -- so skip, watch and any future early return are all covered
+without being enumerated. `healed_f` is intersected with it, and
+`today_failed` folded in (a name that failed today ran, by
+construction, so the two inputs cannot disagree).
+**(4) UNRUN NAMES ARE REPORTED, NOT DROPPED.** A non-failing
+`not re-checked today` clause rides on whatever verdict the arms reach.
+Failing on it would fire every night forever on a healthy box
+(`collect-skips` is UNVERIFIED on every run of one) -- the same
+alarm-fatigue trap the healed-only rule exists to avoid -- and how long
+a section may go unrun is already owned by its `<section> checks
+completed within 36h` line. The PASS line's `still open today` list now
+excludes them too: it promises those names are "reported by their own
+lines", and an unrun check has no line.
+**VERIFIED LIVE** by replaying the 09-11 10:00Z journal (30 executed
+checks, 1 SKIP, the WATCH) against the 09-10 record: the fixed reader
+drops exactly the two false names and keeps the three real heals. Seven
+arms verified red against the exact pre-fix logic, with both no-verdict
+paths driven through the real production functions, not simulated.
+**Suite 1363 -> 1371. COMMITTED, PROMOTED, PUSHED.** Mistake **#53**.
+NEXT PASS: (1) 09-12 QA is the first run under the new arm -- it should
+report the three real heals as read and stay quiet about the two unrun
+names. (2) streamd flush backlog -- still the unmeasured one. (3) The
+10th panel day, ~09-17. (4) Width-24 econ maker bracket needs
+2026-09-12 (TOMORROW); atlas quoted tier wants ~2.1M settled markets.
+(5) Inert leftover, deliberately not deleted: `hyxrestration-stable/
+reports/shadow_divergence/`.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box, and a notify
+channel (smtp creds or a webhook URL).
+
+---
+
 Updated: **2026-09-11 (INERT PASS -- THE RULE #47 GUESSED WAS A PROXY
 FOR ONE ALREADY WRITTEN IN EVERY UNIT FILE.)**
 Cold start per instructions. The digest's one ATTENTION unit resolves to
