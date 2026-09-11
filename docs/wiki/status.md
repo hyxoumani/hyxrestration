@@ -1,5 +1,72 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-11 (INERT PASS -- THE RULE #47 GUESSED WAS A PROXY
+FOR ONE ALREADY WRITTEN IN EVERY UNIT FILE.)**
+Cold start per instructions. The digest's one ATTENTION unit resolves to
+the previous pass's work and was re-checked, not assumed: `hyxlab-qa`
+FAILED is still the 09-10 10:00Z run, and today's 10:00Z firing had not
+happened yet at 08:15Z. The 09-11 firsts are therefore still ahead
+(06:10Z sweep was mid-run, poly-sweep 4h in) -- and the 01:20Z
+divergence fire did happen, on time, `OK last ran 6.9h ago`, so the
+worktree-reports fix held. No contention today: `data/` has no spool
+directory and `collect_skips.jsonl` has not moved since 09-10 02:35, so
+the spool is inert, which is what an uncontended day looks like.
+So the pass went to the ladder's item (4): the one thing mistake #47
+left OPEN by name.
+**(1) SIX ARMS OF TEXT AND NOTHING ABOUT WIRING.** `judge_drift`
+compared unit TEXT six ways. Enablement is not text -- it is the symlink
+`enable` writes from an `[Install]` section, and no file this repo ships
+contains it -- so `hyxlab-divergence.timer` shipped byte-perfect, passed
+`systemd-analyze verify` and the unit-file suite, read `23/23 loaded
+unit files match the repo`, and would never have fired.
+**(2) THE GUESS WAS A PROXY; THE FILE HAD THE RULE.** #47 wrote the rule
+down as "timers yes, timer-backed services no". True today, and derived
+from the wrong thing. `enable` does exactly one thing, so a unit with no
+`[Install]` cannot be enabled at all -- systemd calls it `static`.
+Measured across all 23 vendored units: `[Install]` present and
+`UnitFileState=enabled` agree EXACTLY, 14 and 14 (11 timers + the three
+daemons), `static` for the other 9. The file-based rule excludes the
+same nine services and additionally covers the three DAEMONS the
+filename rule silently omitted.
+**(3) ONE RULE, TWO CONSUMERS, PINNED BY EXECUTION.** `promote.sh` now
+selects its enable set by `[Install]` too -- which is what lets INERT be
+`REPAIRABLE` instead of an operator hand-off -- with `--now` still
+timers-only: writing a daemon's boot symlink IS the repair, starting a
+daemon the operator stopped is a side effect a unit-file repair has no
+business having, and these daemons own DuckDB files under a lock.
+`tests/test_promote_enables_timers.py` extracts promote's OWN selection
+loop and runs it over the repo's real unit files, comparing the result
+with `health._wants_enabling`: a re-implementation in python would have
+been a second rule. (It found its own bug immediately -- the arrays are
+`local`, so reading them after the function returns reports an empty set
+for every possible rule.)
+**(4) ARM ORDER, PINNED FROM BOTH SIDES.** `UnitFileState` comes from
+the manager's CACHED view of the file, so a unit that has just gained an
+`[Install]` and not been reloaded still reads `static`. STALE-IN-MEMORY
+is judged FIRST, so a unit mid-promotion cannot read as a false INERT;
+everything after it is judged later, because the text arms answer what a
+unit would DO and this one answers whether it can ever run.
+**VERIFIED LIVE:** a probe outside the fleet's namespace
+(`hyxprobe-inert.timer` -- installed into INSTALL_DIR, daemon-reloaded,
+never enabled, removed afterwards; zero risk to the running fleet) read
+`disabled` -> INERT, then `enable` -> `enabled` -> OK, while its
+`[Install]`-less companion service read OK throughout. Nine health arms
+and three promote arms verified red against the exact pre-fix files.
+**Suite 1350 -> 1363. COMMITTED, PROMOTED (no daemon restarted), PUSHED.**
+Mistake **#47 CLOSED**.
+NEXT PASS: (1) **the 09-11 firsts are still unread** -- 06:10Z sweep
+under the busy handler and 10:00Z QA carrying `unread` + the spool
+section + the worktree-reports fix (its divergence arm should go green);
+read them before anything else. (2) streamd flush backlog -- still the
+unmeasured one. (3) The 10th panel day, ~09-17. (4) Width-24 econ maker
+bracket needs 2026-09-12; atlas quoted tier wants ~2.1M settled markets.
+(5) Inert leftover, deliberately not deleted: `hyxrestration-stable/
+reports/shadow_divergence/`.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box, and a notify
+channel (smtp creds or a webhook URL).
+
+---
+
 Updated: **2026-09-11 (WORKTREE-REPORTS PASS -- THE REPORT WAS WRITTEN
 IN ONE CHECKOUT AND LOOKED FOR IN THE OTHER.)**
 Cold start per instructions. The digest's two ATTENTION units both

@@ -1207,14 +1207,26 @@ Format: what happened → root cause → error type → prevention tier
     enumeration cannot fail when a new timer appears, which is this same
     defect restated one level up. All three arms verified to fail
     against the pre-fix `promote.sh`.
-    **OPEN, and named so the next pass does not have to rediscover it:**
-    `health.judge_drift` still has no INERT arm. The digest would report
-    a hand-`disable`d timer as clean, and the repair above only covers
-    units that arrive through a promotion. The arm needs `UnitFileState`
-    in the props and a rule for which repo units are SUPPOSED to be
-    enabled (timers yes, timer-backed services no) -- deliberately not
-    written in the pass that found it, so the shape gets designed rather
-    than bolted on.
+    **CLOSED 2026-09-11** (was left OPEN here on purpose, so the shape got
+    designed rather than bolted on). `health.judge_drift` now has an
+    INERT arm, and the rule this entry guessed -- "timers yes,
+    timer-backed services no" -- turned out to be a PROXY for one written
+    in each unit file: `enable` only ever creates the symlinks an
+    `[Install]` section names, so a unit without one cannot be enabled at
+    all (`static`). Measured across all 23 vendored units, `[Install]`
+    and `UnitFileState=enabled` agree exactly -- 14 and 14 -- and the
+    file-based rule additionally covers the three DAEMONS the guessed
+    rule omitted. `promote.sh` selects its enable set by the same rule
+    (`--now` still timers-only), which is what makes INERT `REPAIRABLE`
+    rather than an operator hand-off, and
+    `tests/test_promote_enables_timers.py` executes promote's own
+    selection code over the repo's files so the two cannot diverge.
+    Arm ORDER is the subtlety: `UnitFileState` is read from the manager's
+    cached view, so a unit that has just gained an `[Install]` and not
+    been reloaded still reads `static` -- STALE-IN-MEMORY is judged first
+    so a mid-promotion unit cannot read as a false INERT. Verified live
+    on a probe outside the fleet's namespace (installed, reloaded, never
+    enabled, removed): `disabled` -> INERT, `enable` -> OK.
 
 48. **2026-09-10 -- the sweep had a graceful path for the failure it
     cannot recover from and none for the one it can.** The 06:10Z
