@@ -129,6 +129,7 @@ PROPS = (
     "FragmentPath",
     "DropInPaths",
     "NeedDaemonReload",
+    "UnitFileState",
 )
 
 # Where `promote.sh` installs: `cp "$DEV"/scripts/systemd/hyxlab-* ~/.config/systemd/user/`.
@@ -178,7 +179,7 @@ DEPLOY_REF = "stable"
 # A naive `--units-only` would run the `cp`, reload, exit 0, and leave a SHADOWED
 # box reporting success -- the same shape of lie the digest was built to stop
 # telling. So the repair re-runs the judge and reports what SURVIVED it.
-REPAIRABLE = ("DRIFT", "STALE-IN-MEMORY")
+REPAIRABLE = ("DRIFT", "STALE-IN-MEMORY", "INERT")
 # Where the person this verdict is handed to finds the procedure. A remedy that
 # points at source ("see health.py") asks the operator to derive the steps from
 # the code that just declined to take them.
@@ -627,6 +628,35 @@ def _dropin_effect(path: str, text: str | None) -> str:
     return f"{name} sets {', '.join(keys)}{hijack}"
 
 
+# WHICH UNITS ARE SUPPOSED TO BE ENABLED, AND WHY THE FILE ANSWERS IT (2026-09-11).
+# Left open by mistake #47: the INERT arm needs a rule for which repo units the
+# manager is supposed to have wired up, and #47 guessed "timers yes, timer-backed
+# services no". That is a proxy for the real thing, and the real thing is written
+# in each unit file. `enable` does exactly one thing -- it creates the symlinks a
+# unit's `[Install]` section names -- so a unit WITHOUT an `[Install]` section
+# cannot be enabled at all; systemd calls it `static`. Measured 2026-09-11 across
+# all 23 vendored unit files: `UnitFileState` is `enabled` for exactly the 14 that
+# contain `[Install]` (11 timers + the three daemons stream/shadow/simui) and
+# `static` for exactly the 9 that do not (every timer-backed .service). No
+# exception, so the proxy and the file agree today -- and the FILE is what stays
+# right when the next daemon or the next timer-backed service arrives.
+#
+# One rule, two consumers: `promote.sh` enables the same discovered set, which is
+# what makes INERT `REPAIRABLE` rather than an operator hand-off.
+# `tests/test_promote_enables_timers.py` pins that they cannot diverge.
+ENABLED_STATES = ("enabled", "enabled-runtime")
+
+
+def _wants_enabling(vendored: str) -> bool:
+    """Does the REPO's copy of this unit declare an `[Install]` section.
+
+    The repo's copy, not the loaded one, on purpose: this arm asks what the unit
+    is SUPPOSED to be, and a loaded file whose `[Install]` differs from the repo's
+    is a text fault the DRIFT arm below already reports under its own name.
+    """
+    return any(ln.strip() == "[Install]" for ln in vendored.splitlines())
+
+
 def judge_drift(
     unit: str,
     props: dict[str, str],
@@ -674,6 +704,13 @@ def judge_drift(
     states are two phases of one fault, which is why the reload comes before
     the re-read in the repair and why both are in `REPAIRABLE`.
 
+    **INERT.** A unit file can be installed, loaded, textually perfect, and
+    wired to nothing: `enable` writes the symlinks the `[Install]` section names,
+    and that symlink is not part of any file this repo ships. So every text arm
+    above reads clean on a timer that will never fire -- measured 2026-09-10,
+    `hyxlab-divergence.timer` (mistake #47). See ENABLED_STATES for which units
+    the arm expects to be enabled and why the unit FILE answers that question.
+
     **DROP-IN.** `DropInPaths` lists `<unit>.d/*.conf` files that override
     directives without touching the fragment; an `ExecStart=` reset there
     replaces the command entirely (measured: `/bin/true` became
@@ -715,6 +752,25 @@ def judge_drift(
     if props.get("NeedDaemonReload") == "yes":
         return UnitDrift(
             unit, "STALE-IN-MEMORY", "fragment on disk changed since load; daemon-reload never ran"
+        )
+
+    # AFTER the reload arm, and that ordering is the whole subtlety. `UnitFileState`
+    # is read from the manager's cached view of the unit file, so a unit that gains
+    # an `[Install]` section and has not been reloaded still reports `static` --
+    # which would fire this arm on a unit that is merely mid-promotion. Reporting
+    # the pending reload first states the only fact that is certain there.
+    #
+    # BEFORE the text arms, because those are questions about what the unit would
+    # do and this one is whether it can ever run. `hyxlab-divergence.timer` shipped
+    # with byte-perfect text, passed every gate this repo has, and would never have
+    # fired (mistake #47).
+    if _wants_enabling(vendored) and props.get("UnitFileState") not in ENABLED_STATES:
+        return UnitDrift(
+            unit,
+            "INERT",
+            f"installed, loaded, and NOT enabled (UnitFileState="
+            f"{props.get('UnitFileState') or '?'}); its [Install] symlinks are absent, "
+            "so nothing will ever trigger it",
         )
 
     drops = [d for d in (props.get("DropInPaths") or "").split() if d]

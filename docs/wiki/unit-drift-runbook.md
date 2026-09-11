@@ -3,8 +3,8 @@
 Written 2026-09-09. Audience: whoever is holding the box when
 `collector.health` or `promote.sh --units-only` prints `SHADOWED` or
 `DROP-IN`. The other verdicts are not here because they do not need a
-person: `DRIFT` and `STALE-IN-MEMORY` are `REPAIRABLE`, and the repair is
-`scripts/promote.sh --units-only`, which re-runs the judge afterwards and
+person: `DRIFT`, `STALE-IN-MEMORY` and `INERT` (added 2026-09-11) are
+`REPAIRABLE`, and the repair is `scripts/promote.sh --units-only`, which re-runs the judge afterwards and
 reports what survived it.
 
 ## Why these two are handed to you at all

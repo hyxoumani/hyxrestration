@@ -54,6 +54,10 @@ def props(**over: str) -> dict[str, str]:
         "FragmentPath": INSTALLED,
         "DropInPaths": "",
         "NeedDaemonReload": "no",
+        # `static` is what systemd reports for a unit with no `[Install]`, which
+        # is what VENDORED is -- so the default probe cannot be INERT, and the
+        # arms above are judged on the states they were written for.
+        "UnitFileState": "static",
     }
     return base | over
 
@@ -209,7 +213,7 @@ def test_the_fields_the_arms_read_are_fields_the_digest_asks_for():
     """`show` requests exactly `PROPS`. A field the arms read but `show` does not
     request comes back missing, and every arm keyed on it goes quiet -- the
     failure mode is a checker that always passes."""
-    for field in ("FragmentPath", "DropInPaths", "NeedDaemonReload"):
+    for field in ("FragmentPath", "DropInPaths", "NeedDaemonReload", "UnitFileState"):
         assert field in health.PROPS
 
 
@@ -278,7 +282,7 @@ def test_the_states_a_reinstall_cannot_clear_are_not_promised():
     fault into a green line."""
     assert "SHADOWED" not in health.REPAIRABLE
     assert "DROP-IN" not in health.REPAIRABLE
-    assert set(health.REPAIRABLE) == {"DRIFT", "STALE-IN-MEMORY"}
+    assert set(health.REPAIRABLE) == {"DRIFT", "STALE-IN-MEMORY", "INERT"}
 
 
 def test_every_state_the_judge_can_emit_is_classified():
@@ -290,7 +294,15 @@ def test_every_state_the_judge_can_emit_is_classified():
     src = inspect.getsource(health.judge_drift)
     emitted = set(re.findall(r'UnitDrift\(\s*\n?\s*unit,\s*\n?\s*"([A-Z-]+)"', src))
     emitted |= set(re.findall(r'"(SKIP|OK|SHADOWED|STALE-IN-MEMORY|DROP-IN|DRIFT|UNREADABLE)",', src))
-    assert {"SHADOWED", "STALE-IN-MEMORY", "DROP-IN", "DRIFT", "UNREADABLE", "PENDING-PROMOTE"} <= emitted, emitted
+    assert {
+        "SHADOWED",
+        "STALE-IN-MEMORY",
+        "INERT",
+        "DROP-IN",
+        "DRIFT",
+        "UNREADABLE",
+        "PENDING-PROMOTE",
+    } <= emitted, emitted
     unclassified = emitted - set(health.NOT_A_FAULT) - set(health.REPAIRABLE) - set(health.UNREPAIRABLE)
     assert not unclassified, f"judge_drift can emit {unclassified}, which no set classifies"
     assert not set(health.REPAIRABLE) & set(health.UNREPAIRABLE)
@@ -621,3 +633,127 @@ def test_the_operator_remedy_points_at_a_procedure_that_exists():
         assert state in text or state == "UNREADABLE", f"{state} sends an operator here unaddressed"
     assert "promote.sh --units-only" in text, "the repairable escape hatch must be named"
     assert "--drift-only" in text, "the procedure must end by re-asking the judge"
+
+
+# --------------------------------------------------------------------------
+# INERT: installed, loaded, textually perfect, and wired to nothing.
+# Left OPEN by mistake #47 and closed 2026-09-11. Every arm above compares
+# TEXT, and enablement is not text: it is the symlink `enable` writes from a
+# unit's `[Install]` section, which no file this repo ships contains. So
+# `hyxlab-divergence.timer` shipped byte-perfect, passed `systemd-analyze
+# verify`, the unit-file suite and `23/23 loaded unit files match the repo`,
+# and would never have fired.
+#
+# MEASURED 2026-09-11 against the live manager, on a probe unit outside the
+# fleet's namespace (`hyxprobe-inert.timer`, installed into INSTALL_DIR,
+# daemon-reloaded, never enabled, removed afterwards): `UnitFileState=disabled`
+# -> INERT; `systemctl --user enable` -> `enabled` -> OK; and its companion
+# `hyxprobe-inert.service`, which has no `[Install]`, read OK throughout.
+# --------------------------------------------------------------------------
+
+INSTALLABLE = "[Unit]\nDescription=probe\n[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n"
+
+
+def judge_timer(loaded_text: str | None = INSTALLABLE, **over: str) -> health.UnitDrift:
+    return health.judge_drift("hyxlab-probe.timer", props(**over), loaded_text, INSTALLABLE)
+
+
+def test_a_timer_that_was_never_enabled_is_not_reported_as_agreement():
+    """The #47 condition exactly: the file is installed, loaded and identical to
+    the repo's, and the unit will never run. A text comparison says OK here, and
+    said OK for a whole day on this box."""
+    d = judge_timer(UnitFileState="disabled")
+    assert d.state == "INERT"
+    assert "disabled" in d.detail, "the verdict must quote the state it read"
+    assert "nothing will ever trigger it" in d.detail, (
+        "and say what the consequence is, not just the field it read"
+    )
+
+
+def test_an_enabled_timer_is_clean():
+    d = judge_timer(UnitFileState="enabled")
+    assert d.state == "OK"
+
+
+def test_a_runtime_enable_counts_as_enabled():
+    """`enable --runtime` writes the symlink under /run: it does not survive a
+    reboot, but the unit fires today. Calling it INERT would send an operator to
+    repair a unit that is running."""
+    assert judge_timer(UnitFileState="enabled-runtime").state == "OK"
+
+
+def test_a_unit_with_no_install_section_is_never_inert():
+    """`static` is not a fault -- it is what every timer-backed .service in this
+    repo reads, because `enable` has nothing to link and systemd refuses it.
+    An arm that expected all 23 units to be enabled would report nine permanent
+    false faults and be switched off within a day."""
+    assert judge().state == "OK"
+    assert judge(UnitFileState="static").state == "OK"
+
+
+def test_an_unreported_unit_file_state_is_not_read_as_enabled():
+    """A missing property is the shape of a `systemctl show` that changed under
+    us. Defaulting it to enabled would make the arm silently vacuous -- the
+    failure mode `test_the_fields_the_arms_read...` exists for."""
+    d = health.judge_drift(
+        "hyxlab-probe.timer",
+        {k: v for k, v in props().items() if k != "UnitFileState"},
+        INSTALLABLE,
+        INSTALLABLE,
+    )
+    assert d.state == "INERT"
+    assert "?" in d.detail
+
+
+def test_a_pending_reload_is_reported_before_enablement_is_judged():
+    """ORDERING, and the reason the arm sits where it does. `UnitFileState` comes
+    from the manager's CACHED view of the unit file, so a unit that has just
+    gained an `[Install]` section and not been reloaded still reads `static`.
+    Judging enablement first would report a false INERT on a unit that is merely
+    mid-promotion; STALE-IN-MEMORY is the only certain fact in that state."""
+    d = judge_timer(UnitFileState="static", NeedDaemonReload="yes")
+    assert d.state == "STALE-IN-MEMORY"
+
+
+def test_a_unit_that_cannot_run_outranks_what_its_text_would_have_done():
+    """ORDERING, the other side. A disabled timer whose text has also drifted is
+    reported INERT: the text arms answer what the unit would DO, and this one
+    answers whether it can ever run at all."""
+    d = judge_timer(loaded_text="[Unit]\nDescription=other\n[Install]\n", UnitFileState="disabled")
+    assert d.state == "INERT"
+
+
+def test_the_inert_state_is_repaired_by_the_script_not_handed_to_a_person():
+    """It is in REPAIRABLE because `promote.sh` genuinely enables it -- see
+    `tests/test_promote_enables_timers.py`, which pins that promote's enable set
+    and `health._wants_enabling` are the SAME rule. If that ever stops being
+    true, this promise becomes the "converts a detected fault into a green line"
+    lie the unrepairable states are kept out of REPAIRABLE to avoid."""
+    assert "INERT" in health.REPAIRABLE
+    assert health.drift_exit_code([judge_timer(UnitFileState="disabled")]) == health.DRIFT_REPAIRABLE
+
+
+def test_the_expectation_is_read_from_the_repos_copy_not_the_loaded_one():
+    """Which file states the INTENT. The repo's: a loaded fragment whose
+    `[Install]` differs from the repo's is a text fault, and the DRIFT arm
+    reports it under its own name rather than this one guessing from it."""
+    assert health._wants_enabling(INSTALLABLE)
+    assert not health._wants_enabling(VENDORED)
+    assert not health._wants_enabling("[Unit]\n# [Install]\nDescription=commented out\n")
+
+
+def test_every_installable_unit_in_this_repo_is_enabled_on_this_box():
+    """LIVE, and non-vacuous by assertion. The fleet-wide version of the arm:
+    the repo ships 14 units with an `[Install]` section (11 timers + three
+    daemons) and every one of them must be wired up here. `drift_report` covers
+    this too, but only as one `fault` among six states; named separately it says
+    WHICH fault when a timer is switched off by hand."""
+    installable = [f.name for f in health.UNIT_DIR.glob("hyxlab-*") if health._wants_enabling(f.read_text())]
+    assert installable, "no vendored unit declares [Install]; this arm proves nothing"
+    inert = [
+        (u, health.show(u).get("UnitFileState"))
+        for u in installable
+        if health.show(u).get("LoadState") == "loaded"
+        and health.show(u).get("UnitFileState") not in health.ENABLED_STATES
+    ]
+    assert not inert, f"installed but wired to nothing: {inert}"

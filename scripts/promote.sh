@@ -78,15 +78,38 @@ install_units() {
     # `hyxlab-divergence.timer` promoted clean, `is-enabled` said `disabled`,
     # and it had to be enabled by hand.
     #
-    # Timers only. A timer-triggered .service must NOT be enabled (it would
-    # then also start at boot, outside its schedule). `enable --now` is
-    # idempotent: on an already-enabled, already-active timer both halves are
-    # no-ops, so this cannot disturb a running schedule or a Persistent
-    # catch-up.
-    echo "== enable the repo's timers (idempotent; a new timer is inert until enabled) =="
-    local timers=()
-    for t in "$DEV"/scripts/systemd/hyxlab-*.timer; do timers+=("$(basename "$t")"); done
+    # WHICH UNITS, AND WHY THE FILE DECIDES (2026-09-11). This said "timers
+    # only", on the reasoning that a timer-triggered .service must not be
+    # enabled -- it would then also start at boot, outside its schedule. True,
+    # but it is a proxy: `enable` does one thing, create the symlinks a unit's
+    # `[Install]` section names, so a unit with no `[Install]` cannot be enabled
+    # at all (systemd calls it `static`) and a timer-backed .service here has
+    # none. Selecting on `[Install]` therefore excludes exactly the same nine
+    # services -- measured over all 23 vendored files -- and additionally covers
+    # the three DAEMONS (stream/shadow/simui), which do have one and which the
+    # timer glob silently omitted. Same rule as `health._wants_enabling`, so the
+    # INERT verdict this repairs and the repair itself cannot disagree.
+    #
+    # `--now` for timers only. Enabling a daemon writes its boot symlink, which
+    # is the state being repaired; STARTING one the operator stopped is a side
+    # effect a unit-file repair has no business having, and these daemons own
+    # DuckDB files under a lock (see .claude/rules/ops.md). The restart stage
+    # below is where a daemon is deliberately brought up.
+    #
+    # `enable` is idempotent: on an already-enabled, already-active unit both
+    # halves are no-ops, so this cannot disturb a running schedule or a
+    # `Persistent` catch-up.
+    echo "== enable the repo's installable units (idempotent; a new one is inert until enabled) =="
+    local timers=() svcs=()
+    for f in "$DEV"/scripts/systemd/hyxlab-*; do
+        grep -qxF '[Install]' "$f" || continue
+        case "$f" in
+            *.timer) timers+=("$(basename "$f")") ;;
+            *) svcs+=("$(basename "$f")") ;;
+        esac
+    done
     systemctl --user enable --now "${timers[@]}"
+    if ((${#svcs[@]})); then systemctl --user enable "${svcs[@]}"; fi
 }
 
 cd "$DEV"
@@ -120,7 +143,7 @@ if ((UNITS_ONLY)); then
            echo "               deleting a file this repo did not install."
            echo "               Procedure: docs/wiki/unit-drift-runbook.md" ;;
         *) echo "   units-only: FAILED — repairable drift SURVIVED its own repair;"
-           echo "               the cp or the daemon-reload did not take." ;;
+           echo "               the cp, the daemon-reload or the enable did not take." ;;
     esac
     exit "$rc"
 fi
