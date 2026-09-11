@@ -1,5 +1,67 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-11 (BACKLOG PASS -- THE ONE QUANTITY THE DAEMON
+NEVER MEASURED, AND IT HAD ALREADY HIT ITS CAP TWICE.)**
+Cold start per instructions. The digest's one ATTENTION unit is the
+09-11 10:00Z `hyxlab-qa` failure, which is the PREVIOUS pass's own
+finding (the unread line) and already fixed and promoted; its first
+run under the new arm is 09-12 10:00Z, still ahead. So the pass went to
+the item the last four NEXT-PASS lists carried unchanged: **streamd
+flush backlog -- the unmeasured one.**
+**(1) MEASURE BEFORE BUILDING.** 7 days of `hyxlab-stream` journal,
+101 episodes: 76 are a SINGLE 15s flush, median 15s -- and the tail is
+1756/1801/1876s, with **TWO of those three at `SPILL_CAP`**, moving
+34,691 and 286 rows out of memory to the JSONL sidecar. The harmful end
+is twice a week, not hypothetical. The named lock holder in both is
+`simulator.shadow`: a duckdb READ-ONLY handle takes a shared lock the
+writer cannot get past, so every long-lived reader is a candidate.
+**(2) THE JOURNAL IS THE WRONG INSTRUMENT, BY CONSTRUCTION.** It logs
+the FAILURES and never the success that ENDS an episode, so every
+duration above is an interpolation between the first and last failure
+line; it is per-boot text nothing aggregates; and it rolls at the host's
+retention. `streamd.FlushStalls` writes episodes from inside the daemon
+-- the only scope that sees both ends. Heartbeats past 300s so a daemon
+killed mid-stall still leaves the measurement on disk, and an `open`
+record is a LOWER BOUND, never a claim the stall is live now.
+**(3) THE VERDICT IS ON THE SPILL, NOT THE DURATION.** A stall inside
+the buffer loses nothing and the box has legitimate multi-hour readers
+(poly sweep ~7h), so failing on minutes manufactures exactly the alarm
+fatigue `qa_collect_skips` refuses to. Past `SPILL_CAP` rows leave
+memory for a file whose torn-append path is a known archive-hole class.
+That boundary is the daemon's OWN declared constant, not a number
+invented by the check. Duration is reported on the pass line so drift
+stays visible.
+**(4) THE EMPTY LEDGER IS DECIDED, AND THE TWO COUNTS ARE NEVER
+COMPARED BY SIZE.** Journal witness as EXP-943 did for the skip sidecar
+-- but one 30-minute episode is 120 journal lines, so only the
+zero/non-zero split crosses the two namespaces (#53 with different
+nouns). The ledger also carries its OWN EPOCH (`armed` on every daemon
+start, read outside the window): without it, failures journalled before
+the daemon was restarted onto this code read INERT on the first QA run
+after every promote.
+**(5) A HAND-WRITTEN LIST STOPPED STUBBING THE SECTION ADDED AFTER IT.**
+`tests/test_qa_prior_run.py` enumerated qa's sections; the new one ran
+for real against production's journal from inside the suite and four
+tests there started asserting on that verdict. Discovered now.
+**VERIFIED LIVE:** pre-promote the check read `PRODUCER INERT ... never
+been armed -- the running daemon predates the ledger` against the real
+journal (133 failed flushes); post-promote and restart, the ledger armed
+at 20:29:42Z and the same check reads UNVERIFIED off the epoch. Five
+behaviours verified red against the exact pre-fix code.
+**Suite 1371 -> 1399. COMMITTED, PROMOTED (hyxlab-stream restarted --
+the daemon IS the producer), PUSHED.**
+NEXT PASS: (1) **First production EPISODE** -- the ledger has its epoch
+but no closed record yet; confirm the first one carries a real duration,
+peak and holder. (2) 09-12 QA is the first run under BOTH the unread arm
+and this check. (3) Width-24 econ maker bracket needs 2026-09-12
+(TOMORROW). (4) The 10th panel day, ~09-17; atlas quoted tier wants
+~2.1M settled markets. (5) Inert leftover, deliberately not deleted:
+`hyxrestration-stable/reports/shadow_divergence/`.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box, and a notify
+channel (smtp creds or a webhook URL).
+
+---
+
 Updated: **2026-09-11 (UNREAD-ARM PASS -- "NOT IN THE FAILURE LIST"
 IS NOT "PASSED", AND TODAY'S OWN RUN PROVED IT TWICE.)**
 Cold start per instructions. The digest's one ATTENTION unit is

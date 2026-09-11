@@ -618,6 +618,16 @@ self-match trap the ops rules name for `pkill -f`.
   `--smoke N` for a bounded live test. **Watch disk**: observed rate
   extrapolates to low-single-GB/day; parquet rotation is the lever if
   it bites. Box uptime now matters — stream data is unrecoverable.
+  **The flush backlog is measured** (2026-09-11, `data/stream_stalls.jsonl`
+  + `qa_stream_stalls`). A flush that cannot take the archive's write lock
+  holds its rows in RAM and retries; past `SPILL_CAP` the oldest go to a
+  JSONL sidecar. Measured over the 7 days to 2026-09-11 (101 episodes):
+  **median 15 s, 76 of them a single flush, tail 1756/1801/1876 s, and two
+  of that tail hit SPILL_CAP** (34,691 and 286 rows spilled). The cause is
+  a long-lived READ-ONLY reader — a duckdb read-only handle takes a shared
+  lock the writer cannot get past, and `simulator.shadow` is the named
+  holder in both. QA fails on the SPILL, never on duration: a stall inside
+  the buffer loses nothing and multi-hour readers are legitimate.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,
   2.6M candles. `python -m hyxlab.sweep --doctor` = health check for
   BOTH archives (includes mirror tripwire + stream counts/size).
