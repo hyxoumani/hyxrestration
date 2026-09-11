@@ -109,14 +109,16 @@ def _run_main(monkeypatch, capsys, *, failures=(), skipped=()):
             qa._skipped.append(name)
         return None
 
-    for fn in (
-        "qa_stream",
-        "qa_archive",
-        "qa_signals_fetch",
-        "qa_collect_skips",
-        "qa_fade_window_capture",
-        "qa_batch_run_budget",
-    ):
+    # DISCOVERED, never listed: a hand-written set silently stops stubbing
+    # the section added after it, and that section then runs for real against
+    # production's journal and sidecars from inside the suite. 2026-09-11 --
+    # `qa_stream_stalls` landed and four tests here started asserting on a
+    # verdict this file never meant to produce.
+    for fn in [
+        n
+        for n in dir(qa)
+        if n.startswith("qa_") and n != "qa_prior_run" and callable(getattr(qa, n))
+    ]:
         monkeypatch.setattr(qa, fn, lambda *a, _f=fn, **k: None)
     monkeypatch.setattr(qa, "qa_stream", _sections)
     monkeypatch.setattr("sys.argv", ["qa"])

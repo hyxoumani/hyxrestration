@@ -67,6 +67,27 @@ SERIES_PAUSE_S = float(os.environ.get("HYXLAB_SERIES_PAUSE_S", "0.35"))
 # task ever subscribes with an empty set.
 EMPTY_SET_RETRY_LADDER = (10, 30, 60, 120)
 
+# Flush-stall ledger. A failed flush is already journalled, but the journal
+# is the WRONG instrument for the question "how long does the backlog get":
+# it records only the FAILURES, never the success that ends an episode, so a
+# duration read off it is an interpolation between the first and last failure
+# line; it rolls at the host's retention (7d here); and it is per-boot-session
+# text nothing downstream can aggregate. Measured over the 7 days to
+# 2026-09-11 -- 101 episodes, 76 of them a single 15s flush, three ~30 min,
+# and TWO of those three reached SPILL_CAP (34,691 and 286 rows moved to the
+# sidecar) -- so the tail this ledger exists to bound is real and recurring,
+# and the cause is a long-lived READ-ONLY reader: a duckdb read-only handle
+# takes a shared lock the writer cannot upgrade past (the 09-09 and 09-10
+# episodes name `simulator.shadow` as the holder).
+STALL_LOG = "data/stream_stalls.jsonl"
+# A stall that outlives the daemon (OOM, restart, host crash) must still be
+# on disk, so an episode past this age writes an interim `open` record and
+# refreshes it at this cadence. Short episodes -- the 75% that are one failed
+# flush -- write exactly one `closed` record and nothing else, so the quiet
+# case stays quiet. 300s is well inside the ~30 min tail above and 20x
+# FLUSH_SECS, i.e. it cannot fire for the common case.
+STALL_HEARTBEAT_S = 300.0
+
 
 def load_env(path: str | Path = ".env") -> None:
     """Minimal .env loader: KEY=VALUE lines, no quoting; existing
@@ -124,6 +145,123 @@ def open_tickers(series_list: list[str], pause_s: float = SERIES_PAUSE_S) -> set
     return out
 
 
+class FlushStalls:
+    """Append-only ledger of flush-stall EPISODES (see STALL_LOG).
+
+    One episode = the span from the first failed flush to the next successful
+    one. The daemon is the only process that can see both ends, which is the
+    whole reason this is written here and not derived by a reader from the
+    journal.
+
+    Two record shapes, and the difference is load-bearing:
+
+      closed  the episode ENDED at `at`; `duration_s` is exact.
+      open    the episode had lasted `duration_s` as of `at` and the daemon
+              had not yet seen it end. It is a LOWER BOUND, never a claim
+              that the stall is still running now -- the daemon may have been
+              killed a second later, and a reader that treats `open` as
+              "ongoing" would report a stall that ended weeks ago as live.
+
+    An episode that ends normally therefore writes `closed` whether or not it
+    also wrote heartbeats, and a reader keyed on `started` takes the longest
+    record it has for that episode.
+
+    Writes are best-effort: an unwritable ledger must never take down the
+    daemon whose one job is not losing what it saw.
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        # Resolved at WRITE time, never bound here: STALL_LOG is relative to
+        # the working directory and the suite patches it (the same default-arg
+        # trap `collector.collect.acquire_writer_lock` documents).
+        self._path = path
+        self.started: datetime | None = None
+        self.fails = 0
+        self.peak_pending = 0
+        self.spilled = 0
+        # The last failure's message, carried onto the CLOSED record too: an
+        # episode that ended is the one an operator reads after the fact, and
+        # "30 minutes" without "who held the lock" is half the finding.
+        self.last_error = ""
+        self._last_written: datetime | None = None
+
+    def _write(self, rec: dict) -> None:
+        path = Path(self._path or STALL_LOG)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except OSError as exc:
+            _log(f"stall ledger unwritable ({type(exc).__name__}: {exc})")
+
+    def _record(self, state: str, now: datetime) -> None:
+        assert self.started is not None
+        self._write(
+            {
+                "at": now.isoformat(),
+                "state": state,
+                "started": self.started.isoformat(),
+                "duration_s": round((now - self.started).total_seconds(), 1),
+                "fails": self.fails,
+                "peak_pending": self.peak_pending,
+                "spilled": self.spilled,
+                "error": self.last_error,
+            }
+        )
+        self._last_written = now
+
+    def arm(self, now: datetime) -> None:
+        """Announce that the producer is alive, from now.
+
+        WHY A LEDGER NEEDS AN EPOCH. The reader decides an EMPTY ledger by
+        asking the journal whether any flush failed; without an epoch, every
+        failure the journal remembers from BEFORE this code was deployed --
+        or from before the daemon was restarted onto it -- counts as evidence
+        that the producer is dead. The first QA run after any deployment
+        would read INERT on a perfectly healthy daemon, which is the alarm a
+        producer-liveness check exists to make believable.
+
+        Written on every start and never rotated away by the reader: a daemon
+        up for 30 days must still be able to say when it armed, so this record
+        is looked up OUTSIDE the reader's window.
+        """
+        self._write({"at": now.isoformat(), "state": "armed"})
+
+    def failed(self, pending: int, spilled: int, exc: BaseException, now: datetime) -> None:
+        """One failed flush. Opens an episode if none is open."""
+        if self.started is None:
+            self.started = now
+            self.fails = 0
+            self._last_written = None
+        self.fails += 1
+        self.last_error = _short_err(exc)
+        self.peak_pending = max(self.peak_pending, pending)
+        self.spilled = max(self.spilled, spilled)
+        since = self._last_written or self.started
+        if (now - self.started).total_seconds() >= STALL_HEARTBEAT_S and (
+            now - since
+        ).total_seconds() >= STALL_HEARTBEAT_S:
+            self._record("open", now)
+
+    def ok(self, now: datetime) -> None:
+        """A flush succeeded. Closes an open episode; a no-op otherwise."""
+        if self.started is None:
+            return
+        self._record("closed", now)
+        self.started = None
+        self.peak_pending = 0
+        self.spilled = 0
+        self.last_error = ""
+
+
+def _short_err(exc: BaseException) -> str:
+    """First line of the exception, bounded. DuckDB's lock error is a
+    paragraph with a URL in it; the ledger needs the class and the holder,
+    not the manual."""
+    first = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    return f"{type(exc).__name__}: {first}"[:200]
+
+
 class Daemon:
     def __init__(self, store: StreamStore, watchlist: dict) -> None:
         self.store = store
@@ -133,6 +271,7 @@ class Daemon:
         self.pem = Path(pem_path).read_bytes() if pem_path and Path(pem_path).exists() else b""
         self.stats: dict[str, int] = {}
         self._spill_corrupt_seen = 0
+        self.stalls = FlushStalls()
 
     def _count(self, key: str, n: int) -> None:
         self.stats[key] = self.stats.get(key, 0) + n
@@ -364,7 +503,12 @@ class Daemon:
                     f"{sev}flush FAILED ({type(exc).__name__}: {exc});"
                     f" {n_pending} rows held for retry{spill}"
                 )
+                # The journal line above says a flush failed; the ledger says
+                # how long the episode ran and how big it got. Written from
+                # here because this is the only scope that sees BOTH ends.
+                self.stalls.failed(n_pending, n_spilled, exc, datetime.now(UTC))
                 continue
+            self.stalls.ok(datetime.now(UTC))
             # A drain that skipped sidecar records is a real archive hole
             # (torn append from a host crash). The store no longer stalls on
             # it, so the journal is the only place it can surface (EXP-936).
@@ -382,6 +526,7 @@ class Daemon:
 
     async def run(self, duration: float | None = None) -> None:
         self.store.mark_startup_gap()
+        self.stalls.arm(datetime.now(UTC))
         tasks = [
             asyncio.create_task(self.kalshi_trades(), name="kalshi-trades"),
             asyncio.create_task(self.kalshi_books(), name="kalshi-books"),
@@ -398,6 +543,11 @@ class Daemon:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             self.store.flush()  # final drain — never lose buffered events
+            # The drain that ends a stall is an ending like any other, and it
+            # happens outside the flusher: without this, a daemon restarted
+            # DURING an episode leaves that episode open in the ledger forever
+            # and its true duration is never written down.
+            self.stalls.ok(datetime.now(UTC))
             _log(f"shutdown; stats {self.stats}")
 
 

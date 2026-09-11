@@ -138,6 +138,43 @@ STANDING_SKIPS: frozenset[str] = frozenset({COLLECT_SKIP_SECTION})
 # next successful cycle drains them. `qa_collect_skips` above still counts
 # the contention (that is a real signal about the box); this check asks the
 # different question of whether the recovery actually happened.
+# EXP-1381 — the streamd flush-stall ledger (`collector.streamd.FlushStalls`).
+# Same sidecar shape as the two logs below and for the same reason: a stall IS
+# the archive being unwritable, so nothing read out of the stream archive can
+# report on one.
+#
+# WHY THERE IS A BUDGET AT ALL. Until 2026-09-11 the backlog was the one
+# measured-by-nobody quantity in the daemon: the journal carries a line per
+# failed flush, so an operator could see a stall in progress but nothing
+# aggregated them and nothing recorded the END. Measured off 7 days of
+# journal (2026-09-04..11, 101 episodes): 76 were a single 15s flush, the
+# median 15s, and the tail three ran 1756-1876s. TWO of those three hit
+# `StreamStore.SPILL_CAP` and moved rows to the JSONL sidecar (34,691 and
+# 286). So the harmful end of this distribution is not hypothetical, it is
+# twice a week.
+STREAM_STALL_LOG = "data/stream_stalls.jsonl"
+STREAM_UNIT = "hyxlab-stream.service"
+_STREAM_STALL_SECTION = "stream-stalls"
+# The threshold is NOT a number picked here: a spill means the daemon's own
+# declared cap was reached, and past it rows leave memory for a file whose
+# torn-append path is a real archive-hole class (`spill_corrupt`, EXP-936).
+# Duration alone is deliberately not a failure -- the box has legitimate
+# multi-hour writers (the poly sweep runs ~7h) and a stall that stays inside
+# the buffer loses nothing, so failing on minutes would manufacture exactly
+# the alarm fatigue `qa_collect_skips` refuses to. The duration IS reported,
+# on the pass line, so the distribution stays visible as it drifts.
+STREAM_STALL_REPORT_S = 600.0  # episodes at least this long are named on the line
+# The journal line the ledger's producer prints one statement before it
+# appends. One definition, so a reword of the daemon's log cannot silently
+# turn the witness into a permanent zero (`tests/test_stream_stalls.py`
+# pins it against the real format string).
+STREAM_FLUSH_FAIL_MARK = "flush FAILED"
+# `streamd.STALL_HEARTBEAT_S` (300s) + two flush intervals. An episode
+# younger than this has journalled failures and may legitimately have no
+# ledger record yet, so the witness must not see it; see
+# `journal_stream_flush_fails`.
+STREAM_STALL_GRACE_S = 330.0
+
 COLLECT_SPOOL_LOG = "data/collect_spool.jsonl"
 COLLECT_SPOOL_DIR = "data/collect_spool"
 # A spooled cycle drains on the NEXT successful cycle, i.e. within ~5 min.
@@ -1855,6 +1892,215 @@ def qa_collect_skips(
         _record_ok(COLLECT_SKIP_SECTION, now)
 
 
+def journal_stream_flush_fails(
+    since: datetime,
+    now: datetime,
+    grace_s: float = STREAM_STALL_GRACE_S,
+    unit: str = STREAM_UNIT,
+) -> int | None:
+    """Failed-flush LINES the daemon journalled in the window; None if the
+    journal could not be read.
+
+    The independent witness that makes an EMPTY ledger decidable, exactly as
+    `journal_skip_exits` does for the skip sidecar: the `flush FAILED` line is
+    printed one statement before the ledger is appended, so the two disagree in
+    precisely one case -- the ledger's producer is not running.
+
+    **THE TWO COUNTS ARE IN DIFFERENT NAMESPACES AND ARE NEVER COMPARED BY
+    SIZE.** This counts FAILED FLUSHES; the ledger counts EPISODES, and one
+    episode of a 30-minute stall is 120 of these lines. Only the zero/non-zero
+    split carries information across the two, which is the same mistake class
+    as #53 (a name absent from one set for two opposite reasons).
+
+    `grace_s` ends the window EARLY, because an episode in progress has
+    journalled its failures and cannot yet have written a closed record. Once
+    it passes `streamd.STALL_HEARTBEAT_S` it writes an `open` one, so a grace
+    of that plus a flush interval makes "journalled but not in the ledger"
+    mean inert and nothing else.
+
+    `since` is the caller's, not a window computed here, because the honest
+    start is the LATER of the window and the ledger's own epoch (see
+    `stall_epoch`). A failure the daemon journalled before it armed is not
+    evidence about a producer that did not yet exist.
+    """
+    text = _journal(unit, since, now - timedelta(seconds=grace_s))
+    if text is None:
+        return None
+    return text.count(STREAM_FLUSH_FAIL_MARK)
+
+
+def read_stall_episodes(path: str, hours: float, now: datetime) -> tuple[list[dict], int]:
+    """In-window episodes (longest record per episode) and a malformed count.
+
+    Keyed on `started`, taking the LONGEST record: an episode that outran
+    `STALL_HEARTBEAT_S` wrote one or more `open` records before its `closed`
+    one, and all of them describe the same stall. Taking the longest rather
+    than the last is deliberate -- it is correct for the episode whose closed
+    record never arrived (daemon killed mid-stall), where the heartbeats are
+    all the evidence there will ever be.
+    """
+    p = Path(path)
+    if not p.exists():
+        return [], 0
+    best: dict[str, dict] = {}
+    malformed = 0
+    try:
+        lines = p.read_text().splitlines()
+    except OSError:
+        return [], 0
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+            at = datetime.fromisoformat(rec["at"])
+            if rec.get("state") == "armed":
+                continue  # an epoch mark, not an episode; see `stall_epoch`
+            key = str(rec["started"])
+            dur = float(rec["duration_s"])
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            malformed += 1
+            continue
+        if (now - at).total_seconds() > hours * 3600:
+            continue
+        prev = best.get(key)
+        if prev is None or dur > float(prev["duration_s"]):
+            best[key] = rec
+    return sorted(best.values(), key=lambda r: str(r["started"])), malformed
+
+
+def stall_epoch(path: str) -> datetime | None:
+    """When the ledger's producer last announced itself, or None.
+
+    Read across the WHOLE file, never the reader's window: a daemon that has
+    been up for 30 days armed once, 30 days ago, and that is exactly the case
+    where the epoch matters least and a windowed lookup would lose it.
+    """
+    p = Path(path)
+    if not p.exists():
+        return None
+    newest: datetime | None = None
+    try:
+        lines = p.read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+            if rec.get("state") != "armed":
+                continue
+            at = datetime.fromisoformat(rec["at"])
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            continue
+        if newest is None or at > newest:
+            newest = at
+    return newest
+
+
+def qa_stream_stalls(
+    hours: float = 24.0,
+    path: str | None = None,
+    journal_fails: int | None | object = _QUERY_JOURNAL,
+    now: datetime | None = None,
+) -> None:
+    """Fail when a streamd flush stall pushed rows out of memory to the sidecar.
+
+    A stall is the stream archive being unwritable while the firehose keeps
+    arriving (~105 ev/s), i.e. the daemon holding the tape in RAM. Until the
+    ledger landed, the ONLY record of one was a journal line per failed flush:
+    no end time, no aggregate, and gone at the host's retention. Seven days of
+    it (2026-09-04..11) measured the distribution this check now watches -- 101
+    episodes, median 15s, tail 1756-1876s, and two episodes at the spill cap.
+
+    The verdict is on the SPILL, not the duration. A stall inside the buffer
+    loses nothing and is a normal consequence of a legitimate long reader (the
+    poly sweep runs ~7h; a duckdb READ-ONLY handle takes a shared lock the
+    writer cannot get past, so every long reader is a candidate). Past
+    `SPILL_CAP` the oldest rows move to a JSONL sidecar whose torn-append path
+    is a known archive-hole class, and that boundary is the daemon's own
+    declared one, not a number invented by this check.
+    """
+    now = now or datetime.now(UTC)
+    name = "streamd flush stalls stay inside the buffer"
+    ledger = path or STREAM_STALL_LOG
+    episodes, malformed = read_stall_episodes(ledger, hours, now)
+    tail = f", {malformed} malformed rows" if malformed else ""
+    # The window the WITNESS may testify about: never earlier than the epoch,
+    # so a restart (or a promote that has not restarted the daemon yet) cannot
+    # make yesterday's journalled failures indict today's producer.
+    epoch = stall_epoch(ledger)
+    since = now - timedelta(hours=hours)
+    if epoch is not None and epoch > since:
+        since = epoch
+        episodes = [e for e in episodes if datetime.fromisoformat(e["at"]) >= epoch]
+    witness = (
+        journal_stream_flush_fails(since, now) if journal_fails is _QUERY_JOURNAL else journal_fails
+    )
+
+    if not episodes:
+        if witness:
+            check(
+                name,
+                False,
+                f"PRODUCER INERT: {STREAM_UNIT} journalled {witness} failed flush(es) since "
+                f"{since:%m-%d %H:%M}Z but {ledger} holds no episode"
+                + (
+                    f" (producer armed {epoch:%m-%d %H:%M}Z)"
+                    if epoch
+                    else " and has never been armed — the running daemon predates the ledger"
+                )
+                + f". This check reads a file nothing writes{tail}",
+            )
+            return
+        detail = (
+            f"UNVERIFIED: no stall episode recorded in {ledger}"
+            + (
+                " and the daemon's journal is unreadable, so the ledger's producer is "
+                "neither proven alive nor proven dead"
+                if witness is None
+                else " and the daemon journalled no failed flush — consistent, but no "
+                "flush lost the archive lock in the window, so production is untested"
+            )
+            + tail
+        )
+        _note_seen(_STREAM_STALL_SECTION, now)
+        _skipped.append(_STREAM_STALL_SECTION)
+        print(f"SKIP  {name} — {detail}", flush=True)
+        return
+
+    spilled = [e for e in episodes if int(e.get("spilled") or 0) > 0]
+    longest = max(episodes, key=lambda e: float(e["duration_s"]))
+    peak = max(int(e.get("peak_pending") or 0) for e in episodes)
+    open_n = sum(1 for e in episodes if e.get("state") == "open")
+    shape = (
+        f"{len(episodes)} episode(s) in {hours:g}h; longest {float(longest['duration_s']):.0f}s "
+        f"({longest['started'][:16]}Z"
+        + (", still open when last written" if longest.get("state") == "open" else "")
+        + f"), peak {peak} rows held"
+        + (f", {open_n} never recorded an end" if open_n else "")
+        + (
+            f", {sum(1 for e in episodes if float(e['duration_s']) >= STREAM_STALL_REPORT_S)} over "
+            f"{STREAM_STALL_REPORT_S:.0f}s"
+            if any(float(e["duration_s"]) >= STREAM_STALL_REPORT_S for e in episodes)
+            else ""
+        )
+        + tail
+    )
+    if spilled:
+        rows = sum(int(e["spilled"]) for e in spilled)
+        check(
+            name,
+            False,
+            f"{len(spilled)} episode(s) hit SPILL_CAP and moved {rows} row(s) out of memory "
+            f"to the sidecar — {shape}",
+        )
+        return
+    check(name, True, shape)
+    _record_ok(_STREAM_STALL_SECTION, now)
+
+
 @dataclass
 class NightCapture:
     """One 23:00-04:00Z fade window's capture record.
@@ -2553,6 +2799,7 @@ def main() -> None:
     qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
     qa_collect_skips()  # sidecar journal; never gated by the archive lock
     qa_collect_spool()  # the recovery half of the same hole; also sidecar-only
+    qa_stream_stalls()  # ledger + journal witness; a stall IS the archive unwritable
     qa_fade_window_capture()  # journal-only, for the same reason
     qa_batch_run_budget()  # journal-only, for the same reason
     # `_ran` is read here for the same reason the findings are: it must be the
