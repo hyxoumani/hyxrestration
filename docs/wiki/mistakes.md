@@ -1389,6 +1389,58 @@ Format: what happened → root cause → error type → prevention tier
     protecting a name that no longer exists.
 
 
+52. **2026-09-11 -- the same two-worktree symlink topology as #51, read
+    from the other half, and production got the wrong answer.** #51 was
+    "`hyxrestration-stable/data` IS `hyxrestration/data`, and a test did
+    not know." This is "`hyxrestration-stable/reports` is NOT
+    `hyxrestration/reports`, and the units did not know." `data`, `.env`
+    and `.secrets` are symlinks between the two trees; `reports/` is a
+    real directory in each. So a cwd-relative `reports/<x>` is shared
+    state in the first three cases and per-checkout state in the fourth,
+    and nothing in the path says which.
+    It cost both halves, measured. A divergence report produced by hand
+    in the dev tree on 09-09 was invisible to `hyxlab-qa` (WorkingDirectory
+    = stable) on 09-10, which FAILED "run 20260829T191841 finished 67.5h
+    ago, unmeasured; newest report on file is 20260810T081931" against a
+    file that had been on disk for 13 hours. Then `hyxlab-divergence`
+    fired for the first time at 09-11 01:20Z and its `--if-new` flag --
+    whose unit comment says it "is what makes this daily unit
+    affordable" -- found the stable tree empty and re-derived the report:
+    29min 26s wall, 4.2G peak, output byte-identical to the 09-09 file
+    apart from `generated_at`.
+    The QA check even printed the trap as its remedy: "Repair: `python -m
+    simulator.divergence` (~30 min)", which run in the dev tree (where an
+    agent stands) costs half an hour and clears nothing.
+    Type: `path-relative-to-a-cwd-that-two-deployments-do-not-share`.
+    **RULE: a path is only "relative" if every process that reads it and
+    every process that writes it stands in the same place. Two checkouts
+    of one repo do not, so for anything DERIVED FROM the shared archive
+    the root must be STATED -- not inferred from a neighbouring symlink,
+    which points wherever the operator pointed it, and not from git
+    worktree metadata, which a deployment need not have.** The inverse
+    stays relative on purpose: `qa.STATE` is a log of what THIS checkout
+    did, and fusing the two records is the same bug's mirror image. The
+    question that sorts them is "derived from the shared archive, or a
+    record of this checkout?" -- and it has to be asked per path, because
+    both live under `reports/`.
+    Prevention: `hyxlab/reportdir.py` (`HYXLAB_REPORTS_DIR`, stated in the
+    unit file beside the absolute `WorkingDirectory` already stated
+    there; unset = the old relative default, so by-hand use is
+    unchanged), and `tests/test_shared_reports.py`, which walks each
+    unit's ExecStart import graph and reddens on any relative `reports/`
+    literal a unit can reach -- one documented per-tree record
+    allowlisted, the allowlist itself checked for still matching, and the
+    unit discovery asserted non-empty so the guard cannot pass by finding
+    nothing. Three arms verified red against the exact pre-fix state
+    (literal restored, Environment line dropped, the two units made to
+    disagree).
+    Corollary worth carrying: #51 and #52 are one topology, and the
+    lesson is not "symlink more" or "symlink less" -- it is that **a
+    tree where some children are shared and some are not cannot be
+    reasoned about from a path**, so every cwd-relative default inside
+    it is a claim that needs a reason written next to it.
+
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

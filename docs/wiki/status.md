@@ -1,5 +1,67 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-11 (WORKTREE-REPORTS PASS -- THE REPORT WAS WRITTEN
+IN ONE CHECKOUT AND LOOKED FOR IN THE OTHER.)**
+Cold start per instructions. The digest's two ATTENTION units both
+resolve to the previous pass's work and were re-checked, not assumed:
+`hyxlab-qa` and `hyxlab-sweep` FAILED are the 09-10 runs already
+diagnosed and fixed, and 09-11 is still the first run that can clear
+either. `hyxlab-divergence` has left NEVER-RAN -- it fired at 01:20Z,
+on time -- and that first fire is where the pass went.
+**(1) A 29-MINUTE NO-OP.** `--if-new` exists so the daily unit costs
+nothing on the ~364 days its subject has not advanced; its own comment
+calls the flag "what makes this daily unit affordable". The first fire
+ran 29min 26s at a 4.2G peak and re-derived `20260829T191841` -- a
+report an agent had produced by hand on 09-09. Diffed: byte-identical
+apart from `generated_at`.
+**(2) THE SAME SPLIT HAD ALREADY FAKED A QA FAILURE.** 09-10 05:00
+local: `FAIL shadow-vs-replay divergence measured on the newest complete
+run -- run 20260829T191841 finished 67.5h ago, unmeasured; newest report
+on file is 20260810T081931`. The report it wanted was 13 hours old, one
+symlink away. And the check's own remedy line -- "Repair: `python -m
+simulator.divergence` (~30 min)" -- run where an agent stands, costs
+half an hour and clears nothing.
+**(3) ONE TOPOLOGY, TWO OPPOSITE ASSUMPTIONS.** `hyxrestration-stable`
+symlinks `data`, `.env` and `.secrets` back to the dev tree, but its
+`reports/` is a real directory. Mistake #51 (yesterday) was a test
+assuming those trees were SEPARATE when `data/` is shared; this is
+production assuming they were SHARED when `reports/` is not. Same tree,
+same day apart, opposite half. A path cannot tell you which it is.
+**(4) STATED, NOT INFERRED.** `hyxlab/reportdir.py` +
+`Environment=HYXLAB_REPORTS_DIR=...` in the two units, beside the
+absolute `WorkingDirectory` already there. Deliberately not derived from
+the `data` symlink (points wherever the operator pointed it) nor from
+git worktree metadata (a deployment need not be a checkout). Unset = the
+old relative default, so by-hand use is unchanged. `qa.STATE` stays
+relative ON PURPOSE and now says why: it is a record of what THIS
+checkout did, not an artifact derived from the shared archive.
+**(5) THE GUARD IS THE CLASS, NOT THE INSTANCE.**
+`tests/test_shared_reports.py` walks each unit's ExecStart import graph
+and reddens on any relative `reports/` literal a unit can reach -- so
+the next report family (atlas, maker bracket, pairs, priority_check,
+shadow_*) reddens on the day it gets a timer, which is the only day the
+split does damage. Discovery asserted non-empty so it cannot pass by
+finding nothing; allowlist checked for still matching.
+**VERIFIED LIVE, BOTH SIDES:** the unit's exact command now exits in
+**0.088s** ("already reported"), and `collector.qa` reads the same
+directory and finds the report. Three arms verified red against the
+exact pre-fix state. **Suite 1318 -> 1350. COMMITTED, PROMOTED,
+PUSHED.** Mistake **#52**.
+NEXT PASS: (1) **09-11 is the quadruple first** -- 06:10Z sweep under
+the new busy handler, 10:00Z QA carrying `unread` + the spool section +
+this fix (the divergence arm should go green), and the first contention
+that can prove the spool drain in production. (2) streamd flush backlog
+-- still the unmeasured one. (3) `health.judge_drift` INERT arm (open
+since #47). (4) The 10th panel day, ~09-17. (5) Width-24 econ maker
+bracket needs 2026-09-12; atlas quoted tier wants ~2.1M settled markets.
+(6) Inert leftover, deliberately not deleted: `hyxrestration-stable/
+reports/shadow_divergence/` still holds the two duplicate reports
+nothing reads now.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box, and a notify
+channel (smtp creds or a webhook URL).
+
+---
+
 Updated: **2026-09-10 (SPOOL PASS -- THE HOLE WAS RECOVERABLE AND THE
 DOCSTRING SAYING OTHERWISE WAS WRITTEN ABOUT A CODE PATH THAT NO LONGER
 EXISTS.)**
