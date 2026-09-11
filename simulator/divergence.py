@@ -30,6 +30,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run
 from hyxlab.store import connect_retry, open_retry
 from simulator.bookreplay import BOOK_GAPS, replay_snapshots, stream_events
@@ -412,7 +413,11 @@ def main() -> None:
     ap.add_argument("--shadow-db", default=SHADOW_DB)
     ap.add_argument("--stream-db", default=STREAM_DB)
     ap.add_argument("--archive-db", default="data/hyxlab.duckdb")
-    ap.add_argument("--out", default="reports/shadow_divergence")
+    # Rooted, not cwd-relative: the daily unit runs from the stable
+    # worktree and `collector.qa` reads the result from there too, while
+    # a by-hand run in the dev tree must land in the same place or
+    # --if-new re-derives a 29-minute replay (hyxlab.reportdir).
+    ap.add_argument("--out", default=str(shared_reports("shadow_divergence")))
     ap.add_argument(
         "--if-new",
         action="store_true",

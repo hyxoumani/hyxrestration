@@ -28,16 +28,23 @@ import duckdb
 
 from collector.backup import DBS
 from collector.venues import alfred
+from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run, run_completed_at
 from hyxlab.store import SCHEMA_VERSION, duck_connect, lock_holder
 
 ARCHIVE = "data/hyxlab.duckdb"
 STREAM = "data/hyxstream.duckdb"
 SHADOW = "data/hyxshadow.duckdb"
-DIVERGENCE_REPORTS = Path("reports/shadow_divergence")
+# Shared with `hyxlab-divergence`, which WRITES what this check READS from
+# the other worktree -- hence rooted, not cwd-relative (hyxlab.reportdir).
+DIVERGENCE_REPORTS = shared_reports("shadow_divergence")
 
 # Per-section completion record, so a skip can be BOUNDED. Without it a
 # locked archive skips silently forever and the journal still reads green.
+# Deliberately cwd-RELATIVE, unlike DIVERGENCE_REPORTS above: this is a log
+# of what THIS checkout did, not an artifact derived from the shared
+# archive, and the dev tree must not inherit the stable tree's record (or
+# vice versa). See CLAUDE.md and tests/test_health_digest.py.
 STATE = Path("reports/qa/sections.json")
 SKIP_MAX_AGE_H = 36.0  # matches the "sweep ran in last 36h" tolerance
 

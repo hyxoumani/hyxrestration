@@ -15,6 +15,16 @@ Type=oneshot
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+# The one directory both worktrees must agree on. `reports/` is a REAL
+# directory in each tree (unlike data/.env/.secrets, which the stable tree
+# symlinks back to the dev tree), so a cwd-relative report path splits the
+# writer from the reader: on 2026-09-10 qa FAILED "divergence ... unmeasured"
+# against a report that had been on disk in the other tree for 13h, and on
+# 09-11 --if-new re-derived it at 29min/4.2G for the same reason. Absolute,
+# and pointed at the dev tree because the report history already lives there.
+# tests/test_shared_reports.py enforces that every unit reaching
+# hyxlab.reportdir carries this line, with the same value.
+Environment=HYXLAB_REPORTS_DIR=/home/devs/workspace/hyxrestration/reports
 # --if-new is what makes this daily unit affordable. The subject is
 # `latest_complete_run`, which advances only when the shadow daemon restarts,
 # so on almost every day the report already exists and the unit exits 0 in
