@@ -1546,6 +1546,24 @@ Format: what happened → root cause → error type → prevention tier
     that the old code dropped) and one against a real read-only lock
     holder (7,094 rows handed to the sidecar, drained by the next boot).
 
+55. **2026-09-12 -- the atlas quoted tier gated "tested" on ROWS and ran its
+    test on DAYS, so `not_significant` included tests too small to reject.**
+    The same gate-vs-draw defect 740b657 fixed in queuescore (orders counted,
+    underlyings sampled), live one report over. `quoted_status` = silent iff
+    quoted_n < 200, while the Wilson draws n = quoted_days: on 08-25, 2 of
+    the 3 tested buckets had fewer days than the flagged gap needs (51 vs 69,
+    54 vs 57), and the docstring decomposition read all three as "failing on
+    the interval". Type: `wrong-statistic`, #32/#33 family.
+    Root cause: a gate and a test were written in different passes, each
+    correct at its own unit, and nothing asserted the units matched.
+    Prevention: `quoted_days_to_detect` / `quoted_powered` at the full-sample
+    gap (fixed before the quoted outcome), `quoted_verdict.tested_powered`,
+    four mutants red. **RULE (#42's sweep rule applied to units): when a
+    gate admits a test, name the unit the gate counts and the unit the test
+    draws in the same pass; if they differ, publish power at the draw unit.**
+    Not swept yet: base `flag_status` (n rows gate, row-Wilson -- same unit,
+    likely clean) and the robust/day tiers, which inherit the row gate.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

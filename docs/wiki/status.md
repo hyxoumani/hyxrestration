@@ -1,5 +1,37 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-12 (POWER PASS -- THE QUOTED TIER'S GATE COUNTED ROWS,
+ITS TEST COUNTED DAYS.)**
+Cold start. Digest ATTENTION is still the 09-12 10:00Z QA budget FAIL that
+c905d83 already classified; nothing new until the 09-13 run. NEXT-PASS (6)
+**closed clean**: the 09-12 `hyxlab-sweep` ran **10.58h** (633.9 min, 0
+errors, 0 lock skips, not aborted) under its 12.5h budget -- the post-fix
+steady state holds. NEXT-PASS (5), the novelty/unit sweep of the atlas,
+**found the queuescore defect at a second site**: `quoted_status` decides
+`silent` on quoted OBSERVATIONS (>= 200) while its Wilson draws n = quoted
+DAYS. Commodities 1h d1 on 09-09: 5,088 rows, 81 days, needing 58 to reject
+its flagged gap -- fine; but Financials 6h d4 on 08-25: 51 days, needed 69,
+and 2 of that reading's 3 "tested" buckets were unpowered -- the "all three
+failing on the interval" decomposition was mostly tests too small to fail.
+Unpowered/tested: 08-25 2/3, 08-29 2/8, 09-09 3/14, **09-12 2/16**
+(Economics 1h d8, Financials 1h d5). The effect size is the FULL-SAMPLE
+day-weighted gap, fixed before the quoted outcome is read (a mutant using
+the quoted gap is red). Fields: `quoted_days_to_detect`, `quoted_powered`
+(None where no test ran), `quoted_verdict.tested_powered/unpowered`, and
+the trajectory carries it (None on older priors). **No status moved and
+MIN_N is unchanged** -- this re-reads what `not_significant` is evidence of.
+Live atlas 20260912T202006: 35 survivors, 0 confirmed, 15 n.s., 1 refuted,
+19 silent. Suite 1420 -> 1424, four mutants red. Sim-side (no unit runs
+atlas): committed + pushed, no promote.
+NEXT PASS: (1) the 09-13 10:00Z QA run against c905d83's prediction (one
+FAIL on the catchup key, the only name). (2) first production `shutdown;
+stats` line on the next `hyxlab-stream` restart. (3) width-24 econ bracket
+EVENT rollover (~late Sept). (4) 10th panel day ~09-17. (5) sweep the same
+gate-vs-draw lens over the BASE tier and the robust/day tiers (`flag_status`
+gates on n rows; day tiers draw days) and `divergence`.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box; notify channel.
+
+---
 Updated: **2026-09-12 (CATCH-UP PASS -- THE CHECK CERTIFIED THE BREACH AS
 NOT-A-STALE-BUDGET IN ITS OWN SENTENCE, THEN FAILED ON IT ANYWAY.)**
 Cold start per instructions. The digest's ATTENTION unit is no longer the
