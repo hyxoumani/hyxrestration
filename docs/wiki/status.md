@@ -1,94 +1,75 @@
 # Status & next steps (living page)
 
-Updated: **2026-09-12 (INDEPENDENCE PASS -- THE 336h WAIT BOUGHT ORDER
-NOVELTY OF 1.00 AND UNIT NOVELTY OF 0.29.)**
-Cold start per instructions. The digest's one ATTENTION unit is still the
-09-11 10:00Z `hyxlab-qa` failure, whose first run under the new arm is
-09-12 10:00Z and still ahead. NEXT-PASS item (1), the first production
-`shutdown; stats` line, is **correctly still absent**: the journal has 3
-`starting (db=` lines in 3d and the last restart (09-12 02:34:31Z, the
-drain promote itself) killed a process running the OLD code, so the first
-line can only come from the NEXT restart. Nothing to read yet, as
-predicted. That left NEXT-PASS item (3), the oldest item on the list --
-**and its boundary fell 5 minutes into the pass.**
-**(1) THE WAIT WAS HONOURED TO THE SECOND, AND IT WORKED -- AT ITS OWN
-TIER.** The width-24 econ bracket needed a window starting at or after
-2026-08-29T08:20:19Z to stop re-scoring the prior run's orders. Ran at
-08:21:02Z; `window since 2026-08-29 08:20:52`. Result:
-`independence.new_share_vs_all` **1.0**, `orders_shared` **0** of 4,384.
-The 14-day wait delivered exactly the order-disjointness it was scheduled
-for.
-**(2) AND THE VERDICT IT WAS SCHEDULED TO EARN DOES NOT SAMPLE ORDERS.**
-`direction_*_status` is a one-sided binomial whose draw is an UNDERLYING.
-Compared the two runs' `per_underlying` sets: **5 of 7 underlyings are the
-same events** (`KXCPI-26AUG`, `KXCPIYOY-26AUG`, `KXFED-26SEP`,
-`KXFED-26DEC`, `KXU3-26AUG`), and of the 4 that lean in both, **4 of 4
-kept their sign** (KXU3-26AUG -32/-24, KXCPI-26AUG -18/-22, KXCPIYOY-26AUG
--11/-75, KXFED-26SEP +8/+10). Order novelty **1.00**, underlying novelty
-**0.29**. Spacing runs by `--hours` buys order independence only; the
-UNITS roll over on the events' own clock, and monthly econ prints do not
-roll in 14 days. So the replication below is substantially four events
-agreeing with themselves on fresh quotes -- not a second sample of them.
-**(3) THE READING ITSELF, WITH THAT DISCOUNT APPLIED.** 4,384 orders, 24
-markets / 7 underlyings, **all four readings powered**. MARKET tier
-`significant_under` on both bounds (17 of 22 leaning markets under,
-`market_sign_p` **0.00845**); UNDERLYING tier `not_significant` on both
-(5 of 7 under, `underlying_sign_p` **0.2266**, `min_sign_p` 0.0078 so the
-run COULD have shown a direction). Same shape as 08-29 in every tier.
-Raw counts keep their direction too: `pess_but_not_crossing` **218** vs
-`crossing_but_not_opt` **96** (08-29: 121 vs 61) -- the crossing rule
-FORGOES real fills rather than inventing them, now on two windows. The
-honest read is unchanged from 08-29: no directional bias at the event
-tier, and the significance sits exactly where the independence assumption
-is false. **Not a verdict: pre-registration decides.**
-**(4) THE FIELD NOW MEASURES THE TIER IT IS READ AT.**
-`independence.units` re-asks novelty over underlyings (`new_vs_prior`,
-`new_vs_all` against the union of every comparable prior -- the same
-top-N-churn correction the order tier already had), and
-`units.repeat_sign` counts `shared_leaning` / `same_sign` /
-`opposite_sign`. A unit tied in either run has no sign to repeat and is
-excluded, so dead strikes cannot manufacture agreement. `direction_
-stability` carries `new_underlyings` and `repeated_underlyings_same_sign`
-BESIDE its delta, on their own printed line: the delta's `underlyings 0`
-and the new tier's `0 new` are opposite facts (same COUNT of units vs the
-same UNITS), and a reader who saw only the first was told a re-measurement
-was a replication. Absent (`None`) on every report predating the tier,
-never `0` -- `0` here means "the events did not roll over", the opposite
-of "nobody looked" (`_verdict_point`'s rule, third site).
-**(5) THIS IS THE #32/#33 LENS ONE GRANULARITY UP.** The order tier
-already knew that novelty must be measured against the union, not the
-immediate prior; what it never asked was whether the ORDER is the thing
-whose novelty the verdict needs. Same defect, coarser unit. Eight mutants
-red (tied units counted as agreeing, sign agreement inverted, `vs_all`
-falling back to the immediate prior, first-run zeros instead of nulls,
-novelty differenced instead of carried, an absent tier read as zero
-novelty, the shared set forced empty, `nets_here` emptied).
-**Suite 1408 -> 1415. COMMITTED (740b657), PUSHED. NO PROMOTE --
-verified, not assumed: `grep` over `scripts/systemd/` finds no unit
-referencing queuescore or maker_bracket, so no daemon moved and the
-09-12 02:34Z stream/shadow runs are untouched.** The 09-12 report was
-NOT backfilled with the new block -- an archived reading is a record of
-what was measured, and re-running to populate the field would have
-re-scored these same orders and destroyed the 1.0 the pass just bought.
-The next econ run carries it.
-**STALL LEDGER, read in passing:** 4 episodes since the 02:34Z arm, all
-17.6-19.3s, 1 fail each, peak_pending 2,302-4,991, **spilled 0** -- all
-under the cap arm, holder `simulator.shadow` both boots. The ledger is
-behaving exactly as specified.
-NEXT PASS: (1) **The first production `shutdown; stats` line** -- still
-pending the next `hyxlab-stream` restart; check it and whether it carried
-a handoff. (2) The 09-12 10:00Z QA run is the first under both the unread
-arm and the stall check. (3) **The width-24 econ bracket now needs EVENT
-rollover, not just 336h**: `KXCPIYOY-26AUG`/`KXCPI-26AUG`/`KXU3-26AUG`
-settle and the 26SEP ladders take over, so the next genuinely independent
-underlying sample is ~late Sept -- read `independence.units.new_vs_all`
-to decide, and do not schedule it by the clock again. (4) The 10th panel
-day, ~09-17; atlas quoted tier wants ~2.1M settled markets. (5) Sweep the
-new lens: enumerate the other reports that publish a novelty or stability
-field (`atlas.verdict_stability`, divergence) and check whether each
-measures novelty at the unit its own verdict samples. (6) Inert leftover,
-deliberately not deleted: `hyxrestration-stable/reports/shadow_
-divergence/`.
+Updated: **2026-09-12 (CATCH-UP PASS -- THE CHECK CERTIFIED THE BREACH AS
+NOT-A-STALE-BUDGET IN ITS OWN SENTENCE, THEN FAILED ON IT ANYWAY.)**
+Cold start per instructions. The digest's ATTENTION unit is no longer the
+09-11 unread-line failure: the 09-12 10:00Z QA run -- NEXT-PASS item (2),
+the first under both the unread arm and the stall check -- ran and both new
+arms read clean (`prior QA run was read` PASS, `streamd flush stalls`
+PASS, 6 episodes, longest 19s, peak 4,991, **spilled 0**). It failed on ONE
+name, and it was a different one: `batch units within measured run budget`.
+NEXT-PASS item (1), the first production `shutdown; stats` line, is
+**still correctly absent** -- `hyxlab-stream` has not restarted since the
+09-12 02:34Z arm (promote today moved no daemon's code: "none -- no
+daemon's code moved"), so there is still nothing to read.
+**(1) THE FAILURE IS REAL, AND IT WAS ALREADY REPAIRED TWO DAYS AGO.**
+`hyxlab-sweep` ran **16.66h against a 12.5h budget**, 09-11 06:10Z ->
+22:49Z. The cause is named in the journal: the 09-10 06:10Z run **died
+1.59h in** on `IOException: Could not set lock on ... hyxlab.duckdb` --
+`open_retry` exhausting `BURST_OPEN_RETRIES` and raising instead of
+skipping. That is exactly the defect 32c5ced ("a held archive killed the
+run it should only have skipped") closed, promoted **08:25Z on 09-10, 40
+minutes after the crash**. The 09-11 run then carried two days of series
+in one pass. Nothing is broken today.
+**(2) THE CHECK KNEW ALL OF THAT AND FAILED ANYWAY.** `_catch_up_clause`
+looks at the run before a breach, finds the abort, and prints the verdict's
+own conclusion inside the failing line: `-- catch-up after the 09-10
+07:45Z abort, **not a stale budget**`. Then the verdict discards it: `over`
+enters the FAIL condition unsplit. So the two repairs a breach implies --
+re-measure the constant, or make the unit faster -- were both demanded for
+a backlog the reported run had already burned off. The run sits in the
+7-day lookback, so QA was red 09-12 and would have stayed red **through
+09-18**: a week with nothing to do about it. The docstring two lines above
+names that outcome as the thing it refuses to create ("a permanent FAIL is
+the noise that trains an operator to stop reading QA"), and the ABORT key
+directly beside it already implements the cure. The attribution was written
+as prose and never wired to the decision it was about.
+**(3) THE SPLIT.** A breach is now classified by what it is EVIDENCE OF.
+`stale_budget` (no abort before it) keeps the unconditional, undecaying
+FAIL -- a constant that is wrong today is wrong tomorrow and the repair is
+available. A catch-up breach takes its own per-run state key
+(`catchup:<unit>@<end>`): **FAIL on a new run, WATCH -- still printed, with
+the attribution -- once reported.** Per-RUN, so a unit that aborts and
+overruns again is fresh news again; and a decayed catch-up does not
+swallow an unrelated live breach in the same run (pinned).
+**(4) THE TEST THAT MATTERED WAS THE ONE THE OBVIOUS TEST HID.** The
+natural decay test shows abort and catch-up on the same day -- where the
+ABORT's own fresh FAIL masks a catch-up arm that never fires (mutant
+survived). Production runs them a day apart: the abort is reported when it
+happens, the catch-up run lands the next day with nothing else fresh. That
+sequencing test kills the mutant. One equivalent mutant is documented in
+the code rather than tested: `catch_up` is implied by `aborted` today, and
+is named in the WATCH condition anyway because the three sets are derived
+independently.
+**(5) WHAT THE NEXT QA RUN WILL PRINT, PREDICTED BEFORE IT RUNS.** The
+catchup key has never been recorded, so 09-13 10:00Z **FAILs once more**
+on it (verified by dry-run against the real journal), and 09-14 through
+09-18 print `WATCH ... (already reported)` with the breach and its
+attribution still in the line. The state file was NOT pre-seeded to skip
+that last FAIL -- silencing a verdict retroactively is the retro-rescue
+rule applied to QA's own record.
+**Suite 1415 -> 1420. COMMITTED (c905d83), PUSHED, PROMOTED** (collection-
+side: qa.py runs from the stable worktree; drift 23/23, no daemon moved).
+NEXT PASS: (1) **Read the 09-13 10:00Z QA run against the prediction in
+(5)** -- one FAIL on the catchup key, and check it is the ONLY name. (2)
+The first production `shutdown; stats` line, still pending the next
+`hyxlab-stream` restart. (3) The width-24 econ bracket needs EVENT
+rollover (~late Sept); read `independence.units.new_vs_all`, never the
+clock. (4) The 10th panel day, ~09-17; atlas quoted tier wants ~2.1M
+settled markets. (5) The novelty-tier sweep: does `atlas.verdict_stability`
+/ divergence measure novelty at the unit its own verdict samples? (6)
+The `hyxlab-sweep` budget itself is UNTESTED by a clean run since 09-09
+(10.05h) -- watch whether the post-fix steady state stays under 12.5h.
 **USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box, and a notify
 channel (smtp creds or a webhook URL).
 
