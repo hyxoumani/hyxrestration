@@ -34,6 +34,7 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import time as _time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -194,7 +195,7 @@ class FlushStalls:
         except OSError as exc:
             _log(f"stall ledger unwritable ({type(exc).__name__}: {exc})")
 
-    def _record(self, state: str, now: datetime) -> None:
+    def _record(self, state: str, now: datetime, **extra) -> None:
         assert self.started is not None
         self._write(
             {
@@ -206,6 +207,7 @@ class FlushStalls:
                 "peak_pending": self.peak_pending,
                 "spilled": self.spilled,
                 "error": self.last_error,
+                **extra,
             }
         )
         self._last_written = now
@@ -227,8 +229,16 @@ class FlushStalls:
         """
         self._write({"at": now.isoformat(), "state": "armed"})
 
-    def failed(self, pending: int, spilled: int, exc: BaseException, now: datetime) -> None:
-        """One failed flush. Opens an episode if none is open."""
+    def observe(self, pending: int, spilled: int, exc: BaseException, now: datetime) -> None:
+        """Account one failed flush against the episode, writing nothing.
+
+        Split out of `failed` because the shutdown path needs the accounting
+        WITHOUT the heartbeat: `interrupted` writes its own record at the
+        same instant, and two records for one episode at the same duration
+        leave the reader (which keeps the LONGEST per `started`) picking
+        between them on a tie -- where the one it must not pick is the one
+        without the handoff count.
+        """
         if self.started is None:
             self.started = now
             self.fails = 0
@@ -237,11 +247,40 @@ class FlushStalls:
         self.last_error = _short_err(exc)
         self.peak_pending = max(self.peak_pending, pending)
         self.spilled = max(self.spilled, spilled)
+
+    def failed(self, pending: int, spilled: int, exc: BaseException, now: datetime) -> None:
+        """One failed flush. Opens an episode if none is open."""
+        self.observe(pending, spilled, exc, now)
+        assert self.started is not None
         since = self._last_written or self.started
         if (now - self.started).total_seconds() >= STALL_HEARTBEAT_S and (
             now - since
         ).total_seconds() >= STALL_HEARTBEAT_S:
             self._record("open", now)
+
+    def interrupted(self, now: datetime, handoff: int = 0) -> None:
+        """Record an episode this process will not see the end of.
+
+        Written `open` and never `closed`: the drain that would have ended
+        the stall is the thing that just failed, so the stall outlived the
+        daemon and `duration_s` is a lower bound. Forced regardless of
+        `STALL_HEARTBEAT_S` — shutdown is the last chance this episode has
+        to be written down at all, and a 20 s stall that ate a restart is
+        exactly the one no heartbeat would ever have reached.
+
+        `handoff` is the slice of `spilled` that went to the sidecar at
+        SHUTDOWN rather than at SPILL_CAP. The reader needs the two apart: a
+        cap spill says a stall ran an hour and the daemon is at its memory
+        bound, a condition to fix; a handoff says a restart landed during a
+        stall and the sidecar caught what the process would otherwise have
+        dropped, which is the design working. Failing on the second would
+        raise the alarm exactly when the safety net held. Carried as a count
+        beside `spilled`, not as a separate state, so `spilled` stays the
+        total that left memory.
+        """
+        if self.started is None:
+            return
+        self._record("open", now, interrupted=True, handoff=handoff)
 
     def ok(self, now: datetime) -> None:
         """A flush succeeded. Closes an open episode; a no-op otherwise."""
@@ -524,6 +563,88 @@ class Daemon:
                 _log(f"stats {self.stats} (flushed {n} this round)")
                 last_stats = now
 
+    def _install_stop(self) -> asyncio.Task | None:
+        """Make SIGTERM reach the shutdown drain instead of killing the
+        process on the spot.
+
+        systemd stops this unit with SIGTERM, and Python's default
+        disposition for SIGTERM is the OS one: terminate immediately, no
+        `finally`, no drain. MEASURED 2026-09-12 on the live box — 4
+        `starting (db=` lines in 14 days of `hyxlab-stream` journal and
+        ZERO `shutdown; stats` lines. The final drain that exists so the
+        daemon never loses what it saw had not run in production once; it
+        was reachable only from Ctrl-C and from `--smoke`. Every
+        `systemctl restart` (promote.sh does one whenever streamd changes)
+        dropped the buffer instead — a flush interval normally, up to
+        SPILL_CAP rows if a stall was in progress, which is the restart a
+        wedged archive makes most likely.
+
+        Returns None where the loop cannot take signal handlers (Windows,
+        a non-main thread, an embedded loop in the suite): the daemon then
+        behaves exactly as before rather than refusing to start.
+        """
+        loop = asyncio.get_running_loop()
+        stop = asyncio.Event()
+        self._stop_signals = []
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, stop.set)
+            except (NotImplementedError, RuntimeError, ValueError):
+                continue
+            self._stop_signals.append(sig)
+        if not self._stop_signals:
+            return None
+        return asyncio.create_task(stop.wait(), name="stop")
+
+    def _release_stop(self) -> None:
+        loop = asyncio.get_running_loop()
+        for sig in getattr(self, "_stop_signals", []):
+            with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                loop.remove_signal_handler(sig)
+        self._stop_signals = []
+
+    def _final_drain(self) -> None:
+        """The last write of this process's life, and the one that must not
+        raise.
+
+        Two archive holes live here, and both only open on the path where
+        the archive is unreachable — which at shutdown is the LIKELY path,
+        because a wedged archive is the usual reason a restart is happening.
+        (a) `store.flush()` raising means every buffered row dies with the
+        process; the sidecar exists exactly for that, so spill EVERYTHING
+        (not just the overflow above SPILL_CAP, which a sub-hour stall never
+        reaches) and let the next boot drain it. (b) The open stall episode
+        would never be written: `ok()` is unreachable when the drain that
+        would have ended the stall is the thing that failed, so the episode
+        the restart interrupted is recorded as `open` — a lower bound.
+
+        Nothing here propagates: this runs inside `run()`'s `finally`, where
+        a raise would mask the exception that ended the daemon and skip the
+        shutdown line.
+        """
+        now = datetime.now(UTC)
+        try:
+            self.store.flush()
+        except Exception as exc:
+            held = self.store.pending
+            try:
+                moved = self.store.spill_all()
+            except Exception as spill_exc:
+                moved = 0
+                _log(
+                    f"CRITICAL final drain failed ({_short_err(exc)}) and the sidecar "
+                    f"refused it ({_short_err(spill_exc)}) — {held} row(s) lost"
+                )
+            else:
+                _log(
+                    f"final drain FAILED ({_short_err(exc)}); {moved} row(s) moved to the "
+                    f"sidecar for the next boot to drain"
+                )
+            self.stalls.observe(held, self.store.spilled, exc, now)
+            self.stalls.interrupted(now, handoff=moved)
+        else:
+            self.stalls.ok(now)
+
     async def run(self, duration: float | None = None) -> None:
         self.store.mark_startup_gap()
         self.stalls.arm(datetime.now(UTC))
@@ -533,21 +654,36 @@ class Daemon:
             asyncio.create_task(self.poly_books(), name="poly-books"),
             asyncio.create_task(self.flusher(), name="flusher"),
         ]
+        stop = self._install_stop()
+        running = asyncio.gather(*tasks)
         try:
             if duration:
                 await asyncio.sleep(duration)
+            elif stop is None:
+                await running
             else:
-                await asyncio.gather(*tasks)
+                done, _ = await asyncio.wait({running, stop}, return_when=asyncio.FIRST_COMPLETED)
+                # A task that died still has to surface with its traceback;
+                # only the signal arm is a normal end.
+                if running in done:
+                    running.result()
         finally:
+            self._release_stop()
+            if stop is not None:
+                stop.cancel()
+            running.cancel()
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            self.store.flush()  # final drain — never lose buffered events
-            # The drain that ends a stall is an ending like any other, and it
-            # happens outside the flusher: without this, a daemon restarted
-            # DURING an episode leaves that episode open in the ledger forever
-            # and its true duration is never written down.
-            self.stalls.ok(datetime.now(UTC))
+            # `running` gathers the same tasks, so its outcome is already
+            # accounted for -- but an unretrieved cancelled gather prints a
+            # bare traceback over the shutdown line at interpreter exit, and
+            # the shutdown line is the one an operator reads. Consumed, never
+            # awaited: this is a shutdown path and must not be able to block.
+            if running.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    running.exception()
+            self._final_drain()
             _log(f"shutdown; stats {self.stats}")
 
 

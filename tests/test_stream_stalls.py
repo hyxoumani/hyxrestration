@@ -187,12 +187,22 @@ class _Store:
         self.spilled = 0
         self.spill_corrupt = 0
         self.flushes = 0
+        self.spill_alls = 0
+        self.sidecar_broken = False
 
     def flush(self) -> int:
         if self.wedged:
             raise OSError("IO Error: Could not set lock on file")
         self.flushes += 1
         return 7
+
+    def spill_all(self) -> int:
+        if self.sidecar_broken:
+            raise OSError("No space left on device")
+        self.spill_alls += 1
+        moved, self.pending = self.pending, 0
+        self.spilled += moved
+        return moved
 
     def mark_startup_gap(self) -> None:
         pass
@@ -233,13 +243,151 @@ def test_the_flusher_records_the_episode_it_lives_through(monkeypatch, tmp_path)
     assert "OSError" in rec["error"]
 
 
-def test_the_shutdown_drain_closes_an_open_episode():
-    """`run()`'s final drain ends a stall outside the flusher. Without that
-    call, a daemon restarted DURING an episode leaves it open forever and its
-    true duration is never written down."""
-    src = inspect.getsource(streamd.Daemon.run)
-    tail = src.split("self.store.flush()")[-1]
-    assert "self.stalls.ok(" in tail
+def _daemon(tmp_path, store):
+    d = streamd.Daemon.__new__(streamd.Daemon)
+    d.store = store
+    d.stats = {}
+    d._spill_corrupt_seen = 0
+    d.stalls = streamd.FlushStalls(str(tmp_path / "stalls.jsonl"))
+    return d
+
+
+def test_the_shutdown_drain_closes_an_open_episode(tmp_path):
+    """`run()`'s final drain ends a stall outside the flusher. Without it, a
+    daemon restarted DURING an episode leaves it open forever and its true
+    duration is never written down."""
+    store = _Store()
+    d = _daemon(tmp_path, store)
+    d.stalls.failed(1234, 0, _err(), T0)
+    store.wedged = False  # the reader let go before the restart landed
+
+    d._final_drain()
+
+    assert store.flushes == 1
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["state"] == "closed"
+
+
+def test_a_shutdown_whose_drain_fails_spills_the_buffer_instead_of_dropping_it(tmp_path):
+    """The archive being unreachable is the LIKELY shutdown, not the odd one:
+    a wedged archive is the usual reason a restart is happening. The overflow
+    path keeps SPILL_CAP rows in memory because a next flush is coming; at
+    shutdown there is no next flush, so every row left in the buffer is lost.
+    Before 2026-09-12 the final drain simply raised and 1,234 rows (up to
+    SPILL_CAP) died with the process."""
+    store = _Store()  # wedged
+    d = _daemon(tmp_path, store)
+
+    d._final_drain()  # must not raise
+
+    assert store.spill_alls == 1, "the buffer was dropped, not spilled"
+    assert store.pending == 0
+    assert store.spilled == 1234
+
+
+def test_a_shutdown_whose_drain_fails_records_the_episode_it_interrupted(tmp_path):
+    """`ok()` is unreachable exactly when the record matters most: the drain
+    that would have ended the stall is the thing that failed. The episode is
+    written `open` -- the stall outlived this process, so the duration is a
+    lower bound, never a closed measurement."""
+    store = _Store()
+    d = _daemon(tmp_path, store)
+    d.stalls.failed(1234, 0, _err(), T0)  # the flusher had already opened one
+
+    d._final_drain()
+
+    recs = _records(tmp_path / "stalls.jsonl")
+    assert [r["state"] for r in recs] == ["open"], "one episode, one record"
+    assert recs[0]["started"] == T0.isoformat()
+    assert recs[0]["peak_pending"] == 1234
+    assert recs[0]["spilled"] == 1234, "the shutdown spill belongs on the record"
+    assert recs[0]["handoff"] == 1234, "and it has to be separable from a cap spill"
+
+
+def test_an_interrupted_episode_is_written_even_below_the_heartbeat(tmp_path):
+    """A 20s stall that ate a restart is precisely the one no heartbeat would
+    ever have reached, so the shutdown record is forced rather than paced."""
+    s = streamd.FlushStalls(str(tmp_path / "stalls.jsonl"))
+    s.failed(10, 0, _err(), T0)
+    s.interrupted(T0 + timedelta(seconds=20), handoff=10)
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["state"] == "open" and rec["duration_s"] == 20.0
+
+
+def test_a_long_stall_interrupted_by_a_restart_writes_one_record_not_two(tmp_path):
+    """The heartbeat and the shutdown record would land at the same instant
+    with the same duration, and the reader keeps the LONGEST per episode --
+    so a tie would let it keep the one WITHOUT the handoff count. The
+    shutdown path accounts without writing (`observe`) for exactly that."""
+    store = _Store()
+    d = _daemon(tmp_path, store)
+    d.stalls.failed(1234, 0, _err(), T0)
+    d.stalls._last_written = None
+    d.stalls.started = datetime.now(UTC) - timedelta(hours=1)  # long past the heartbeat
+
+    d._final_drain()
+
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["handoff"] == 1234
+
+
+def test_a_shutdown_with_no_stall_writes_no_episode(tmp_path):
+    """Every restart must not manufacture an episode; only a failed drain does."""
+    store = _Store()
+    store.wedged = False
+    d = _daemon(tmp_path, store)
+    d._final_drain()
+    assert not (tmp_path / "stalls.jsonl").exists()
+
+
+def test_a_sidecar_that_also_refuses_is_logged_not_raised(tmp_path, capsys):
+    """`_final_drain` runs inside `run()`'s finally: a raise there masks the
+    exception that ended the daemon and skips the shutdown line."""
+    store = _Store()
+    store.sidecar_broken = True
+    d = _daemon(tmp_path, store)
+
+    d._final_drain()  # must not raise
+
+    out = capsys.readouterr().out
+    assert "CRITICAL final drain failed" in out and "1234 row(s) lost" in out
+
+
+def test_sigterm_reaches_the_drain_instead_of_killing_the_process():
+    """MEASURED 2026-09-12 on the live box: 14 days of `hyxlab-stream` journal
+    hold 4 `starting (db=` lines and ZERO `shutdown; stats` lines. Python's
+    default SIGTERM disposition is the OS one -- terminate, no `finally` -- so
+    the drain that exists so the daemon never loses what it saw was reachable
+    only from Ctrl-C and `--smoke`, and every `systemctl restart` dropped the
+    buffer. The handler is what makes the two tests above run in production."""
+    import asyncio
+    import os
+    import signal
+
+    store = _Store()
+    store.wedged = False
+    d = streamd.Daemon.__new__(streamd.Daemon)
+    d.store = store
+    d.stats = {}
+    d._spill_corrupt_seen = 0
+    d.stalls = streamd.FlushStalls(None)
+    d.watchlist = {}
+    d.key_id, d.pem = "", b""
+
+    async def forever():
+        await asyncio.Event().wait()
+
+    async def drive():
+        for name in ("kalshi_trades", "kalshi_books", "poly_books", "flusher"):
+            setattr(d, name, forever)
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.05, lambda: os.kill(os.getpid(), signal.SIGTERM))
+        await asyncio.wait_for(d.run(), timeout=5)
+
+    drained = []
+    d._final_drain = lambda: drained.append(True)
+    asyncio.run(drive())
+    assert drained == [True], "SIGTERM bypassed the shutdown drain"
 
 
 def test_the_witness_marker_matches_the_line_the_daemon_prints():
@@ -279,8 +427,16 @@ def _ledger(tmp_path, *episodes) -> str:
     return str(p)
 
 
-def _ep(started: datetime, duration: float, *, state="closed", spilled=0, peak=1000) -> dict:
-    return {
+def _ep(
+    started: datetime,
+    duration: float,
+    *,
+    state="closed",
+    spilled=0,
+    peak=1000,
+    handoff=None,
+) -> dict:
+    rec = {
         "at": (started + timedelta(seconds=duration)).isoformat(),
         "state": state,
         "started": started.isoformat(),
@@ -290,6 +446,9 @@ def _ep(started: datetime, duration: float, *, state="closed", spilled=0, peak=1
         "spilled": spilled,
         "error": "OSError: IO Error",
     }
+    if handoff is not None:
+        rec.update(interrupted=True, handoff=handoff)
+    return rec
 
 
 def test_stalls_inside_the_buffer_pass_and_report_the_shape(tmp_path):
@@ -482,3 +641,25 @@ def test_the_epoch_survives_a_daemon_older_than_the_window(tmp_path):
 def test_an_absent_ledger_is_not_a_crash(tmp_path):
     failed, skipped, out = _run_check(path=str(tmp_path / "nope.jsonl"), journal_fails=0, now=NOW)
     assert not failed and skipped == [qa._STREAM_STALL_SECTION], out
+
+
+def test_a_shutdown_handoff_is_reported_but_never_failed_on(tmp_path):
+    """The handoff is the safety net HOLDING: those rows would have died with
+    the process before 2026-09-12. Failing here would raise the alarm exactly
+    when the design worked, and the sidecar is drained on the next boot."""
+    path = _ledger(tmp_path, _ep(T0, 19.0, state="open", spilled=7094, handoff=7094))
+    failed, skipped, out = _run_check(path=path, journal_fails=3, now=NOW)
+    assert not failed and not skipped, out
+    assert "1 shutdown handoff(s) carrying 7094 row(s)" in out
+    assert "rescued, not lost" in out
+
+
+def test_a_capped_episode_a_restart_interrupted_still_fails(tmp_path):
+    """`handoff` is SUBTRACTED from `spilled`, not substituted for it: an
+    episode that hit SPILL_CAP and was then interrupted by a restart is still
+    a capped episode, and hiding it behind the handoff arm would be a way to
+    launder the failure this check exists for."""
+    path = _ledger(tmp_path, _ep(T0, 3600.0, state="open", spilled=34_691, handoff=291))
+    failed, skipped, out = _run_check(path=path, journal_fails=240, now=NOW)
+    assert failed == {"streamd flush stalls stay inside the buffer"}, out
+    assert "moved 34400 row(s)" in out

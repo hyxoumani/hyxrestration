@@ -249,16 +249,29 @@ class StreamStore:
         self.spilled = 0
         return n
 
-    def _spill_overflow(self) -> None:
+    def spill_all(self) -> int:
+        """Move EVERY pending row to the sidecar; returns rows moved.
+
+        The overflow path below keeps SPILL_CAP rows in memory because it is
+        protecting a daemon that will flush again in FLUSH_SECS. At shutdown
+        neither is true: there is no next flush, so a row left in the buffer
+        is a row lost, and the cap is 0. Called only when the final drain
+        itself failed — the sidecar is the one place left that can hold the
+        tape until the next boot drains it.
+        """
+        return self._spill_overflow(cap=0)
+
+    def _spill_overflow(self, cap: int | None = None) -> int:
         """Move the oldest pending rows to the sidecar until the buffer
-        is back at SPILL_CAP. Append-only, oldest-first from each buffer
-        front, so the sidecar always holds rows older than anything
-        still in memory. Sidecar write lands BEFORE the buffers are
-        trimmed — a failed disk write must not drop rows (mistakes #12:
-        recovery claims get tested, not assumed)."""
-        over = self.pending - self.SPILL_CAP
+        is back at `cap` (SPILL_CAP by default); returns rows moved.
+        Append-only, oldest-first from each buffer front, so the sidecar
+        always holds rows older than anything still in memory. Sidecar
+        write lands BEFORE the buffers are trimmed — a failed disk write
+        must not drop rows (mistakes #12: recovery claims get tested, not
+        assumed)."""
+        over = self.pending - (self.SPILL_CAP if cap is None else cap)
         if over <= 0:
-            return
+            return 0
         lines: list[str] = []
         takes: list[tuple[list, int]] = []
         for buf, enc in (
@@ -292,6 +305,7 @@ class StreamStore:
         for buf, take in takes:
             del buf[:take]
         self.spilled += len(lines)
+        return len(lines)
 
     def _read_spill(self) -> tuple[list[BookEvent], list[StreamTrade], list[tuple]]:
         """Decode the sidecar, skipping records it cannot parse.

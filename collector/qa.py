@@ -2021,6 +2021,16 @@ def qa_stream_stalls(
     `SPILL_CAP` the oldest rows move to a JSONL sidecar whose torn-append path
     is a known archive-hole class, and that boundary is the daemon's own
     declared one, not a number invented by this check.
+
+    A SHUTDOWN HANDOFF is not that. When the final drain fails, streamd moves
+    the WHOLE buffer to the same sidecar so a restart landing mid-stall does
+    not drop it (before 2026-09-12 it did, silently, on every `systemctl
+    restart` -- SIGTERM never reached the drain at all). Those rows carry a
+    `handoff` count and are reported, never failed on: the alarm would fire
+    exactly when the safety net held, which is the alarm-fatigue trap
+    `qa_collect_skips` refuses to set. The cap arm still sees a capped episode
+    that a restart interrupted, because `handoff` is SUBTRACTED from `spilled`
+    rather than replacing it.
     """
     now = now or datetime.now(UTC)
     name = "streamd flush stalls stay inside the buffer"
@@ -2070,7 +2080,11 @@ def qa_stream_stalls(
         print(f"SKIP  {name} — {detail}", flush=True)
         return
 
-    spilled = [e for e in episodes if int(e.get("spilled") or 0) > 0]
+    def _cap_rows(e: dict) -> int:
+        return int(e.get("spilled") or 0) - int(e.get("handoff") or 0)
+
+    spilled = [e for e in episodes if _cap_rows(e) > 0]
+    handoff = [e for e in episodes if int(e.get("handoff") or 0) > 0]
     longest = max(episodes, key=lambda e: float(e["duration_s"]))
     peak = max(int(e.get("peak_pending") or 0) for e in episodes)
     open_n = sum(1 for e in episodes if e.get("state") == "open")
@@ -2086,10 +2100,17 @@ def qa_stream_stalls(
             if any(float(e["duration_s"]) >= STREAM_STALL_REPORT_S for e in episodes)
             else ""
         )
+        + (
+            f", {len(handoff)} shutdown handoff(s) carrying "
+            f"{sum(int(e['handoff']) for e in handoff)} row(s) to the sidecar for the "
+            "next boot (rescued, not lost)"
+            if handoff
+            else ""
+        )
         + tail
     )
     if spilled:
-        rows = sum(int(e["spilled"]) for e in spilled)
+        rows = sum(_cap_rows(e) for e in spilled)
         check(
             name,
             False,
