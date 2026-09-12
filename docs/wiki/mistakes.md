@@ -1498,6 +1498,54 @@ Format: what happened → root cause → error type → prevention tier
     functions rather than simulated.
 
 
+54. **2026-09-12 -- the cleanup that exists so nothing is lost ran on no
+    exit path production takes, and it had a passing test.**
+    `collector.streamd.Daemon.run` ends with
+    `self.store.flush()  # final drain -- never lose buffered events`,
+    inside a `finally`. Python's default disposition for SIGTERM is the
+    OS one: terminate immediately, no `finally`, no atexit. Nothing
+    installed a handler and `hyxlab-stream.service` sets no `KillSignal`,
+    so the drain was reachable only from Ctrl-C and from `--smoke` --
+    i.e. from a developer's terminal and from the test suite, never from
+    `systemctl restart`, which is the only way it is ever stopped.
+    MEASURED, and the measurement is a count of zero: 14 days of journal
+    hold **4 `starting (db=` lines and 0 `shutdown; stats` lines**. Every
+    restart dropped the buffer -- a flush interval (~1,500 rows) normally,
+    up to `SPILL_CAP` = 400,000 rows if a flush stall was in progress,
+    which is the restart a wedged archive makes most likely. promote.sh
+    restarts this daemon on every streamd change, so the passes that
+    built the stall ledger were themselves paying the cost.
+    Type: `cleanup-on-a-path-the-deployment-never-takes`.
+    **RULE: a shutdown path is production code only if the signal that
+    actually stops the process reaches it. Before writing anything into a
+    `finally`, name the signal the supervisor sends -- and then check the
+    journal for the line that path prints, because the absence of that
+    line is the whole proof.** Generalises past SIGTERM: `atexit`, context
+    managers and `__del__` are all skipped by SIGKILL, and a cgroup OOM
+    kill skips every one of them.
+    Two holes under it, both only reachable once the path ran at all: a
+    FAILING final drain dropped the buffer rather than spilling it (the
+    overflow path keeps `SPILL_CAP` rows in memory because a next flush is
+    coming; at shutdown there is none), and the interrupted stall episode
+    was never recorded, because `ok()` is unreachable exactly when the
+    drain that would have ended the stall is the thing that failed.
+    **A recovery that is only correct when the thing it recovers from did
+    not happen is not a recovery.**
+    The guard was `test_the_shutdown_drain_closes_an_open_episode`, which
+    read `inspect.getsource(Daemon.run)` and asserted `self.stalls.ok(`
+    appeared after `self.store.flush()`. It was green for the whole life
+    of the defect. Same class as #53's hand-written section list and #48's
+    text-reading unit checks: **a test that reads source text asserts that
+    a line EXISTS, and the question here was always whether it RUNS.**
+    Prevention: a loop signal handler for SIGTERM/SIGINT ending `run()`
+    through its `finally`; `StreamStore.spill_all()`; `FlushStalls.
+    interrupted()` writing an `open` record (a lower bound, forced past
+    the heartbeat); and seven behavioural tests, verified red against the
+    exact pre-fix code, plus two live runs of the real daemon on a scratch
+    DB -- one clean SIGTERM (20,551 book_events + 2,147 trades persisted
+    that the old code dropped) and one against a real read-only lock
+    holder (7,094 rows handed to the sidecar, drained by the next boot).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

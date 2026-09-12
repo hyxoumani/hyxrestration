@@ -47,3 +47,16 @@
   health signal is `memory.events` — `oom_kill 0` with a large `max`
   count is reclaim, not death; `oom_kill > 0` is the kill. Read the
   cgroup, never `MemoryPeak` alone.
+- A daemon's shutdown path is production code only if the signal that
+  actually stops it reaches that path. systemd stops a unit with
+  SIGTERM, and Python's default disposition for SIGTERM is the OS one:
+  terminate at once -- no `finally`, no `atexit`, no context-manager
+  `__exit__`. `collector.streamd`'s final drain, commented "never lose
+  buffered events", was reachable only from Ctrl-C and `--smoke` and had
+  run ZERO times in production (mistakes #54; 14 days of journal, 4
+  starts, 0 shutdown lines). Before writing cleanup into a `finally`,
+  name the signal the supervisor sends and install a handler for it --
+  then prove it by grepping the journal for the line that path prints.
+  Absence of that line is the whole proof. SIGKILL and a cgroup OOM kill
+  skip every one of these regardless, so cleanup that must survive those
+  belongs on disk, not in a handler.

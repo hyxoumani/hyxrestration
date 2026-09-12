@@ -1,5 +1,82 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-12 (SHUTDOWN-DRAIN PASS -- THE LINE COMMENTED "NEVER
+LOSE BUFFERED EVENTS" HAD NOT RUN ONCE IN PRODUCTION.)**
+Cold start per instructions. The digest's one ATTENTION unit is still the
+09-11 10:00Z `hyxlab-qa` failure -- the unread line, fixed and promoted
+two passes ago, first run under the new arm is 09-12 10:00Z, still ahead.
+So the pass began with NEXT-PASS item (1), **the first production stall
+EPISODE**, and it is there and complete: `09-11T23:02:58Z, closed, 17.4s,
+1 fail, peak_pending 2895, spilled 0`, holder named (PID 3806798 =
+`simulator.shadow`, up since 09-07). `qa_stream_stalls` reads it `PASS  ...
+1 episode(s) in 24h; longest 17s, peak 2895 rows held`. The ledger works
+end to end. A second landed during the pass (02:25:59Z, 18.2s, peak 4397,
+same holder).
+**Then the ledger's own producer asked the next question: what happens to
+an episode the daemon does not outlive?** Reading that path found the
+defect.
+**(1) MEASURED FIRST, AND IT IS A COUNT OF ZERO.** `journalctl -u
+hyxlab-stream --since -14d`: **4 `starting (db=` lines, 0 `shutdown; stats`
+lines.** `run()`'s `finally` -- `self.store.flush()  # final drain -- never
+lose buffered events` -- had never executed in production. Python's default
+SIGTERM disposition is the OS one: terminate, no `finally`. Nothing
+installed a handler and the unit sets no `KillSignal`, so the drain was
+reachable only from Ctrl-C and `--smoke`. Every `systemctl restart` dropped
+the buffer, and promote.sh restarts this daemon on every streamd change.
+**(2) THE FAILING DRAIN WAS THE HOLE UNDER THE HOLE.** Even once reached,
+`flush()` raising at shutdown dropped everything: `_spill_overflow` keeps
+`SPILL_CAP` (400,000) rows in memory because a next flush is coming, and at
+shutdown there is none. And at shutdown the archive being unreachable is the
+LIKELY case, not the odd one -- a wedge is the usual reason a restart is
+happening. `StreamStore.spill_all` now moves the WHOLE buffer to the sidecar
+(same fsync'd all-or-nothing append, cap 0) and the next boot drains it.
+**(3) `ok()` IS UNREACHABLE EXACTLY WHERE THE RECORD MATTERS.** The drain
+that would have ended the stall is the thing that failed, so the interrupted
+episode lands as `open` -- a lower bound, since the stall outlived the
+process -- and FORCED past `STALL_HEARTBEAT_S`, because a 17s stall that ate
+a restart is precisely the one a 300s heartbeat never reaches.
+**(4) A HANDOFF IS THE NET HOLDING, SO IT IS REPORTED, NOT FAILED ON.**
+Failing would raise the alarm exactly when the design worked -- the
+`qa_collect_skips` trap. `handoff` is SUBTRACTED from `spilled`, never
+substituted, so a capped episode a restart interrupted still fails the cap
+arm instead of laundering itself through the new one. `observe` splits the
+accounting out of `failed` so the shutdown path writes ONE record: two at
+the same duration would leave the reader (longest-per-`started`) breaking a
+tie, and the one it must not pick is the one without `handoff`.
+**(5) THE TEST THAT GUARDED THIS WAS A SOURCE-TEXT ASSERTION.**
+`test_the_shutdown_drain_closes_an_open_episode` grepped `run()` for
+`self.stalls.ok(` after `self.store.flush()`. It passed for the entire time
+the path never ran -- the same class as #53's hand-written section list.
+Behavioural now, with six others.
+**VERIFIED LIVE, TWICE, ON THE REAL DAEMON (scratch DB, own cwd so the
+production ledger was never touched):** SIGTERM'd clean, the drain persisted
+**20,551 book_events + 2,147 stream_trades** the old code dropped; then with
+a real read-only lock holder wedging the file, the shutdown handed **7,094
+rows (1.6 MB)** to the sidecar, wrote `open/16.9s/handoff 7235`, and the
+NEXT boot archived 14,198 = 7,094 rescued + 7,104 new, sidecar drained and
+removed. Seven behaviours verified red against the exact pre-fix code.
+**Suite 1399 -> 1408. COMMITTED, PROMOTED (hyxlab-stream AND hyxlab-shadow
+restarted -- both execute `hyxlab/streamstore.py`; shadow's 107.8h run ended,
+already far past the ~3d span the diurnal analyses need), PUSHED.**
+**OPS NOTE, new this pass:** the commit hook COMMITS AND PUSHES on its own
+with a generated message before the agent's `git commit` runs. `42e6b05` is
+the hook's; the fuller reasoning is this entry. Do not hand-write a message
+expecting to use it, and do not amend after the hook has pushed -- main
+cannot be force-pushed.
+NEXT PASS: (1) **The first production `shutdown; stats` line** -- the next
+restart of `hyxlab-stream` is the first that can produce one; check it, and
+check whether it carried a handoff. (2) 09-12 10:00Z QA is the first run
+under both the unread arm and the stall check. (3) **Width-24 econ maker
+bracket: the boundary is 2026-09-12T08:20Z** (the 08-29 08:20Z run's 336h
+window ends there); running before it re-measures the prior population, so
+this is data-gated by ~6h as of 02:40Z and is the oldest item on the list.
+(4) The 10th panel day, ~09-17; atlas quoted tier wants ~2.1M settled
+markets. (5) Inert leftover, deliberately not deleted:
+`hyxrestration-stable/reports/shadow_divergence/`.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box, and a notify
+channel (smtp creds or a webhook URL).
+
+---
 Updated: **2026-09-11 (BACKLOG PASS -- THE ONE QUANTITY THE DAEMON
 NEVER MEASURED, AND IT HAD ALREADY HIT ITS CAP TWICE.)**
 Cold start per instructions. The digest's one ATTENTION unit is the
