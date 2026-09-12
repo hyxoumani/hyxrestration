@@ -2411,8 +2411,8 @@ def read_batch_runs(
     return out
 
 
-def _catch_up_clause(run: BatchRun, siblings: list[BatchRun]) -> str:
-    """Name the abort a breach is catching up from, when there is one.
+def _catch_up_abort(run: BatchRun, siblings: list[BatchRun]) -> BatchRun | None:
+    """The abort a breach is catching up from, when there is one.
 
     A run that follows an aborted one carries the work the abort left behind,
     so it is long for a reason that re-measuring the budget would not fix —
@@ -2421,9 +2421,17 @@ def _catch_up_clause(run: BatchRun, siblings: list[BatchRun]) -> str:
     14.64h against a 12.5h budget with double the usual CPU time.
     """
     prior = [r for r in siblings if r.end <= run.start]
-    if not prior or max(prior, key=lambda r: r.end).ok:
-        return ""
+    if not prior:
+        return None
     last = max(prior, key=lambda r: r.end)
+    return None if last.ok else last
+
+
+def _catch_up_clause(run: BatchRun, siblings: list[BatchRun]) -> str:
+    """`_catch_up_abort` as the sentence printed beside the breach."""
+    last = _catch_up_abort(run, siblings)
+    if last is None:
+        return ""
     return f" — catch-up after the {last.end:%m-%d %H:%M}Z abort, not a stale budget"
 
 
@@ -2445,6 +2453,11 @@ def qa_batch_run_budget(
       budget breach   -> the CONSTANT is stale. FAIL: it is repairable, either
                          by re-measuring or by making the unit faster, and it
                          must keep failing until someone does one of them.
+      catch-up breach -> a breach whose prior run ABORTED. FAIL on a NEW run,
+                         WATCH on one already reported: `_catch_up_abort` has
+                         already certified the constant is NOT stale, so
+                         neither of those repairs applies and a permanent FAIL
+                         would be a week of red with nothing to do about it.
       fade overlap    -> the unit actually spent Kalshi quota inside the live
                          agent's window (EXP-958). FAIL on a NEW date, WATCH
                          on one already reported — a past overlap cannot be
@@ -2483,6 +2496,21 @@ def qa_batch_run_budget(
     aborted = [r for rs in measured.values() for r in rs if not r.ok]
 
     over = [r for rs in healthy.values() for r in rs if r.wall_h > BATCH_RUN_BUDGET_H[r.unit]]
+    # A breach splits by what it is EVIDENCE OF, and the two halves decay
+    # differently because their repairs differ. `stale_budget` is a claim about
+    # a CONSTANT that is still wrong today, so it must keep failing until the
+    # constant is re-measured or the unit is made faster. A catch-up breach is
+    # a PAST EVENT — this check itself certifies it is not a stale budget, and
+    # neither repair applies to it: the backlog was already burned off by the
+    # run being reported. It sits in the 7-day lookback for a week, so failing
+    # on it every day is exactly the noise this docstring refuses to create
+    # (and the policy the abort key already follows). Loud once, then a WATCH
+    # that still says it. Each catch-up keys on its own run, so a unit that
+    # aborts and overruns again is fresh news again.
+    catch_up = {
+        id(r): a for r in over if (a := _catch_up_abort(r, measured[r.unit])) is not None
+    }
+    stale_budget = [r for r in over if id(r) not in catch_up]
     # Overlap, unlike the budget, is about quota actually spent — a run that
     # died inside the fade window still spent it, so this reads every run.
     overlaps = [
@@ -2497,13 +2525,24 @@ def qa_batch_run_budget(
     reported = set(entry.get("reported") or [])
     keys = {f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r, _ in overlaps}
     keys |= {f"abort:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r in aborted}
+    keys |= {f"catchup:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r in over if id(r) in catch_up}
     fresh = keys - reported
     entry["reported"] = sorted(reported | keys)
     entry.setdefault("first_seen", now.isoformat())
     _save_state(state)
 
-    fresh_overlap = {k for k in fresh if not k.startswith("abort:")}
+    # The bare `unit@end` form IS the overlap key, so every other kind has to be
+    # subtracted by name. (A catch-up key is minted in the same run as that
+    # run's overlap key when both apply, so today a missed prefix could not
+    # flip a verdict — but the set is read as "overlaps", and the next kind
+    # added here would not be so lucky.)
+    fresh_overlap = {k for k in fresh if not k.startswith(("abort:", "catchup:"))}
     fresh_abort = [r for r in aborted if f"abort:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh]
+    fresh_catch_up = [
+        r
+        for r in over
+        if id(r) in catch_up and f"catchup:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh
+    ]
 
     worst = {u: max(r.wall_h for r in rs) for u, rs in healthy.items() if rs}
     detail = (
@@ -2532,13 +2571,13 @@ def qa_batch_run_budget(
     if unmeasured:
         detail += f"; UNMEASURED: {', '.join(unmeasured)}"
 
-    if over or fresh_overlap or fresh_abort:
+    if stale_budget or fresh_catch_up or fresh_overlap or fresh_abort:
         reasons = (
             [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
                 f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z"
                 + _catch_up_clause(r, measured[r.unit])
-                for r in over
+                for r in sorted(stale_budget + fresh_catch_up, key=lambda r: r.end)
             ]
             + [
                 f"{r.unit} spent {h:.2f}h inside the {FADE_WINDOW_START_H}:00Z fade window "
@@ -2554,14 +2593,29 @@ def qa_batch_run_budget(
         )
         check(name, False, detail + "; " + "; ".join(reasons))
         return
-    if overlaps or aborted:
-        past = [
-            f"{r.unit} overlapped the fade window by {h:.2f}h ending {r.end:%m-%d %H:%M}Z"
-            for r, h in overlaps
-        ] + [
-            f"{r.unit} aborted {r.wall_h:.2f}h in at {r.end:%m-%d %H:%M}Z"
-            for r in sorted(aborted, key=lambda r: r.end)
-        ]
+    # `catch_up` is implied by `aborted` today — a catch-up is defined by the
+    # abort before it, so that abort is in the same window. It is named anyway
+    # because the three sets are derived independently, and a later narrowing
+    # of `aborted` would otherwise print PASS over a live breach.
+    if overlaps or aborted or catch_up:
+        past = (
+            [
+                f"{r.unit} overlapped the fade window by {h:.2f}h ending {r.end:%m-%d %H:%M}Z"
+                for r, h in overlaps
+            ]
+            + [
+                f"{r.unit} aborted {r.wall_h:.2f}h in at {r.end:%m-%d %H:%M}Z"
+                for r in sorted(aborted, key=lambda r: r.end)
+            ]
+            + [
+                f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h) "
+                f"ending {r.end:%m-%d %H:%M}Z"
+                + _catch_up_clause(r, measured[r.unit])
+                for r in sorted(
+                    (r for r in over if id(r) in catch_up), key=lambda r: r.end
+                )
+            ]
+        )
         print(
             f"WATCH {name} — {detail}; " + "; ".join(past) + " (already reported)",
             flush=True,

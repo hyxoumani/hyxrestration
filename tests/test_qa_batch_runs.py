@@ -311,6 +311,104 @@ def test_a_breach_after_an_abort_is_attributed_to_catch_up_not_a_stale_budget(ca
     assert "catch-up" in out and "08-20" in out
 
 
+def test_a_catch_up_breach_fails_once_then_decays_to_a_watch(capsys):
+    """The half of the attribution that was computed and then thrown away.
+
+    `_catch_up_abort` certifies the constant is NOT stale, so neither repair a
+    breach implies — re-measure, or make the unit faster — applies to this run.
+    The work it was catching up on is already burned off, yet the run sits in
+    the 7-day lookback for a week. Live case: the 09-11 sweep ran 16.66h after
+    the 09-10 07:45Z abort and QA went red on it with nothing to do.
+    """
+    runs = {
+        "hyxlab-sweep.timer": [
+            _aborted(datetime(2026, 8, 20, 7, 31, tzinfo=UTC), 1.36),
+            _sweep(datetime(2026, 8, 21, 20, 48, tzinfo=UTC), 14.64),
+        ]
+    }
+    now = datetime(2026, 8, 22, tzinfo=UTC)
+    assert _run(runs, now=now)[0] == {"batch units within measured run budget"}
+
+    failed, _ = _run(runs, now=now)
+    assert not failed
+    out = capsys.readouterr().out
+    assert "WATCH" in out and "catch-up" in out and "already reported" in out
+    # ...and the breach itself is still SAID, not silently dropped.
+    assert "14.64h" in out
+
+
+def test_a_catch_up_breach_is_loud_on_the_day_it_first_appears(capsys):
+    """The sequence production actually runs, where nothing else is fresh.
+
+    The abort is reported the day it happens; the catch-up run that follows it
+    lands a day later. So on the day the breach first exists, its abort is
+    already on the record and cannot raise the alarm for it — only the breach's
+    own key can. The previous test cannot see this: it shows both on the same
+    day, where the abort's own FAIL would mask a catch-up that never fired.
+    """
+    abort = _aborted(datetime(2026, 8, 20, 7, 31, tzinfo=UTC), 1.36)
+    day1 = {"hyxlab-sweep.timer": [abort]}
+    assert _run(day1, now=datetime(2026, 8, 21, tzinfo=UTC))[0]
+    capsys.readouterr()
+
+    day2 = {"hyxlab-sweep.timer": [abort, _sweep(datetime(2026, 8, 21, 20, 48, tzinfo=UTC), 14.64)]}
+    failed, _ = _run(day2, now=datetime(2026, 8, 22, tzinfo=UTC))
+    assert failed == {"batch units within measured run budget"}
+    out = capsys.readouterr().out
+    assert "FAIL" in out and "14.64h" in out and "catch-up" in out
+
+
+def test_a_stale_budget_breach_never_decays(capsys):
+    """The discrimination control: only the certified-not-stale half decays.
+
+    A constant that is wrong today is still wrong tomorrow, and the repair is
+    available — so this one must stay red until someone makes it.
+    """
+    runs = {"hyxlab-sweep.timer": [_sweep(datetime(2026, 8, 21, 20, 48, tzinfo=UTC), 14.64)]}
+    now = datetime(2026, 8, 22, tzinfo=UTC)
+    assert _run(runs, now=now)[0] == {"batch units within measured run budget"}
+    assert _run(runs, now=now)[0] == {"batch units within measured run budget"}
+    assert "catch-up" not in capsys.readouterr().out
+
+
+def test_a_second_catch_up_breach_on_a_new_date_fails_again(capsys):
+    """Decay is per-run: a unit that aborts and overruns again is fresh news."""
+    first_abort = _aborted(datetime(2026, 8, 20, 7, 31, tzinfo=UTC), 1.36)
+    first = _sweep(datetime(2026, 8, 21, 20, 48, tzinfo=UTC), 14.64)
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    runs = [first_abort, first]
+    assert _run({"hyxlab-sweep.timer": list(runs)}, now=now)[0]
+    assert not _run({"hyxlab-sweep.timer": list(runs)}, now=now)[0]
+
+    runs += [
+        _aborted(datetime(2026, 8, 22, 7, 40, tzinfo=UTC), 1.5),
+        _sweep(datetime(2026, 8, 23, 21, 0, tzinfo=UTC), 14.9),
+    ]
+    failed, _ = _run({"hyxlab-sweep.timer": list(runs)}, now=now)
+    assert failed == {"batch units within measured run budget"}
+    out = capsys.readouterr().out
+    assert "14.90h" in out and "08-22 07:40Z abort" in out
+
+
+def test_a_decayed_catch_up_does_not_mask_a_new_stale_budget_breach(capsys):
+    """A WATCH-ed catch-up must not take an unrelated live breach down with it."""
+    runs = {
+        "hyxlab-sweep.timer": [
+            _aborted(datetime(2026, 8, 20, 7, 31, tzinfo=UTC), 1.36),
+            _sweep(datetime(2026, 8, 21, 20, 48, tzinfo=UTC), 14.64),
+        ]
+    }
+    now = datetime(2026, 8, 24, tzinfo=UTC)
+    _run(runs, now=now)
+    runs["hyxlab-tradepass.timer"] = [
+        BatchRun("hyxlab-tradepass.timer", datetime(2026, 8, 23, 12, 0, tzinfo=UTC), 5.0)
+    ]
+    failed, _ = _run(runs, now=now)
+    assert failed == {"batch units within measured run budget"}
+    out = capsys.readouterr().out
+    assert "hyxlab-tradepass.timer ran 5.00h" in out
+
+
 def test_a_breach_with_no_abort_before_it_still_reads_as_a_stale_budget(capsys):
     """The discrimination control — attribution must not fire on every breach."""
     runs = {
