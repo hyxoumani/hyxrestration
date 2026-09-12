@@ -1,5 +1,98 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-12 (INDEPENDENCE PASS -- THE 336h WAIT BOUGHT ORDER
+NOVELTY OF 1.00 AND UNIT NOVELTY OF 0.29.)**
+Cold start per instructions. The digest's one ATTENTION unit is still the
+09-11 10:00Z `hyxlab-qa` failure, whose first run under the new arm is
+09-12 10:00Z and still ahead. NEXT-PASS item (1), the first production
+`shutdown; stats` line, is **correctly still absent**: the journal has 3
+`starting (db=` lines in 3d and the last restart (09-12 02:34:31Z, the
+drain promote itself) killed a process running the OLD code, so the first
+line can only come from the NEXT restart. Nothing to read yet, as
+predicted. That left NEXT-PASS item (3), the oldest item on the list --
+**and its boundary fell 5 minutes into the pass.**
+**(1) THE WAIT WAS HONOURED TO THE SECOND, AND IT WORKED -- AT ITS OWN
+TIER.** The width-24 econ bracket needed a window starting at or after
+2026-08-29T08:20:19Z to stop re-scoring the prior run's orders. Ran at
+08:21:02Z; `window since 2026-08-29 08:20:52`. Result:
+`independence.new_share_vs_all` **1.0**, `orders_shared` **0** of 4,384.
+The 14-day wait delivered exactly the order-disjointness it was scheduled
+for.
+**(2) AND THE VERDICT IT WAS SCHEDULED TO EARN DOES NOT SAMPLE ORDERS.**
+`direction_*_status` is a one-sided binomial whose draw is an UNDERLYING.
+Compared the two runs' `per_underlying` sets: **5 of 7 underlyings are the
+same events** (`KXCPI-26AUG`, `KXCPIYOY-26AUG`, `KXFED-26SEP`,
+`KXFED-26DEC`, `KXU3-26AUG`), and of the 4 that lean in both, **4 of 4
+kept their sign** (KXU3-26AUG -32/-24, KXCPI-26AUG -18/-22, KXCPIYOY-26AUG
+-11/-75, KXFED-26SEP +8/+10). Order novelty **1.00**, underlying novelty
+**0.29**. Spacing runs by `--hours` buys order independence only; the
+UNITS roll over on the events' own clock, and monthly econ prints do not
+roll in 14 days. So the replication below is substantially four events
+agreeing with themselves on fresh quotes -- not a second sample of them.
+**(3) THE READING ITSELF, WITH THAT DISCOUNT APPLIED.** 4,384 orders, 24
+markets / 7 underlyings, **all four readings powered**. MARKET tier
+`significant_under` on both bounds (17 of 22 leaning markets under,
+`market_sign_p` **0.00845**); UNDERLYING tier `not_significant` on both
+(5 of 7 under, `underlying_sign_p` **0.2266**, `min_sign_p` 0.0078 so the
+run COULD have shown a direction). Same shape as 08-29 in every tier.
+Raw counts keep their direction too: `pess_but_not_crossing` **218** vs
+`crossing_but_not_opt` **96** (08-29: 121 vs 61) -- the crossing rule
+FORGOES real fills rather than inventing them, now on two windows. The
+honest read is unchanged from 08-29: no directional bias at the event
+tier, and the significance sits exactly where the independence assumption
+is false. **Not a verdict: pre-registration decides.**
+**(4) THE FIELD NOW MEASURES THE TIER IT IS READ AT.**
+`independence.units` re-asks novelty over underlyings (`new_vs_prior`,
+`new_vs_all` against the union of every comparable prior -- the same
+top-N-churn correction the order tier already had), and
+`units.repeat_sign` counts `shared_leaning` / `same_sign` /
+`opposite_sign`. A unit tied in either run has no sign to repeat and is
+excluded, so dead strikes cannot manufacture agreement. `direction_
+stability` carries `new_underlyings` and `repeated_underlyings_same_sign`
+BESIDE its delta, on their own printed line: the delta's `underlyings 0`
+and the new tier's `0 new` are opposite facts (same COUNT of units vs the
+same UNITS), and a reader who saw only the first was told a re-measurement
+was a replication. Absent (`None`) on every report predating the tier,
+never `0` -- `0` here means "the events did not roll over", the opposite
+of "nobody looked" (`_verdict_point`'s rule, third site).
+**(5) THIS IS THE #32/#33 LENS ONE GRANULARITY UP.** The order tier
+already knew that novelty must be measured against the union, not the
+immediate prior; what it never asked was whether the ORDER is the thing
+whose novelty the verdict needs. Same defect, coarser unit. Eight mutants
+red (tied units counted as agreeing, sign agreement inverted, `vs_all`
+falling back to the immediate prior, first-run zeros instead of nulls,
+novelty differenced instead of carried, an absent tier read as zero
+novelty, the shared set forced empty, `nets_here` emptied).
+**Suite 1408 -> 1415. COMMITTED (740b657), PUSHED. NO PROMOTE --
+verified, not assumed: `grep` over `scripts/systemd/` finds no unit
+referencing queuescore or maker_bracket, so no daemon moved and the
+09-12 02:34Z stream/shadow runs are untouched.** The 09-12 report was
+NOT backfilled with the new block -- an archived reading is a record of
+what was measured, and re-running to populate the field would have
+re-scored these same orders and destroyed the 1.0 the pass just bought.
+The next econ run carries it.
+**STALL LEDGER, read in passing:** 4 episodes since the 02:34Z arm, all
+17.6-19.3s, 1 fail each, peak_pending 2,302-4,991, **spilled 0** -- all
+under the cap arm, holder `simulator.shadow` both boots. The ledger is
+behaving exactly as specified.
+NEXT PASS: (1) **The first production `shutdown; stats` line** -- still
+pending the next `hyxlab-stream` restart; check it and whether it carried
+a handoff. (2) The 09-12 10:00Z QA run is the first under both the unread
+arm and the stall check. (3) **The width-24 econ bracket now needs EVENT
+rollover, not just 336h**: `KXCPIYOY-26AUG`/`KXCPI-26AUG`/`KXU3-26AUG`
+settle and the 26SEP ladders take over, so the next genuinely independent
+underlying sample is ~late Sept -- read `independence.units.new_vs_all`
+to decide, and do not schedule it by the clock again. (4) The 10th panel
+day, ~09-17; atlas quoted tier wants ~2.1M settled markets. (5) Sweep the
+new lens: enumerate the other reports that publish a novelty or stability
+field (`atlas.verdict_stability`, divergence) and check whether each
+measures novelty at the unit its own verdict samples. (6) Inert leftover,
+deliberately not deleted: `hyxrestration-stable/reports/shadow_
+divergence/`.
+**USER-GATED (unchanged):** `HYXLAB_BACKUP_DIR` off-box, and a notify
+channel (smtp creds or a webhook URL).
+
+---
 Updated: **2026-09-12 (SHUTDOWN-DRAIN PASS -- THE LINE COMMENTED "NEVER
 LOSE BUFFERED EVENTS" HAD NOT RUN ONCE IN PRODUCTION.)**
 Cold start per instructions. The digest's one ATTENTION unit is still the

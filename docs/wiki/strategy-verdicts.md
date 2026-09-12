@@ -97,6 +97,26 @@ structure — see [venues](venues.md)).
    it before treating a re-run as a confirming reading. To get an
    independent econ reading, space re-runs by at least `--hours` or
    shorten the window.
+   **AMENDED 2026-09-12 — that last sentence buys the wrong kind of
+   independence.** Every field above counts ORDERS, and the
+   `direction_*_status` verdict a re-run is read to confirm is a sign
+   test whose draw is an UNDERLYING. The 08-29 and 09-12 width-24 econ
+   runs were spaced 336h apart precisely to earn `new_share_vs_all =
+   1.00` and did — **0 of 4,384 orders shared** — while **5 of their 7
+   underlyings were the same events**, and all 4 that leaned in both
+   kept their sign (KXU3-26AUG -32/-24, KXCPI-26AUG -18/-22,
+   KXCPIYOY-26AUG -11/-75, KXFED-26SEP +8/+10). Order novelty 1.00,
+   underlying novelty **0.29**. Spacing by `--hours` guarantees only
+   that no ORDER repeats; the units roll over on the EVENTS' own clock,
+   and monthly econ prints do not roll in 14 days. Weather is the
+   control and is genuinely independent at both tiers, for the same
+   reason it always was: `KXHIGH*` city-days expire daily, so the units
+   themselves churn. Reports from 2026-09-12 carry
+   `independence.units` (`new_vs_prior`, `new_vs_all`) and
+   `units.repeat_sign.same_sign`: **read those, not `new_share_vs_all`,
+   before counting an econ re-run as a confirming reading**, and
+   schedule the next econ bracket on event rollover rather than on the
+   clock.
    **First fully independent econ reading (2026-08-25):** the 19-day
    gap since 08-06 exceeded the 336h window, so this run is the first
    econ bracket at `new_share_vs_all = 1.00` — no order re-scored from
