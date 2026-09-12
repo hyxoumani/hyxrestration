@@ -137,3 +137,11 @@ def test_every_published_verdict_is_registered_for_tracking(tmp_path):
     }
     assert published == set(VERDICT_POPULATION)
     assert VERDICT_POPULATION["quoted_verdict"] == ("day_weighted_survivors", QUOTED_STATUSES)
+
+
+def test_power_on_a_prior_without_the_field_is_absent_not_zero(tmp_path):
+    _write(tmp_path, "20260802T140000", _report(2, survivors=6, silent=5))
+    current = _report(3, survivors=8, silent=4)
+    current["quoted_verdict"]["tested_powered"] = 3
+    vs = verdict_stability(tmp_path, current)["quoted_verdict"]
+    assert [p["tested_powered"] for p in vs["trajectory"]] == [None, 3]

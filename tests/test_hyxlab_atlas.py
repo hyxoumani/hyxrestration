@@ -885,3 +885,56 @@ def test_flag_status_is_a_strict_refinement_of_the_preserved_boolean(tmp_path):
             assert b["flag_status"] == "silent"
         else:
             assert b["flag_status"] != "silent"
+
+
+# 240 quoted rows -- past MIN_N -- packed onto 4 of 50 days, beside 46 days of
+# empty books that carry the +0.34 day-weighted gap.
+_PACKED = (
+    [[(10, 10, _EMPTY_BOOK), (60, 60, _QUOTED)]] * 3
+    + [[(10, 0, _EMPTY_BOOK), (60, 0, _QUOTED)]]
+    + [[(10, 10, _EMPTY_BOOK)]] * 39
+    + [[(10, 0, _EMPTY_BOOK)]] * 7
+)
+
+
+def test_a_test_past_the_row_gate_can_be_too_few_days_to_reject(tmp_path):
+    # the 09-09 archive's Commodities 1h d1: 5,088 quoted rows over 81 days,
+    # needing ~123. The gate counts rows, the Wilson counts days, so
+    # `not_significant` here is a test too small to say, not evidence against.
+    b = _spread_atlas(tmp_path, _PACKED)
+    assert b["quoted_n"] == 240 >= MIN_N and b["quoted_days"] == 4
+    assert b["quoted_status"] == "not_significant"
+    assert b["quoted_powered"] is False
+    # the effect size is the FULL-SAMPLE gap fixed before the quoted outcome
+    # is read (9 days); the quoted gap would give 16 and re-fit it to the answer
+    from simulator.atlas import _days_to_detect
+
+    need = _days_to_detect(b["realized_day_weighted"], b["implied_day_weighted"])
+    assert b["quoted_days_to_detect"] == need == 9
+    assert _days_to_detect(b["quoted_realized_day_weighted"], b["quoted_implied_day_weighted"]) != 9
+
+
+def test_power_is_absent_where_no_test_ran(tmp_path):
+    # the control and the two statuses that carry no test: power is None,
+    # never False -- an untested bucket is not an underpowered one
+    tight = _spread_atlas(tmp_path / "t", _uniform(_QUOTED))
+    assert tight["quoted_status"] == "confirmed" and tight["quoted_powered"] is True
+    silent = _spread_atlas(
+        tmp_path / "s",
+        [[(17, 17, _EMPTY_BOOK), (3, 3, _QUOTED)]] * 42
+        + [[(17, 0, _EMPTY_BOOK), (3, 0, _QUOTED)]] * 8,
+    )
+    assert silent["quoted_status"] == "silent" and silent["quoted_powered"] is None
+
+
+def test_quoted_verdict_counts_powered_tests_separately(tmp_path):
+    from simulator.atlas import _quoted_verdict
+
+    rows = [
+        _spread_atlas(tmp_path / "p", _PACKED),
+        _spread_atlas(tmp_path / "t", _uniform(_QUOTED)),
+    ]
+    rows[0]["category"] = "Packed"
+    qv = _quoted_verdict(rows)
+    assert qv["tested_powered"] == 1
+    assert qv["unpowered"] == ["Packed|1h|d5"]

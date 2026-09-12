@@ -187,6 +187,19 @@ bucket carries `flag_status` (`flagged` / `not_significant` / `silent`) and
 the report carries `flag_verdict`, whose counts PARTITION the bucket set and
 whose `tested` is the honest denominator. `flagged` is untouched.
 
+The gate and the test count different units (2026-09-12). `silent` is decided
+on quoted OBSERVATIONS (>= MIN_N), but the quoted Wilson draws n = quoted DAYS,
+so "tested" never meant "able to reject". Measured against the gap that
+flagged each bucket (the full-sample day-weighted gap, fixed before the quoted
+outcome is read): on 08-25, **2 of the 3** tested buckets lacked the days to
+reject it (Financials 6h d4: 51 days, needed 69; 6h d8: 54, needed 57) -- so
+"all three failing on the interval" above was mostly tests too small to fail.
+2 of 8 on 08-29, 3 of 14 on 09-09, 2 of 16 on 09-12. Every bucket carries
+`quoted_days_to_detect` / `quoted_powered` (None where no test ran), and
+`quoted_verdict` carries `tested_powered` and `unpowered`. Status and MIN_N
+are unchanged -- this re-reads what `not_significant` is evidence of, and
+moves no bucket into or out of any status.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -695,6 +708,23 @@ def build_atlas(conn) -> dict:
             else:
                 quoted_status = "confirmed"
             flagged_quoted = quoted_status == "confirmed"
+        # THE GATE AND THE TEST COUNT DIFFERENT UNITS (2026-09-12). `silent`
+        # is decided on OBSERVATIONS (quoted_n >= MIN_N) but the Wilson above
+        # draws n = quoted_DAYS, so a bucket can clear the gate on 5,088 quoted
+        # rows over 81 days and still be unable to reject the very gap that
+        # flagged it -- and its `not_significant` then reads as evidence
+        # against when it is a test too small to say. The effect size is the
+        # FULL-SAMPLE day-weighted gap, fixed before the quoted outcome is
+        # seen, so this is power, never a re-fit of the verdict. Status and
+        # MIN_N are untouched.
+        days_to_detect = (
+            _days_to_detect(realized_dw, implied_dw) if flagged_day_weighted else None
+        )
+        quoted_powered = (
+            None
+            if quoted_status in ("not_applicable", "silent")
+            else days_to_detect is not None and quoted_days >= days_to_detect
+        )
         buckets.append(
             {
                 "category": category,
@@ -746,6 +776,8 @@ def build_atlas(conn) -> dict:
                 "wilson_quoted_hi": round(qwhi, 4) if qwhi is not None else None,
                 "flagged_quoted": flagged_quoted,
                 "quoted_status": quoted_status,
+                "quoted_days_to_detect": days_to_detect,
+                "quoted_powered": quoted_powered,
                 # tier-neutral and readable even where the tier is silent:
                 # how much of the day-weighted gap survives on two-sided
                 # books. > 1 means the gap GREW; a negative value means it
@@ -843,6 +875,25 @@ def build_atlas(conn) -> dict:
 QUOTED_STATUSES = ("confirmed", "not_significant", "refuted_sign", "silent")
 
 
+#: Search ceiling for `_days_to_detect`. The largest need on the 09-09 archive
+#: is 97 days; past this the gap is too small to call detectable at all.
+MAX_DETECT_DAYS = 5000
+
+
+def _days_to_detect(realized: float, implied: float) -> int | None:
+    """Fewest day-draws at which Wilson at `realized` excludes `implied`.
+
+    Deterministic, not a probability: the n at which a gap of exactly this
+    size would clear the interval the quoted tier applies. None when no n up
+    to MAX_DETECT_DAYS gets there (a zero or vanishing gap).
+    """
+    for d in range(1, MAX_DETECT_DAYS + 1):
+        lo, hi = wilson(realized * d, d)
+        if not lo <= implied <= hi:
+            return d
+    return None
+
+
 def _flag_verdict(buckets: list[dict]) -> dict:
     """Counts that PARTITION the bucket set over the base tier's three outcomes.
 
@@ -890,6 +941,15 @@ def _quoted_verdict(buckets: list[dict]) -> dict:
         ),
         "day_weighted_survivors": len(survivors),
         "counts": {s: len(v) for s, v in by_status.items()},
+        # of the tests that RAN, how many had the quoted days to reject the
+        # gap that flagged them. `tested` counts buckets past an observation
+        # gate; this counts tests past the gate of the unit they sample.
+        "tested_powered": sum(1 for b in survivors if b["quoted_powered"]),
+        "unpowered": [
+            f"{b['category']}|{b['horizon']}|d{b['decile']}"
+            for b in survivors
+            if b["quoted_powered"] is False
+        ],
         "buckets": {
             s: [f"{b['category']}|{b['horizon']}|d{b['decile']}" for b in v]
             for s, v in by_status.items()
@@ -940,6 +1000,9 @@ def _verdict_point(report: dict, field: str, pop_key: str, statuses: tuple) -> d
         "population": pop,
         "tested": tested,
         "tested_share": round(tested / pop, 4) if pop else None,
+        # None on a prior written before the field, never 0: "no test was
+        # powered" and "power was not measured" are opposite readings.
+        "tested_powered": v.get("tested_powered"),
         "shares": {s: (round(counts[s] / pop, 4) if pop else None) for s in statuses},
     }
 
@@ -1099,6 +1162,11 @@ def main() -> None:
         f" survivors: {c['confirmed']} confirmed, {c['not_significant']}"
         f" not-significant, {c['refuted_sign']} refuted-on-sign,"
         f" {c['silent']} SILENT (< {MIN_N} quoted obs -- untested, not rejected)"
+    )
+    tested = qv["day_weighted_survivors"] - c["silent"]
+    print(
+        f"[atlas] quoted tests POWERED in days for the gap that flagged them:"
+        f" {qv['tested_powered']} of {tested}; unpowered {qv['unpowered']}"
     )
     if qv["gap_retained_measurable"]:
         print(
