@@ -385,18 +385,28 @@ def _order(mid, placed, price=0.4):
     return VirtualOrder(mid, "yes", price, 5.0, placed, tracker=None)
 
 
-def _write_report(out_dir, name, composition, orders):
+def _write_report(out_dir, name, composition, orders, nets=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / name).write_text(
         json.dumps(
             {
                 "market_composition": composition,
+                "concentration": {
+                    "per_underlying": [
+                        {"event_ticker": e, "net": n} for e, n in (nets or {}).items()
+                    ]
+                },
                 "orders_detail": [
                     {"market_id": m, "placed": str(p), "price": pr} for m, p, pr in orders
                 ],
             }
         )
     )
+
+
+def _conc(nets=None):
+    """The concentration block independence_vs_prior reads: per-underlying nets."""
+    return {"per_underlying": [{"event_ticker": e, "net": n} for e, n in (nets or {}).items()]}
 
 
 def test_independence_flags_overlapping_rerun_as_mostly_not_new(tmp_path):
@@ -408,7 +418,7 @@ def test_independence_flags_overlapping_rerun_as_mostly_not_new(tmp_path):
 
     orders = [_order(m, p, pr) for m, p, pr in shared]
     orders.append(_order("KXCPI-26JUL", T0 + timedelta(minutes=99)))
-    res = independence_vs_prior(out, orders, {"KXCPI": 10})
+    res = independence_vs_prior(out, orders, {"KXCPI": 10}, _conc())
 
     assert res["prior_report"] == "20260726T000000.json"
     assert res["orders_new"] == 1
@@ -429,7 +439,7 @@ def test_independence_compares_within_series_and_handles_first_run(tmp_path):
 
     econ = [_order("KXCPI-26JUL", T0)]
     # only a weather report exists, so the econ run has no comparable prior
-    assert independence_vs_prior(out, econ, {"KXCPI": 1}) == {
+    assert independence_vs_prior(out, econ, {"KXCPI": 1}, _conc()) == {
         "prior_report": None,
         "orders_new": None,
         "orders_shared": None,
@@ -437,10 +447,20 @@ def test_independence_compares_within_series_and_handles_first_run(tmp_path):
         "priors_compared": 0,
         "orders_new_vs_all": None,
         "new_share_vs_all": None,
+        "units": {
+            "tier": "underlying",
+            "here": 0,
+            "shared_with_prior": None,
+            "new_vs_prior": None,
+            "new_share_vs_prior": None,
+            "new_vs_all": None,
+            "new_share_vs_all": None,
+            "repeat_sign": None,
+        },
     }
     # a weather run does match the weather report, and is fully new
     weather = [_order("KXHIGHNY-26JUL27", T0 + timedelta(hours=5))]
-    res = independence_vs_prior(out, weather, {"KXHIGHNY": 1})
+    res = independence_vs_prior(out, weather, {"KXHIGHNY": 1}, _conc())
     assert res["prior_report"] == "20260726T000000.json"
     assert res["orders_new"] == 1 and res["orders_shared"] == 0
     assert res["new_share"] == 1.0
@@ -461,7 +481,7 @@ def test_independence_vs_all_catches_top_n_churn(tmp_path):
     orders += [
         _order("KXCPI-26JUL-T0.5", T0 + timedelta(hours=9) + timedelta(minutes=i)) for i in range(2)
     ]
-    res = independence_vs_prior(out, orders, {"KXCPI": 10})
+    res = independence_vs_prior(out, orders, {"KXCPI": 10}, _conc())
 
     assert res["prior_report"] == "20260725T000000.json"
     assert res["priors_compared"] == 2
@@ -486,7 +506,7 @@ def test_independence_vs_all_still_certifies_a_genuinely_new_run(tmp_path):
     )
 
     fresh = [_order("KXHIGHNY-26JUL30-B80.5", T0 + timedelta(hours=48))]
-    res = independence_vs_prior(out, fresh, {"KXHIGHNY": 1})
+    res = independence_vs_prior(out, fresh, {"KXHIGHNY": 1}, _conc())
 
     assert res["priors_compared"] == 2
     assert res["new_share"] == 1.0 and res["new_share_vs_all"] == 1.0
@@ -507,7 +527,7 @@ def test_independence_vs_all_unions_only_comparable_priors(tmp_path):
     )
 
     econ = [_order("KXCPI-26JUL-T0.0", T0)]
-    res = independence_vs_prior(out, econ, {"KXCPI": 1})
+    res = independence_vs_prior(out, econ, {"KXCPI": 1}, _conc())
 
     # only the one econ prior is comparable, and it does not carry this order
     assert res["priors_compared"] == 1
@@ -790,3 +810,151 @@ def test_status_never_contradicts_the_preserved_boolean():
                 status = c[f"direction_{tier}_status"]
                 assert status in DIRECTION_STATUSES
                 assert (status.startswith("significant_")) is c[f"direction_{tier}_significant"]
+
+
+def test_order_novelty_of_one_can_hide_a_fully_repeated_unit_set(tmp_path):
+    """THE LOAD-BEARING CASE, and it is not hypothetical.
+
+    The 08-29 and 09-12 width-24 econ runs were deliberately spaced 336h apart
+    so that `new_share_vs_all` would reach 1.0, and it did: 0 of 4,384 orders
+    shared. But the verdict those runs are read for is a sign test over
+    UNDERLYINGS, and 5 of the 7 were the same monthly prints, leaning the same
+    way both times. Perfect order novelty is compatible with zero unit novelty,
+    so the order-tier fields cannot certify a replication on their own."""
+    out = tmp_path / "maker_bracket"
+    nets = {"KXCPI-26AUG": -18, "KXCPIYOY-26AUG": -11, "KXFED-26SEP": 8}
+    _write_report(
+        out,
+        "20260829T082019.json",
+        {"KXCPI": 3},
+        [("KXCPI-26AUG-T0.3", T0, 0.4)],
+        nets=nets,
+    )
+
+    # every order is new -- a disjoint window, exactly as the spacing intended
+    orders = [_order("KXCPI-26AUG-T0.3", T0 + timedelta(hours=336))]
+    res = independence_vs_prior(
+        out,
+        orders,
+        {"KXCPI": 3},
+        _conc({"KXCPI-26AUG": -22, "KXCPIYOY-26AUG": -75, "KXFED-26SEP": 10}),
+    )
+
+    assert res["new_share_vs_all"] == 1.0  # the order tier says fully independent
+    u = res["units"]
+    assert u["here"] == 3
+    assert u["shared_with_prior"] == 3
+    assert u["new_vs_prior"] == 0 and u["new_share_vs_prior"] == 0.0
+    assert u["new_vs_all"] == 0
+    # and all three repeated units kept their sign: the "replication" is three
+    # events agreeing with themselves on fresh quotes
+    assert u["repeat_sign"] == {
+        "shared_leaning": 3,
+        "same_sign": 3,
+        "opposite_sign": 0,
+        "repeated": ["KXCPI-26AUG", "KXCPIYOY-26AUG", "KXFED-26SEP"],
+    }
+
+
+def test_a_unit_that_flipped_sign_is_not_counted_as_agreeing(tmp_path):
+    """`same_sign` is the quantity that decides whether a repeated verdict is
+    a second look; a repeated underlying that reversed is evidence AGAINST the
+    prior reading and must never be folded in with the ones that agreed."""
+    out = tmp_path / "maker_bracket"
+    _write_report(
+        out,
+        "20260829T082019.json",
+        {"KXCPI": 2},
+        [("KXCPI-26AUG-T0.3", T0, 0.4)],
+        nets={"KXCPI-26AUG": -18, "KXFED-26SEP": 8},
+    )
+    res = independence_vs_prior(
+        out,
+        [_order("KXCPI-26AUG-T0.3", T0 + timedelta(hours=336))],
+        {"KXCPI": 2},
+        _conc({"KXCPI-26AUG": -22, "KXFED-26SEP": -3}),
+    )
+    assert res["units"]["repeat_sign"]["shared_leaning"] == 2
+    assert res["units"]["repeat_sign"]["same_sign"] == 1
+    assert res["units"]["repeat_sign"]["opposite_sign"] == 1
+
+
+def test_a_unit_with_no_lean_in_either_run_has_no_sign_to_repeat(tmp_path):
+    """net 0 is not a direction. Counting a tied underlying as agreeing would
+    let a run of dead strikes manufacture agreement out of nothing."""
+    out = tmp_path / "maker_bracket"
+    _write_report(
+        out,
+        "20260829T082019.json",
+        {"KXCPI": 3},
+        [("KXCPI-26AUG-T0.3", T0, 0.4)],
+        nets={"KXCPI-26AUG": -18, "KXFED-26DEC": 0, "KXU3-26AUG": -4},
+    )
+    res = independence_vs_prior(
+        out,
+        [_order("KXCPI-26AUG-T0.3", T0 + timedelta(hours=336))],
+        {"KXCPI": 3},
+        _conc({"KXCPI-26AUG": -22, "KXFED-26DEC": -1, "KXU3-26AUG": 0}),
+    )
+    rs = res["units"]["repeat_sign"]
+    # KXFED-26DEC is tied in the prior, KXU3-26AUG is tied here: neither leans
+    # in BOTH, so only KXCPI-26AUG has a sign that can repeat
+    assert rs["shared_leaning"] == 1 and rs["repeated"] == ["KXCPI-26AUG"]
+    assert rs["same_sign"] == 1
+
+
+def test_rolled_over_events_do_register_as_new_units(tmp_path):
+    """The control. If the unit tier could not distinguish fresh events from
+    repeated ones it would be a constant, not a measurement -- weather brackets
+    roll their city-days daily and must read as genuinely new."""
+    out = tmp_path / "maker_bracket"
+    _write_report(
+        out,
+        "20260829T082019.json",
+        {"KXHIGHNY": 2},
+        [("KXHIGHNY-26AUG28-T80", T0, 0.4)],
+        nets={"KXHIGHNY-26AUG28": -5, "KXHIGHNY-26AUG29": 3},
+    )
+    res = independence_vs_prior(
+        out,
+        [_order("KXHIGHNY-26AUG30-T80", T0 + timedelta(hours=48))],
+        {"KXHIGHNY": 2},
+        _conc({"KXHIGHNY-26AUG30": -5, "KXHIGHNY-26AUG31": 3}),
+    )
+    u = res["units"]
+    assert u["shared_with_prior"] == 0
+    assert u["new_vs_prior"] == 2 and u["new_share_vs_prior"] == 1.0
+    assert u["new_vs_all"] == 2
+    assert u["repeat_sign"]["shared_leaning"] == 0 and u["repeat_sign"]["same_sign"] == 0
+
+
+def test_unit_novelty_vs_all_unions_every_comparable_prior(tmp_path):
+    """Same top-N churn defect as the order tier, one granularity up: an event
+    that drops out of one run's top-N and returns in the next reads as a fresh
+    unit against the immediate prior while an older run already sampled it."""
+    out = tmp_path / "maker_bracket"
+    _write_report(
+        out,
+        "20260801T000000.json",
+        {"KXCPI": 1},
+        [("KXCPI-26AUG-T0.3", T0, 0.4)],
+        nets={"KXU3-26AUG": -7},
+    )
+    _write_report(
+        out,
+        "20260815T000000.json",
+        {"KXCPI": 1},
+        [("KXCPI-26AUG-T0.4", T0, 0.4)],
+        nets={"KXCPI-26AUG": -18},
+    )
+    res = independence_vs_prior(
+        out,
+        [_order("KXCPI-26AUG-T0.5", T0 + timedelta(hours=336))],
+        {"KXCPI": 1},
+        _conc({"KXCPI-26AUG": -22, "KXU3-26AUG": -4}),
+    )
+    u = res["units"]
+    # KXU3-26AUG is absent from the IMMEDIATE prior, so it reads new there...
+    assert u["new_vs_prior"] == 1
+    # ...but the 08-01 run already sampled it, so it is not new evidence at all
+    assert u["new_vs_all"] == 0

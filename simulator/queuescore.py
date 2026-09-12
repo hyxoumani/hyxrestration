@@ -82,7 +82,22 @@ def order_key(o: VirtualOrder) -> list:
     return [o.market_id, str(o.placed), o.price]
 
 
-def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition: dict) -> dict:
+def _underlying_nets(report: dict) -> dict[str, int]:
+    """Per-underlying net disagreement of an archived report, keyed by event."""
+    conc = report.get("concentration") or {}
+    rows = conc.get("per_underlying")
+    if not isinstance(rows, list):
+        return {}
+    return {
+        r["event_ticker"]: r["net"]
+        for r in rows
+        if isinstance(r, dict) and "event_ticker" in r and "net" in r
+    }
+
+
+def independence_vs_prior(
+    out_dir: Path, orders: list[VirtualOrder], composition: dict, conc: dict
+) -> dict:
     """How much of this run's evidence is NEW since the last comparable run.
 
     The window is trailing (`max(recv_ts) - N hours`), so re-running sooner
@@ -107,10 +122,29 @@ def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition
     `*_vs_all` therefore compares against the union of EVERY comparable prior
     and is the honest novelty read; `new_share` is kept unchanged for
     cross-report comparability with reports written before this tier.
+
+    AND ORDER-LEVEL NOVELTY IS THE WRONG GRANULARITY FOR THE TEST IT IS READ
+    TO JUSTIFY. Every `new_share` here counts ORDERS, but the direction verdict
+    the reader reaches for is a sign test whose draw is an UNDERLYING -- and
+    the two move independently. Measured on the first deliberately spaced pair
+    (08-29 and 09-12 width-24 econ, windows 336h apart by construction so that
+    `new_share_vs_all` would reach 1.0): it did reach exactly 1.0, 0 orders
+    shared, while **5 of the 7 underlyings were the same events**, leaning the
+    same way in both runs (KXU3-26AUG -32/-24, KXCPI-26AUG -18/-22,
+    KXCPIYOY-26AUG -11/-75, KXFED-26SEP +8/+10). A pair of readings can be
+    perfectly order-disjoint and still be five CPI/jobs prints agreeing with
+    themselves on fresh quotes. So `units` re-runs the same novelty question
+    at the tier the sign test actually samples, and `units.repeat_sign` counts
+    how many shared underlyings kept their sign -- the quantity that says a
+    "replication" is the same events restated. Spacing runs by `--hours` buys
+    order independence only; underlying independence needs the EVENTS to roll
+    over, which for monthly econ prints is a far longer clock.
     """
     keys = {tuple(order_key(o)) for o in orders}
-    prior_name, prior_keys = None, None
+    nets_here = {u["event_ticker"]: u["net"] for u in conc.get("per_underlying") or []}
+    prior_name, prior_keys, prior_nets = None, None, None
     union: set[tuple] = set()
+    union_units: set[str] = set()
     n_priors = 0
     for path in sorted(out_dir.glob("*.json"), reverse=True):
         try:
@@ -122,9 +156,11 @@ def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition
         prior_keys_here = {
             (d["market_id"], d["placed"], d["price"]) for d in prior.get("orders_detail", [])
         }
+        nets_there = _underlying_nets(prior)
         if prior_keys is None:
-            prior_name, prior_keys = path.name, prior_keys_here
+            prior_name, prior_keys, prior_nets = path.name, prior_keys_here, nets_there
         union |= prior_keys_here
+        union_units |= set(nets_there)
         n_priors += 1
     if prior_keys is None:
         return {
@@ -135,6 +171,7 @@ def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition
             "priors_compared": 0,
             "orders_new_vs_all": None,
             "new_share_vs_all": None,
+            "units": _unit_independence(nets_here, None, set()),
         }
     new = len(keys - prior_keys)
     new_all = len(keys - union)
@@ -146,6 +183,54 @@ def independence_vs_prior(out_dir: Path, orders: list[VirtualOrder], composition
         "priors_compared": n_priors,
         "orders_new_vs_all": new_all,
         "new_share_vs_all": round(new_all / len(keys), 4) if keys else None,
+        "units": _unit_independence(nets_here, prior_nets, union_units),
+    }
+
+
+def _unit_independence(
+    nets_here: dict[str, int], prior_nets: dict[str, int] | None, union_units: set[str]
+) -> dict:
+    """The same novelty question at the tier the sign test samples.
+
+    `shared_leaning` is restricted to underlyings that lean in BOTH runs, since
+    a unit with net 0 in either has no sign to repeat; `same_sign` over that set
+    is the count that decides whether a repeated verdict is a second look or a
+    louder first one. Returns nulls (never zeros) when there is no comparable
+    prior, for the reason `_verdict_point` returns None: an absent comparison
+    plotted as a measured zero reads as perfect novelty, which is the claim
+    this block exists to refuse.
+    """
+    here = set(nets_here)
+    if prior_nets is None:
+        return {
+            "tier": "underlying",
+            "here": len(here),
+            "shared_with_prior": None,
+            "new_vs_prior": None,
+            "new_share_vs_prior": None,
+            "new_vs_all": None,
+            "new_share_vs_all": None,
+            "repeat_sign": None,
+        }
+    shared = here & set(prior_nets)
+    leaning = {u for u in shared if nets_here[u] != 0 and prior_nets[u] != 0}
+    same = sum(1 for u in leaning if (nets_here[u] > 0) == (prior_nets[u] > 0))
+    new_units = here - set(prior_nets)
+    new_units_all = here - union_units
+    return {
+        "tier": "underlying",
+        "here": len(here),
+        "shared_with_prior": len(shared),
+        "new_vs_prior": len(new_units),
+        "new_share_vs_prior": round(len(new_units) / len(here), 4) if here else None,
+        "new_vs_all": len(new_units_all),
+        "new_share_vs_all": round(len(new_units_all) / len(here), 4) if here else None,
+        "repeat_sign": {
+            "shared_leaning": len(leaning),
+            "same_sign": same,
+            "opposite_sign": len(leaning) - same,
+            "repeated": sorted(leaning),
+        },
     }
 
 
@@ -353,6 +438,17 @@ def _verdict_point(report: dict, field: str, statuses: tuple) -> dict | None:
         "orders": report.get("orders"),
         "window_hours": report.get("window_hours"),
         "units": {"markets": conc.get("markets"), "underlyings": conc.get("underlyings")},
+        # How many of those underlyings the PRIOR reading had not already
+        # sampled. `units` alone cannot say: two runs both reading 7
+        # underlyings print an identical `underlyings 0` delta whether the
+        # events rolled over completely or not at all, and the second case is
+        # the same five CPI prints re-measured. Absent (None) on reports
+        # written before this tier, never 0 -- 0 here means "no new events",
+        # which is the opposite of "not measured".
+        "unit_novelty": ((report.get("independence") or {}).get("units") or {}).get("new_vs_prior"),
+        "unit_repeat_same_sign": (
+            ((report.get("independence") or {}).get("units") or {}).get("repeat_sign") or {}
+        ).get("same_sign"),
         # per reading, because the ceiling is 2^-decisive and `decisive` differs
         # between the floor and the ceiling: the two bounds lean different
         # numbers of units.
@@ -435,6 +531,12 @@ def direction_stability(out_dir: Path, current: dict) -> dict:
                     "underlyings": _delta(
                         latest["units"]["underlyings"], prior["units"]["underlyings"]
                     ),
+                    # Carried from the LATEST reading, not differenced: it is
+                    # already a comparison against that reading's prior, and
+                    # differencing a novelty count would ask how much the
+                    # newness changed rather than how much there was.
+                    "new_underlyings": latest["unit_novelty"],
+                    "repeated_underlyings_same_sign": latest["unit_repeat_same_sign"],
                 }
                 if prior is not None
                 else None
@@ -764,7 +866,7 @@ def main() -> None:
         "concentration": conc,
         "concentration_strict": conc_strict,
         "direction_verdict": direction_verdict(conc, conc_strict),
-        "independence": independence_vs_prior(out_dir, all_orders, composition),
+        "independence": independence_vs_prior(out_dir, all_orders, composition, conc),
         "note": (
             "crossing rule = what backtests award today; queue bounds ="
             " what L2+tape evidence supports (pess is the floor)."
@@ -790,6 +892,16 @@ def main() -> None:
             " only the top-N by print count and it churns, so a strike absent"
             " from the immediate prior but present in an older run reads as"
             " fresh against new_share while never being new evidence at all."
+            " Both of those count ORDERS, and the direction verdict below is a"
+            " sign test whose draw is an UNDERLYING, so read independence.units"
+            " before reading a repeated verdict as a replication: a pair of"
+            " runs spaced a full --hours apart reaches new_share_vs_all 1.0"
+            " with ZERO orders shared while still scoring the same monthly CPI"
+            " and jobs prints (measured, 08-29 vs 09-12: 1.0 order novelty, 5"
+            " of 7 underlyings shared, all 5 leaning the same way both times)."
+            " units.repeat_sign.same_sign is that count: the number of shared"
+            " underlyings that kept their sign, i.e. how much of an apparent"
+            " confirmation is the same events agreeing with themselves."
             " concentration treats the MARKET as the independent unit (all"
             " orders in a market ride one book): read"
             " direction_market_robust before calling any over/under verdict,"
@@ -853,6 +965,22 @@ def main() -> None:
             f" significant {d['counts']['significant_over'] + d['counts']['significant_under']:+d},"
             f" markets {d['markets']}, underlyings {d['underlyings']}"
         )
+        # Printed on its own line and never folded into the delta above: the
+        # delta's `underlyings 0` and this line's `0 new` are opposite facts
+        # (same COUNT of units vs same UNITS), and a reader who sees only the
+        # first has been told a re-measurement is a replication.
+        nu, rs = d["new_underlyings"], d["repeated_underlyings_same_sign"]
+        if nu is None:
+            print(
+                "  direction_stability unit independence: not measured"
+                " (prior reading predates the units tier)"
+            )
+        else:
+            print(
+                f"  direction_stability unit independence: {nu} underlying(s) new"
+                f" vs the prior reading, {rs} repeated underlying(s) kept their"
+                " sign"
+            )
     print(f"[queuescore] written to {out}")
 
 

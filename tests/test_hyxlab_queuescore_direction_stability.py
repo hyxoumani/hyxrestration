@@ -228,3 +228,49 @@ def test_two_reports_over_the_same_orders_are_one_reading(tmp_path):
     assert ds["reports_read"] == 2
     assert ds["comparable_readings"] == 1  # one data state, read twice
     assert ds["readings"] == 2  # that state, plus the current run
+
+
+def _with_units(report, *, here, new_vs_prior, same_sign):
+    """A reading carrying the unit-independence tier."""
+    report["independence"] = {
+        "units": {
+            "tier": "underlying",
+            "here": here,
+            "new_vs_prior": new_vs_prior,
+            "repeat_sign": {"same_sign": same_sign},
+        }
+    }
+    return report
+
+
+def test_an_identical_unit_count_does_not_mean_the_same_units_rolled_over(tmp_path):
+    """`underlyings 0` in the delta is a count, not an identity. Two readings
+    that both sample 7 underlyings print the same delta whether the events
+    rolled over completely or not at all -- and in the 08-29/09-12 econ pair it
+    was not at all. The trajectory must carry the novelty beside the count."""
+    _write(
+        tmp_path,
+        "20260829T082019",
+        _with_units(_report("a", markets=24, underlyings=7), here=7, new_vs_prior=3, same_sign=1),
+    )
+    here = _with_units(_report("b", markets=24, underlyings=7), here=7, new_vs_prior=0, same_sign=5)
+
+    d = direction_stability(tmp_path, here)["direction_verdict"]["delta_vs_prior"]
+
+    assert d["underlyings"] == 0  # the same COUNT of units...
+    assert d["new_underlyings"] == 0  # ...and not one of them is a new event
+    assert d["repeated_underlyings_same_sign"] == 5
+
+
+def test_a_prior_without_the_units_tier_reports_not_measured_not_zero(tmp_path):
+    """Same rule as `_verdict_point` returning None: 0 new underlyings means
+    'the events did not roll over', which is the opposite of 'nobody looked'.
+    Every report archived before this tier must read as the latter."""
+    _write(tmp_path, "20260829T082019", _report("a", markets=24, underlyings=7))
+    here = _report("b", markets=24, underlyings=7)  # no independence block either
+
+    d = direction_stability(tmp_path, here)["direction_verdict"]["delta_vs_prior"]
+
+    assert d["underlyings"] == 0
+    assert d["new_underlyings"] is None
+    assert d["repeated_underlyings_same_sign"] is None
