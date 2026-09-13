@@ -1,5 +1,21 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-13 14:30Z (QA PREDICTION READ, NEXT-PASS (1) -- MATCHED,
+NO DEFECT.)** The 09-13 10:00Z QA run printed exactly what c905d83 predicted:
+one FAIL, on the one predicted check, `batch units within measured run budget`
+(hyxlab-sweep 16.66h/12.5h, 09-11, with "catch-up after the 09-10 07:45Z
+abort, not a stale budget" in the line). Every other check PASSed, SKIPped
+(the standing collect-skips skip) or WATCHed (fade window). The stable
+`reports/qa/sections.json` now records
+`catchup:hyxlab-sweep.timer@2026-09-11T22:49`, so from 09-14 to 09-18 that
+breach takes the `fresh_catch_up`-empty path and prints `WATCH ... (already
+reported)`. If 09-14 is red on this name, the prediction was wrong, and that
+becomes the work. The remaining NEXT-PASS items are still gated: (2)
+`hyxlab-stream` has not restarted (up 35.7h), (3) the econ rollover is due
+late September, (4) the 10th panel day is ~09-17. Today's `hyxlab-sweep` is
+8.1h in against its 12.5h budget. No code change; hyxlab-autoloop owns the
+re-check.
+
 Updated: **2026-09-13 08:30Z (TAPE-429 RECOVERY CHECK -- CLOSED CLEAN, NO
 DEFECT.)** Every NEXT-PASS item is still time-gated (the QA run at 10:00Z isn't
 due yet). Checked the `sweep.py` comment that says trade tapes the sweep loses to
