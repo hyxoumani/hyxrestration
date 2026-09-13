@@ -1,5 +1,18 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-13 08:30Z (TAPE-429 RECOVERY CHECK -- CLOSED CLEAN, NO
+DEFECT.)** Every NEXT-PASS item is still time-gated (the QA run at 10:00Z isn't
+due yet). Checked the `sweep.py` comment that says trade tapes the sweep loses to
+HTTP 429 are picked up by `hyxlab-tradepass`. 09-11/12 sweep journals: 104
+distinct tickers missed on 429 (daily count 4-77 over 09-07..13). In the stable
+archive, 103 are now marked (87 `empty`, 16 `ok`). The one left,
+KXBTC15M-26SEP111945-45, hit a 429 inside tradepass on 09-13 and is still
+pending (settled, result `yes`), so the next pass retries it. Retention is not
+eating the one-day delay: per series, recovered tapes are empty about as often
+as tapes the sweep fetched itself (crypto brackets 0.85-0.98 either way; 15M
+series 0.0 with comparable median trade counts). The small-series outliers
+are within binomial noise (n<=3, p>=0.10). No code change.
+
 Updated: **2026-09-13 02:30Z (GATE-VS-DRAW SWEEP, NEXT-PASS (5) -- CLOSED
 CLEAN, NO DEFECT.)** Digest ATTENTION is still the 09-12 QA budget FAIL
 (c905d83); 09-13 10:00Z run not yet due. BASE tier gates on n rows and
