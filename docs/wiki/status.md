@@ -1,5 +1,18 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-13 02:30Z (GATE-VS-DRAW SWEEP, NEXT-PASS (5) -- CLOSED
+CLEAN, NO DEFECT.)** Digest ATTENTION is still the 09-12 QA budget FAIL
+(c905d83); 09-13 10:00Z run not yet due. BASE tier gates on n rows and
+draws n rows -- same unit. Robust/day/day-weighted tiers have NO gate or
+status of their own: each is a chained boolean filter (`flagged AND ...`),
+and no report field or wiki page reads a drop-out as evidence against. A
+power count there is tautological -- measured on 09-12 (30/30 robust,
+76/76 day-robust drops "unpowered") because failing a Wilson at n = units
+IS n < days-to-detect for that same gap; the quoted tier differed only
+because its effect size came from a different sample. `divergence` runs
+no interval test at all. No code change. Remaining NEXT-PASS (1)-(4) are
+time/data-gated; hyxlab-autoloop owns the re-check.
+
 Updated: **2026-09-12 (POWER PASS -- THE QUOTED TIER'S GATE COUNTED ROWS,
 ITS TEST COUNTED DAYS.)**
 Cold start. Digest ATTENTION is still the 09-12 10:00Z QA budget FAIL that
