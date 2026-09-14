@@ -1,5 +1,19 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-14 08:30Z (PARLAY-FLOOD AFTERMATH -- PREDICTION FOR TODAY'S
+QA RUN, NO DEFECT.)** The flood's fix, ce7140e (`mve_filter=exclude`), had no
+status entry, so this is it. It was promoted: stable HEAD = ce7140e, and every
+cycle since 02:22Z is untruncated (universe ~8,330, picked 1000,
+fetch ~2.8s; 71/71 persisted cycles clean). Digest `RECENT hyxlab-breadth 3x`
+(19:33/20:07/20:24Z) came from the same flood: 504 Gateway Time-out while
+paging deep into the 250k-row walk. Those runs failed; they were not a
+separate fault. **Prediction:** the 09-14 10:00Z QA run FAILs `breadth universe
+enumerated exhaustively over last 24h`, 94 truncated cycles 09-13 18:03Z ->
+09-14 02:19Z, widest universe 250000 (persisted `breadth_cycles`, read-only).
+The `batch units` breach should print WATCH (already reported). The breadth
+failure is a known window aging out, and it must be clean on **09-15 10:00Z**.
+If it is red then, or truncated cycles reappear, that is the work. No code change.
+
 Updated: **2026-09-13 14:30Z (QA PREDICTION READ, NEXT-PASS (1) -- MATCHED,
 NO DEFECT.)** The 09-13 10:00Z QA run printed exactly what c905d83 predicted:
 one FAIL, on the one predicted check, `batch units within measured run budget`
