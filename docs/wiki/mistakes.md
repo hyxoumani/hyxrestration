@@ -1724,6 +1724,22 @@ afford an enumeration, check what is in it that should never have been
 there.** The useful universe had not grown at all: 8,586 markets against
 8,718 measured five weeks earlier.
 
+**Recurrence (2026-09-14, parlay-flood-above-the-floor pass).** The floor
+held for five days, then a second KXMVECROSSCATEGORY flood listed legs with
+FUTURE close times. At 09-13 11Z the 24h universe went from ~5-9k to the 250k
+cap, and `picked` fell 1,000 -> 3. Lesson (2) above was right about WHERE
+the constraint binds, but it closed off "exclude the parlay family" by testing
+only the CLIENT-side form. The server-side form existed all along:
+`/markets?mve_filter=exclude` gives 8,767 markets / 3.5 s, untruncated, and
+cost exactly zero, since 14 days of breadth_snapshots hold 0 KXMVE rows. **When an
+option is ruled out, write down which FORM of it was measured.** "Exclude
+the family" was dead as a result filter, not as a request filter. A new
+trap came with it: Kalshi answers 200 to an unrecognised `mve_filter` value
+and ignores it, so the test pins the literal on every page (typo mutant red).
+Detection this time was prompt: `breadth_cycles.truncated` + the digest's
+RECENT line on the three 504s surfaced it within 15h, versus 27h silent on
+09-06.
+
 ---
 
 Recurrence audit (2026-09-08, promote-deadlock pass): the 09-07 pass
