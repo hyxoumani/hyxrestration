@@ -1,5 +1,11 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-14 14:30Z (QA PREDICTION READ -- MATCHED, NO DEFECT.)** The 09-14 10:00Z QA run
+FAILed only `breadth universe enumerated exhaustively over last 24h` (94/285 truncated, widest 250000, as
+predicted); `batch units` printed WATCH (already reported). Since the fix: 143 persisted cycles 02:22Z->14:12Z,
+0 truncated, universe 8,325-8,888 (read-only). The window ages out ~09-15 02:19Z; 09-15 10:00Z must be clean.
+Other NEXT-PASS items are still gated. No code change; hyxlab-autoloop owns the re-check.
+
 Updated: **2026-09-14 08:30Z (PARLAY-FLOOD AFTERMATH -- PREDICTION FOR TODAY'S
 QA RUN, NO DEFECT.)** The flood's fix, ce7140e (`mve_filter=exclude`), had no
 status entry, so this is it. It was promoted: stable HEAD = ce7140e, and every
