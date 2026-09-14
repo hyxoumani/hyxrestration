@@ -366,6 +366,32 @@ def test_the_walk_is_floored_at_now_because_open_includes_already_closed(monkeyp
     assert params["min_close_ts"] < params["max_close_ts"], "the horizon must be a window"
 
 
+def test_parlay_legs_are_excluded_server_side_not_client_side():
+    """THE 09-13 FIX. A second KXMVECROSSCATEGORY flood listed legs with
+    FUTURE close times, so the `now` floor stopped removing them: from ~13Z
+    every cycle hit the 250,000-row cap and `picked` fell from 1,000 to 3.
+    A client-side ticker filter cannot fix that, because the legs would
+    still be paged through. The filter has to be in the REQUEST. MEASURED
+    2026-09-14: `mve_filter=exclude` -> 8,767 markets / 3.5 s / untruncated.
+    Cost: 0 KXMVE rows in 14 days of healthy top-1,000 breadth_snapshots.
+
+    Pinned as a literal on EVERY page, because Kalshi answers 200 to an
+    unknown value (measured with "bogus") and just ignores the filter: a
+    typo would bring the flood back silently, which is how the first one
+    ran for 27 hours.
+    """
+    sess = _PagedSession(
+        [
+            {"markets": [_mkt("A", 1)], "cursor": "c1"},
+            {"markets": [_mkt("B", 1)], "cursor": ""},
+        ]
+    )
+    breadth.fetch_universe(session=sess, pause_s=0.0, now=datetime(2026, 9, 14, tzinfo=UTC))
+
+    assert len(sess.calls) == 2
+    assert all(p.get("mve_filter") == "exclude" for p in sess.calls)
+
+
 def test_the_floor_moves_with_now_rather_than_being_pinned(monkeypatch):
     """Discrimination control: a constant, or a floor accidentally derived
     from the same expression as the ceiling, would pass the test above. The

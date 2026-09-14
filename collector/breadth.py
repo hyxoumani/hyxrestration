@@ -57,6 +57,23 @@ it is no longer tradeable, but its late quotes would stop being recorded.
 The useful universe is UNCHANGED by the flood: 8,586 non-parlay markets on
 2026-09-08 against 8,718 measured on 2026-08-03.
 
+THE FLOOR WAS FALSIFIED IN TURN on 2026-09-13 ~11Z: a second parlay flood
+listed legs with FUTURE close times, so `min_close_ts` no longer removed
+them. The 24h universe went from ~5-9k to the 250,000-row cap within two
+hours. From 13Z every cycle truncated, `picked` fell from 1,000 to 3-424
+(cutoff volume 0.03), and three pages hit HTTP 504 deep in the
+KXMVECROSSCATEGORY cursor. The fix is the one the client-side option could
+not be: SERVER-SIDE exclusion, `mve_filter=exclude`, which removes the legs
+from the WALK rather than from the result. MEASURED 2026-09-14T02:2xZ, same
+24h window: exclude -> 8,767 markets, untruncated, 3.5 s, 0 KXMVE rows,
+1,658 with volume, rank-1,000 cutoff 153.5; `only` -> a first page that is
+100% KXMVE with the cursor live (the param is honoured). The cost is zero
+by record, not by argument: over 14 days (08-30..09-14, ~3.4M rows) of
+healthy top-1,000 cycles, `breadth_snapshots` holds ZERO KXMVE rows. The
+parlay family never reached the ranking. Note that an unrecognised
+`mve_filter` value returns 200 and is silently ignored, so a typo here
+would be a no-op rather than an error. The test pins the literal.
+
 MEASURED 2026-08-03, and the reason CLOSE_WINDOW_H exists: the
 UNFILTERED open universe is **>200,000 markets** (the walk truncated at
 200 pages with the cursor still live, 140 s, 2x HTTP 429) and is almost
@@ -175,6 +192,9 @@ def fetch_universe(
     series_ticker filter and NO CATEGORY ALLOWLIST — that is the point;
     the only filter is the close-time horizon, which is about cost and
     usefulness rather than about which families we are willing to study.
+    The one exception is `mve_filter=exclude`: the KXMVE parlay family
+    never once reached the top-1,000 in 14 days of records, and since
+    2026-09-13 its future-dated legs alone overflow the page cap.
 
     The horizon is BOUNDED AT BOTH ENDS. `min_close_ts = now` is not a
     cost knob like the ceiling — it is a correctness one. `status=open`
@@ -204,6 +224,9 @@ def fetch_universe(
         pause_s=pause_s,
         min_close_ts=int(now.timestamp()),
         max_close_ts=max_close_ts,
+        # Server-side, so the legs leave the WALK (see module docstring,
+        # 2026-09-13 flood). Kalshi ignores unknown values silently.
+        mve_filter="exclude",
         with_truncated=True,
     )
 
