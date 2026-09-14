@@ -1,5 +1,7 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-14 20:20Z (BREADTH DRIFT CHECK -- NO DEFECT.)** Since the fix: 215 cycles 02:22Z->20:12Z, 0 truncated. The universe slid smoothly 8,888 (13Z) -> 6,028 (19Z), then back to 6,540 (20Z). Picked held at 1000 and cutoff_volume_24h 189-400. That is evening market churn, not paging loss; pre-fix hourly swings were similar (1,974 on 09-12 20Z). 09-15 10:00Z QA must still be clean. Other NEXT-PASS items are still gated (stream not restarted, 65.7h).
+
 Updated: **2026-09-14 14:30Z (QA PREDICTION READ -- MATCHED, NO DEFECT.)** The 09-14 10:00Z QA run
 FAILed only `breadth universe enumerated exhaustively over last 24h` (94/285 truncated, widest 250000, as
 predicted); `batch units` printed WATCH (already reported). Since the fix: 143 persisted cycles 02:22Z->14:12Z,
