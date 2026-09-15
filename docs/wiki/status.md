@@ -1,5 +1,7 @@
 # Status & next steps (living page)
 
+Updated: **2026-09-15 02:20Z (PRE-QA BREADTH READ -- NO DEFECT, DATA-GATED.)** Digest ATTENTION is still only the classified 09-14 QA FAIL. Since 20:12Z: 73 cycles to 02:12Z, 0 truncated, picked 1000, universe back to 8,529-8,707 from 21Z. The 6,545->8,529 step at the 21Z boundary is a listing roll, not paging (truncated=False, http_retries 0, no journal errors). The last truncated cycle is 09-14 02:19:06Z, so it has aged out. The 09-15 10:00Z QA window holds 195/195 clean so far, so its breadth check should PASS. Every other NEXT-PASS item is still gated (stream up 71.7h, no restart). No code change.
+
 Updated: **2026-09-14 20:20Z (BREADTH DRIFT CHECK -- NO DEFECT.)** Since the fix: 215 cycles 02:22Z->20:12Z, 0 truncated. The universe slid smoothly 8,888 (13Z) -> 6,028 (19Z), then back to 6,540 (20Z). Picked held at 1000 and cutoff_volume_24h 189-400. That is evening market churn, not paging loss; pre-fix hourly swings were similar (1,974 on 09-12 20Z). 09-15 10:00Z QA must still be clean. Other NEXT-PASS items are still gated (stream not restarted, 65.7h).
 
 Updated: **2026-09-14 14:30Z (QA PREDICTION READ -- MATCHED, NO DEFECT.)** The 09-14 10:00Z QA run
