@@ -10,6 +10,8 @@ NEXT PASS: (1) the 09-16 10:00Z QA run -- it must be fully green, since the stab
 
 ---
 
+Updated: **2026-09-16 20:15Z (EVENING CHECK -- ALL GATED, NO DEFECT.)** Digest clean: 13/13 units OK, 0 unit failures/24h, 23/23 unit files match, 09-16 QA clean (standing collect-skips skip). The sweep and poly-sweep both finished. Stream/shadow up 113.7h, 0 restarts, so there is no shutdown-stats line yet. Weather width-24 reading two is due 09-30, econ event rollover late Sept, 10th panel day ~09-17. No code change.
+
 Updated: **2026-09-16 14:15Z (POST-QA CHECK -- 09-16 QA CLEAN, NEXT-PASS (1) CLOSED; REST GATED.)** Digest: the 10:00Z QA run is clean (standing skip collect-skips only), the one-shot heal report did not re-arm as predicted, 13/13 units OK, 0 unit failures/24h, 23/23 unit files match. In-flight sweep 8.1h and poly-sweep 10.0h are inside their 6-day ranges (8.7-16.7h, 14.2-15.3h); the 429s are the known tape backoff. Stream/shadow up 107.7h, no restart. Weather width-24 reading two 09-30, econ event rollover late Sept, 10th panel day ~09-17. No code change.
 
 Updated: **2026-09-16 08:15Z (PRE-QA CHECK -- ALL GATED, NO DEFECT.)** The digest matches the 02:20Z entry: ATTENTION is the classified one-shot heal report, and the 10:00Z QA run is not due yet. Stream and shadow have been up 101.7h with no restart. The weather width-24 reading two is due 09-30, and the 10th panel day is ~09-17. No code change.
