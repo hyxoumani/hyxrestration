@@ -280,6 +280,51 @@ structure — see [venues](venues.md)).
    bias column), and the mix is KXHIGH*/KXLOWT* city-temperature
    ladders, where the cheap band is where a bracket set's overround has
    to sit. This measures the weather-bracket complex, not Kalshi.
+   **The weather direction gate was width-bound, not run-bound
+   (2026-09-16, `reports/maker_bracket/20260916T021727.json`).** The
+   07-31 power caveat concluded the gate needed "~26 more runs at 3
+   city-days each, or ~16 at `--markets 15`", and every weather bracket
+   since kept running at the default `--markets 8` (3-5 underlyings,
+   `underlying_min_sign_p` 0.0625-0.125 -- underpowered before any data
+   was read). ONE run at the width the econ series has used since 08-29
+   (`--markets 24 --hours 336`) reaches **16 underlyings in a single
+   reading**: `underlying_min_sign_p` **0.000122**, all four tier x bound
+   readings POWERED, and 15 of the 16 underlyings new against every
+   archived report (city-days expire daily, so weather units churn by
+   construction -- the property that made weather the independence
+   control all along). It reads a **clean null at the honest unit**: 7
+   over / 6 under / 3 tied, `underlying_sign_p` 0.50; against the ceiling
+   6 over / 9 under, 0.304. The market tier agrees for once
+   (`market_sign_p` 0.668 floor / 0.143 ceiling,
+   `direction_market_robust` FALSE on the floor), so unlike 08-29/09-12
+   econ there is no significant-market-over-null-underlying split to
+   adjudicate. This is the first weather reading in which a fill-model
+   direction COULD have been rejected and none was. Carry the
+   offsetting-nets caveat with it: `net_disagreement` +1 on
+   `abs_net_by_market` **67** (crossing 588, queue-pess 587, queue-opt
+   657; `crossing_but_not_pess` 155 vs `pess_but_not_crossing` 154,
+   `inside_bracket` 19) is cancellation, not precision. Consequence for
+   the standing gate: it was never reachable by ACCUMULATING
+   default-width runs, and the 08-29 lesson still binds -- this is
+   reading ONE of a new weather width-24 series, not an extension of the
+   width-8 one. (The same pass's default-parameter run,
+   `20260916T021652.json` -- 8 markets / 3 underlyings / `min_sign_p`
+   0.125 -- is in the archive and is structurally uninformative; it is
+   the `prior_report` that run 021727 compares against.)
+   **Econ width-24 re-run (2026-09-16, `20260916T021816.json`) -- same
+   verdict, and by the project's own test NOT a confirmation of it.** 24
+   markets / 9 underlyings / 4,337 orders: market tier
+   `significant_under` on both bounds, underlying tier
+   `not_significant` on both (`underlying_sign_p` 0.0898, `min` 0.001953,
+   powered 4 of 4) -- the 08-29 and 09-12 shape exactly, with crossing
+   209 below queue-pess 309 / opt 363 (204 real fills forgone against 99
+   unambiguously invented). The 09-12 amendment says do not count it:
+   spaced only ~4 days into a 336h window, it carries
+   `new_share_vs_all` 0.465 on ORDERS and **2 of 9 underlyings new
+   against all priors**, with 5 of the 6 repeated leaners keeping their
+   sign. It is the 09-12 reading re-measured. The next informative econ
+   bracket is the width-24 EVENT rollover already queued (late
+   September), not a clock-spaced re-run.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
