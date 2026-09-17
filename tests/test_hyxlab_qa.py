@@ -1703,3 +1703,19 @@ def test_an_archive_without_the_cycle_table_does_not_abort_the_run(tmp_path, cap
     assert _BFRESH not in failed and _BCONT not in failed, (
         "the rest of the archive section must still have run"
     )
+
+
+def test_server_unsubscribed_ack_is_benign(tmp_path):
+    """Live 2026-09-17 07:34Z: Kalshi's Thursday maintenance sent a books
+    `unsubscribed` ack that streamd never asked for. It is a control frame,
+    not an unparsed data frame, and dead-air gap-marks what it costs, so
+    it must not red QA. `something_new` in the test above stays the
+    control that the check still fires."""
+    store = _stream_with_books(
+        tmp_path / "s.duckdb",
+        [(_book_frame("delta", 1, "0.40", "1.00"), NOW - timedelta(minutes=30))],
+    )
+    store.append_events(parse_message(_void_frame("unsubscribed", 2), NOW - timedelta(minutes=29))[0])
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "void frames are known types" not in failed

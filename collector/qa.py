@@ -541,7 +541,20 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         " GROUP BY side ORDER BY 2 DESC",
         [now, int(hours)],
     ).fetchall()
-    benign = {"orderbook_snapshot", "subscribed", "ok", "error", "heartbeat", "pong"}
+    # `unsubscribed` is a control ack too, and the SERVER sends it: streamd
+    # never unsubscribes. The only one on record (09-17 07:34Z, books) fell in
+    # Kalshi's Thursday 07-09Z maintenance, whose dead-air storm every Thursday
+    # since 08-13 shows. The capture it costs is already the channel's
+    # dead-air gap row; this check exists to catch a DATA frame nobody parses.
+    benign = {
+        "orderbook_snapshot",
+        "subscribed",
+        "unsubscribed",
+        "ok",
+        "error",
+        "heartbeat",
+        "pong",
+    }
     unknown = [(t, n) for t, n in voids if t and t not in benign]
     legacy = sum(n for t, n in voids if not t)
     check(
@@ -2507,9 +2520,32 @@ def qa_batch_run_budget(
     # (and the policy the abort key already follows). Loud once, then a WATCH
     # that still says it. Each catch-up keys on its own run, so a unit that
     # aborts and overruns again is fresh news again.
+    state = _load_state()
+    entry = state.setdefault("batch-run-budget", {})
+    reported = set(entry.get("reported") or [])
     catch_up = {
         id(r): a for r in over if (a := _catch_up_abort(r, measured[r.unit])) is not None
     }
+    # An abort always ENDS before the catch-up it certifies, so it leaves the
+    # lookback first: 09-17 10:00Z read the 09-11 catch-up without the 09-10
+    # 07:45Z abort and failed it as a stale budget. A catch-up key is minted
+    # only for a certified run, so the record is the certification's witness
+    # once the abort's own journal line is out of reach.
+    aged_out = {
+        id(r)
+        for r in over
+        if id(r) not in catch_up and f"catchup:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in reported
+    }
+    catch_up |= dict.fromkeys(aged_out)
+
+    def clause(r: BatchRun) -> str:
+        if id(r) in aged_out:
+            return (
+                f" — catch-up after an abort now outside the {BATCH_RUN_LOOKBACK_DAYS}d read"
+                " (certified on the record), not a stale budget"
+            )
+        return _catch_up_clause(r, measured[r.unit])
+
     stale_budget = [r for r in over if id(r) not in catch_up]
     # Overlap, unlike the budget, is about quota actually spent — a run that
     # died inside the fade window still spent it, so this reads every run.
@@ -2520,9 +2556,6 @@ def qa_batch_run_budget(
         if _fade_overlap_h(r.start, r.end) > 0
     ]
 
-    state = _load_state()
-    entry = state.setdefault("batch-run-budget", {})
-    reported = set(entry.get("reported") or [])
     keys = {f"{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r, _ in overlaps}
     keys |= {f"abort:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r in aborted}
     keys |= {f"catchup:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" for r in over if id(r) in catch_up}
@@ -2576,7 +2609,7 @@ def qa_batch_run_budget(
             [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
                 f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z"
-                + _catch_up_clause(r, measured[r.unit])
+                + clause(r)
                 for r in sorted(stale_budget + fresh_catch_up, key=lambda r: r.end)
             ]
             + [
@@ -2593,10 +2626,9 @@ def qa_batch_run_budget(
         )
         check(name, False, detail + "; " + "; ".join(reasons))
         return
-    # `catch_up` is implied by `aborted` today — a catch-up is defined by the
-    # abort before it, so that abort is in the same window. It is named anyway
-    # because the three sets are derived independently, and a later narrowing
-    # of `aborted` would otherwise print PASS over a live breach.
+    # `catch_up` is NOT implied by `aborted`: a recorded catch-up outlives its
+    # abort in the lookback (`aged_out` above), and dropping it from this test
+    # would print PASS over a breach that is still in the window.
     if overlaps or aborted or catch_up:
         past = (
             [
@@ -2610,7 +2642,7 @@ def qa_batch_run_budget(
             + [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h) "
                 f"ending {r.end:%m-%d %H:%M}Z"
-                + _catch_up_clause(r, measured[r.unit])
+                + clause(r)
                 for r in sorted(
                     (r for r in over if id(r) in catch_up), key=lambda r: r.end
                 )

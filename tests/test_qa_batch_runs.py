@@ -472,3 +472,31 @@ def test_a_second_abort_on_a_new_date_fails_again(capsys):
     failed, _ = _run({"hyxlab-sweep.timer": [first, second]}, now=now)
     assert failed == {"batch units within measured run budget"}
     assert "08-21 07:40Z" in capsys.readouterr().out
+
+
+def test_a_reported_catch_up_stays_one_after_its_abort_leaves_the_lookback(capsys):
+    """An abort always ENDS before the catch-up it certifies, so it ages out first.
+
+    Live case: the 09-10 07:45Z abort left the 7-day read at 09-17 10:00Z while
+    the 09-11 22:49Z catch-up it certified was still in it. With no sibling
+    left to certify it, the run re-classified as a stale budget and QA went red
+    for a constant nobody could repair. The certification was made while the
+    abort was visible and is on the record; losing the witness does not revoke it.
+    """
+    abort = _aborted(datetime(2026, 9, 10, 7, 45, tzinfo=UTC), 1.58)
+    catch_up = _sweep(datetime(2026, 9, 11, 22, 49, tzinfo=UTC), 16.66)
+    assert _run({"hyxlab-sweep.timer": [abort, catch_up]}, now=datetime(2026, 9, 12, tzinfo=UTC))[0]
+    capsys.readouterr()
+
+    failed, _ = _run({"hyxlab-sweep.timer": [catch_up]}, now=datetime(2026, 9, 17, 10, tzinfo=UTC))
+    assert not failed
+    out = capsys.readouterr().out
+    assert "WATCH" in out and "catch-up" in out and "16.66h" in out and "already reported" in out
+
+
+def test_an_unrecorded_breach_with_no_abort_in_view_still_fails(capsys):
+    """The control: only a RECORDED catch-up survives its abort ageing out."""
+    runs = {"hyxlab-sweep.timer": [_sweep(datetime(2026, 9, 11, 22, 49, tzinfo=UTC), 16.66)]}
+    failed, _ = _run(runs, now=datetime(2026, 9, 17, 10, tzinfo=UTC))
+    assert failed == {"batch units within measured run budget"}
+    assert "catch-up" not in capsys.readouterr().out
