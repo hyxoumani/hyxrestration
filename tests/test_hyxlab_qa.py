@@ -1715,7 +1715,144 @@ def test_server_unsubscribed_ack_is_benign(tmp_path):
         tmp_path / "s.duckdb",
         [(_book_frame("delta", 1, "0.40", "1.00"), NOW - timedelta(minutes=30))],
     )
-    store.append_events(parse_message(_void_frame("unsubscribed", 2), NOW - timedelta(minutes=29))[0])
+    store.append_events(
+        parse_message(_void_frame("unsubscribed", 2), NOW - timedelta(minutes=29))[0]
+    )
     store.flush()
     failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
     assert "void frames are known types" not in failed
+
+
+# --- capture-gap budget -----------------------------------------------------
+#
+# `stream_gaps` rows excuse the seq check, the book reconstruction and the
+# replay windows; these are the tests for the only reader of how much they
+# excuse. See qa.CAPTURE_GAP_BUDGET_MIN.
+
+THU = datetime(2026, 9, 17)  # a Thursday, matching KALSHI_MAINT_DOW
+
+
+def _gap_db(path, gaps):
+    store = _fresh_stream(path)
+    for venue, channel, a, b, reason in gaps:
+        store.append_gap(venue, channel, a, b, reason)
+    store.flush()
+    return qa._connect_ro(str(path))
+
+
+def test_maintenance_overlap_counts_only_the_in_window_part():
+    # Wed 23:00Z -> Thu 08:00Z: 9h of gap, 2h of it inside 06-10Z.
+    got = qa.maintenance_overlap_s(THU - timedelta(hours=1), THU + timedelta(hours=8))
+    assert got == pytest.approx(2 * 3600)
+
+
+def test_gap_opening_before_the_window_is_not_excused_wholesale():
+    # THE MUTANT THIS KILLS: excusing a gap because `start.weekday()` is
+    # Thursday. This one opens at 05:00Z Thursday, an hour before the window,
+    # and only its last 30 minutes are maintenance.
+    a, b = THU + timedelta(hours=5), THU + timedelta(hours=6.5)
+    assert qa.maintenance_overlap_s(a, b) == pytest.approx(1800)
+
+
+def test_a_wednesday_gap_of_the_same_clock_hours_is_never_excused():
+    wed = THU - timedelta(days=1)
+    assert qa.maintenance_overlap_s(wed + timedelta(hours=6), wed + timedelta(hours=10)) == 0.0
+
+
+def test_maintenance_storm_does_not_trip_the_budget(tmp_path):
+    # The real 09-17 shape: dozens of short gaps across 07-09Z, 61 minutes of
+    # books capture lost. Every minute is inside the window, so nothing is
+    # budgeted -- but the minutes are still reported.
+    storm = [
+        (
+            "kalshi",
+            "books",
+            THU + timedelta(hours=7, minutes=2 * i),
+            THU + timedelta(hours=7, minutes=2 * i + 2),
+            "dead_air",
+        )
+        for i in range(30)
+    ]
+    conn = _gap_db(tmp_path / "s.duckdb", storm)
+    load = qa._capture_gap_minutes(conn, THU + timedelta(hours=10), 26.0)
+    conn.close()
+    budgeted, maint = load["books"]
+    assert budgeted == 0.0
+    assert maint == pytest.approx(60.0)
+
+
+def test_a_long_non_maintenance_gap_is_budgeted(tmp_path):
+    # The 2026-07-20 shape: a multi-hour degradation on a Monday.
+    mon = THU - timedelta(days=3)
+    conn = _gap_db(
+        tmp_path / "s.duckdb",
+        [
+            (
+                "kalshi",
+                "books",
+                mon + timedelta(hours=4),
+                mon + timedelta(hours=5, minutes=3),
+                "dead_air",
+            )
+        ],
+    )
+    load = qa._capture_gap_minutes(conn, mon + timedelta(hours=6), 26.0)
+    conn.close()
+    assert load["books"][0] == pytest.approx(63.0)
+    assert load["books"][1] == 0.0
+
+
+def test_capture_gap_is_clipped_to_the_window(tmp_path):
+    # A 10h outage whose last 30 minutes fall inside the window contributes
+    # 30 minutes, not 600. Without clipping a single old outage would keep
+    # failing this rolling check long after it ended.
+    now = THU - timedelta(days=2)  # Tuesday, no maintenance anywhere near
+    conn = _gap_db(
+        tmp_path / "s.duckdb",
+        [
+            (
+                "kalshi",
+                "books",
+                now - timedelta(hours=36),
+                now - timedelta(hours=26) + timedelta(minutes=30),
+                "dead_air",
+            )
+        ],
+    )
+    load = qa._capture_gap_minutes(conn, now, 26.0)
+    conn.close()
+    assert load["books"][0] == pytest.approx(30.0)
+
+
+def test_other_venues_do_not_consume_the_kalshi_budget(tmp_path):
+    # polymarket reconnects are the largest gap source in the archive (807
+    # minutes over 21 days, measured 09-17) and say nothing about kalshi.
+    tue = THU - timedelta(days=2)
+    conn = _gap_db(
+        tmp_path / "s.duckdb",
+        [("polymarket", "market", tue + timedelta(hours=1), tue + timedelta(hours=4), "reconnect")],
+    )
+    load = qa._capture_gap_minutes(conn, tue + timedelta(hours=5), 26.0)
+    conn.close()
+    assert load["books"][0] == 0.0
+    assert load["trades"][0] == 0.0
+
+
+def test_capture_gap_budget_trips_through_qa_stream(tmp_path):
+    # Six hours ending now. The maintenance window is four hours wide, so
+    # this exceeds the 30-minute budget on EVERY day of the week and at every
+    # hour -- the assertion does not depend on when the suite runs.
+    store = _fresh_stream(tmp_path / "s.duckdb")
+    store.append_gap("kalshi", "books", NOW - timedelta(hours=6), NOW, "dead_air")
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert qa.CAPTURE_GAP_CHECK in failed
+
+
+def test_healthy_stream_reports_the_capture_gap_check(tmp_path):
+    # It must EXECUTE on a clean archive, not merely fail to fail: a check
+    # that never runs is invisible to `qa_prior_run`'s healed-set logic.
+    _fresh_stream(tmp_path / "s.duckdb")
+    qa._ran.clear()
+    _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert qa.CAPTURE_GAP_CHECK in qa._ran

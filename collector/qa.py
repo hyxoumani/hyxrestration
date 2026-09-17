@@ -48,6 +48,60 @@ DIVERGENCE_REPORTS = shared_reports("shadow_divergence")
 STATE = Path("reports/qa/sections.json")
 SKIP_MAX_AGE_H = 36.0  # matches the "sweep ran in last 36h" tolerance
 
+# --- Kalshi's weekly maintenance window, and the capture-gap budget. --------
+#
+# `stream_gaps` rows are read all over this repo -- by the seq-contiguity
+# check above, by the book reconstruction, by `simulator.shadow`,
+# `run_l2`, `divergence` and `queuescore` -- and in EVERY one of those
+# readers a gap is an EXCUSE: it suppresses a hole, skips a market, or
+# bounds a replay window. Until this check nothing read their VOLUME, so
+# degrading capture made every downstream check QUIETER rather than
+# louder. That is the whole failure mode: the excuse channel had no
+# budget.
+#
+# Measured 2026-09-17 over the full 71-day stream retention (07-07 ->
+# 09-17), every kalshi gap minute above the noise floor falls in exactly
+# one of three places:
+#   * the Thursday maintenance storm below -- on ALL 11 Thursdays in the
+#     record, not merely "since 08-13" (its magnitude grew ~50 min on
+#     07-09 to ~450 min on 08-27, which is why the recent ones were the
+#     ones that got noticed);
+#   * one 4.3h streamd outage, 08-20 21:33Z -> 08-21 01:53Z, which also
+#     wrote a daemon_start row and is DELIBERATELY not excused here;
+#   * one genuine multi-hour degradation, 07-20 04:00Z -> 10:00Z, 63.5
+#     books / 69.7 trades minutes -- the event this check exists to catch.
+# Outside the maintenance window the per-channel daily load is 0.0-5.6
+# minutes over all 71 days.
+#
+#: Thursday (Python `weekday()`), 06:00-10:00 UTC. Bounds are the RECORD's,
+#: not the venue's published ones: storms begin in hour 06 or 07 on every
+#: Thursday observed, and the single latest-bleeding one (07-30) opened its
+#: last gap inside hour 09. Excusing four hours a week is the cost of not
+#: alarming weekly on something we cannot fix; the minutes inside the window
+#: are still REPORTED in the detail line every run, so the storm's own drift
+#: stays visible even though it is not budgeted.
+KALSHI_MAINT_DOW = 3
+KALSHI_MAINT_START_H = 6
+KALSHI_MAINT_END_H = 10
+
+#: Ceiling on kalshi capture-gap minutes per QA window, per channel, outside
+#: that window. Calibrated by REPLAYING this check over all 71 historical
+#: 10:00Z slots (2026-09-17, read-only): it fails 3 of 71, and all three are
+#: genuine capture loss -- 07-09 (the 60-min 07-08 21Z bring-up hole), 07-20
+#: (57.3, the degradation above) and 08-21 (266.4, the streamd outage). It
+#: false-alarms on NONE of the 11 Thursday storms. The worst benign window in
+#: the mature record is 12.2 minutes (08-28), which is the 08-27 storm's last
+#: gaps bleeding past the window's 10:00Z edge -- so 30 sits 2.5x above the
+#: worst benign reading and 1.9x below the incident it exists to catch.
+#: The quantity is bounded -- minutes of a fixed-length window -- so a
+#: constant is the bound this failure mode earns (the #29 test), unlike the
+#: clock-offset threshold that mistakes #25-27 retired for chasing an
+#: unbounded drift. The benign floor DOES creep with the subscribed universe
+#: (0.6 min/day in July, 3.8 in September), and that universe is itself
+#: capped at 1000 markets by `breadth`; the measured value is printed on
+#: every run, pass or fail, so the creep is readable long before it trips.
+CAPTURE_GAP_BUDGET_MIN = 30.0
+
 # Lock-wait budget. Measured 2026-08-02: `hyxlab-collect` is OnCalendar
 # `*:0/5` and `hyxlab-qa` is `07:00:00 UTC` — a 5-minute boundary — so the
 # two start in the SAME SECOND every day, by construction. The collector
@@ -438,6 +492,61 @@ def _reachable(conn, name: str, section: str, now: datetime) -> bool:
     return False
 
 
+def maintenance_overlap_s(start: datetime, end: datetime) -> float:
+    """Seconds of [start, end) that fall inside a Kalshi maintenance window.
+
+    Computed by intersection rather than by testing the gap's own weekday:
+    a gap that OPENS at 05:58Z Thursday, or one that runs from Wednesday
+    into Thursday morning, must contribute only its in-window part. Testing
+    `start.weekday()` would excuse the whole of the first and none of the
+    second.
+    """
+    if end <= start:
+        return 0.0
+    total = 0.0
+    day = start.date() - timedelta(days=1)
+    while day <= end.date():
+        if day.weekday() == KALSHI_MAINT_DOW:
+            # `datetime.min.time()`, not `datetime.time()`: qa.py imports the
+            # `time` MODULE, and shadowing it here breaks the lock-retry sleep.
+            midnight = datetime.combine(day, datetime.min.time())
+            w0 = midnight + timedelta(hours=KALSHI_MAINT_START_H)
+            w1 = midnight + timedelta(hours=KALSHI_MAINT_END_H)
+            total += max(0.0, (min(end, w1) - max(start, w0)).total_seconds())
+        day += timedelta(days=1)
+    return total
+
+
+CAPTURE_GAP_CHECK = "kalshi capture gaps within budget outside venue maintenance"
+
+
+def _capture_gap_minutes(conn, now: datetime, hours: float) -> dict[str, tuple[float, float]]:
+    """Per channel, (budgeted minutes, maintenance minutes) inside the window.
+
+    Gaps are CLIPPED to the window first: a gap that started before it
+    otherwise contributes its whole length to a window it only partly
+    overlaps, which is how a single old outage would keep failing a rolling
+    check long after it ended.
+    """
+    lo = now - timedelta(hours=hours)
+    rows = conn.execute(
+        "SELECT channel, started_at, ended_at FROM stream_gaps"
+        " WHERE venue = 'kalshi' AND channel IN ('books', 'trades')"
+        " AND ended_at > ? AND started_at < ?",
+        [lo, now],
+    ).fetchall()
+    out: dict[str, tuple[float, float]] = {c: (0.0, 0.0) for c in ("books", "trades")}
+    for channel, g0, g1 in rows:
+        a, b = max(g0, lo), min(g1, now)
+        if b <= a:
+            continue
+        maint = maintenance_overlap_s(a, b)
+        budgeted = max(0.0, (b - a).total_seconds() - maint)
+        prev = out.get(channel, (0.0, 0.0))
+        out[channel] = (prev[0] + budgeted / 60, prev[1] + maint / 60)
+    return out
+
+
 def qa_stream(hours: float, path: str = STREAM) -> None:
     conn = _connect_ro(path)
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -563,6 +672,22 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         f"{sum(n for _, n in voids)} void frames"
         + (f" ({legacy} legacy unattributed)" if legacy else "")
         + ("; UNKNOWN " + ", ".join(f"{t}x{n}" for t, n in unknown) if unknown else "; all known"),
+    )
+
+    # Capture-gap budget. The seq check above and the reconstruction below
+    # both treat a gap row as an EXCUSE; this is the only reader of how much
+    # is being excused. See CAPTURE_GAP_BUDGET_MIN.
+    load = _capture_gap_minutes(conn, now, hours)
+    over = {c: m for c, (m, _) in load.items() if m > CAPTURE_GAP_BUDGET_MIN}
+    check(
+        CAPTURE_GAP_CHECK,
+        not over,
+        "; ".join(
+            f"{c} {m:.1f} min budgeted (+{mt:.1f} maintenance)"
+            for c, (m, mt) in sorted(load.items())
+        )
+        + f"; budget {CAPTURE_GAP_BUDGET_MIN:.0f} min/{hours:.0f}h"
+        + ("; OVER " + ", ".join(sorted(over)) if over else ""),
     )
 
     # Reconstruct each Kalshi book from its time-latest snapshot image
@@ -2523,9 +2648,7 @@ def qa_batch_run_budget(
     state = _load_state()
     entry = state.setdefault("batch-run-budget", {})
     reported = set(entry.get("reported") or [])
-    catch_up = {
-        id(r): a for r in over if (a := _catch_up_abort(r, measured[r.unit])) is not None
-    }
+    catch_up = {id(r): a for r in over if (a := _catch_up_abort(r, measured[r.unit])) is not None}
     # An abort always ENDS before the catch-up it certifies, so it leaves the
     # lookback first: 09-17 10:00Z read the 09-11 catch-up without the 09-10
     # 07:45Z abort and failed it as a stale budget. A catch-up key is minted
@@ -2572,9 +2695,7 @@ def qa_batch_run_budget(
     fresh_overlap = {k for k in fresh if not k.startswith(("abort:", "catchup:"))}
     fresh_abort = [r for r in aborted if f"abort:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh]
     fresh_catch_up = [
-        r
-        for r in over
-        if id(r) in catch_up and f"catchup:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh
+        r for r in over if id(r) in catch_up and f"catchup:{r.unit}@{r.end:%Y-%m-%dT%H:%M}" in fresh
     ]
 
     worst = {u: max(r.wall_h for r in rs) for u, rs in healthy.items() if rs}
@@ -2608,8 +2729,7 @@ def qa_batch_run_budget(
         reasons = (
             [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
-                f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z"
-                + clause(r)
+                f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z" + clause(r)
                 for r in sorted(stale_budget + fresh_catch_up, key=lambda r: r.end)
             ]
             + [
@@ -2641,11 +2761,8 @@ def qa_batch_run_budget(
             ]
             + [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h) "
-                f"ending {r.end:%m-%d %H:%M}Z"
-                + clause(r)
-                for r in sorted(
-                    (r for r in over if id(r) in catch_up), key=lambda r: r.end
-                )
+                f"ending {r.end:%m-%d %H:%M}Z" + clause(r)
+                for r in sorted((r for r in over if id(r) in catch_up), key=lambda r: r.end)
             ]
         )
         print(
