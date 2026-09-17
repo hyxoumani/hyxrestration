@@ -225,6 +225,12 @@ size; poly market_id = CLOB token id), `stream_trades`, `stream_gaps`
 (closed intervals of broken coverage — reconnects, Kalshi seq jumps,
 daemon downtime; replay must treat books as unknown inside a gap until
 the next snapshot re-seeds).
+**Kalshi weekly maintenance, Thursdays 07:00-09:00Z** (measured 08-13 through
+09-17, every week): 26-38 `dead_air` gaps, each followed by a reconnect that
+comes back silent. Kalshi trades fall to ~2k in the 07Z hour, against
+200-400k/h on either side. Replay and event studies must exclude this
+window rather than read it as illiquidity. On 09-17 the server also sent a books
+`unsubscribed` ack mid-window (QA treats it as a benign control frame).
 
 ## Key decisions
 

@@ -1564,6 +1564,27 @@ Format: what happened → root cause → error type → prevention tier
     Not swept yet: base `flag_status` (n rows gate, row-Wilson -- same unit,
     likely clean) and the robust/day tiers, which inherit the row gate.
 
+56. **2026-09-17 -- a verdict certified by a sibling in a sliding window
+    was re-derived every day, and the witness always left the window first.**
+    `qa_batch_run_budget` classed a breach as catch-up (FAIL once, then WATCH)
+    only while the abort before it was inside the 7d journal read. An abort
+    ENDS before the catch-up it certifies, so it always ages out first: at
+    09-17 10:00Z the 09-10 07:45Z abort was gone, the 09-11 22:49Z catch-up
+    was not, and QA went red on "stale budget" for a constant nobody could
+    fix. It would have stayed red until ~09-18 22:49Z. The 09-13 status entry
+    predicted WATCH "from 09-14 to 09-18" without checking the edge. Every
+    catch-up hits this, because the ordering is structural. Type:
+    `wrong-assumption` (window edge). Fix 9fc4b1b: the recorded
+    `catchup:` key (minted only for certified runs) is the witness once the
+    abort is unreadable; a live-case test and an unrecorded control.
+    **RULE: when a classification depends on an EARLIER event in a
+    lookback, persist the classification when it is made. Re-deriving it
+    fails on the day the earlier event ages out, and that day always comes.**
+    Same pass: Kalshi's Thursday 07-09Z maintenance (dead-air storms every
+    Thursday since 08-13) sent the first books `unsubscribed` ack on record,
+    and the void-frame check had no entry for that control frame. Added as
+    benign; the dead-air gap row still marks the capture it cost.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
