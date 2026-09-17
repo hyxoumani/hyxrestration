@@ -1580,10 +1580,35 @@ Format: what happened → root cause → error type → prevention tier
     **RULE: when a classification depends on an EARLIER event in a
     lookback, persist the classification when it is made. Re-deriving it
     fails on the day the earlier event ages out, and that day always comes.**
-    Same pass: Kalshi's Thursday 07-09Z maintenance (dead-air storms every
-    Thursday since 08-13) sent the first books `unsubscribed` ack on record,
-    and the void-frame check had no entry for that control frame. Added as
-    benign; the dead-air gap row still marks the capture it cost.
+    Same pass: Kalshi's Thursday maintenance (dead-air storms, hours 06-09Z)
+    sent the first books `unsubscribed` ack on record, and the void-frame
+    check had no entry for that control frame. Added as benign; the dead-air
+    gap row still marks the capture it cost. (That entry said "since 08-13";
+    see #57.)
+
+57. **2026-09-17 -- "since 08-13" was a fact about how far back I
+    looked, not about the world.** Classifying the `unsubscribed` ack
+    (#56) I measured the maintenance storm over recent weeks and wrote
+    it up as recurring "every Thursday since 08-13" -- a start date, in
+    the wiki, presented as measured. Re-measured the same day over the
+    whole 71-day stream retention: the storm is on ALL 11 Thursdays in
+    the record, back to 07-09. 08-13 is where its SIZE jumps (~50 lost
+    minutes on 07-09, ~450 on 08-27), which is why the recent weeks were
+    the ones that got noticed. The claim was never wrong about any day it
+    had seen; it was wrong about the days it had not, and it read as a
+    causal event ("something changed on 08-13") that never happened.
+    Type: `wrong-assumption` (sampling edge). No code fix -- the error was
+    in a wiki claim, corrected in `data-pipeline.md`.
+    **RULE: a recurrence found in a recent window has no start date until
+    you run it against the WHOLE retention. The earliest occurrence in a
+    partial sample is the sample's edge, not the phenomenon's onset --
+    and if the edge coincides with a round "since <date>", that is the
+    tell, not the evidence.** Found while budgeting `stream_gaps` volume
+    the same pass, which is the sibling lesson: gaps were read by six
+    consumers and spent as an EXCUSE by all six, so nothing measured the
+    quantity itself. **A quantity that only ever excuses other checks
+    needs a budget of its own, or capture can degrade without a single
+    check getting louder.**
 
 ## Pattern analysis (Step 5)
 

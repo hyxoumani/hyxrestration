@@ -225,12 +225,35 @@ size; poly market_id = CLOB token id), `stream_trades`, `stream_gaps`
 (closed intervals of broken coverage — reconnects, Kalshi seq jumps,
 daemon downtime; replay must treat books as unknown inside a gap until
 the next snapshot re-seeds).
-**Kalshi weekly maintenance, Thursdays 07:00-09:00Z** (measured 08-13 through
-09-17, every week): 26-38 `dead_air` gaps, each followed by a reconnect that
-comes back silent. Kalshi trades fall to ~2k in the 07Z hour, against
-200-400k/h on either side. Replay and event studies must exclude this
-window rather than read it as illiquidity. On 09-17 the server also sent a books
-`unsubscribed` ack mid-window (QA treats it as a benign control frame).
+**Kalshi weekly maintenance, Thursdays ~06:00-10:00Z**: 26-38 `dead_air`
+gaps, each followed by a reconnect that comes back silent. Kalshi trades
+fall to ~2k in the 07Z hour, against 200-400k/h on either side. Replay and
+event studies must exclude this window rather than read it as illiquidity.
+On 09-17 the server also sent a books `unsubscribed` ack mid-window (QA
+treats it as a benign control frame).
+
+This was first recorded 09-17 as "every Thursday **since 08-13**", which
+was an artefact of looking at recent weeks only. Re-measured the same day
+over the whole 71-day stream retention: the storm is on **all 11 Thursdays
+in the record**, back to 07-09 — what changed on 08-13 is its SIZE (~50
+lost minutes on 07-09, ~450 on 08-27), not its existence. Its hour bounds
+are the record's, not a published schedule: storms open in hour 06 or 07
+every time, and the one latest-bleeding (07-30) opened its last gap inside
+hour 09 — hence the 4h span QA excuses. **When a weekly pattern is found in
+the recent window, re-measure it over the whole retention before writing
+down a start date; "since <date>" is a claim about the data's edge as often
+as about the world.**
+
+**`stream_gaps` volume is budgeted by QA** (`kalshi capture gaps within
+budget outside venue maintenance`, 30 min per channel per 26h). Every other
+reader spends a gap row as an EXCUSE — it suppresses a seq hole, skips a
+market in the book reconstruction, bounds a shadow/replay window — so
+before this check degrading capture made the whole check surface QUIETER
+instead of louder. Outside the maintenance window the per-channel load is
+0.0-5.6 min/day; the budget was calibrated by replaying the check over all
+71 historical 10:00Z slots (fails 3, all genuine capture loss, and none of
+the 11 storms). Minutes INSIDE the maintenance window are printed every run
+but never budgeted, so the storm's own drift stays readable.
 
 ## Key decisions
 
