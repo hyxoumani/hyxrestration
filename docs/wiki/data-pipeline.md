@@ -640,8 +640,13 @@ self-match trap the ops rules name for `pkill -f`.
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
-  trade firehose (~105 ev/s) + orderbook_delta for watchlist series'
-  open markets (re-resolved hourly, reconnect re-seeds books); Poly
+  trade firehose (~105 ev/s quoted since 07-07; re-measured 2026-09-18
+  over 174h, median **136/s**) + orderbook_delta for watchlist series'
+  open markets (median **96/s**; re-resolved hourly, reconnect re-seeds
+  books) — **the two share ONE buffer, so what sizes it is the sum,
+  median 249/s, p90 320, busiest hour 433** (`StreamStore.BUFFER_ROWS_PER_S`;
+  quoting the trade channel alone mis-sized both buffer constants by 2.4x,
+  mistakes #58); Poly
   books for the top-50 volume markets' tokens + any watchlist pairs
   (hourly refresh). Flushes every 15 s;
   `--smoke N` for a bounded live test. **Watch disk**: observed rate

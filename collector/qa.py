@@ -2146,7 +2146,9 @@ def qa_stream_stalls(
     """Fail when a streamd flush stall pushed rows out of memory to the sidecar.
 
     A stall is the stream archive being unwritable while the firehose keeps
-    arriving (~105 ev/s), i.e. the daemon holding the tape in RAM. Until the
+    arriving (~250 rows/s into the buffer -- books AND trades, see
+    `StreamStore.BUFFER_ROWS_PER_S`; the ~105 ev/s once quoted here is the
+    trade channel alone), i.e. the daemon holding the tape in RAM. Until the
     ledger landed, the ONLY record of one was a journal line per failed flush:
     no end time, no aggregate, and gone at the host's retention. Seven days of
     it (2026-09-04..11) measured the distribution this check now watches -- 101

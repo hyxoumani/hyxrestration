@@ -190,15 +190,45 @@ class StreamStore:
     ) -> None:
         self._gaps.append((venue, channel, _naive_utc(started_at), _naive_utc(ended_at), reason))
 
-    # ~30 min of firehose at the observed ~105 ev/s. Exceeding this
-    # means a reader has wedged the file far beyond a flush burst —
-    # the flusher escalates its log so the journal shows it clearly
-    # before memory pressure ever could (review M3).
+    #: Rows per second the BUFFER fills at. Not a channel rate: `pending`
+    #: counts events + trades + gaps, so every sizing below must use the
+    #: SUM over the subscribed channels. Sizing these two constants off
+    #: "~105 ev/s" -- the kalshi-trades figure quoted in `streamd`,
+    #: `kalshi_ws` and venues.md -- understated them by 2.4x, because the
+    #: book channel fills the same buffer and was never added in.
+    #:
+    #: MEASURED 2026-09-18, three independent instruments agreeing:
+    #:   1. `hyxstream.duckdb` hourly counts, 174h to 09-18: book_events
+    #:      median 96.1/s, stream_trades median 136.0/s, COMBINED median
+    #:      249.0/s (p90 320.1, busiest hour 433.4, quietest 13.3).
+    #:   2. The stall ledger's one long episode (09-13 01:20Z): 145,176
+    #:      rows held over 599.7s = 242/s.
+    #:   3. The pre-ledger journal tail: the 09-09/09-10 episodes reached
+    #:      SPILL_CAP at 1756s and 1801s, i.e. 400_000/1756 = 228/s.
+    #: Trades outnumber book events here, so the channel most likely to be
+    #: quoted alone is also the one that is not the majority of the buffer.
+    BUFFER_ROWS_PER_S = 250
+
+    # ~13 min of firehose at the measured BUFFER_ROWS_PER_S (~8 min in the
+    # busiest observed hour) -- NOT the ~30 min this once claimed off the
+    # trade-channel rate. Exceeding this means a reader has wedged the file
+    # far beyond a flush burst — the flusher escalates its log so the
+    # journal shows it clearly before memory pressure ever could (review
+    # M3). Memory is the loose bound of the two: a buffered row costs ~256 B
+    # resident (measured 2026-09-18, tracemalloc: 264 B/BookEvent,
+    # 248 B/StreamTrade), so even a buffer pinned at SPILL_CAP is ~102 MB
+    # against the unit's 2G cgroup cap. The rows leaving memory, not the
+    # memory itself, is what the cap below is protecting against.
     PENDING_ALARM = 200_000
 
-    # 2x the alarm (~1 h of firehose). Past this, a failed flush moves
-    # the OLDEST pending rows to a JSONL sidecar next to the DB, so a
-    # multi-hour reader wedge (poly sweep runs ~7 h) bounds daemon
+    # 2x the alarm: ~27 min of firehose at BUFFER_ROWS_PER_S, and ~15 min in
+    # the busiest observed hour. It was documented as "~1 h" while the real
+    # rate made it half an hour, which is why `streamd._final_drain` could
+    # carry the flatly false "a sub-hour stall never reaches SPILL_CAP" --
+    # refuted, in the same commit, by the measurement in `streamd.STALL_LOG`
+    # recording two ~30 min episodes that DID reach it. Past this, a failed
+    # flush moves the OLDEST pending rows to a JSONL sidecar next to the DB,
+    # so a multi-hour reader wedge (poly sweep runs ~7 h) bounds daemon
     # memory instead of growing without limit. The sidecar is drained
     # ahead of the in-memory buffer on the next good flush — recv order
     # preserved — and survives a daemon restart.
@@ -284,8 +314,12 @@ class StreamStore:
             takes.append((buf, take))
             over -= take
         # Append all-or-nothing. A partial append (ENOSPC part-way through a
-        # multi-hour wedge — the sidecar runs ~165 B/row, so a 7 h poly-sweep
-        # wedge is ~430 MB and disk-full is a live possibility) would leave a
+        # multi-hour wedge — the sidecar runs ~160 B/row (measured
+        # 2026-09-18: 167 B/event, 150 B/trade, weighted by the observed
+        # channel mix), so a 7 h poly-sweep wedge is 6.3M rows and ~1.0 GB,
+        # not the ~430 MB this said while it used the trade-channel rate for
+        # a buffer that also holds books; disk-full is a live possibility)
+        # would leave a
         # torn record mid-file that the drain can only skip: a hole. Rewinding
         # to the last record boundary keeps that loss at zero, since the
         # buffers below are trimmed only once the bytes are down (EXP-936).

@@ -1189,3 +1189,70 @@ def test_kalshi_dead_air_logs_gap_and_reconnects(tmp_path, monkeypatch):
     assert connects == 2  # dead air forced a reconnect
     store.flush()
     assert duckdb_reason(tmp_path / "s.duckdb") == "dead_air"
+
+
+# -- buffer sizing constants ------------------------------------------------
+#
+# The defect these pin (2026-09-18): `PENDING_ALARM` and `SPILL_CAP` were both
+# sized off "~105 ev/s", the kalshi-TRADES channel figure quoted in
+# `streamd`, `kalshi_ws` and venues.md. The buffer they bound holds events AND
+# trades AND gaps, and trades are not even the majority of it (books 96/s,
+# trades 136/s measured over 174h). So both constants were documented at 2.4x
+# the span they actually cover -- the cap as "~1 h" when it is ~27 min -- and
+# `streamd._final_drain` inherited the flatly false "a sub-hour stall never
+# reaches SPILL_CAP", refuted in the same commit by the measurement recorded
+# beside `STALL_LOG` (two of three ~30 min episodes DID reach the cap).
+#
+# A rate quoted in prose cannot be tested against production from a unit test.
+# What CAN be pinned is the property whose absence caused the error: that the
+# sizing rate is a SUM over everything `pending` counts, and that the minutes
+# each comment advertises still follow from the constant beside it. Either one
+# going stale is how this returns.
+
+
+def _sizing_comment(name: str) -> str:
+    """The comment block immediately above `name`'s assignment."""
+    src = Path("hyxlab/streamstore.py").read_text().splitlines()
+    idx = next(i for i, ln in enumerate(src) if ln.strip().startswith(f"{name} = "))
+    out = []
+    for ln in reversed(src[:idx]):
+        if not ln.strip().startswith("#"):
+            break
+        out.append(ln.strip().lstrip("#").strip())
+    return " ".join(reversed(out))
+
+
+def test_buffer_fill_rate_is_the_sum_over_every_buffer_pending_counts(tmp_path):
+    """`BUFFER_ROWS_PER_S` sizes a buffer fed by three appenders, so it must
+    exceed any single channel's rate -- the ~105 ev/s trade figure included.
+    `pending` counting all three is the fact that makes a one-channel rate
+    wrong, so it is asserted here rather than assumed."""
+    st = StreamStore(tmp_path / "s.duckdb")
+    st.append_events([BookEvent("kalshi", "M", RECV, RECV, "s", 1, "delta", "yes", 50, 1)])
+    st.append_trades([StreamTrade("kalshi", "M", RECV, RECV, 50, 1, "yes", 1)])
+    st.append_gap("kalshi", "books", RECV, RECV, "test")
+    assert st.pending == 3, "pending must count events, trades AND gaps"
+
+    KALSHI_TRADE_CHANNEL_EV_S = 105  # collector/streamd.py:11, venues.md
+    assert StreamStore.BUFFER_ROWS_PER_S > KALSHI_TRADE_CHANNEL_EV_S
+
+
+@pytest.mark.parametrize(
+    "name, minutes",
+    [("PENDING_ALARM", 13), ("SPILL_CAP", 27)],
+)
+def test_sizing_comment_minutes_match_the_constant_beside_it(name, minutes):
+    """The comment is the artifact that was wrong, so the comment is what is
+    checked. Change the constant (or the measured rate) without restating the
+    span, and this goes red instead of shipping a stale claim."""
+    value = getattr(StreamStore, name)
+    derived = value / StreamStore.BUFFER_ROWS_PER_S / 60.0
+    assert round(derived) == minutes, f"{name} is {derived:.0f} min, not the documented {minutes}"
+    assert f"~{minutes} min" in _sizing_comment(name)
+
+
+def test_no_sizing_comment_still_claims_the_trade_channel_rate():
+    """The 2.4x error propagated by copy: one wrong rate reused at four
+    reasoning sites. Keep it out of the two that size the buffer."""
+    for name in ("PENDING_ALARM", "SPILL_CAP"):
+        assert "105" not in _sizing_comment(name)

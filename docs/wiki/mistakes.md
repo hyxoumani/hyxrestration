@@ -1610,6 +1610,60 @@ Format: what happened → root cause → error type → prevention tier
     needs a budget of its own, or capture can degrade without a single
     check getting louder.**
 
+58. **2026-09-18 -- a CHANNEL's rate was used to size a BUFFER that holds
+    three channels, and the counter-example was in the same file.**
+    `StreamStore.PENDING_ALARM` (200k) and `SPILL_CAP` (400k) were both
+    documented as spans of time -- "~30 min of firehose at the observed
+    ~105 ev/s" and "2x the alarm (~1 h of firehose)". 105 ev/s is correct,
+    and is the kalshi-TRADES channel figure quoted in `streamd`,
+    `kalshi_ws` and venues.md. But `pending` counts events + trades +
+    gaps, and the book channel fills the same buffer. Measured over 174h
+    of `hyxstream.duckdb` (09-11..09-18): books median 96.1/s, trades
+    136.0/s, **combined 249.0/s** (p90 320.1, busiest hour 433.4). Trades
+    are not even the majority, so the channel most likely to be quoted
+    alone is the one that is not most of the buffer. Both constants were
+    therefore advertised at **2.4x** the span they cover: the alarm is
+    ~13 min (~8 in the busiest hour), the cap ~27 min (~15), not ~1 h.
+    Three independent instruments agree on the real rate -- the archive
+    counts (249/s), the stall ledger's one long episode (145,176 rows in
+    599.7s = 242/s) and the pre-ledger journal tail (the cap reached at
+    1756s = 228/s).
+    **The sharpest detail: the refutation was written into the same file,
+    in the same commit.** `streamd._final_drain` justified spilling the
+    whole buffer at shutdown with "not just the overflow above SPILL_CAP,
+    **which a sub-hour stall never reaches**" -- while 540 lines above it
+    the `STALL_LOG` comment recorded the measurement that refutes it:
+    "three ~30 min, and TWO of those three reached SPILL_CAP". Both are
+    sub-hour. The two comments were never read against each other because
+    each was true-sounding on its own, and the arithmetic that connects
+    them (400,000 / rate) was never performed with the right rate.
+    The `_final_drain` conclusion was right for the OTHER reason stated
+    beside it (at shutdown there is no next flush, so a row left in the
+    buffer is a row lost), which is why the false premise cost nothing yet
+    and survived unread. Second consequence, still live: the sidecar
+    sizing note priced a 7 h poly-sweep wedge at ~430 MB; at the measured
+    rate it is 6.3M rows and **~1.0 GB**, which is the number the
+    torn-append/ENOSPC rewind path exists to survive.
+    Type: `wrong-assumption` (unit mismatch -- a per-channel rate applied
+    to a per-buffer quantity), propagated by copy to four reasoning sites.
+    Memory was NOT the exposure and that was measured too, not assumed: a
+    buffered row costs ~256 B resident (tracemalloc: 264 B/BookEvent,
+    248 B/StreamTrade), so a buffer pinned at the cap is ~102 MB against
+    the unit's 2G cap. The constants' VALUES are therefore left alone --
+    only the claims about them were wrong.
+    **RULE: before sizing a shared buffer in units of time, name every
+    producer that appends to it and add their rates. A rate quoted with a
+    channel's name on it is evidence about that channel only, and reusing
+    it for the aggregate is a unit error that reads as a measurement.**
+    Prevention: ESCALATED to test (`tests/test_hyxlab_stream.py`) --
+    `BUFFER_ROWS_PER_S` is now a single declared constant carrying its
+    measurement; one test pins that `pending` counts all three buffers and
+    that the rate exceeds any single channel's, and another parses each
+    constant's OWN comment and asserts the minutes it advertises still
+    equal `constant / BUFFER_ROWS_PER_S`. Changing a constant, or the
+    rate, without restating the span goes red. Verified red against the
+    old rate: setting `BUFFER_ROWS_PER_S = 105` fails three tests.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

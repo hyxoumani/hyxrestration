@@ -612,8 +612,14 @@ class Daemon:
         because a wedged archive is the usual reason a restart is happening.
         (a) `store.flush()` raising means every buffered row dies with the
         process; the sidecar exists exactly for that, so spill EVERYTHING
-        (not just the overflow above SPILL_CAP, which a sub-hour stall never
-        reaches) and let the next boot drain it. (b) The open stall episode
+        rather than just the overflow above SPILL_CAP, which at shutdown
+        protects nothing: there is no next flush for the rows it leaves in
+        memory. (This once justified itself with "a sub-hour stall never
+        reaches SPILL_CAP" — false, and refuted by the measurement recorded
+        beside STALL_LOG above: two of the three ~30 min episodes DID reach
+        the cap. The cap is ~27 min of firehose, not the ~1 h it was
+        documented as; see `StreamStore.BUFFER_ROWS_PER_S`. The spill-all is
+        right for the reason stated here, which does not depend on it.) (b) The open stall episode
         would never be written: `ok()` is unreachable when the drain that
         would have ended the stall is the thing that failed, so the episode
         the restart interrupted is recorded as `open` — a lower bound.
