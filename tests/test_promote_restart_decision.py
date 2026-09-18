@@ -318,10 +318,29 @@ def test_a_simui_only_change_restarts_simui_alone():
 # old is the run you are about to kill". Measured 2026-09-02: all 15
 # day-starved shadow runs were stopped mid-write, 19 promotes did the
 # stopping, and the closure guard was right every time.
-def guard(age: str, force: str = "0", young: str = "0", threshold: str | None = None) -> str:
+def guard(
+    age: str,
+    force: str = "0",
+    young: str = "0",
+    threshold: str | None = None,
+    panel: str = "panel_shortfall RID 10 10",
+    cap: str | None = None,
+) -> str:
+    """Drive young_run_guard in a scratch bash, with the panel query STUBBED.
+
+    `panel` is injected through PANEL_SHORTFALL_CMD so no test in this
+    file reads the live shadow ledger -- these assertions must not change
+    their answer because the daemon banked another panel day overnight.
+    The default stub is a COMPLETE panel, so the age-floor tests below
+    exercise the floor and nothing else; the ceiling tests set it.
+    `tests/test_hyxlab_shadow_diurnal.py` owns the real query.
+    """
     env = f"FORCE_RESTART={force}; RESTART_YOUNG={young}; "
+    env += f"PANEL_SHORTFALL_CMD='echo {panel}'; "
     if threshold is not None:
         env += f"YOUNG_RUN_S={threshold}; "
+    if cap is not None:
+        env += f"PANEL_GUARD_MAX_S={cap}; "
     script = (
         f'DEV="{REPO}"; {env}'
         f'source "{REPO}/scripts/restart_decision.sh"; '
@@ -343,9 +362,14 @@ def test_a_young_shadow_run_is_deferred_and_the_age_is_printed():
     assert "--restart-young" in out  # how to override, named
 
 
-def test_a_run_past_the_threshold_is_restarted():
-    assert guard(str(3 * 86400)).strip().endswith("RESTART")
-    assert guard(str(10 * 86400)).strip().endswith("RESTART")
+def test_a_run_past_the_floor_with_a_COMPLETE_panel_is_restarted():
+    """Past the floor the guard asks the second question, and a run whose
+    panel is complete answers it: restarting costs power, not
+    scorability, which is bound 14's own line and the operator's call."""
+    for age in (str(3 * 86400), str(10 * 86400)):
+        out = guard(age)
+        assert out.strip().endswith("RESTART")
+        assert "PANEL COMPLETE" in out
 
 
 def test_the_threshold_is_the_env_and_defaults_to_three_days():
@@ -367,6 +391,81 @@ def test_an_unknown_age_never_defers_and_says_so():
         out = guard(age)
         assert out.strip().endswith("RESTART")
         assert "age unknown" in out
+
+
+# --------------------------------------------------------- bound 14b
+# The floor above is MIN_DAYS, the PROFILE threshold. The run is not
+# accumulated for its profile -- it is accumulated for its level shape,
+# which needs `panel_days_needed` PANEL days. Measured 2026-09-18 over
+# the 54-run ledger: no run ever reached 10, the two closest died at 9
+# and 8, and in the 16 days the age-only guard was live it deferred ZERO
+# restarts and waved through TWO (`20260829T191841` at 8 panel days, 81 s
+# after the 54d05c7 promote; `20260907T142900` at 4).
+def test_the_09_07_promote_that_killed_an_8_panel_day_run_now_defers():
+    """The regression this bound exists for, at its measured numbers.
+
+    211.2 h up is 2.9x the 72 h floor, so the age-only guard waved it
+    through and the promote reset a panel that was 2 days from being the
+    first readable level shape in the project's history.
+    """
+    out = guard(str(int(211.2 * 3600)), panel="panel_shortfall 20260829T191841 8 10")
+    assert out.strip().endswith("DEFER")
+    assert "SHORT PANEL" in out
+    assert "8 of the 10 panel days" in out  # what it has vs what it needs
+    assert "--restart-young" in out  # how to override, named
+
+
+def test_the_ceiling_releases_exactly_at_the_runs_own_requirement():
+    for banked, expect in ((8, "DEFER"), (9, "DEFER"), (10, "RESTART"), (11, "RESTART")):
+        age = str(20 * 86400 // 2)  # past the floor, under the cap
+        out = guard(age, panel=f"panel_shortfall RID {banked} 10")
+        assert out.strip().endswith(expect), (banked, out)
+
+
+def test_the_requirement_is_read_off_the_run_not_hardcoded_at_ten():
+    """A 10 that is really a constant would not move when the clock does.
+    `panel_days_needed` is `_days_needed(LEVEL_FWER / hours_tested)`, so a
+    run publishing a different requirement must get a different answer."""
+    age = str(5 * 86400)
+    assert guard(age, panel="panel_shortfall RID 6 7").strip().endswith("DEFER")
+    assert guard(age, panel="panel_shortfall RID 7 7").strip().endswith("RESTART")
+
+
+def test_the_cap_keeps_a_stalled_panel_from_deferring_forever():
+    """Reason (2) of the 2026-09-02 refusal: a deferral that can never
+    release is not a guard. A panel that stopped growing buys nothing by
+    being protected, and every promote it survives ages the code."""
+    out = guard(str(15 * 86400), panel="panel_shortfall RID 5 10")
+    assert out.strip().endswith("RESTART")
+    assert "PANEL STALLED" in out
+    # ... and the cap is high enough never to bind on a HEALTHY run: the
+    # requirement is 10 panel days and the measured wall-to-panel lag is
+    # 1.0-1.6 days, so ~12 days is the worst honest case.
+    assert guard(str(12 * 86400), panel="panel_shortfall RID 9 10").strip().endswith("DEFER")
+    assert guard(str(15 * 86400), panel="panel_shortfall RID 5 10", cap=str(20 * 86400)).strip().endswith(
+        "DEFER"
+    )
+
+
+def test_an_absent_panel_number_leaves_the_floor_in_charge_and_says_so():
+    """Same rule as an unknown age: the guard protects a MEASURED span,
+    never an assumed one. `none` is what the query prints when there is no
+    open run or the run has no balanced panel yet -- a young run with no
+    panel is already covered by the floor, and a query that fails must
+    never read as "defer forever"."""
+    for stub in ("panel_shortfall none no open run in the ledger", "false", "echo garbage"):
+        out = guard(str(5 * 86400), panel=stub)
+        assert out.strip().endswith("RESTART"), (stub, out)
+        assert "panel shortfall unknown" in out
+    # Below the floor the missing number changes nothing: age still wins.
+    assert guard("60", panel="panel_shortfall none whatever").strip().endswith("DEFER")
+
+
+def test_force_flags_skip_the_panel_query_entirely():
+    """--restart-all/--restart-young must not depend on a DuckDB read
+    succeeding; they are the operator's override of the whole bound."""
+    assert guard("60", force="1", panel="false").strip().endswith("RESTART")
+    assert guard(str(5 * 86400), young="1", panel="false").strip().endswith("RESTART")
 
 
 def test_promote_sh_wires_the_young_run_guard_into_the_defer_path():

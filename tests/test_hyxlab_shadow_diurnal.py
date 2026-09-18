@@ -21,6 +21,7 @@ from simulator.shadow_diurnal import (
     SUCCESSION_WINDOW_S,
     VERDICT_POPULATION,
     build_diurnal,
+    panel_shortfall,
 )
 
 T0 = datetime(2026, 8, 1, 0, 0)
@@ -1814,3 +1815,114 @@ def test_the_lifetime_block_never_claims_a_reason_for_the_stop():
     for word in ("promote", "crash", "reboot", "cause", "reason"):
         assert word not in blob
     assert set(SUCCESSION_KINDS) == {"open", "immediate", "after_outage", "no_successor"}
+
+
+# --- Bound 14b: what promote.sh's young_run_guard asks the ledger ---------
+# The guard used to answer "how old is the run you are about to kill" with
+# a constant, MIN_DAYS days of unit UPTIME. MIN_DAYS is the PROFILE
+# threshold; the run is accumulated for its LEVEL SHAPE, which needs
+# `panel_days_needed` PANEL days. Measured 2026-09-18 over the 54-run
+# ledger: no run ever reached 10, and the guard waved through a promote
+# that killed one at 8. `panel_shortfall` is the number it should have
+# been asking for. `tests/test_promote_restart_decision.py` owns the bash.
+
+
+def _live_clock_ledger(n_days, delta, run_id="R"):
+    """`_clock_ledger`'s shape, but ending NOW so the run reads OPEN.
+
+    Anchored off `datetime.now(UTC)` naive-ised, for the same reason
+    `test_an_open_run_is_flagged_off_the_ledger_not_off_run_id_order`
+    is: the ledger stores naive UTC, and a naive LOCAL now would read as
+    hours stale on any host west of Greenwich.
+
+    The start is snapped to a UTC MIDNIGHT `n_days` back, because the
+    panel is an intersection over hour-of-day across whole days (bound
+    7): a run that begins at an arbitrary minute has a ragged first and
+    last day and banks fewer panel days than it spans. What is left over
+    between the last midnight and now is a PARTIAL day, which is exactly
+    what a live run always has and what the trim exists to drop.
+    """
+    now = datetime.now(UTC).replace(tzinfo=None)
+    now_min = int((now - T0).total_seconds() // 60)
+    start = (now_min // 1440) * 1440 - n_days * 1440
+    eq, level = [(run_id, start - 30, 0.0)], 0.0  # padding partial hour
+    minute = start
+    while minute + 60 <= now_min:
+        level += delta((minute - start) // 1440, (minute // 60) % 24)
+        eq.append((run_id, minute + 30, level))
+        eq.append((run_id, minute + 59, level))
+        minute += 60
+    eq.append((run_id, now_min - 1, level))  # inside OPEN_RUN_GRACE_MIN
+    return _ledger(eq)
+
+
+def test_panel_shortfall_reports_the_live_runs_own_banked_and_needed():
+    led = _live_clock_ledger(6, lambda d, hod: -10.0 + (d - 3.0), run_id="LIVE")
+    short = panel_shortfall(led)
+    assert short["run_id"] == "LIVE"
+    assert short["needed"] == 10  # _days_needed(LEVEL_FWER / 24)
+    # It must be the SAME number the report publishes, not a recount.
+    lv = _level(_run(build_diurnal(led), "LIVE"))
+    assert short["banked"] == lv["n_panel_days"]
+    assert short["needed"] == lv["panel_days_needed"]
+
+
+def test_panel_shortfall_ignores_a_closed_run_however_long_it_was():
+    """The guard is about the run it is ABOUT TO KILL. A finished run's
+    panel is already banked or already lost; protecting the daemon for it
+    would defer on a span no restart can cost."""
+    assert "reason" in panel_shortfall(_clock_ledger(11, lambda d, hod: -10.0))
+    assert "no open run" in panel_shortfall(_clock_ledger(11, lambda d, hod: -10.0))["reason"]
+
+
+def test_panel_shortfall_declines_when_the_live_run_has_no_panel_yet():
+    """No balanced panel is no measured span, and the guard must read that
+    as "do not defer on the panel" -- never as "defer forever". Such a run
+    is young, so restart_decision.sh's age FLOOR is what covers it."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    m = int((now - T0).total_seconds() // 60)
+    short = panel_shortfall(_ledger([("NEW", m - 5, 1.0), ("NEW", m - 1, 2.0)]))
+    assert "reason" in short
+    assert "no balanced panel" in short["reason"]
+
+
+def test_panel_shortfall_refuses_to_average_over_two_open_runs():
+    """Two runs writing the same ledger inside the grace window is the
+    EXP-1372 two-daemon shape. Picking one, or pooling them, would hand
+    the guard a number about a ledger that is already corrupt."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    m = int((now - T0).total_seconds() // 60)
+    rows = [(r, m - k, 1.0) for r in ("A", "B") for k in (5, 1)]
+    short = panel_shortfall(_ledger(sorted(rows, key=lambda r: r[1])))
+    assert "reason" in short
+    assert "2 runs open at once" in short["reason"]
+    assert "A B" in short["reason"]  # named, not counted
+
+
+def test_panel_shortfall_mode_prints_one_line_and_writes_no_report(tmp_path, capsys):
+    """promote.sh runs this on every promote that moves shadow's closure.
+    A mode that wrote a dated JSON each time would fill
+    reports/shadow_diurnal with readings nobody asked for."""
+    from simulator.shadow_diurnal import main
+
+    db = tmp_path / "led.duckdb"
+    src = _live_clock_ledger(6, lambda d, hod: -10.0 + (d - 3.0), run_id="LIVE")
+    dst = duckdb.connect(str(db))
+    for tbl in ("shadow_equity", "shadow_fills", "shadow_settlements"):
+        cols = src.execute(f"describe {tbl}").fetchall()
+        dst.execute(f"create table {tbl} ({', '.join(f'{c[0]} {c[1]}' for c in cols)})")
+        rows = src.execute(f"select * from {tbl}").fetchall()
+        if rows:
+            dst.executemany(
+                f"insert into {tbl} values ({', '.join('?' * len(cols))})", rows
+            )
+    dst.close()
+
+    out_dir = tmp_path / "reports"
+    main(["--ledger", str(db), "--out", str(out_dir), "--panel-shortfall"])
+    line = capsys.readouterr().out.strip()
+    assert len(line.splitlines()) == 1
+    kind, rid, banked, needed = line.split()
+    assert kind == "panel_shortfall" and rid == "LIVE"
+    assert int(needed) == 10 and 0 <= int(banked) < int(needed)
+    assert not out_dir.exists()  # no report file, and no directory either

@@ -1850,6 +1850,61 @@ defect, one mode over, and it survived because the fix was written as a
 property of a MODE ("units-only excludes test_unit_drift.py") instead of a
 property of the CHECK.
 
+59. **2026-09-18 -- the guard that protects a shadow run was sized off
+    the threshold that makes the run READABLE AT ALL, not the one it is
+    being accumulated for. Same defect class as #58, found the same day
+    at a second site.** `young_run_guard` (bound 14, shipped 09-02)
+    defers a promote's shadow restart while the live run is younger than
+    `YOUNG_RUN_S` = 3 days, and 3 days is `shadow_diurnal.MIN_DAYS` --
+    the PROFILE floor, below which hour-of-day means are not readable at
+    all. But nobody keeps a shadow run alive for its profile. It is kept
+    alive for `level_shape_status`, which needs the `panel_days_needed`
+    PANEL days the run itself publishes: **10**, at the `LEVEL_FWER / 24`
+    ceiling. The guard protected the cheap threshold and waved the
+    expensive one through.
+    **Measured over the 54-run ledger: NO run has ever reached 10 panel
+    days.** The two closest died at 9 (`20260810T081931`, the 08-20 4.3h
+    streamd outage -- not a promote, so no guard could have saved it) and
+    at 8 (`20260829T191841`, killed 81 s after the 54d05c7 promote, which
+    moved `hyxlab/store.py` -- squarely in shadow's closure). In the 16
+    days the guard has been live it **deferred ZERO restarts and waved
+    through TWO**, at 8 and at 4 panel days. It has never once fired.
+    **The unit was wrong too, which is why the fix is a query and not a
+    bigger constant.** A panel day needs a whole clock of whole hours, so
+    it lags wall-clock by a NON-CONSTANT amount: 253.2h (10.6d) -> 9
+    panel days, 211.2h (8.8d) -> 8, 149.7h (6.2d) -> 5. The lag runs
+    1.0-1.6 days. Any threshold in seconds is wrong by about two days
+    before it is wrong by anything else.
+    **What made it survive a deliberate review.** The 09-02 pass
+    considered reading the live run's own requirement and refused it in a
+    30-line comment, reason (1) being "the number does not exist when it
+    matters -- an unscored run publishes `own_days_needed` = None". That
+    is true, and it is about a DIFFERENT field: `own_days_needed` belongs
+    to the off-panel counterfactual and is None for any run that HAS a
+    panel. The LEVEL path publishes `panel_days_needed` for every run
+    with a balanced panel, open or closed, scored or not. The comment
+    even wrote its own revisit condition -- "revisit if a reading ever
+    publishes [the requirement] for an OPEN run below MIN_DAYS" -- and
+    the condition had been met by every reading since. Type:
+    `wrong-statistic`, #58/#55 family.
+    Fix: `shadow_diurnal.panel_shortfall` + `--panel-shortfall` (one
+    line, no report file), a PANEL CEILING in `young_run_guard` above the
+    unchanged age FLOOR, and `PANEL_GUARD_MAX_S` (14d) so the deferral
+    can always release -- the 09-02 refusal's reason (2), answered rather
+    than re-argued. Suite 1441 -> 1452; six of the new bash tests verified
+    red against the old guard, including the 09-07 case at its measured
+    numbers.
+    **RULE (#58's rule, restated for guards): a guard's threshold must be
+    the quantity the thing it protects is being ACCUMULATED for, not the
+    nearest published threshold with the same units. Before shipping one,
+    name the report field the number comes from and check that field is
+    the one that decides -- `MIN_DAYS` and `panel_days_needed` are both
+    "days" and differ by 3.3x.** Corollary, from how this one hid: **a
+    comment that states its own revisit condition has to be re-read
+    against the data, not just against the next change to its file.** The
+    condition had been true for weeks and nothing was watching it.
+
+
 **(1) A gate that only the gated action can satisfy is a deadlock, and it
 is invisible until someone edits the file.** `tests/test_unit_drift.py`'s
 live arm asserts the installed units match this repo. `promote.sh` gates

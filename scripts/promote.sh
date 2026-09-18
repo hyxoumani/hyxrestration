@@ -27,6 +27,17 @@
 # a needless restart is measured in DAYS OF SPAN, not in settlement rows,
 # and the 2026-08-23 promote that killed a 2d18h run lost exactly that and
 # nothing else. Re-derive this cost again if the analyses change shape.
+#
+# RE-COSTED AGAIN 2026-09-18, taking that last sentence up: the cost was
+# right and its THRESHOLD was a different quantity. "~3 spanned days" is
+# `MIN_DAYS`, the PROFILE floor. The run is accumulated for its LEVEL
+# SHAPE, which needs the `panel_days_needed` PANEL days the run itself
+# publishes — 10 over a 24-hour clock, and panel days lag wall days by a
+# non-constant 1.0–1.6. Measured over the 54-run ledger: NO run has ever
+# reached 10, and the age-only guard waved through the 2026-09-07 promote
+# that killed one at 8. The guard now asks the run for its own number
+# (bound 14b in restart_decision.sh); the 3-day constant survives as the
+# FLOOR, where bound 7 puts it.
 set -euo pipefail
 
 DEV=/home/devs/workspace/hyxrestration
@@ -40,11 +51,12 @@ for arg in "$@"; do
     case "$arg" in
         --restart-all) FORCE_RESTART=1 ;;
         # --restart-young: restart hyxlab-shadow even though its live run
-        # is younger than the span a scorable run needs (bound 14; see
-        # young_run_guard in restart_decision.sh). Without it, a young
-        # shadow run is DEFERRED automatically, because 2026-09-02's
-        # measurement found all 15 day-starved runs were stopped, not
-        # starved, and 19 promotes did the stopping.
+        # still owes its panel days (bounds 14/14b; see young_run_guard in
+        # restart_decision.sh). Without it, such a run is DEFERRED
+        # automatically, because 2026-09-02's measurement found all 15
+        # day-starved runs were stopped, not starved, and 19 promotes did
+        # the stopping — and 2026-09-18's found the guard's own threshold
+        # was too low to catch two more of them.
         --restart-young) RESTART_YOUNG=1 ;;
         # --defer=UNIT[,UNIT]: promote everything but leave the named
         # daemon(s) running old code until their next natural break.
@@ -214,10 +226,12 @@ if needs_restart simulator.simui.__main__ '^(simulator|strategies|hyxlab)/'; the
     echo "           (it holds a live paper session). Restart it when the UI is idle:"
     echo "           systemctl --user restart hyxlab-simui.service"
 fi
-# Bound 14: the closure guard asks "did the code move"; this asks "how
-# old is the run you are about to kill". A young shadow run is deferred
-# unless the operator says otherwise, and the deferral is printed with
-# the age, so it is recorded the same way an explicit --defer is.
+# Bounds 14/14b: the closure guard asks "did the code move"; this asks
+# "what is the run you are about to kill still owing". A shadow run below
+# the age FLOOR or short of its own PANEL requirement is deferred unless
+# the operator says otherwise, and the deferral is printed with the
+# number that decided it, so it is recorded the same way an explicit
+# --defer is.
 if [[ " ${RESTART[*]} " == *" hyxlab-shadow.service "* ]] \
    && young_run_guard hyxlab-shadow.service "$(unit_age_s hyxlab-shadow.service)"; then
     DEFER="${DEFER:+$DEFER,}hyxlab-shadow.service"

@@ -1885,12 +1885,103 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
     return report
 
 
+def panel_shortfall(ledger: duckdb.DuckDBPyConnection) -> dict:
+    """What the LIVE shadow run still owes its level panel (bound 14b).
+
+    `young_run_guard` in `scripts/restart_decision.sh` asks "how old is
+    the run you are about to kill". Until 2026-09-18 it answered with a
+    constant, `MIN_DAYS` days of UNIT UPTIME, and that constant was sized
+    off the wrong quantity -- the same defect class as the buffer rate
+    the 09-18 02:15Z pass corrected, at a second site.
+
+    `MIN_DAYS` is the PROFILE threshold: below it `profile_status` reads
+    underpowered and the run's hour-of-day means are not readable. But
+    the run is not accumulated for its profile. It is accumulated for
+    `level_shape_status`, and that needs `panel_days_needed` PANEL days
+    -- 10, at the 24-hour clock's `LEVEL_FWER / 24` ceiling. The guard
+    protected the cheap threshold and waved through the expensive one.
+
+    MEASURED 2026-09-18 over the 54-run ledger: NO run has ever reached
+    10 panel days. The two that came closest died at 9 and 8. The guard
+    shipped 2026-09-02 and in the 16 days since has deferred ZERO
+    restarts and waved through TWO -- `20260829T191841` at 8 panel days,
+    killed 81 s after the 54d05c7 promote (`hyxlab/store.py` is in
+    shadow's closure, so the closure guard was right and the age guard
+    was asleep), and `20260907T142900` at 4.
+
+    WHY THIS NUMBER AND NOT A BIGGER CONSTANT. The 2026-09-02 comment
+    refused reading the live run's own requirement for three reasons.
+    Reason (1) -- "the number does not exist when it matters", because an
+    unscored run publishes `own_days_needed` = None -- named the
+    OFF-PANEL counterfactual, which is None for any run that HAS a panel.
+    The LEVEL path publishes `panel_days_needed` for every run with a
+    balanced panel, open or closed, scored or underpowered: the live run
+    reads 5 of 10 at 149.7 h up. The file said "revisit if a reading ever
+    publishes [the requirement] for an OPEN run below MIN_DAYS"; it does,
+    so reason (1) is spent. Reasons (2) and (3) are answered by the
+    caller, not here -- see `young_run_guard`.
+
+    UPTIME IS ALSO THE WRONG UNIT, which is why this returns panel days
+    rather than a corrected number of seconds. A panel day needs a whole
+    clock of whole hours, so it lags wall-clock: measured across the
+    ledger's long runs, 253.2 h (10.6 d) -> 9 panel days, 211.2 h
+    (8.8 d) -> 8, 149.7 h (6.2 d) -> 5. The lag runs 1.0-1.6 days and is
+    not a constant, so a threshold in seconds is wrong by about two days
+    before it is wrong by anything else.
+
+    Returns `{"run_id", "banked", "needed"}` for the open run, or
+    `{"reason": ...}` when there is no measured shortfall to report --
+    no open run, or an open run with no balanced panel yet. The guard
+    protects a MEASURED span and never an assumed one (the same rule
+    `unit_age_s` follows for an unknown age), so an absent number must
+    read as "do not defer on the panel", never as "defer forever".
+    """
+    now = datetime.now(UTC)
+    open_runs = [
+        r[0]
+        for r in ledger.execute("select run_id, max(ts) from shadow_equity group by 1").fetchall()
+        if (now - r[1].replace(tzinfo=UTC)).total_seconds() < OPEN_RUN_GRACE_MIN * 60
+    ]
+    if not open_runs:
+        return {"reason": "no open run in the ledger"}
+    # More than one run inside the grace window means two writers, which
+    # is the EXP-1372 shape and not a thing to average over.
+    if len(open_runs) > 1:
+        return {"reason": f"{len(open_runs)} runs open at once: {' '.join(sorted(open_runs))}"}
+    rid = open_runs[0]
+    level = build_diurnal(ledger, rid)["runs"][0]["diurnal_level"]
+    needed = level.get("panel_days_needed")
+    banked = level.get("n_panel_days")
+    if needed is None or banked is None:
+        return {"reason": f"{rid} has no balanced panel yet ({level.get('settlement_absence')})"}
+    return {"run_id": rid, "banked": banked, "needed": needed}
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ledger", default=SHADOW_DB)
     ap.add_argument("--run", default=None, help="run_id (default: every run)")
     ap.add_argument("--out", default="reports/shadow_diurnal")
+    # --panel-shortfall: one machine-readable line for promote.sh's
+    # young_run_guard, and NO report file. The guard runs on every
+    # promote that moves shadow's closure; a mode that wrote a dated
+    # JSON each time would fill reports/shadow_diurnal with readings
+    # nobody asked for and make the directory's mtime meaningless as
+    # "when did someone last look".
+    ap.add_argument("--panel-shortfall", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.panel_shortfall:
+        ledger = connect_retry(args.ledger, read_only=True)
+        try:
+            short = panel_shortfall(ledger)
+        finally:
+            ledger.close()
+        if "reason" in short:
+            print(f"panel_shortfall none {short['reason']}")
+        else:
+            print(f"panel_shortfall {short['run_id']} {short['banked']} {short['needed']}")
+        return
 
     ledger = connect_retry(args.ledger, read_only=True)
     try:
