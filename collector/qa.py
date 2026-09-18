@@ -369,6 +369,11 @@ _skipped: list[str] = []
 #: "went green" from "was not looked at". `qa_prior_run` is the reader; see the
 #: healed-set derivation there for what went wrong without it.
 _ran: list[str] = []
+#: Names that reached a MEASURED but deliberately non-failing verdict this run
+#: -- see `watch()`. Kept apart from `_ran` because the healed arm reads `_ran`
+#: as "green today", and a watched name is the opposite of green: its condition
+#: was found, and found still there.
+_watched: list[str] = []
 _passes = 0
 _lock_holder: str | None = None  # set by _connect_ro when a live writer holds the file
 
@@ -382,6 +387,34 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         _passes += 1
     else:
         _failures.append(name)
+
+
+def watch(name: str, detail: str) -> None:
+    """A check that MEASURED its condition, found it still present, and
+    deliberately does not fail on it — an already-reported hole, an abort
+    already on the books, a drain still inside its grace.
+
+    This is a THIRD outcome, and collapsing it into either neighbour states
+    something false about today (measured 2026-09-18 in production, mistakes
+    #60). It is not `check(name, True)`: the condition is there, and calling it
+    a pass is the free-banked all-clear of mistakes #28. It is not silence
+    either: `qa_prior_run` reads the absence of a name as "the section did not
+    run, so neither healed nor still-failing can be claimed", and about a name
+    that just printed a measured line one paragraph above, that sentence is
+    simply untrue — still-failing is exactly what can be claimed, and it is the
+    strongest thing on the record.
+
+    So the name lands HERE rather than in `_ran`: not in the healed set (it did
+    not heal), not in the unwatched set (it ran), but in `still` — open today,
+    and reported by its own line directly above.
+
+    NOT for the UNMEASURED WATCH (no shadow run to measure, no cycles in the
+    window, no `breadth_cycles` table). Those reach no verdict about the
+    condition at all, and "did not run" is the true thing to say about them;
+    they stay plain `print` for that reason.
+    """
+    print(f"WATCH {name} — {detail}", flush=True)
+    _watched.append(name)
 
 
 def _load_state(path: Path | None = None) -> dict:
@@ -1746,11 +1779,11 @@ def qa_tape_coverage(conn, now: datetime) -> None:
         )
     else:
         oldest = max(age_h(m) for m in uncovered)
-        print(
-            f"WATCH {name} — {len(uncovered)} unswept but sweeps landed "
+        watch(
+            name,
+            f"{len(uncovered)} unswept but sweeps landed "
             f"{landed_age_h:.1f}h ago and the oldest has waited {oldest:.1f}h "
             f"(grace {TAPE_DRAIN_GRACE_H:g}h); draining tail, not rot",
-            flush=True,
         )
 
 
@@ -2437,7 +2470,7 @@ def qa_fade_window_capture(
     if holed:
         # Known and already journalled once. Still say it out loud, but do not
         # keep failing the run for a hole nobody can now repair.
-        print(f"WATCH {name} — {detail} (already reported)", flush=True)
+        watch(name, f"{detail} (already reported)")
         return
     overrun = [r for r in measured if r.sweep_in_window]
     if overrun:
@@ -2767,10 +2800,7 @@ def qa_batch_run_budget(
                 for r in sorted((r for r in over if id(r) in catch_up), key=lambda r: r.end)
             ]
         )
-        print(
-            f"WATCH {name} — {detail}; " + "; ".join(past) + " (already reported)",
-            flush=True,
-        )
+        watch(name, f"{detail}; " + "; ".join(past) + " (already reported)")
         return
     check(name, True, detail)
     _record_ok("batch-run-budget", now)
@@ -2906,6 +2936,7 @@ def qa_prior_run(
     failures: list[str] | None = None,
     skipped: list[str] | None = None,
     ran: list[str] | None = None,
+    watched: list[str] | None = None,
 ) -> str:
     """Read back what the previous run reported, because nothing else does.
 
@@ -2944,6 +2975,10 @@ def qa_prior_run(
     # A name that FAILED today ran today, by construction — folded in so the
     # execution evidence cannot disagree with the findings it is filtering.
     today_ran = set(_ran if ran is None else ran) | today_failed
+    # Measured today, condition still there, deliberately not failed on. Ran --
+    # so not unwatched -- but not green either, so it is kept out of `today_ran`
+    # rather than folded into it. See `watch()`.
+    today_open = set(_watched if watched is None else watched)
     prior = _prior_run()
     if prior is None:
         check(QA_RUN_CHECK, True, "no prior run on record — nothing to read back")
@@ -2974,9 +3009,19 @@ def qa_prior_run(
     # holds SECTION names ("collect-skips") and its `failures` list holds CHECK
     # names, so the check name crossed into an arm that could not see the skip
     # — and no section is skipped at all in the WATCH case. `_ran` is fed from
-    # `check()`, the one place a verdict is reached, so it covers both paths and
-    # whatever third one is written next without being told about it.
-    unwatched = sorted(set(prior.failures) - today_ran)
+    # `check()`, the one place a PASS or FAIL verdict is reached, so it covers
+    # both paths and whatever third one is written next without being told.
+    #
+    # THAT LAST CLAUSE WAS WRONG ABOUT THE WATCH PATH, and production said so on
+    # 2026-09-18: `batch units within measured run budget` printed its measured
+    # WATCH line and this check reported it, three lines below, as "the section
+    # did not run". Covering a path is not the same as classifying it. A WATCH
+    # that MEASURED its condition is a verdict -- just not one `check()` can
+    # spell -- and it belongs in neither set here: not healed (the abort is
+    # still on the books) and not unwatched (it ran). `watch()`/`_watched` is
+    # that third outcome, and it lands in `still` below. The UNMEASURED WATCHes
+    # do still belong here: "did not run" is the true thing to say about them.
+    unwatched = sorted(set(prior.failures) - today_ran - today_open)
     healed_f = sorted((set(prior.failures) & today_ran) - today_failed)
     healed_s = sorted(set(prior.skipped) - today_skipped)
     if healed_f:
@@ -3028,9 +3073,11 @@ def main() -> None:
     qa_stream_stalls()  # ledger + journal witness; a stall IS the archive unwritable
     qa_fade_window_capture()  # journal-only, for the same reason
     qa_batch_run_budget()  # journal-only, for the same reason
-    # `_ran` is read here for the same reason the findings are: it must be the
-    # LIVE set at the moment of the comparison, not one captured earlier.
-    unread = qa_prior_run(now, _own_findings(), _skipped, _ran)  # the only reader of the last run
+    # `_ran` and `_watched` are read here for the same reason the findings are:
+    # they must be the LIVE sets at the moment of the comparison, not ones
+    # captured earlier.
+    # the only reader of the last run
+    unread = qa_prior_run(now, _own_findings(), _skipped, _ran, _watched)
     # Re-read AFTER the check rather than reusing the list above: the
     # exclusion is then a live filter, not an artifact of statement order.
     _record_run(_own_findings(), _skipped, now, unread)  # BEFORE either exit path below

@@ -59,11 +59,13 @@ def _isolated_state(tmp_path, monkeypatch):
     qa._failures.clear()
     qa._skipped.clear()
     qa._ran.clear()
+    qa._watched.clear()
     qa._passes = 0
     yield
     qa._failures.clear()
     qa._skipped.clear()
     qa._ran.clear()
+    qa._watched.clear()
     qa._passes = 0
 
 
@@ -583,9 +585,9 @@ def test_main_hands_the_live_executed_set_to_the_check(monkeypatch):
 
 
 def test_a_prior_failure_that_only_reaches_WATCH_today_is_not_called_green(capsys):
-    """The second no-verdict path, driven through the real function. An
-    already-reported abort prints WATCH and returns: the abort is still on the
-    books, so yesterday's FAIL of the same name has not healed."""
+    """The WATCH path, driven through the real function. An already-reported
+    abort prints WATCH and returns: the abort is still on the books, so
+    yesterday's FAIL of the same name has NOT healed."""
     now = datetime.now(UTC)
     abort = qa.BatchRun("hyxlab-sweep.timer", now - timedelta(hours=6), 1.59, ok=False)
     qa.qa_batch_run_budget(now=now, runs={"hyxlab-sweep.timer": [abort]})
@@ -594,13 +596,102 @@ def test_a_prior_failure_that_only_reaches_WATCH_today_is_not_called_green(capsy
 
     qa._failures.clear()
     qa._ran.clear()
+    qa._watched.clear()
     qa.qa_batch_run_budget(now=now, runs={"hyxlab-sweep.timer": [abort]})
     out = capsys.readouterr().out
     assert f"WATCH {name}" in out and "already reported" in out
-    assert name not in qa._ran and not qa._skipped, "no verdict, and no section skipped"
+    assert name not in qa._ran and not qa._skipped, "not a PASS, and no section skipped"
+    assert qa._watched == [name], "a measured non-failing verdict is still a verdict"
 
     _write_record(now - timedelta(hours=24), failures=[name])
     qa.qa_prior_run(now, qa._own_findings(), qa._skipped)
     out = capsys.readouterr().out
-    assert "green today" not in out and "not re-checked today" in out
+    assert "green today" not in out
     assert not qa._failures
+
+
+def test_a_watched_name_is_reported_as_still_open_not_as_never_run(capsys):
+    """THE 2026-09-18 PRODUCTION DEFECT, at its measured numbers (mistakes
+    #60). `batch units within measured run budget` printed a measured WATCH
+    line naming the 09-11 sweep catch-up, and `qa_prior_run` reported it, in
+    the same run's output, as `the section did not run, so neither healed nor
+    still-failing can be claimed`. It ran, and still-failing is exactly what
+    could be claimed. Verified red against the pre-fix classification."""
+    now = datetime.now(UTC)
+    name = "batch units within measured run budget"
+    _write_record(now - timedelta(hours=24), failures=[name])
+
+    qa.qa_prior_run(now, [], [], ran=[], watched=[name])
+    out = capsys.readouterr().out
+    assert out.startswith("PASS"), out
+    assert "not re-checked today" not in out, "it ran -- its own WATCH line is the evidence"
+    assert "still open today, reported by their own lines" in out
+    assert name in out
+
+
+def test_a_watched_name_is_never_claimed_to_have_healed(capsys):
+    """The other direction, and the one that would be a false all-clear: the
+    condition was FOUND today, so `green today` must not be reachable for it
+    no matter what the prior run said."""
+    now = datetime.now(UTC)
+    name = "fade window (23:00-04:00Z) capture"
+    _write_record(now - timedelta(hours=24), failures=[name])
+
+    qa.qa_prior_run(now, [], [], ran=[], watched=[name])
+    out = capsys.readouterr().out
+    assert "green today" not in out and "nothing read it" not in out
+    assert not qa._failures, "a condition still on the books has not healed"
+
+
+def test_an_unmeasured_watch_still_reads_as_the_section_not_running(capsys):
+    """The distinction `watch()` rests on, asserted from the other side. A
+    WATCH that reached no verdict about the condition -- no cycles in window,
+    no shadow run to measure -- must stay in the unwatched set: `did not run`
+    is the true thing to say about it, and banking it as measured would be
+    mistakes #28 by a new route."""
+    now = datetime.now(UTC)
+    _write_record(now - timedelta(hours=24), failures=["stream fresh"])
+    qa.qa_prior_run(now, [], [], ran=[], watched=[])
+    out = capsys.readouterr().out
+    assert "not re-checked today" in out and "still open today" not in out
+
+
+def test_watch_prints_and_registers_exactly_like_check_records(capsys):
+    """`_watched` is the evidence the classification reads; it is worth nothing
+    if a measured WATCH can be printed without landing in it."""
+    qa.watch("watched one", "the condition is still there")
+    out = capsys.readouterr().out
+    assert out == "WATCH watched one — the condition is still there\n"
+    assert qa._watched == ["watched one"]
+    assert qa._ran == [] and qa._failures == [], "not a pass, not a failure"
+    assert qa._passes == 0
+
+
+def test_main_hands_the_live_watched_set_to_the_check():
+    """The companion to the `_ran` guard above, for the same reason: pass the
+    module list through, or production classifies against an empty set while
+    every unit test that passes `watched=` keeps passing."""
+    call = [
+        n
+        for n in ast.walk(ast.parse(QA.read_text()))
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "qa_prior_run"
+    ]
+    assert call, "qa_prior_run is not called from qa.py"
+    args = {getattr(a, "id", None) for a in call[0].args}
+    assert "_watched" in args, f"main() does not pass the watched set: {args}"
+
+
+def test_every_already_reported_watch_goes_through_watch(capsys):
+    """Read off the source. An `already reported` WATCH is BY DEFINITION a
+    measured condition that is still present -- the phrase means the report was
+    acknowledged, never that the condition went away. Any such site that still
+    hand-rolls `print` is one `qa_prior_run` will call unrun."""
+    tree = ast.parse(QA.read_text())
+    stray = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "print"):
+            continue
+        text = ast.unparse(node)
+        if "WATCH" in text and "already reported" in text:
+            stray.append(node.lineno)
+    assert not stray, f"WATCH ... already reported printed outside watch(): lines {stray}"

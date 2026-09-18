@@ -1933,3 +1933,53 @@ directory are `stable`'s, not the working tree's. The checker compared
 against the working tree because that is the tree it lives in. **A
 checker judging a DEPLOYED artifact must read the deployed baseline; the
 tree it happens to run in is not evidence of anything.**
+
+---
+
+60. **2026-09-18 -- a check that MEASURED its condition and deliberately
+    did not fail on it was reported, by the next line of the same run, as
+    a check that never ran.** `qa_prior_run` splits yesterday's failures
+    into HEALED (green today -- report it, nothing else will) and
+    UNWATCHED ("not re-checked today -- the section did not run, so
+    neither healed nor still-failing can be claimed"). It derives both
+    from `_ran`, which only `check()` feeds. But qa.py has a third
+    outcome: the WATCH line, printed by a section that measured its
+    condition, found it STILL THERE, and returns without failing because
+    the report was already acknowledged. That path never calls `check()`,
+    so it lands in neither set -- and the leftover falls into UNWATCHED by
+    default.
+    **Production said so on the 09-18 10:00Z run, in its own output.**
+    `batch units within measured run budget` printed
+    `WATCH ... (already reported)` naming the 09-11 sweep catch-up, and
+    eleven lines later the same run reported it as `not re-checked today
+    -- the section did not run`. It ran. Still-failing was precisely what
+    could be claimed, and it was the strongest thing on the record. The
+    digest then carried the false sentence up to the operator verbatim, on
+    the `UNREAD` line.
+    **The comment above the defect asserted the coverage it did not
+    have.** The 09-11 pass added `_ran` to fix the *opposite* error -- the
+    same WATCH path being announced as "green today" -- and wrote: "`_ran`
+    is fed from `check()`, the one place a verdict is reached, so it
+    covers both paths and whatever third one is written next without being
+    told about it." Half true. `check()` is the one place a PASS or FAIL
+    is reached, not the one place a VERDICT is: the fix moved the name out
+    of the false-green bucket and into the false-unrun one, and the
+    docstring of the test that pinned it called the WATCH a "no-verdict
+    path", which is the same mistake stated as an assertion.
+    **RULE: when a fix moves a name OUT of a wrong bucket, name the
+    bucket it lands in and state what that bucket claims. Two buckets can
+    only encode two outcomes; a third outcome silently takes the default
+    one.** Corollary, and it is the cheap detector: **an emitted line is
+    evidence about a check. If a classifier says "did not run" about a
+    name that printed a line in the same run, the classifier is wrong --
+    grep the run's own output against the verdict it reaches.**
+    Fix: a `watch()` emitter and a `_watched` registry as the explicit
+    third outcome, so such a name is reported as `still open today,
+    reported by their own lines` -- and can never be claimed healed, since
+    its condition was found. The three MEASURED sites (already-reported
+    fade-window hole, already-reported batch abort, draining tape tail)
+    route through it; the four UNMEASURED WATCHes (no shadow run, no
+    cycles in window, no `breadth_cycles` table) deliberately do NOT --
+    "did not run" is the true thing to say about those, and banking them
+    as measured would be #28 by a new route. A source guard fails any
+    future `already reported` WATCH that hand-rolls `print`.

@@ -57,7 +57,12 @@ from test_qa_silent_guards import _assignments, _is_monotone  # noqa: E402
 REPO = Path(__file__).resolve().parent.parent
 QA = REPO / "collector" / "qa.py"
 
-EMITTERS = {"check", "_check_freshness", "_check_continuity", "_reachable", "print"}
+# `watch` is here for the same reason `print` is: it puts one line on stdout,
+# which is all this derivation asks of an exit. It was split out of `print`
+# 2026-09-18 so `qa_prior_run` could tell a MEASURED non-failing verdict from a
+# section that never ran (mistakes #60) -- a distinction that lives downstream
+# of this file and must not silently un-bound the returns it already covered.
+EMITTERS = {"check", "watch", "_check_freshness", "_check_continuity", "_reachable", "print"}
 
 # Early exits that emit nothing, keyed by "<section>:<enclosing guard>" so
 # editing the guard forces the reason to be re-read. Each must name what
