@@ -89,6 +89,38 @@ STALL_LOG = "data/stream_stalls.jsonl"
 # FLUSH_SECS, i.e. it cannot fire for the common case.
 STALL_HEARTBEAT_S = 300.0
 
+# Wall-clock the SHUTDOWN drain is allowed to spend flushing, and the reason
+# a shutdown path needs one at all: systemd stops this unit with SIGTERM and
+# SIGKILLs whatever is left `TimeoutStopSec` later. Until 2026-09-18 the unit
+# set no `TimeoutStopSec`, so that deadline was systemd's default 90s -- a
+# number nothing in this repo had written down, let alone budgeted against.
+#
+# The drain's cost is `rows / StreamStore.FLUSH_ROWS_PER_S` (7,100/s,
+# measured), so 90s bought ~639,000 rows, and the drain's OWN bound is much
+# larger than that: `flush()` writes the buffer AND the whole sidecar in one
+# transaction, and the sidecar is unbounded -- the 7h poly-sweep wedge its
+# own comment prices is 6.3M rows, ~890s, 10x the deadline. Measured
+# end-to-end at 2M rows: 285.6s.
+#
+# What a SIGKILL mid-drain costs is the point. DuckDB rolls the transaction
+# back and the sidecar survives (it is unlinked only after commit) -- but
+# `flush()` has already moved the in-memory buffers into locals by then, and
+# SIGKILL runs no `except BaseException` to put them back and no `spill_all`
+# to save them. Up to SPILL_CAP rows (~27 min of tape) die with no gap row
+# to mark the hole, which is precisely the loss `_final_drain` exists to
+# prevent. So the drain now REFUSES a flush it cannot finish and spills
+# instead: `spill_all` moved the same 400,000 rows in 1.11s against
+# `flush()`'s 56.46s (51x), is equally lossless, and the next boot drains
+# the sidecar ahead of the buffer, by design.
+#
+# 90s is a deliberate 1.6x over the in-memory worst case (SPILL_CAP/
+# FLUSH_ROWS_PER_S = 56.3s), so a full buffer ALWAYS flushes and only a
+# sidecar backlog can trip the refusal. `TimeoutStopSec=180` in the unit is
+# 2x this, leaving the rest of the stop path -- websocket close, task
+# cancellation, a periodic flush still in flight on its worker thread -- a
+# budget of its own. `tests/test_drain_budget.py` pins both ratios.
+DRAIN_BUDGET_S = 90.0
+
 
 def load_env(path: str | Path = ".env") -> None:
     """Minimal .env loader: KEY=VALUE lines, no quoting; existing
@@ -607,9 +639,12 @@ class Daemon:
         """The last write of this process's life, and the one that must not
         raise.
 
-        Two archive holes live here, and both only open on the path where
-        the archive is unreachable — which at shutdown is the LIKELY path,
-        because a wedged archive is the usual reason a restart is happening.
+        Three archive holes live here. (a) and (b) only open on the path
+        where the archive is unreachable — which at shutdown is the LIKELY
+        path, because a wedged archive is the usual reason a restart is
+        happening. (c) opens on the OPPOSITE path: an archive that is
+        reachable but has a wedge's worth of backlog queued behind it,
+        where the flush runs past systemd's SIGKILL rather than failing.
         (a) `store.flush()` raising means every buffered row dies with the
         process; the sidecar exists exactly for that, so spill EVERYTHING
         rather than just the overflow above SPILL_CAP, which at shutdown
@@ -619,7 +654,13 @@ class Daemon:
         beside STALL_LOG above: two of the three ~30 min episodes DID reach
         the cap. The cap is ~27 min of firehose, not the ~1 h it was
         documented as; see `StreamStore.BUFFER_ROWS_PER_S`. The spill-all is
-        right for the reason stated here, which does not depend on it.) (b) The open stall episode
+        right for the reason stated here, which does not depend on it.) (c) The
+        drain is a race against the unit's `TimeoutStopSec` at a measured
+        7,100 rows/s, and LOSING that race is worse than not starting: a
+        SIGKILL lands after `flush()` has moved the buffers into locals,
+        skipping the `except BaseException` that would put them back and
+        the `spill_all` that would have saved them. Refused above the row
+        budget; see `DRAIN_BUDGET_S`. (b) The open stall episode
         would never be written: `ok()` is unreachable when the drain that
         would have ended the stall is the thing that failed, so the episode
         the restart interrupted is recorded as `open` — a lower bound.
@@ -629,6 +670,36 @@ class Daemon:
         shutdown line.
         """
         now = datetime.now(UTC)
+        budget = int(DRAIN_BUDGET_S * self.store.FLUSH_ROWS_PER_S)
+        est = self.store.drain_rows_estimate()
+        if est > budget:
+            # (c) The flush cannot finish before systemd's SIGKILL, so
+            # starting it is how the rows are lost — see DRAIN_BUDGET_S.
+            # Hand the tape to the sidecar instead and let the next boot
+            # drain it. Note the estimate counts sidecar rows that are
+            # ALREADY on disk, so `moved` here is only what left memory.
+            moved = 0
+            try:
+                moved = self.store.spill_all()
+            except Exception as spill_exc:
+                _log(
+                    f"CRITICAL drain of ~{est} row(s) exceeds the {DRAIN_BUDGET_S:.0f}s "
+                    f"budget and the sidecar refused the handoff "
+                    f"({_short_err(spill_exc)}) — {self.store.pending} row(s) lost"
+                )
+            else:
+                _log(
+                    f"final drain DECLINED: ~{est} row(s) is "
+                    f"~{est / self.store.FLUSH_ROWS_PER_S:.0f}s of flush against a "
+                    f"{DRAIN_BUDGET_S:.0f}s budget; {moved} row(s) moved to the sidecar "
+                    f"for the next boot to drain"
+                )
+            # No flush failed here, so the episode is not closed and no
+            # exception is accounted against it; `interrupted` is a no-op
+            # unless a stall was already open, which is the only way a
+            # sidecar this large gets built in the first place.
+            self.stalls.interrupted(now, handoff=moved)
+            return
         try:
             self.store.flush()
         except Exception as exc:

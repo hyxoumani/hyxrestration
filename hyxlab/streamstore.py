@@ -25,6 +25,7 @@ over convenience — replay logic interprets):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import dataclass
@@ -234,9 +235,55 @@ class StreamStore:
     # preserved — and survives a daemon restart.
     SPILL_CAP = 400_000
 
+    #: Rows/s one `flush()` sustains end to end — sidecar parse,
+    #: `executemany` into all three tables, commit. This is the rate a
+    #: SHUTDOWN drain is racing, and it is 28x SLOWER than the rate rows
+    #: ARRIVE at (`BUFFER_ROWS_PER_S`); the two are not interchangeable
+    #: and nothing before 2026-09-18 had measured this one at all.
+    #:
+    #: MEASURED 2026-09-18 on the live box, four buffer sizes at the
+    #: observed channel mix, linear within 0.7%: 50k in 7.05s (7,090/s),
+    #: 200k in 28.04s (7,132/s), 400k in 56.46s (7,085/s), 1M in 140.66s
+    #: (7,110/s). Rounded DOWN to the slowest reading.
+    #:
+    #: Its consumer is `collector.streamd.DRAIN_BUDGET_S`: systemd stops
+    #: the daemon with SIGTERM and SIGKILLs it `TimeoutStopSec` later, so
+    #: the final drain has a row budget, and a flush that cannot finish
+    #: inside it must not be STARTED — a SIGKILL lands mid-transaction,
+    #: after `flush()` has already moved the buffers into locals, where no
+    #: `except BaseException` will restore them and no gap row marks the
+    #: hole.
+    FLUSH_ROWS_PER_S = 7_100
+
+    #: Bytes one sidecar JSONL record occupies. MEASURED 2026-09-18:
+    #: 167 B/event, 150 B/trade, ~160 weighted by the observed channel mix
+    #: (49.3 MB for 400,000 rows, 247.4 MB for 2,000,000). Lets
+    #: `drain_rows_estimate` size the sidecar from a `stat()` instead of
+    #: the parse the drain is deciding whether it can afford.
+    SPILL_BYTES_PER_ROW = 160
+
     @property
     def pending(self) -> int:
         return len(self._events) + len(self._trades) + len(self._gaps)
+
+    def drain_rows_estimate(self) -> int:
+        """Rows the NEXT `flush()` would write: the buffer plus whatever
+        the sidecar still holds.
+
+        The sidecar is sized from its BYTE length over
+        `SPILL_BYTES_PER_ROW`, never by parsing it. The one caller is the
+        shutdown drain deciding whether it can afford the parse, so an
+        estimate that pays for it first answers nothing; and the estimate
+        only has to be good enough to separate "a few thousand rows" from
+        "a multi-hour wedge", which are four orders of magnitude apart.
+        An unreadable sidecar counts as zero: the drain then attempts the
+        flush, which is the pre-existing behaviour for a sidecar it
+        cannot stat.
+        """
+        n = self.pending
+        with contextlib.suppress(OSError):
+            n += self._spill_path.stat().st_size // self.SPILL_BYTES_PER_ROW
+        return n
 
     @property
     def _spill_path(self) -> Path:

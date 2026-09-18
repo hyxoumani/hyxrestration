@@ -180,9 +180,11 @@ class _Store:
 
     PENDING_ALARM = streamd.StreamStore.PENDING_ALARM
     SPILL_CAP = streamd.StreamStore.SPILL_CAP
+    FLUSH_ROWS_PER_S = streamd.StreamStore.FLUSH_ROWS_PER_S
 
     def __init__(self) -> None:
         self.wedged = True
+        self.sidecar_rows = 0
         self.pending = 1234
         self.spilled = 0
         self.spill_corrupt = 0
@@ -203,6 +205,9 @@ class _Store:
         moved, self.pending = self.pending, 0
         self.spilled += moved
         return moved
+
+    def drain_rows_estimate(self) -> int:
+        return self.pending + self.sidecar_rows
 
     def mark_startup_gap(self) -> None:
         pass

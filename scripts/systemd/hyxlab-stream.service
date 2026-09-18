@@ -7,6 +7,12 @@ Type=simple
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.streamd
 Restart=always
+# 2x collector.streamd.DRAIN_BUDGET_S. The shutdown drain writes buffered
+# rows at a measured 7,100/s and systemd SIGKILLs whatever is still running
+# when this expires; unset, it was the 90s default, which nothing had
+# budgeted against. Pinned here so the deadline the drain sizes itself to is
+# a declared constant (tests/test_drain_budget.py).
+TimeoutStopSec=180
 RestartSec=10
 MemoryMax=2G
 
