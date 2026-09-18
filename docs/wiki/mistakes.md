@@ -1664,6 +1664,60 @@ Format: what happened → root cause → error type → prevention tier
     rate, without restating the span goes red. Verified red against the
     old rate: setting `BUFFER_ROWS_PER_S = 105` fails three tests.
 
+61. **2026-09-18 -- a shutdown path was made REACHABLE and never TIMED,
+    and the deadline it races was a default nothing in the repo had
+    written down.** `collector.streamd._final_drain` exists so that "no
+    buffered row dies with the process", and #54 (2026-09-12) fixed the
+    half everyone looks at: SIGTERM now reaches it. Nobody then asked how
+    LONG it takes, or what stops it. systemd SIGKILLs a unit
+    `TimeoutStopSec` after SIGTERM, `hyxlab-stream.service` set none, so
+    the deadline was systemd's 90s DEFAULT -- a load-bearing constant
+    living outside the repo, sized by nobody, changeable by any host-wide
+    config.
+    **Both sides measured 2026-09-18, and they do not fit.** `flush()`
+    sustains **7,100 rows/s** end to end (50k 7.05s, 200k 28.04s, 400k
+    56.46s, 1M 140.66s -- linear within 0.7%), so 90s bought ~639,000
+    rows. But `flush()` writes the buffer AND the whole sidecar in ONE
+    transaction, and the sidecar is unbounded: the 7h poly-sweep wedge
+    priced in its own comment is 6.3M rows, ~890s, **10x the deadline**
+    (measured directly at 2M rows: 285.6s).
+    **Losing the race is strictly worse than declining it, which is the
+    non-obvious half.** A SIGKILL mid-drain is not a rollback-and-retry:
+    DuckDB does roll the transaction back and the sidecar does survive
+    (it is unlinked only after commit), but `flush()` has by then moved
+    the in-memory buffers into LOCALS, and SIGKILL runs neither the
+    `except BaseException` that puts them back nor the `spill_all` that
+    would have saved them. Up to SPILL_CAP rows -- ~27 min of tape -- die
+    with no gap row marking the hole, because the gap rows are in the same
+    buffer. The drain's own failure mode is the loss it was written to
+    prevent.
+    **The cheap path was there the whole time and was only ever the
+    fallback.** `spill_all` moved the same 400,000 rows in **1.11s**
+    against `flush()`'s 56.46s (51x), is equally lossless, and the next
+    boot drains the sidecar ahead of the buffer by design. The old drain
+    reached it only from `except` -- i.e. only when the archive was
+    UNREACHABLE. On the opposite path (archive reachable, wedge's worth of
+    backlog queued behind it) it started the flush and lost.
+    **Generalises: a rule of this repo is that a recovery claim gets
+    tested, not assumed (#12). The corollary earned here is that a
+    recovery claim on a SUPERVISED process has a WALL CLOCK, and the
+    supervisor's timeout is part of the claim.** "It runs on SIGTERM" and
+    "it finishes before SIGKILL" are two different assertions; #54 proved
+    the first and was read as proving both. Before writing cleanup into a
+    signal path, measure its throughput, name the supervisor's timeout,
+    and check that the timeout is written down in YOUR repo rather than
+    inherited from the manager's defaults.
+    Fix: `StreamStore.FLUSH_ROWS_PER_S` and `SPILL_BYTES_PER_ROW` carrying
+    their measurements; `drain_rows_estimate()` sizing the sidecar from a
+    `stat()` (never the parse the drain is deciding whether it can
+    afford); a `DRAIN_BUDGET_S` refusal that spills rather than starting a
+    flush it cannot finish; and `TimeoutStopSec=180` pinned in the unit.
+    `DRAIN_BUDGET_S` is 90s = 1.6x a full buffer (56.3s), so only a
+    SIDECAR backlog can trip the refusal and an ordinary restart still
+    flushes. `tests/test_drain_budget.py` pins both ratios and the
+    refusal; verified red three ways (no refusal, unit without
+    `TimeoutStopSec`, budget under a full buffer).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

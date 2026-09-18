@@ -60,3 +60,16 @@
   Absence of that line is the whole proof. SIGKILL and a cgroup OOM kill
   skip every one of these regardless, so cleanup that must survive those
   belongs on disk, not in a handler.
+- A cleanup handler that RUNS is not a cleanup handler that FINISHES.
+  systemd SIGKILLs a unit `TimeoutStopSec` after SIGTERM, so a shutdown
+  path has a row budget, not just a code path. `streamd._final_drain`
+  flushes at a measured 7,100 rows/s against an unbounded sidecar (a 7h
+  wedge is 6.3M rows, ~890s) while the unit inherited systemd's 90s
+  DEFAULT -- the deadline was not written down anywhere in this repo.
+  Losing that race is worse than declining it: SIGKILL lands after
+  `flush()` has moved the buffers into locals, skipping the `except` that
+  restores them and the spill that would have saved them (mistakes #61).
+  So: pin `TimeoutStopSec` in the unit, measure the cleanup's throughput,
+  and make the cleanup REFUSE work it cannot finish in the budget --
+  preferring the fast lossless path (spill to disk, drain next boot) over
+  the slow one that gets killed halfway.
