@@ -342,6 +342,17 @@ structure — see [venues](venues.md)).
 - Tier-1 PASS never green-lights capital; Tier-1 FAIL kills outright.
 - Parameter changes after registration = exploratory, cannot upgrade a
   verdict. Trial counts recorded in manifests for DSR deflation.
+- **An atlas flag is a SEARCH result, at every tier including the
+  strictest** (2026-09-19, mistakes #63). The quoted tier returned its
+  first `confirmed` ever on 09-19 (`Economics|1h|d2`) -- one of 18
+  simultaneous tests, at a nominal alpha of 0.0443, when a complete null
+  expects 0.9 of them, and on the 4th look at one accumulating sample
+  with the gap flat across all four. Family-wise (Holm, 0.05/18 =
+  0.00278) it does not survive, and **no quoted bucket has ever confirmed
+  against the search that produced it.** Read `quoted_verdict.family`,
+  `quoted_alpha` and `quoted_looks` BEFORE treating any atlas bucket as a
+  lead worth registering; `flagged_quoted` alone is the least informative
+  of the four.
 
 ## Related
 - [simulation-honesty](simulation-honesty.md) — the machinery enforcing this

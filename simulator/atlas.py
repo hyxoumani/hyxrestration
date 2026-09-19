@@ -200,6 +200,56 @@ reject it (Financials 6h d4: 51 days, needed 69; 6h d8: 54, needed 57) -- so
 are unchanged -- this re-reads what `not_significant` is evidence of, and
 moves no bucket into or out of any status.
 
+One test, or eighteen? (2026-09-19, mistakes #63). Every refinement above
+made the quoted tier STRICTER and none of them changed what an individual
+`confirmed` MEANS, because for five readings the tier printed zero and a
+zero needs no denominator. On the 09-19 reading it printed its first
+`confirmed` ever -- `Economics|1h|d2` -- and the missing denominator became
+the whole reading. The tier ran **18** quoted tests that reading, each at a
+nominal two-sided 0.05, so **0.9 false confirmations were expected under a
+complete null**. One arrived. Measured the same day, its nominal alpha is
+**0.0442** (the interval boundary sits at z* = 2.012 against the 1.96 the
+test uses): the first positive in the tier's history clears the bar it is
+judged against by 0.0026 in probability, and is the single most marginal
+outcome consistent with confirming at all.
+
+`MIN_N`, `quoted_days_to_detect` and the day tiers all bound the evidence
+INSIDE one bucket. None of them bounds the number of buckets, and the
+report's headline count is a SEARCH over 408 of them. Reporting a search's
+best result at the significance of a single pre-registered test is
+mistakes #28's error wearing the tier's own clothes.
+
+Every bucket therefore carries `quoted_alpha` -- the nominal two-sided alpha
+at which its interval verdict flips, i.e. the p-value the boolean was hiding
+-- and the report carries `quoted_verdict.family`: the family size (tests
+that RAN, since a `refuted_sign` consumed a look even though it can never
+confirm), `alpha_family` = 0.05/m, the expected false-confirmation count, and
+a Holm step-down over the family. `quoted_days_to_detect_family` is
+`quoted_days_to_detect` at the family-adjusted z, so a bucket that wants to
+confirm honestly can read what it would cost. **On 09-19 the Holm threshold
+is 0.00278 and the smallest nominal alpha in the family is 0.0442, so the
+family-wise tier is EMPTY: the atlas has still never confirmed a quoted
+bucket.**
+
+`flagged_quoted` and `quoted_status` are UNCHANGED, as at every tier before
+this one -- cross-report comparability is the reason the archive is readable
+at all, and a field that silently changes meaning costs more than the field
+is worth. The family verdict is an ADDITIONAL, strictly more conservative
+reading beside it, exactly as `flagged_day_weighted` sits beside `flagged`.
+
+The looks are the other denominator, and it is NOT corrected here.
+`Economics|1h|d2` was tested on 09-09, 09-12, 09-16 and 09-19 -- four looks
+at one accumulating sample, each at nominal 0.05, with the quoted gap FLAT
+across all of them (0.0912, 0.0868, 0.0883, 0.0901) while `quoted_days` grew
+82 -> 92 and narrowed the interval underneath it. That is textbook optional
+stopping: the reading did not change, the bar moved down to meet it. Every
+bucket carries `quoted_looks` (distinct prior data states in which its
+quoted test ran) so the exposure is READABLE; it is deliberately not spent
+as an alpha, because these looks are nested samples rather than independent
+tests and an alpha-spending function fitted after the fact would be the
+threshold-fitting this module refused at MIN_N. Read `quoted_looks` as: a
+nominal alpha is a per-look figure, and this bucket has had four.
+
 Output: reports/atlas/<ts>.json + printed markdown table of flags.
 """
 
@@ -210,6 +260,7 @@ import json
 import math
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import NormalDist
 
 import duckdb
 
@@ -717,13 +768,22 @@ def build_atlas(conn) -> dict:
         # FULL-SAMPLE day-weighted gap, fixed before the quoted outcome is
         # seen, so this is power, never a re-fit of the verdict. Status and
         # MIN_N are untouched.
-        days_to_detect = (
-            _days_to_detect(realized_dw, implied_dw) if flagged_day_weighted else None
-        )
+        days_to_detect = _days_to_detect(realized_dw, implied_dw) if flagged_day_weighted else None
         quoted_powered = (
             None
             if quoted_status in ("not_applicable", "silent")
             else days_to_detect is not None and quoted_days >= days_to_detect
+        )
+        # ONE TEST, OR EIGHTEEN (2026-09-19). The alpha the boolean above was
+        # read at, made explicit, so the tier's verdicts can be compared to
+        # each other and corrected for the search that produced them. Defined
+        # only where the INTERVAL test ran: `refuted_sign` short-circuits on
+        # the sign before reaching an interval, so it has no boundary in the
+        # confirming direction (the family below still counts its look).
+        quoted_alpha = (
+            _boundary_alpha(quoted_realized_dw, quoted_implied_dw, quoted_days)
+            if quoted_status in ("confirmed", "not_significant")
+            else None
         )
         buckets.append(
             {
@@ -778,6 +838,7 @@ def build_atlas(conn) -> dict:
                 "quoted_status": quoted_status,
                 "quoted_days_to_detect": days_to_detect,
                 "quoted_powered": quoted_powered,
+                "quoted_alpha": (round(quoted_alpha, 6) if quoted_alpha is not None else None),
                 # tier-neutral and readable even where the tier is silent:
                 # how much of the day-weighted gap survives on two-sided
                 # books. > 1 means the gap GREW; a negative value means it
@@ -852,6 +913,12 @@ def build_atlas(conn) -> dict:
             "and more days of it tighten the interval rather than widen it"
         ),
         "quoted_rule": f"spread = ask - bid <= {MAX_QUOTED_SPREAD} on the mid's own candle",
+        "quoted_family_rule": (
+            "the tier's headline is the best of m simultaneous tests, so a"
+            " per-test alpha is not the alpha of the headline; `quoted_verdict"
+            ".family` carries the Holm step-down and the false-confirmation"
+            " count the tier's `confirmed` must be read against"
+        ),
         "buckets": buckets,
         "flagged": [b for b in buckets if b["flagged"]],
         "flagged_robust": [b for b in buckets if b["flagged_robust"]],
@@ -866,7 +933,10 @@ def build_atlas(conn) -> dict:
         # day-weighted tier size — the arithmetic is the guard against
         # reading a zero as a measurement again.
         "flag_verdict": _flag_verdict(buckets),
-        "quoted_verdict": _quoted_verdict(buckets),
+        # the family correction MUTATES buckets (see `_quoted_family`), and
+        # `buckets` above is the same list object, so it must run before the
+        # report is serialised -- it does, being evaluated here.
+        "quoted_verdict": _quoted_verdict(buckets) | {"family": _quoted_family(buckets)},
     }
 
 
@@ -880,18 +950,62 @@ QUOTED_STATUSES = ("confirmed", "not_significant", "refuted_sign", "silent")
 MAX_DETECT_DAYS = 5000
 
 
-def _days_to_detect(realized: float, implied: float) -> int | None:
+def _days_to_detect(realized: float, implied: float, z: float = Z95) -> int | None:
     """Fewest day-draws at which Wilson at `realized` excludes `implied`.
 
     Deterministic, not a probability: the n at which a gap of exactly this
     size would clear the interval the quoted tier applies. None when no n up
     to MAX_DETECT_DAYS gets there (a zero or vanishing gap).
+
+    `z` defaults to the per-test Z95 the tier's own verdict uses. Passing the
+    family-adjusted z (2026-09-19) answers the other question a bucket can
+    ask -- what it would cost to confirm against the whole search rather than
+    against itself -- with the SAME effect size and the same search ceiling,
+    so the two numbers are comparable by construction.
     """
     for d in range(1, MAX_DETECT_DAYS + 1):
-        lo, hi = wilson(realized * d, d)
+        lo, hi = wilson(realized * d, d, z=z)
         if not lo <= implied <= hi:
             return d
     return None
+
+
+#: The per-test significance every Wilson verdict in this module is written
+#: against. Named because the family correction divides it, and a magic 0.05
+#: in two places is how the divisor and the dividend drift apart.
+ALPHA = 0.05
+
+#: Bisection ceiling for `_boundary_alpha`. z = 40 is an alpha below 1e-300;
+#: past it the float underflows to 0.0 and the number stops being readable.
+MAX_BOUNDARY_Z = 40.0
+
+
+def _boundary_alpha(realized: float, implied: float, days: int) -> float | None:
+    """The nominal two-sided alpha at which this bucket's verdict flips.
+
+    `flagged_quoted` is a boolean read at a fixed z, so a bucket that clears
+    the interval by 0.0026 and one that clears it by 0.20 print identically
+    -- and when the tier's FIRST confirmation in its history turned out to be
+    the former (Economics|1h|d2, 2026-09-19, z* = 2.012), the boolean was the
+    only thing anyone had to read it with. This is the p-value that boolean
+    was hiding: the alpha whose Wilson interval has `implied` exactly on its
+    edge. Comparable across buckets, and the input Holm needs.
+
+    Monotone by construction -- the interval widens with z -- so a bisection
+    is exact to float precision rather than a search over a grid. None when
+    `days` is zero (no test to have a boundary).
+    """
+    if not days:
+        return None
+    lo, hi = 0.0, MAX_BOUNDARY_Z
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        wlo, whi = wilson(realized * days, days, z=mid)
+        if wlo <= implied <= whi:
+            hi = mid
+        else:
+            lo = mid
+    return 2 * (1 - NormalDist().cdf((lo + hi) / 2))
 
 
 def _flag_verdict(buckets: list[dict]) -> dict:
@@ -913,6 +1027,98 @@ def _flag_verdict(buckets: list[dict]) -> dict:
         "counts": counts,
         "tested": tested,
         "flagged_share_of_tested": (round(counts["flagged"] / tested, 4) if tested else None),
+    }
+
+
+#: A quoted test that RAN, whatever it concluded. `refuted_sign` belongs
+#: here: it consumed one of the family's looks, and on different data the
+#: same bucket's test would have reached the interval. Excluding it would
+#: shrink the divisor using the outcome, which is the error the correction
+#: exists to prevent.
+QUOTED_TESTED_STATUSES = ("confirmed", "not_significant", "refuted_sign")
+
+
+def _quoted_family(buckets: list[dict]) -> dict:
+    """Correct the quoted tier for the search that produced it, and write
+    each bucket's family-wise verdict back onto it.
+
+    The tier is a SEARCH: 408 buckets, m of them tested, each at a nominal
+    0.05, and the report's headline is the best of them. Under a complete
+    null that search is expected to return `ALPHA * m` confirmations -- 0.9
+    on the 09-19 reading, which is the reading on which the tier returned
+    its first confirmation ever, at a nominal alpha of 0.0442. Holm is the
+    minimum defensible reading of such a count and needs no independence
+    assumption, which matters here because sibling deciles of one category
+    plainly are not independent (the whole `clusters`/`days` apparatus above
+    exists because of it). It is a step-DOWN: sort the family's alphas
+    ascending and reject while alpha_(i) <= ALPHA / (m - i), stopping at the
+    first failure.
+
+    `refuted_sign` enters with alpha 1.0 -- it consumed a look and produced
+    no evidence in the confirming direction -- so it can never be rejected
+    and never shortens the ladder above itself.
+
+    Mutates `buckets` rather than returning a side table because every other
+    quoted field lives on the bucket, and a verdict readable only by joining
+    two structures is a verdict nobody reads.
+    """
+    tested = [b for b in buckets if b["quoted_status"] in QUOTED_TESTED_STATUSES]
+    m = len(tested)
+    alpha_family = ALPHA / m if m else None
+    z_family = NormalDist().inv_cdf(1 - alpha_family / 2) if m else None
+
+    ranked = sorted(
+        tested,
+        key=lambda b: b["quoted_alpha"] if b["quoted_alpha"] is not None else 1.0,
+    )
+    confirmed_family: list[dict] = []
+    still_rejecting = True
+    for i, b in enumerate(ranked):
+        alpha = b["quoted_alpha"] if b["quoted_alpha"] is not None else 1.0
+        if still_rejecting and alpha <= ALPHA / (m - i):
+            b["quoted_confirmed_family"] = True
+            confirmed_family.append(b)
+        else:
+            still_rejecting = False
+            b["quoted_confirmed_family"] = False
+    for b in buckets:
+        b.setdefault("quoted_confirmed_family", None)
+        # what confirming against the whole search would COST this bucket, in
+        # the same unit and at the same fixed effect size as
+        # `quoted_days_to_detect`. None where no test ran.
+        b["quoted_days_to_detect_family"] = (
+            _days_to_detect(b["realized_day_weighted"], b["implied_day_weighted"], z=z_family)
+            if z_family is not None and b["quoted_status"] in QUOTED_TESTED_STATUSES
+            else None
+        )
+    alphas = [b["quoted_alpha"] for b in tested if b["quoted_alpha"] is not None]
+    return {
+        "rule": (
+            "Holm step-down at ALPHA over the tests that RAN this reading;"
+            " a nominal per-test alpha answers 'is THIS bucket calibrated',"
+            " and the tier's headline answers 'did ANY of m buckets look"
+            " uncalibrated', which is a different question with a different"
+            " threshold"
+        ),
+        "tests": m,
+        "alpha": ALPHA,
+        "alpha_family": round(alpha_family, 6) if alpha_family is not None else None,
+        # what a complete null is EXPECTED to hand back at the nominal alpha.
+        # The number to read any non-zero `confirmed` count against.
+        "expected_false_confirmations": round(ALPHA * m, 2) if m else None,
+        "min_alpha": round(min(alphas), 6) if alphas else None,
+        "confirmed_family": [
+            f"{b['category']}|{b['horizon']}|d{b['decile']}" for b in confirmed_family
+        ],
+        # the sequential exposure, REPORTED and deliberately not spent: these
+        # are nested samples, not independent tests, and fitting an
+        # alpha-spending function to an archive already read is the
+        # threshold-fitting MIN_N refused.
+        "looks_rule": (
+            "`quoted_looks` counts distinct prior DATA states in which a"
+            " bucket's quoted test ran; a nominal alpha is a per-look figure"
+            " and this correction bounds the per-reading family only"
+        ),
     }
 
 
@@ -1005,6 +1211,37 @@ def _verdict_point(report: dict, field: str, pop_key: str, statuses: tuple) -> d
         "tested_powered": v.get("tested_powered"),
         "shares": {s: (round(counts[s] / pop, 4) if pop else None) for s in statuses},
     }
+
+
+def annotate_quoted_looks(out_dir: Path, current: dict) -> None:
+    """How many prior readings already tested each bucket's quoted gap.
+
+    `quoted_verdict.family` bounds the m tests of ONE reading. It says
+    nothing about the same bucket being tested again every few days on a
+    sample that only grows -- and that is how the tier's first confirmation
+    arrived: `Economics|1h|d2` was tested on 09-09, 09-12, 09-16 and 09-19
+    with a quoted gap flat at 0.087-0.091 across all four, while
+    `quoted_days` grew 82 -> 92 and narrowed the interval down onto an
+    unchanged reading. Nothing about the market changed on 09-19; the bar
+    did.
+
+    Counted on distinct DATA states, the same unit `tier_stability` uses,
+    and excluding the current run (a re-run on identical data is not a
+    second look). A prior written before `quoted_status` existed cannot say
+    whether a test ran, so it contributes nothing rather than a zero.
+
+    Reported, never spent: see `_quoted_family`'s `looks_rule`.
+    """
+    priors, _ = _distinct_readings(
+        out_dir, json.dumps(current.get("data_fingerprint"), sort_keys=True)
+    )
+    looks: dict[tuple, int] = {}
+    for rep in priors:
+        for b in rep.get("buckets", []):
+            if b.get("quoted_status") in QUOTED_TESTED_STATUSES:
+                looks[_key(b)] = looks.get(_key(b), 0) + 1
+    for b in current["buckets"]:
+        b["quoted_looks"] = looks.get(_key(b), 0)
 
 
 def verdict_stability(out_dir: Path, current: dict) -> dict:
@@ -1121,6 +1358,7 @@ def main() -> None:
     # not one of its priors.
     atlas["tier_stability"] = tier_stability(out_dir, atlas)
     atlas["verdict_stability"] = verdict_stability(out_dir, atlas)
+    annotate_quoted_looks(out_dir, atlas)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(atlas, indent=1) + "\n")
 

@@ -2088,3 +2088,60 @@ tree it happens to run in is not evidence of anything.**
     "did not run" is the true thing to say about those, and banking them
     as measured would be #28 by a new route. A source guard fails any
     future `already reported` WATCH that hand-rolls `print`.
+
+63. **2026-09-19 -- a report's first positive in its history was printed
+    at the significance of a single pre-registered test, when it was the
+    best of EIGHTEEN.** `simulator/atlas.py`'s quoted tier is the
+    strictest of five, and every refinement it ever received made an
+    individual bucket's evidence harder to fake: cluster-robust, then
+    day-robust, then day-weighted, then two-sided books only (#32/#33),
+    then powered (09-12). **Not one of them bounded the NUMBER of
+    buckets.** The tier ran 18 quoted tests on the 09-19 reading, each at
+    a nominal two-sided 0.05, so a complete null was expected to hand back
+    **0.9 confirmations**. Exactly one arrived -- `Economics|1h|d2`, the
+    first `confirmed` in the archive's 31-reading history -- and the
+    report printed it as a boolean with no denominator beside it.
+    **Measured: its nominal alpha is 0.0443** (interval boundary at
+    z* = 2.012 against the 1.96 the test uses). The tier's entire history
+    of positives is one bucket clearing its bar by 0.0026 in probability,
+    which is the single most marginal outcome consistent with confirming
+    at all; Holm over the family needs 0.00278, so **family-wise the atlas
+    has still never confirmed a quoted bucket.**
+    **The defect hid behind a zero.** For five readings the tier printed
+    `0`, and a zero needs no denominator -- so the missing one cost
+    nothing and stayed unread, exactly like #58's false premise. The
+    denominator only became load-bearing on the first reading that had
+    something to divide, which is the reading where a wrong one does
+    damage.
+    **The second denominator is the LOOKS, and it is worse than it
+    sounds.** That bucket was tested on 09-09, 09-12, 09-16 and 09-19 with
+    its quoted gap FLAT across all four (0.0912, 0.0868, 0.0883, 0.0901)
+    while `quoted_days` grew 82 -> 92 and narrowed the interval down onto
+    an unchanged reading. **Nothing about the market changed on the day it
+    confirmed; the bar moved down to meet it.** That is optional stopping
+    on an accumulating sample, and a standing report that is re-run
+    "whenever the data has grown" does it by construction.
+    **RULE: a threshold that selects the best of m candidates is a SEARCH,
+    and its headline cannot be reported at a single test's alpha. Before
+    trusting a report's first positive, ask three questions in order --
+    how many tests ran, how many looks has this candidate had, and by how
+    much did it clear? A tier that reports only the third has told you the
+    least informative of the three.** This is #28 (the strength of
+    evidence is not the strength of the claim) in a place five rounds of
+    strictness had already been applied, which is why it survived: each
+    round made the per-bucket test harder and left the search untouched.
+    Fix: per-bucket `quoted_alpha` (the p-value the boolean was hiding),
+    `quoted_verdict.family` carrying the family size, `alpha_family`, the
+    expected false-confirmation count and a Holm step-down;
+    `quoted_days_to_detect_family` for what confirming against the search
+    would cost (102 quoted days against the 92 it has); and `quoted_looks`
+    per bucket, REPORTED and deliberately not spent -- nested samples are
+    not independent tests, and an alpha-spending function fitted to an
+    archive already read would be the threshold-fitting this module
+    refused at `MIN_N`. `flagged_quoted` and `quoted_status` UNCHANGED, as
+    at every tier before this one: cross-report comparability is why the
+    archive is readable at all. `tests/test_hyxlab_atlas_family.py`
+    (15 tests); verified red four ways -- flat alpha instead of the Holm
+    step-down, `refuted_sign` dropped from the family (shrinking the
+    divisor using the outcome), the boundary bisection inverted, and
+    `quoted_looks` counting report FILES rather than distinct data states.
