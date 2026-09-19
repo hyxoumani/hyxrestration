@@ -36,6 +36,7 @@ import json
 import os
 import signal
 import time as _time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -120,6 +121,30 @@ STALL_HEARTBEAT_S = 300.0
 # cancellation, a periodic flush still in flight on its worker thread -- a
 # budget of its own. `tests/test_drain_budget.py` pins both ratios.
 DRAIN_BUDGET_S = 90.0
+
+# How long the shutdown drain will wait for a PERIODIC flush to get out of
+# its way, out of the budget above.
+#
+# `flusher()` runs `store.flush()` via `asyncio.to_thread`, and `run()`'s
+# `finally` cancels that task before calling `_final_drain`. Cancelling a
+# task awaiting `to_thread` returns in 0.00s while the worker thread keeps
+# running -- it is joined only at interpreter exit (measured 2026-09-18).
+# So without a lock the drain writes CONCURRENTLY with a flush already in
+# flight, on one buffer and one sidecar: measured, 400 sidecar rows became
+# 800 archived rows, and a 60-row `spill_all` was deleted by the in-flight
+# flush's post-commit unlink -- absent from archive, sidecar and buffer
+# alike, with the gap rows that would have marked the hole sitting in the
+# same lost batch. `StreamStore._flush_lock` closes that; this is the
+# drain's half, because it CANNOT wait forever -- SIGKILL arrives
+# `TimeoutStopSec` after SIGTERM whether the flusher finished or not.
+#
+# The wait is charged against DRAIN_BUDGET_S rather than added to it: a
+# drain that waited 30s has 30s less to write in, since the deadline runs
+# from SIGTERM. 30s leaves 60s = 426,000 rows, still over the SPILL_CAP
+# buffer (56.3s) the drain is REQUIRED to flush, so waiting never turns an
+# ordinary restart into a sidecar handoff. `tests/test_flush_concurrency.py`
+# pins that composition and the unit's `TimeoutStopSec` covers the sum.
+DRAIN_LOCK_WAIT_S = 30.0
 
 
 def load_env(path: str | Path = ".env") -> None:
@@ -635,11 +660,11 @@ class Daemon:
                 loop.remove_signal_handler(sig)
         self._stop_signals = []
 
-    def _final_drain(self) -> None:
+    def _final_drain(self, elapsed: Callable[[], float] | None = None) -> None:
         """The last write of this process's life, and the one that must not
         raise.
 
-        Three archive holes live here. (a) and (b) only open on the path
+        Four archive holes live here. (a) and (b) only open on the path
         where the archive is unreachable — which at shutdown is the LIKELY
         path, because a wedged archive is the usual reason a restart is
         happening. (c) opens on the OPPOSITE path: an archive that is
@@ -664,13 +689,56 @@ class Daemon:
         would never be written: `ok()` is unreachable when the drain that
         would have ended the stall is the thing that failed, so the episode
         the restart interrupted is recorded as `open` — a lower bound.
+        (d) The drain does not own this store alone: the periodic flush it
+        races runs on an `asyncio.to_thread` worker that OUTLIVES the task
+        cancellation in `run()`'s `finally` (measured). Two `flush()` calls
+        archive the same sidecar twice, and a `spill_all` beside one lands
+        in the file that flush unlinks after commit. Everything below is
+        therefore under `store.exclusive`, and a wait it loses is declined
+        rather than raced; see `DRAIN_LOCK_WAIT_S`.
 
         Nothing here propagates: this runs inside `run()`'s `finally`, where
         a raise would mask the exception that ended the daemon and skip the
         shutdown line.
         """
         now = datetime.now(UTC)
-        budget = int(DRAIN_BUDGET_S * self.store.FLUSH_ROWS_PER_S)
+        t0 = _time.monotonic()
+        if elapsed is None:
+
+            def elapsed() -> float:
+                return _time.monotonic() - t0
+
+        with self.store.exclusive(DRAIN_LOCK_WAIT_S) as got:
+            if not got:
+                # (d) A periodic flush is still writing on its worker
+                # thread, so every action here is a hole: a flush would
+                # archive the sidecar twice, a spill would be unlinked by
+                # the commit in flight. Declining is the only safe move,
+                # and the rows are in many cases the very ones that flush
+                # is writing -- what is at risk is only what arrived since
+                # it swapped the buffers.
+                _log(
+                    f"CRITICAL final drain SKIPPED: a flush still holds the store after "
+                    f"{DRAIN_LOCK_WAIT_S:.0f}s; {self.store.pending} row(s) left in memory"
+                )
+                self.stalls.interrupted(now, handoff=0)
+                return
+            self._drain_locked(now, elapsed)
+
+    def _drain_locked(self, now: datetime, elapsed: Callable[[], float]) -> None:
+        """The drain proper, under `store.exclusive`. Split out so the
+        decision and the write it leads to cannot be reached without the
+        lock they both depend on."""
+        # What is left of the budget after the wait above -- SIGKILL lands
+        # `TimeoutStopSec` after SIGTERM, not after the lock came free. The
+        # charge is truncated to WHOLE seconds so an uncontended drain (the
+        # normal case: microseconds to take a free lock) is charged nothing
+        # and the boundary stays exactly where DRAIN_BUDGET_S puts it.
+        # Sub-second resolution here would be false precision anyway --
+        # FLUSH_ROWS_PER_S is a rounded-down measurement, and one second of
+        # it is 7,100 rows.
+        left = max(0.0, DRAIN_BUDGET_S - float(int(elapsed())))
+        budget = int(left * self.store.FLUSH_ROWS_PER_S)
         est = self.store.drain_rows_estimate()
         if est > budget:
             # (c) The flush cannot finish before systemd's SIGKILL, so
@@ -683,15 +751,16 @@ class Daemon:
                 moved = self.store.spill_all()
             except Exception as spill_exc:
                 _log(
-                    f"CRITICAL drain of ~{est} row(s) exceeds the {DRAIN_BUDGET_S:.0f}s "
-                    f"budget and the sidecar refused the handoff "
+                    f"CRITICAL drain of ~{est} row(s) exceeds the {left:.0f}s "
+                    f"budget left and the sidecar refused the handoff "
                     f"({_short_err(spill_exc)}) — {self.store.pending} row(s) lost"
                 )
             else:
                 _log(
                     f"final drain DECLINED: ~{est} row(s) is "
-                    f"~{est / self.store.FLUSH_ROWS_PER_S:.0f}s of flush against a "
-                    f"{DRAIN_BUDGET_S:.0f}s budget; {moved} row(s) moved to the sidecar "
+                    f"~{est / self.store.FLUSH_ROWS_PER_S:.0f}s of flush against the "
+                    f"{left:.0f}s left of a {DRAIN_BUDGET_S:.0f}s budget; "
+                    f"{moved} row(s) moved to the sidecar "
                     f"for the next boot to drain"
                 )
             # No flush failed here, so the episode is not closed and no

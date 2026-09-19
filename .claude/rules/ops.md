@@ -60,6 +60,21 @@
   Absence of that line is the whole proof. SIGKILL and a cgroup OOM kill
   skip every one of these regardless, so cleanup that must survive those
   belongs on disk, not in a handler.
+- "Single writer" has to name its concurrency UNIT. The daemon-owns-the-
+  file rules above (EXP-1372 lock ID, EXP-1373 spill directory) exclude a
+  second PROCESS and prove nothing about the threads inside the one
+  legitimate owner. `streamd` ran its shutdown drain CONCURRENTLY with a
+  periodic flush on one `StreamStore`, because `run()`'s `finally` cancels
+  the flusher task and cancelling a task awaiting `asyncio.to_thread`
+  returns in 0.00s while the worker thread keeps running (joined only at
+  interpreter exit). Measured: 400 sidecar rows archived as 800, and a
+  60-row `spill_all` deleted by the in-flight flush's post-commit unlink --
+  absent from archive, sidecar and buffer, with the gap rows that would
+  have marked the hole in the same lost batch (mistakes #62). So: a
+  buffered writer takes its OWN lock across every buffer/sidecar mutation,
+  a shutdown path acquires that lock across its decision AND the write it
+  leads to, and it waits with a bound charged against the supervisor's stop
+  budget -- never `cancel()` as a synchronisation primitive.
 - A cleanup handler that RUNS is not a cleanup handler that FINISHES.
   systemd SIGKILLs a unit `TimeoutStopSec` after SIGTERM, so a shutdown
   path has a row budget, not just a code path. `streamd._final_drain`

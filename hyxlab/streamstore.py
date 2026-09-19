@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -169,6 +170,23 @@ class StreamStore:
         # with `spilled`: a lost row does not become un-lost once the file
         # drains, and the operator needs to see it after the fact.
         self.spill_corrupt = 0
+        # One writer at a time, across THREADS -- not a DuckDB lock, which
+        # excludes nothing here because both racers are this same process.
+        # `streamd.flusher()` runs `flush()` on an `asyncio.to_thread`
+        # worker, and cancelling a task awaiting `to_thread` returns in
+        # 0.00s while that worker keeps running (measured 2026-09-18; the
+        # thread is joined only at interpreter exit). So the shutdown
+        # drain's write overlaps a periodic flush's write, on one buffer and
+        # one sidecar, and three silent holes open: both flushes parse the
+        # SAME sidecar and insert it twice (400 rows in, 800 archived --
+        # measured); a `spill_all` lands in the sidecar that the in-flight
+        # flush then unlinks post-commit, deleting rows it never read (60
+        # rows, gone from archive, file and buffer alike -- measured); and
+        # the three-statement buffer swap splits one recv-ordered batch
+        # across two transactions. Re-entrant because the drain holds it
+        # across its decision and then calls `flush`/`spill_all` under it;
+        # see `exclusive` and `streamd.DRAIN_LOCK_WAIT_S`.
+        self._flush_lock = threading.RLock()
         # Create schema up front so readers see the tables immediately.
         with duck_connect(str(self.path)) as conn:
             conn.execute(_SCHEMA)
@@ -266,6 +284,29 @@ class StreamStore:
     def pending(self) -> int:
         return len(self._events) + len(self._trades) + len(self._gaps)
 
+    @contextlib.contextmanager
+    def exclusive(self, timeout: float):
+        """Hold the store's writer lock for a decision AND the write it
+        leads to; yields whether it was acquired within `timeout`.
+
+        For the shutdown drain, which cannot use a plain `with`: it reads
+        `drain_rows_estimate()`, chooses flush or spill, and then performs
+        it, and all three have to see the same buffer. It also cannot wait
+        forever -- SIGKILL arrives `TimeoutStopSec` after SIGTERM whether or
+        not the flusher's worker thread has finished -- so the refusal is
+        reported to the caller rather than raised: a `False` here means the
+        only safe action left is none, and saying so in the journal beats
+        racing. Never blocks the FLUSHER, which takes the lock plainly; a
+        drain that loses this wait is a drain whose rows a still-running
+        flush is in many cases already writing.
+        """
+        got = self._flush_lock.acquire(timeout=timeout)
+        try:
+            yield got
+        finally:
+            if got:
+                self._flush_lock.release()
+
     def drain_rows_estimate(self) -> int:
         """Rows the NEXT `flush()` would write: the buffer plus whatever
         the sidecar still holds.
@@ -280,10 +321,11 @@ class StreamStore:
         flush, which is the pre-existing behaviour for a sidecar it
         cannot stat.
         """
-        n = self.pending
-        with contextlib.suppress(OSError):
-            n += self._spill_path.stat().st_size // self.SPILL_BYTES_PER_ROW
-        return n
+        with self._flush_lock:
+            n = self.pending
+            with contextlib.suppress(OSError):
+                n += self._spill_path.stat().st_size // self.SPILL_BYTES_PER_ROW
+            return n
 
     @property
     def _spill_path(self) -> Path:
@@ -302,29 +344,30 @@ class StreamStore:
         written FIRST here (older than anything in memory), then
         removed only after the transaction commits — a crash between
         commit and unlink re-drains it (duplicates over holes)."""
-        n = self.pending
-        if n == 0 and not self._spill_path.exists():
-            return 0
-        events, self._events = self._events, []
-        trades, self._trades = self._trades, []
-        gaps, self._gaps = self._gaps, []
-        try:
-            with duck_connect(str(self.path)) as conn:
-                # Parse the sidecar only once the write lock is held: in
-                # a wedge it can hold hours of rows, and a flush that is
-                # about to fail on connect must not pay to load it.
-                s_events, s_trades, s_gaps = self._read_spill()
-                self._insert(conn, s_events + events, s_trades + trades, s_gaps + gaps)
-                n += len(s_events) + len(s_trades) + len(s_gaps)
-        except BaseException:
-            self._events[:0] = events
-            self._trades[:0] = trades
-            self._gaps[:0] = gaps
-            self._spill_overflow()
-            raise
-        self._spill_path.unlink(missing_ok=True)
-        self.spilled = 0
-        return n
+        with self._flush_lock:
+            n = self.pending
+            if n == 0 and not self._spill_path.exists():
+                return 0
+            events, self._events = self._events, []
+            trades, self._trades = self._trades, []
+            gaps, self._gaps = self._gaps, []
+            try:
+                with duck_connect(str(self.path)) as conn:
+                    # Parse the sidecar only once the write lock is held: in
+                    # a wedge it can hold hours of rows, and a flush that is
+                    # about to fail on connect must not pay to load it.
+                    s_events, s_trades, s_gaps = self._read_spill()
+                    self._insert(conn, s_events + events, s_trades + trades, s_gaps + gaps)
+                    n += len(s_events) + len(s_trades) + len(s_gaps)
+            except BaseException:
+                self._events[:0] = events
+                self._trades[:0] = trades
+                self._gaps[:0] = gaps
+                self._spill_overflow()
+                raise
+            self._spill_path.unlink(missing_ok=True)
+            self.spilled = 0
+            return n
 
     def spill_all(self) -> int:
         """Move EVERY pending row to the sidecar; returns rows moved.
@@ -346,6 +389,10 @@ class StreamStore:
         write lands BEFORE the buffers are trimmed — a failed disk write
         must not drop rows (mistakes #12: recovery claims get tested, not
         assumed)."""
+        with self._flush_lock:
+            return self._spill_locked(cap)
+
+    def _spill_locked(self, cap: int | None) -> int:
         over = self.pending - (self.SPILL_CAP if cap is None else cap)
         if over <= 0:
             return 0

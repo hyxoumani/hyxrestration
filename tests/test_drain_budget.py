@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -129,7 +130,14 @@ class _Store:
     SPILL_CAP = StreamStore.SPILL_CAP
     FLUSH_ROWS_PER_S = StreamStore.FLUSH_ROWS_PER_S
 
+    # The real guard, not a stub: the drain takes the store's writer lock
+    # before it decides anything, because a periodic flush on its
+    # `to_thread` worker outlives the cancellation that precedes the drain
+    # (tests/test_flush_concurrency.py).
+    exclusive = StreamStore.exclusive
+
     def __init__(self, pending: int, sidecar_rows: int = 0) -> None:
+        self._flush_lock = threading.RLock()
         self.pending = pending
         self.sidecar_rows = sidecar_rows
         self.spilled = 0

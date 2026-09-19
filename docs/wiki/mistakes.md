@@ -1718,6 +1718,57 @@ Format: what happened → root cause → error type → prevention tier
     refusal; verified red three ways (no refusal, unit without
     `TimeoutStopSec`, budget under a full buffer).
 
+62. **2026-09-19 -- the shutdown drain and the periodic flush ran at the
+    SAME TIME on one buffer, because cancelling an `asyncio.to_thread`
+    task does not stop the thread.** `streamd.flusher()` calls
+    `store.flush()` through `asyncio.to_thread`, and `run()`'s `finally`
+    cancels that task before calling `_final_drain`. The cancel LOOKS like
+    a stop and is not one: a task awaiting `to_thread` returns in 0.00s
+    while the worker thread keeps running -- CPython joins those threads
+    only at interpreter exit. So the last write of the process's life
+    overlapped a write already in flight, on one `StreamStore`, one buffer
+    and one sidecar, with no lock anywhere in the module. Every review of
+    this file for three passes (#54 reachability, #61 timing) read the
+    `finally` as sequential.
+    **Two holes, both measured 2026-09-19, both silent.** (a) Both flushes
+    parse the SAME sidecar before either unlinks it and insert it twice:
+    400 sidecar rows in, **800 archived** -- the EXP-1372 duplicate-row
+    failure mode, from inside ONE process, into tables with no key and no
+    dedupe. (b) `spill_all` appends to the sidecar while a flush is
+    mid-transaction, and that flush's post-commit `unlink` deletes the
+    handoff: **60 rows gone from archive, sidecar and buffer alike**, and
+    the gap rows that would have marked the hole were in the same lost
+    batch. (b) is precisely #61's new DECLINE branch meeting the flusher,
+    so the fix for one hole opened the path into another. A third,
+    unmeasured: the buffer swap is three statements, so two flushers can
+    split one recv-ordered batch across two transactions.
+    **Generalises: an archive-integrity argument has to name its
+    CONCURRENCY unit, not just its process.** `.claude/rules/ops.md`
+    already forbids two daemons owning one DuckDB file (EXP-1372) and two
+    bare attaches sharing a spill directory (EXP-1373) -- both about
+    separate processes, both enforced by a lock ID or a temp path. Neither
+    covers two THREADS of the one legitimate owner, and the daemon reached
+    that state through an ordinary `asyncio` idiom on its most-reviewed
+    path. When a module says "single writer", ask which writers the word
+    counts: a process lock proves nothing about the threads inside it.
+    Corollary on the shutdown side: cleanup that waits on a shared
+    resource is spending the supervisor's stop budget (#61), so the wait
+    needs a bound AND has to be charged against the same clock.
+    Fix: one re-entrant `StreamStore._flush_lock` held across `flush`,
+    `_spill_overflow`/`spill_all` and `drain_rows_estimate`, plus
+    `StreamStore.exclusive(timeout)` -- a guard that the drain holds across
+    its decision AND the write it leads to, yielding whether it was
+    acquired rather than blocking forever. A drain that loses
+    `DRAIN_LOCK_WAIT_S` (30s) declines with a CRITICAL line and the row
+    count, because with a flush in flight every action is a hole; a drain
+    that wins is charged the wait out of `DRAIN_BUDGET_S`, since SIGKILL
+    runs from SIGTERM and not from when the lock came free. 90 - 30 = 60s
+    still covers the 56.3s full buffer the drain is required to flush, so
+    a contended restart is not silently downgraded to a sidecar handoff.
+    `tests/test_flush_concurrency.py` pins the two repros and the
+    composition; verified red four ways (both holes against the pre-fix
+    store, the budget charge removed, `DRAIN_LOCK_WAIT_S = 40`).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

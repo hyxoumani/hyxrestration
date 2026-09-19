@@ -34,6 +34,7 @@ from __future__ import annotations
 import builtins
 import inspect
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -182,7 +183,12 @@ class _Store:
     SPILL_CAP = streamd.StreamStore.SPILL_CAP
     FLUSH_ROWS_PER_S = streamd.StreamStore.FLUSH_ROWS_PER_S
 
+    # The real guard: the drain takes the store's writer lock before it
+    # decides anything (tests/test_flush_concurrency.py).
+    exclusive = streamd.StreamStore.exclusive
+
     def __init__(self) -> None:
+        self._flush_lock = threading.RLock()
         self.wedged = True
         self.sidecar_rows = 0
         self.pending = 1234
