@@ -2145,3 +2145,61 @@ tree it happens to run in is not evidence of anything.**
     step-down, `refuted_sign` dropped from the family (shrinking the
     divisor using the outcome), the boundary bisection inverted, and
     `quoted_looks` counting report FILES rather than distinct data states.
+
+64. **2026-09-19 -- the multiplicity fix shipped that morning had a
+    second site, and at that site the selected candidate was usually a
+    TIE broken by clock order.** #63 bounded the atlas quoted tier's
+    family. `simulator/shadow_diurnal.py` runs the same shape of search
+    one report over: the de-trended level panel tests every hour of the
+    clock, and bound 9 correctly divides the ceiling by `hours_tested`
+    (`LEVEL_FWER / 24` = 0.00208) so `significant_hours` pays for its
+    multiplicity. **The PROSE beside it did not.** `strongest =
+    min(table, key=sign_p)` is the best of `hours_tested` candidates,
+    named in two of the three verdict strings with no denominator -- and
+    `min` resolves a tie by returning the lowest `hour_of_day`.
+    **MEASURED over the 29 distinct panel states in the archive: the
+    named hour is TIED in 26 of them, and in 23 it is not even the
+    largest deviation.** `20260716T130721` is the limit case -- one panel
+    day, all 24 hours at p=1.0, verdict "strongest hour 00Z at p=1". The
+    alphabet, published as a finding. The live report re-read after the
+    fix says the same thing from the other side: 22 of 26 scored panels
+    tied, only 4 naming an hour at all.
+    **AND THE LOOKS DENOMINATOR WAS ABSENT EXACTLY AS IN #63.** A run's
+    panel is re-read as it grows, so the same clock is searched again
+    every reading -- optional stopping by construction. `20260829T191841`
+    is the only run in the archive read at more than one panel size, and
+    across 1, 3, 7 and 8 panel days it named NOTHING: four ties (24-way,
+    8-way, 3-way, 3-way), every one of which the old prose rendered as a
+    confident "strongest hour 00Z"/"08Z". The status page had been
+    quoting those names for weeks.
+    **WHY IT SURVIVED #32, #33, #35 AND BOUND 9.** Every one of those
+    hardened the per-hour TEST -- leave-one-out centre, median centre,
+    ties dropped from `n_effective`, the FWER ceiling, the underpowered/
+    flat partition. Not one touched the SELECTION, because the selection
+    was in an f-string and not in a verdict field, so no `*_verdict`
+    registry, no status partition and no AST walk could see it. **A
+    number that only ever appears in prose is outside every guard this
+    module has.**
+    **RULE: #63's three questions apply to the number a reader QUOTES,
+    not only to the number a report calls a verdict. And add a fourth
+    before the other three -- does the minimum name one candidate at all?
+    A tied argmin is not a weak finding, it is no finding, and `min()`
+    will hand you one anyway.** Absence beats an arbitrary pick, which is
+    bound 11's rule for the unreadable applied one axis over.
+    Fix (bound 15): `_strongest_hour` returns a STRUCTURE whose
+    `hour_of_day` is None when `tied_n > 1`, carrying `tied_hours` and
+    the `of_hours_tested` it was drawn from; the verdict prose reports a
+    tie AS a tie; `strongest_hour: None` in the unscorable branch (no
+    clock searched, so no best of anything); and `level_looks` publishes
+    the prior DISTINCT panel states a run's clock was already searched in
+    (fingerprinted on the panel, never on report FILES -- 20 files here
+    cover 8 states), what each named, and `anchor_held`, which is None
+    rather than True when any reading in the sequence named nothing.
+    REPORTED, never spent: nested samples are not independent tests, the
+    same refusal `atlas.annotate_quoted_looks` makes. `level_shape_status`,
+    `significant_hours` and `sign_p_ceiling` UNCHANGED, per the
+    cross-report comparability precedent at every tier before this one.
+    Suite 1495 -> **1506**; verified red five ways (the `min` tie-break
+    restored, looks counted in report files, the current reading counting
+    itself, `anchor_held` reading True off two unnamed readings, and a
+    pre-bound-15 prior contributing a name instead of its recomputed tie).

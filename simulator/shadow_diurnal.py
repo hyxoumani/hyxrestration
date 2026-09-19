@@ -268,6 +268,39 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      What makes those runs unscorable is their DAY COUNT. The census
      publishes `no_balanced_panel_powerable_off_panel` so the answer is
      re-measured on every reading rather than trusted from this note.
+ 15. THE VERDICT NAMED A "STRONGEST HOUR" THAT WAS USUALLY A TIE BROKEN
+     BY CLOCK ORDER, AND IT NAMED IT WITHOUT THE DENOMINATOR THAT MAKES
+     IT READABLE. `significant_hours` is correctly bounded -- the sign
+     test's ceiling is `LEVEL_FWER / hours_tested` (bound 9), so a
+     bucket clearing it has paid for the multiplicity. The PROSE beside
+     it did not: `min(table, key=sign_p)` is the best of `hours_tested`
+     candidates, and `min` breaks a tie by taking the lowest
+     `hour_of_day`. MEASURED 2026-09-19 over the 29 distinct panel
+     states in the archive: the named hour is TIED in **26 of them**,
+     and `20260716T130721` is the limit case -- one panel day, all 24
+     hours at p=1.0, and the verdict reads "strongest hour 00Z at p=1".
+     That is the alphabet, published as a finding. In 23 of the 29 the
+     named hour is not even the largest deviation. So `strongest_hour`
+     is now a STRUCTURE -- `hour_of_day` is None whenever `tied_n > 1`
+     (absent, not an arbitrary pick, per bound 11's rule for the
+     unreadable), and it carries `tied_hours`, `tied_n` and the
+     `of_hours_tested` it was selected from. This is mistakes #63 at a
+     second site: each round of strictness here hardened the per-hour
+     TEST and left the SELECTION untouched.
+     AND THE SECOND DENOMINATOR IS THE LOOKS. A run's panel is re-read
+     as it grows, so the same clock is searched again every reading --
+     optional stopping, by construction, exactly as the atlas quoted
+     tier does it. MEASURED on `20260829T191841`, the only run in the
+     archive read at more than one panel size: across 1, 3, 7 and 8
+     panel days the named hour moved 00Z -> 00Z -> 08Z -> 08Z (the last
+     two a 3-way tie with 17Z and 23Z) while the largest deviation sat
+     at 13Z throughout. `level_looks` therefore publishes the prior
+     DISTINCT panel states this run has been read at, what each named,
+     and whether the anchor held -- REPORTED, never spent as an alpha,
+     for the reason `atlas.annotate_quoted_looks` gives: nested samples
+     are not independent tests. `level_shape_status`, `significant_hours`
+     and `sign_p_ceiling` are UNCHANGED, per the cross-report
+     comparability precedent at every tier before this one.
 """
 
 from __future__ import annotations
@@ -649,6 +682,36 @@ def _days_needed(ceiling: float) -> int:
     while 2.0 ** (1 - n) > ceiling:
         n += 1
     return n
+
+
+def _strongest_hour(table: list[dict], hours_tested: int) -> dict:
+    """The lowest per-hour sign p, and whether it names one hour at all.
+
+    Bound 15. This is the best of `hours_tested` candidates, and for most
+    panels in this ledger it is not a single candidate: 26 of the 29
+    distinct panel states archived on 2026-09-19 have a TIED minimum,
+    because `_sign_p` is granular in 2^-n and a short panel puts most of
+    the clock on the same value. `min()` resolves those by lowest
+    `hour_of_day`, i.e. by the alphabet, and the verdict then names an
+    hour the data did not choose.
+
+    So a tie yields `hour_of_day: None` -- absent rather than arbitrary,
+    the same rule bound 11 applies to an hour whose every draw settled.
+    `of_hours_tested` travels with it because a minimum without its
+    denominator is the defect mistakes #63 names.
+
+    Never a verdict: `significant_hours` is what clears the corrected
+    ceiling, and it is computed independently of this.
+    """
+    lowest = min(p["sign_p"] for p in table)
+    tied = [p["hour_of_day"] for p in table if p["sign_p"] == lowest]
+    return {
+        "hour_of_day": tied[0] if len(tied) == 1 else None,
+        "sign_p": lowest,
+        "tied_n": len(tied),
+        "tied_hours": tied,
+        "of_hours_tested": hours_tested,
+    }
 
 
 def _level_split(
@@ -1276,6 +1339,9 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                 "panel_days_needed": None,
                 "by_hour_of_day": [],
                 "significant_hours": [],
+                # Bound 15: no clock was searched, so there is no best of
+                # anything. None, not a zero-width tie.
+                "strongest_hour": None,
                 "level_shape_status": "unscorable",
                 "level_shape_verdict": (
                     "UNSCORABLE (no contiguous hour-to-hour change lands on the"
@@ -1361,7 +1427,29 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
     sig = [p for p in table if p["sign_p"] <= ceiling]
     cums = [p["cum_demeaned"] for p in table]
     detrended_span = _r(max(cums) - min(cums))
-    strongest = min(table, key=lambda p: p["sign_p"])
+    strongest = _strongest_hour(table, hours_tested)
+    # Bound 15: the prose may name an hour only when the minimum names
+    # one. A tie is reported AS a tie, with its width, because "strongest
+    # hour 00Z at p=1" over a 24-way tie is the clock order wearing a
+    # finding's clothes.
+    by_hod = {p["hour_of_day"]: p for p in table}
+    if strongest["hour_of_day"] is None:
+        strong_long = strong_short = (
+            f"no single strongest hour ({strongest['tied_n']} of"
+            f" {hours_tested} tie at p={strongest['sign_p']:g})"
+        )
+    else:
+        row = by_hod[strongest["hour_of_day"]]
+        strong_long = (
+            f"strongest hour {row['hour_of_day']:02d}Z at"
+            f" {row['n_below_centre']}/{row['n_days']} days below the"
+            f" leave-one-out centre (p={row['sign_p']:g}, best of"
+            f" {hours_tested} tested)"
+        )
+        strong_short = (
+            f"strongest is {row['hour_of_day']:02d}Z at p={row['sign_p']:g}"
+            f" (best of {hours_tested} tested)"
+        )
     drift = _r(sum(p["mean_d_equity"] for p in table))
 
     if status == "underpowered":
@@ -1373,10 +1461,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             f" {needed} untied panel days are needed). The shape is still worth"
             f" reading: the raw level column spans {raw_span}, and with the"
             f" run's own {drift}/day drift removed the hour-of-day shape spans"
-            f" {detrended_span}; strongest hour"
-            f" {strongest['hour_of_day']:02d}Z at {strongest['n_below_centre']}"
-            f"/{strongest['n_days']} days below the leave-one-out centre"
-            f" (p={strongest['sign_p']:g}). Not a claim."
+            f" {detrended_span}; {strong_long}. Not a claim."
         )
     elif sig:
         named = ", ".join(
@@ -1391,8 +1476,7 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
     else:
         verdict = (
             f"FLAT (no hour of {hours_tested} clears sign p {ceiling:.5f} over"
-            f" up to {max_draws} untied days; strongest is"
-            f" {strongest['hour_of_day']:02d}Z at p={strongest['sign_p']:g}). The"
+            f" up to {max_draws} untied days; {strong_short}). The"
             f" raw level column's {raw_span} span is the run's own {drift}/day"
             f" drift accumulating down the clock, not an hour-of-day effect:"
             f" de-trended it spans {detrended_span}."
@@ -1421,6 +1505,10 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             "panel_days_needed": needed,
             "by_hour_of_day": table,
             "significant_hours": [p["hour_of_day"] for p in sig],
+            # Bound 15. Beside `significant_hours`, never instead of it:
+            # that list is what cleared the corrected ceiling, this is
+            # the best of `hours_tested` and carries its denominator.
+            "strongest_hour": strongest,
             "level_shape_status": status,
             "level_shape_verdict": verdict,
             **split,
@@ -1957,6 +2045,116 @@ def panel_shortfall(ledger: duckdb.DuckDBPyConnection) -> dict:
     return {"run_id": rid, "banked": banked, "needed": needed}
 
 
+def _panel_fingerprint(level: dict) -> str | None:
+    """Identity of the DATA a run's level panel was scored on.
+
+    Bound 15. The unit of a "look" is a distinct panel STATE, not a
+    report file -- the same unit `atlas._distinct_readings` counts in,
+    and for the same reason: this archive holds 20 reports over 8
+    distinct panel states, because most readings re-score every closed
+    run in the ledger and a closed run's panel never changes again.
+    Counting files would hand a frozen run a dozen free looks.
+
+    Fingerprinted on the panel's own inputs -- its day count and, per
+    hour, the draws and the mean the sign test reads -- rather than on
+    `generated_at`, so two reports over one panel collapse to one look.
+    None when there is no panel to have a state.
+    """
+    rows = level.get("by_hour_of_day") or []
+    if not level.get("n_panel_days") or not rows:
+        return None
+    return json.dumps(
+        [
+            level.get("n_panel_days"),
+            level.get("hours_tested"),
+            [
+                [r.get("hour_of_day"), r.get("n_days"), r.get("n_effective"), r.get("sign_p")]
+                for r in rows
+            ],
+        ],
+        sort_keys=True,
+    )
+
+
+def _look_record(level: dict) -> dict:
+    """What one prior reading of a panel named, and how firmly."""
+    strongest = level.get("strongest_hour")
+    if strongest is None:
+        # A report written before bound 15 carries no structure, so the
+        # tie is recoverable only from the table -- recompute it rather
+        # than record a None that reads as "no tie".
+        strongest = _strongest_hour(
+            level["by_hour_of_day"], level.get("hours_tested") or len(level["by_hour_of_day"])
+        )
+    return {
+        "panel_days": level.get("n_panel_days"),
+        "level_shape_status": level.get("level_shape_status"),
+        "best_achievable_sign_p": level.get("best_achievable_sign_p"),
+        "strongest_hour_of_day": strongest["hour_of_day"],
+        "strongest_sign_p": strongest["sign_p"],
+        "strongest_tied_n": strongest["tied_n"],
+        "significant_hours": level.get("significant_hours"),
+    }
+
+
+def annotate_level_looks(out_dir: Path, current: dict) -> None:
+    """How many times each run's clock has already been searched.
+
+    Bound 15's second denominator. `sign_p_ceiling` bounds the m hours of
+    ONE reading; it says nothing about the same panel being re-read every
+    few days on a sample that only grows, which is what a standing report
+    does by construction. The atlas hit this first (mistakes #63) and the
+    answer is the same here: publish the exposure, do not spend it. These
+    looks are nested samples rather than independent tests, and an
+    alpha-spending function fitted to an archive already read would be
+    threshold-fitting.
+
+    Counted on distinct panel states (`_panel_fingerprint`), excluding the
+    current one -- a re-run on an unchanged panel is not a second look,
+    and this archive is mostly such re-runs. `anchor_held` compares the
+    named hour across the priors AND the current reading, and is None
+    when there is no prior to compare against or when any reading in the
+    sequence named nothing: an absence, not a True.
+    """
+    priors: dict[str, dict[str, dict]] = {}
+    for path in sorted(out_dir.glob("*.json")):
+        try:
+            rep = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        for r in rep.get("runs") or []:
+            level = r.get("diurnal_level") or {}
+            fp = _panel_fingerprint(level)
+            if fp is None:
+                continue
+            priors.setdefault(r["run_id"], {})[fp] = level
+
+    for r in current.get("runs") or []:
+        level = r.get("diurnal_level") or {}
+        fp = _panel_fingerprint(level)
+        if fp is None:
+            continue
+        states = {k: v for k, v in priors.get(r["run_id"], {}).items() if k != fp}
+        history = [_look_record(v) for v in states.values()]
+        history.sort(key=lambda h: h["panel_days"] or 0)
+        named = [h["strongest_hour_of_day"] for h in history] + [
+            level["strongest_hour"]["hour_of_day"]
+        ]
+        level["level_looks"] = {
+            "rule": (
+                "prior DISTINCT panel states in which this run's clock was"
+                " already searched; a per-hour sign p is a per-look figure."
+                " Reported, never spent: nested samples are not independent"
+                " tests (mistakes #63)"
+            ),
+            "prior": len(history),
+            "history": history,
+            "anchor_held": (
+                None if not history or any(h is None for h in named) else len(set(named)) == 1
+            ),
+        }
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ledger", default=SHADOW_DB)
@@ -1991,6 +2189,9 @@ def main(argv: list[str] | None = None) -> None:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Before the write, and reading the directory the write lands in --
+    # so the current reading is never among its own priors.
+    annotate_level_looks(out_dir, report)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=1) + "\n")
 

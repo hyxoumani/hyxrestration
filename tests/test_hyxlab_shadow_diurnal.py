@@ -1913,9 +1913,7 @@ def test_panel_shortfall_mode_prints_one_line_and_writes_no_report(tmp_path, cap
         dst.execute(f"create table {tbl} ({', '.join(f'{c[0]} {c[1]}' for c in cols)})")
         rows = src.execute(f"select * from {tbl}").fetchall()
         if rows:
-            dst.executemany(
-                f"insert into {tbl} values ({', '.join('?' * len(cols))})", rows
-            )
+            dst.executemany(f"insert into {tbl} values ({', '.join('?' * len(cols))})", rows)
     dst.close()
 
     out_dir = tmp_path / "reports"
@@ -1926,3 +1924,269 @@ def test_panel_shortfall_mode_prints_one_line_and_writes_no_report(tmp_path, cap
     assert kind == "panel_shortfall" and rid == "LIVE"
     assert int(needed) == 10 and 0 <= int(banked) < int(needed)
     assert not out_dir.exists()  # no report file, and no directory either
+
+
+# --- bound 15: the selection, and the looks ---------------------------------
+# `significant_hours` pays for its multiplicity (the ceiling is
+# LEVEL_FWER / hours_tested). The hour the VERDICT names did not: it is
+# the best of hours_tested, `min` breaks its ties by clock order, and the
+# same panel is searched again every time the report is re-run. Measured
+# over the 29 distinct panel states archived 2026-09-19: tied in 26.
+
+
+def _table(ps):
+    """A by_hour_of_day table carrying just the fields bound 15 reads."""
+    return [
+        {"hour_of_day": h, "n_days": 4, "n_below_centre": 4, "sign_p": p, "demeaned": -1.0 * h}
+        for h, p in enumerate(ps)
+    ]
+
+
+def test_a_tied_minimum_names_no_hour_rather_than_the_lowest_one():
+    """`20260716T130721`: one panel day, all 24 hours at p=1.0, and the
+    verdict read "strongest hour 00Z at p=1". That is the alphabet."""
+    from simulator.shadow_diurnal import _strongest_hour
+
+    s = _strongest_hour(_table([1.0] * 24), 24)
+    assert s["hour_of_day"] is None  # absent, NOT hour 0
+    assert s["tied_n"] == 24 and s["tied_hours"] == list(range(24))
+    assert s["sign_p"] == 1.0
+
+
+def test_an_untied_minimum_still_names_its_hour_and_its_denominator():
+    from simulator.shadow_diurnal import _strongest_hour
+
+    s = _strongest_hour(_table([1.0, 0.25, 1.0, 0.5]), 4)
+    assert s["hour_of_day"] == 1 and s["tied_n"] == 1
+    # the denominator travels with the minimum (mistakes #63)
+    assert s["of_hours_tested"] == 4
+
+
+def test_the_underpowered_verdict_reports_a_tie_as_a_tie(tmp_path):
+    """The prose may name an hour only when the minimum names one."""
+    led = _live_clock_ledger(3, lambda d, hod: -10.0)  # perfectly flat: every hour ties
+    rep = build_diurnal(led, None)
+    lvl = rep["runs"][0]["diurnal_level"]
+    assert lvl["level_shape_status"] == "underpowered"
+    s = lvl["strongest_hour"]
+    assert s["tied_n"] > 1 and s["hour_of_day"] is None
+    v = lvl["level_shape_verdict"]
+    assert "no single strongest hour" in v
+    assert f"{s['tied_n']} of {lvl['hours_tested']} tie" in v
+    assert "strongest hour 00Z" not in v
+
+
+def test_the_unscorable_branch_publishes_no_strongest_hour_at_all():
+    """No clock was searched, so there is no best of anything."""
+    led = _ledger([("R", 0, 0.0), ("R", 30, -5.0), ("R", 59, -7.0)])
+    lvl = build_diurnal(led, None)["runs"][0]["diurnal_level"]
+    assert lvl["level_shape_status"] == "unscorable"
+    assert lvl["strongest_hour"] is None  # absent, not a zero-width tie
+
+
+def test_a_look_is_a_distinct_panel_state_not_a_report_file(tmp_path):
+    """Most readings re-score every closed run in the ledger, so counting
+    FILES hands a frozen panel a free look per reading."""
+    from simulator.shadow_diurnal import annotate_level_looks
+
+    lvl = {
+        "n_panel_days": 4,
+        "hours_tested": 24,
+        "by_hour_of_day": _table([1.0] * 23 + [0.125]),
+        "strongest_hour": {"hour_of_day": 23, "sign_p": 0.125, "tied_n": 1},
+        "level_shape_status": "underpowered",
+        "best_achievable_sign_p": 0.125,
+        "significant_hours": [],
+    }
+    rep = {"runs": [{"run_id": "R", "diurnal_level": lvl}]}
+    out = tmp_path / "reports"
+    out.mkdir()
+    for i in range(5):  # five files, ONE panel state -- and it is the current one
+        (out / f"2026091{i}T000000.json").write_text(json.dumps(rep))
+
+    cur = json.loads(json.dumps(rep))
+    annotate_level_looks(out, cur)
+    looks = cur["runs"][0]["diurnal_level"]["level_looks"]
+    assert looks["prior"] == 0  # not 5, and not 4
+    assert looks["anchor_held"] is None  # nothing to compare against
+
+
+def test_level_looks_records_the_anchor_moving_as_the_panel_grew(tmp_path):
+    """`20260829T191841`, the only run read at more than one panel size:
+    00Z -> 00Z -> 08Z -> 08Z while the largest deviation sat at 13Z."""
+    from simulator.shadow_diurnal import annotate_level_looks
+
+    def lvl(days, ps, named):
+        return {
+            "n_panel_days": days,
+            "hours_tested": 24,
+            "by_hour_of_day": _table(ps),
+            "strongest_hour": {"hour_of_day": named, "sign_p": min(ps), "tied_n": 1},
+            "level_shape_status": "underpowered",
+            "best_achievable_sign_p": min(ps),
+            "significant_hours": [],
+        }
+
+    out = tmp_path / "reports"
+    out.mkdir()
+    early = [1.0] * 24
+    early[0] = 0.25
+    mid = [1.0] * 24
+    mid[8] = 0.0156
+    (out / "20260902T000000.json").write_text(
+        json.dumps({"runs": [{"run_id": "R", "diurnal_level": lvl(3, early, 0)}]})
+    )
+    (out / "20260906T000000.json").write_text(
+        json.dumps({"runs": [{"run_id": "R", "diurnal_level": lvl(7, mid, 8)}]})
+    )
+
+    late = [1.0] * 24
+    late[8] = 0.0078
+    cur = {"runs": [{"run_id": "R", "diurnal_level": lvl(8, late, 8)}]}
+    annotate_level_looks(out, cur)
+    looks = cur["runs"][0]["diurnal_level"]["level_looks"]
+
+    assert looks["prior"] == 2
+    assert [h["panel_days"] for h in looks["history"]] == [3, 7]  # oldest first
+    assert [h["strongest_hour_of_day"] for h in looks["history"]] == [0, 8]
+    assert looks["anchor_held"] is False  # 0 -> 8 -> 8
+
+
+def test_level_looks_holds_the_anchor_when_it_never_moved(tmp_path):
+    from simulator.shadow_diurnal import annotate_level_looks
+
+    def lvl(days, p):
+        ps = [1.0] * 24
+        ps[12] = p
+        return {
+            "n_panel_days": days,
+            "hours_tested": 24,
+            "by_hour_of_day": _table(ps),
+            "strongest_hour": {"hour_of_day": 12, "sign_p": p, "tied_n": 1},
+            "level_shape_status": "underpowered",
+            "best_achievable_sign_p": p,
+            "significant_hours": [],
+        }
+
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "20260902T000000.json").write_text(
+        json.dumps({"runs": [{"run_id": "R", "diurnal_level": lvl(7, 0.0156)}]})
+    )
+    cur = {"runs": [{"run_id": "R", "diurnal_level": lvl(9, 0.0039)}]}
+    annotate_level_looks(out, cur)
+    assert cur["runs"][0]["diurnal_level"]["level_looks"]["anchor_held"] is True
+
+
+def test_a_reading_whose_anchor_is_tied_cannot_report_the_anchor_as_held(tmp_path):
+    """A tie names nothing, so a sequence containing one has no anchor to
+    have held -- absent, not True by agreement of two Nones."""
+    from simulator.shadow_diurnal import annotate_level_looks
+
+    def lvl(days, named):
+        return {
+            "n_panel_days": days,
+            "hours_tested": 24,
+            "by_hour_of_day": _table([1.0] * 24),
+            "strongest_hour": {"hour_of_day": named, "sign_p": 1.0, "tied_n": 24},
+            "level_shape_status": "underpowered",
+            "best_achievable_sign_p": 1.0,
+            "significant_hours": [],
+        }
+
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "20260902T000000.json").write_text(
+        json.dumps({"runs": [{"run_id": "R", "diurnal_level": lvl(2, None)}]})
+    )
+    cur = {"runs": [{"run_id": "R", "diurnal_level": lvl(3, None)}]}
+    annotate_level_looks(out, cur)
+    assert cur["runs"][0]["diurnal_level"]["level_looks"]["anchor_held"] is None
+
+
+def test_a_pre_bound15_report_contributes_its_tie_rather_than_a_false_name(tmp_path):
+    """Every archived report predates `strongest_hour`. Recomputing the
+    tie from its table is what keeps `anchor_held` from reading True off
+    a name the old report never actually resolved."""
+    from simulator.shadow_diurnal import annotate_level_looks
+
+    old = {
+        "n_panel_days": 2,
+        "hours_tested": 24,
+        "by_hour_of_day": _table([1.0] * 24),  # 24-way tie, no strongest_hour key
+        "level_shape_status": "underpowered",
+        "best_achievable_sign_p": 0.5,
+        "significant_hours": [],
+    }
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "20260902T000000.json").write_text(
+        json.dumps({"runs": [{"run_id": "R", "diurnal_level": old}]})
+    )
+    ps = [1.0] * 24
+    ps[12] = 0.0039
+    cur = {
+        "runs": [
+            {
+                "run_id": "R",
+                "diurnal_level": {
+                    "n_panel_days": 9,
+                    "hours_tested": 24,
+                    "by_hour_of_day": _table(ps),
+                    "strongest_hour": {"hour_of_day": 12, "sign_p": 0.0039, "tied_n": 1},
+                    "level_shape_status": "underpowered",
+                    "best_achievable_sign_p": 0.0039,
+                    "significant_hours": [],
+                },
+            }
+        ]
+    }
+    annotate_level_looks(out, cur)
+    looks = cur["runs"][0]["diurnal_level"]["level_looks"]
+    assert looks["prior"] == 1
+    assert looks["history"][0]["strongest_tied_n"] == 24
+    assert looks["history"][0]["strongest_hour_of_day"] is None
+    assert looks["anchor_held"] is None  # not True, and not False
+
+
+def test_the_looks_count_never_includes_the_current_reading(tmp_path):
+    """The annotation runs against the directory the report is about to
+    be written into; a reading that counted itself would gain a free look
+    every time (`atlas._distinct_readings`, same rule)."""
+    from simulator.shadow_diurnal import annotate_level_looks
+
+    def lvl(days):
+        ps = [1.0] * 24
+        ps[12] = 2.0 ** (1 - days)
+        return {
+            "n_panel_days": days,
+            "hours_tested": 24,
+            "by_hour_of_day": _table(ps),
+            "strongest_hour": {"hour_of_day": 12, "sign_p": 2.0 ** (1 - days), "tied_n": 1},
+            "level_shape_status": "underpowered",
+            "best_achievable_sign_p": 2.0 ** (1 - days),
+            "significant_hours": [],
+        }
+
+    out = tmp_path / "reports"
+    out.mkdir()
+    cur = {"runs": [{"run_id": "R", "diurnal_level": lvl(9)}]}
+    # the current state is ALSO on disk, exactly as a re-run leaves it
+    (out / "20260902T000000.json").write_text(
+        json.dumps({"runs": [{"run_id": "R", "diurnal_level": lvl(9)}]})
+    )
+    (out / "20260901T000000.json").write_text(
+        json.dumps({"runs": [{"run_id": "R", "diurnal_level": lvl(7)}]})
+    )
+    annotate_level_looks(out, cur)
+    assert cur["runs"][0]["diurnal_level"]["level_looks"]["prior"] == 1  # the 7-day one only
+
+
+def test_significant_hours_and_the_ceiling_are_untouched_by_bound_15(tmp_path):
+    """Cross-report comparability: every tier before this one refined
+    BESIDE the published verdict, never through it."""
+    led = _live_clock_ledger(6, lambda d, hod: -10.0 + (-40.0 if hod == 12 else 0.0))
+    lvl = build_diurnal(led, None)["runs"][0]["diurnal_level"]
+    assert set(lvl["significant_hours"]) <= set(range(24))
+    assert lvl["sign_p_ceiling"] == round(0.05 / lvl["hours_tested"], 6)
+    assert lvl["level_shape_status"] in ("underpowered", "powered")
