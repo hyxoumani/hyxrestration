@@ -2203,3 +2203,71 @@ tree it happens to run in is not evidence of anything.**
     restored, looks counted in report files, the current reading counting
     itself, `anchor_held` reading True off two unnamed readings, and a
     pre-bound-15 prior contributing a name instead of its recomputed tie).
+
+65. **2026-09-20 -- the third site of #63/#64 was the anti-p-hacking core
+    itself, and there the arbitrary tie-break chose between publishing
+    `dsr: 0.5` and raising ZeroDivisionError.** `simulator/iterate.py`
+    opens "the anti-p-hacking core ... the machinery makes the family
+    size impossible to omit", and `family_report`'s own docstring calls
+    its output "the number a pre-reg verdict may quote". The 09-19
+    sweep looked at it, found `deflated_sharpe(..., n_trials=n)` present
+    and correct, and moved on -- **that sweep asked only #63's
+    denominator question.** #64's FOURTH question, asked first ("does
+    the minimum name one candidate at all?"), had never been put to it.
+    `best = sorted(srs, key=lambda k: srs[k])[-1]`: the best of
+    `n_trials`, with no tie check, feeding both the quoted name and the
+    returns series DSR is computed from.
+    **THE TIE IS MANUFACTURED BY THE FAMILY, NOT STUMBLED INTO.**
+    `sharpe` is documented "0 for degenerate input" and maps EVERY
+    variant with `n < 2` or zero variance onto the same float, so a
+    sweep in which nothing traded is exactly tied by construction.
+    Measured on `{thr_10: [], thr_20: [0.0], thr_30: [0,0,0],
+    thr_40: [1,1,1]}` -- four variants, no trades, all SR 0.0:
+    insertion order named `thr_40` best and published
+    `deflated_sharpe_of_best.dsr = 0.5`, a coin-flip probability of
+    skill for a family that never traded. **The SAME family with its
+    keys reversed raised ZeroDivisionError**, because `sorted` is stable,
+    `[-1]` takes the LAST-INSERTED tied member, reversed that is the
+    empty series, and `moments([])` divides by zero one line ABOVE
+    `deflated_sharpe`'s own `t < 3` guard. So the tie-break was not
+    cosmetic: it selected between a false verdict and a crash, and which
+    one you got was a property of dict construction order.
+    **AND THE MEDIAN SLOT WAS NOT A MEDIAN.** `ordered[n // 2]` is the
+    UPPER straddler of an even family; at n == 2 -- the family size
+    `run_favlong_tight` actually uses -- `median` IS `best`, printed as
+    an independent row of the summary. An even family has no median
+    member; saying so is the only honest read.
+    **WHY IT SURVIVED.** `family_report` has no production caller yet:
+    one test, no archive, no report artifact. Nothing could measure it,
+    so nothing did -- and it is the path the FIRST real sweep's pre-reg
+    number goes through. #64's rule was "a number that only ever appears
+    in prose is outside every guard this module has"; this is the same
+    hole one turn earlier, **a number that does not exist yet is outside
+    every guard the archive can apply.**
+    **RULE: a dormant quoting path gets the same four questions as a live
+    one, on the pass that hardens its live siblings -- there is no
+    archive to catch it later, and its first reading is a verdict.**
+    Corollary, narrower and reusable: **a function documented to return a
+    sentinel for degenerate input (`sharpe` -> 0.0) is a TIE GENERATOR;
+    any argmax over its output needs a tie check before it needs a
+    denominator.**
+    Fix: `_slot` returns a structure whose `variant` is None when
+    `tied_n > 1`, carrying `tied_variants` and `of_n_trials`; `_extreme`
+    and `_median_slot` build best/median/worst through it, and
+    `_median_slot` returns reason `even_family_has_no_median_member`
+    rather than the upper straddler. DSR is DECLINED on a tied best
+    (`deflated_sharpe_of_best: None` + `deflated_sharpe_declined`),
+    since it reads the chosen member's own length and moments, with
+    `tied_best_dsr_span` REPORTED so a reader sees how much the refused
+    pick would have moved -- 0.0 to 0.5 in the measured case, identical
+    min and max for duplicate variants. `moments` returns the normal
+    moments for `n < 2`, matching `sharpe`'s own convention.
+    `degenerate_variants` names the variants that manufacture the tie.
+    `n_trials` UNCHANGED and still counts duplicates and degenerates: a
+    look is a look, and deduplicating would shrink the divisor using the
+    outcome (#63). The untied report is byte-identical to before, so
+    readings stay comparable. `tests/test_hyxlab_iterate_family_ties.py`
+    (9 tests); suite 1506 -> **1515**; verified red five ways (the slot
+    naming a tied member anyway, DSR deflating an arbitrary tied member,
+    `median` restored to the upper straddler, `moments` without the
+    degenerate guard, and `n_trials` deduplicating identical variants).

@@ -90,8 +90,16 @@ def sharpe(returns: list[float]) -> float:
 
 
 def moments(returns: list[float]) -> tuple[float, float]:
-    """(skewness, kurtosis) — kurtosis is Pearson (normal = 3)."""
+    """(skewness, kurtosis) — kurtosis is Pearson (normal = 3).
+
+    Degenerate input returns the normal moments, matching `sharpe`'s own
+    "0 for degenerate input" convention. An empty series used to divide
+    by zero here, and `deflated_sharpe` calls this BEFORE its own `t < 3`
+    guard, so `deflated_sharpe([])` raised rather than reporting the
+    zero-information result its guard already knows how to return."""
     n = len(returns)
+    if n < 2:
+        return 0.0, 3.0
     mean = sum(returns) / n
     m2 = sum((r - mean) ** 2 for r in returns) / n
     if m2 == 0:
@@ -174,27 +182,107 @@ def purged_folds(
     return out
 
 
+def _degenerate(returns: list[float]) -> bool:
+    """True where `sharpe` returns its degenerate 0.0 rather than a ratio.
+
+    Every such variant is mapped onto the SAME float, so a family with two
+    of them is tied BY CONSTRUCTION, not by coincidence."""
+    n = len(returns)
+    if n < 2:
+        return True
+    mean = sum(returns) / n
+    return sum((r - mean) ** 2 for r in returns) == 0.0
+
+
+def _slot(srs: dict[str, float], members: list[str], reason: str | None = None) -> dict:
+    """One rank slot of the family, tie-aware (mistakes #64, bound 15).
+
+    `variant` NAMES a variant only when exactly one holds the slot. A tied
+    argmax is not a weak winner, it is no winner, and `max()`/`sorted()[-1]`
+    will hand you one anyway -- the last-inserted tied member, which makes
+    the name a property of dict construction order rather than of the
+    returns. `tied_variants` and `of_n_trials` travel with it so the slot
+    carries its own denominator."""
+    srs_of = sorted({srs[m] for m in members})
+    shared = srs_of[0] if len(srs_of) == 1 else None
+    return {
+        "variant": members[0] if len(members) == 1 else None,
+        "sr": shared,
+        "tied_variants": None if len(members) == 1 else sorted(members),
+        "tied_n": len(members),
+        "of_n_trials": len(srs),
+        "reason": reason if len(members) > 1 else None,
+    }
+
+
+def _extreme(srs: dict[str, float], best: bool) -> dict:
+    target = max(srs.values()) if best else min(srs.values())
+    return _slot(srs, [k for k, v in srs.items() if v == target], "tied")
+
+
+def _median_slot(srs: dict[str, float]) -> dict:
+    """The median slot, which an even family does not have.
+
+    `ordered[n // 2]` is the UPPER straddler, not a median: at n == 2 it is
+    the best variant, reported a second time as if it were an independent
+    row of the summary."""
+    n = len(srs)
+    ordered = sorted(srs, key=lambda k: (srs[k], k))
+    if n % 2:
+        mid = srs[ordered[n // 2]]
+        return _slot(srs, [k for k, v in srs.items() if v == mid], "tied")
+    lo, hi = ordered[n // 2 - 1], ordered[n // 2]
+    if srs[lo] == srs[hi]:
+        return _slot(srs, [k for k, v in srs.items() if v == srs[lo]], "tied")
+    return _slot(srs, [lo, hi], "even_family_has_no_median_member")
+
+
 def family_report(variant_returns: dict[str, list[float]]) -> dict:
     """Sweep summary: per-variant Sharpe, best/median/worst, and the
     Deflated Sharpe of the BEST variant given the family size and the
     family's own SR variance. This is the number a pre-reg verdict may
-    quote; the raw best-variant SR is not."""
+    quote; the raw best-variant SR is not.
+
+    Every slot is tie-aware and DSR is declined when the best is tied:
+    `deflated_sharpe` reads the chosen member's own length, skew and
+    kurtosis, so on a tie the arbitrary pick is load-bearing rather than
+    cosmetic. Measured on a four-variant family in which nothing traded
+    (all SR exactly 0.0): insertion order published `dsr: 0.5`, and the
+    same family reversed raised ZeroDivisionError. `n_trials` counts every
+    variant swept, duplicates and degenerates included -- a look is a look,
+    and dropping one would shrink the divisor using the outcome (#63)."""
     if not variant_returns:
         return {"n_trials": 0}
     srs = {k: sharpe(v) for k, v in variant_returns.items()}
-    ordered = sorted(srs, key=lambda k: srs[k])
-    best = ordered[-1]
     n = len(srs)
     sr_var = None
     if n >= 2:
         mean_sr = sum(srs.values()) / n
         sr_var = sum((s - mean_sr) ** 2 for s in srs.values()) / (n - 1)
-    dsr = deflated_sharpe(variant_returns[best], n_trials=n, sr_var=sr_var)
+    best = _extreme(srs, best=True)
+    if best["variant"] is not None:
+        dsr = deflated_sharpe(variant_returns[best["variant"]], n_trials=n, sr_var=sr_var)
+        dsr_of_best, declined, tied_dsr = dsr._asdict(), None, None
+    else:
+        tied = best["tied_variants"]
+        spread = sorted(
+            deflated_sharpe(variant_returns[v], n_trials=n, sr_var=sr_var).dsr for v in tied
+        )
+        dsr_of_best = None
+        declined = (
+            f"best SR is tied across {len(tied)} of {n} variants; deflating an"
+            " arbitrarily chosen member is a pick, not a measurement"
+        )
+        # Reported, never quoted: how much the refused pick would have moved.
+        tied_dsr = {"min": spread[0], "max": spread[-1], "n": len(spread)}
     return {
         "n_trials": n,
-        "best": {"variant": best, "sr": srs[best]},
-        "median": {"variant": ordered[n // 2], "sr": srs[ordered[n // 2]]},
-        "worst": {"variant": ordered[0], "sr": srs[ordered[0]]},
+        "best": best,
+        "median": _median_slot(srs),
+        "worst": _extreme(srs, best=False),
         "family_sr_var": sr_var,
-        "deflated_sharpe_of_best": dsr._asdict(),
+        "deflated_sharpe_of_best": dsr_of_best,
+        "deflated_sharpe_declined": declined,
+        "tied_best_dsr_span": tied_dsr,
+        "degenerate_variants": sorted(k for k, v in variant_returns.items() if _degenerate(v)),
     }
