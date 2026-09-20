@@ -138,6 +138,40 @@ landed in a JSON file that nothing in the project read — so a haircut
 that stopped being ≈ 0 would have been visible only to whoever happened
 to open the file.
 
+**2026-09-20 — the 2s match window's evidence could not fail, and the
+field meant to carry it has never held a value.** The v2 matcher's own
+design note named `nearest_dt_abs_mean_s` as the nearest tier's
+calibration information. That mean is taken over the pairs the window
+ADMITTED — the candidate list is filtered on `|dt| <= window` before
+anything is averaged — so it is bounded by the window edge by
+construction and cannot report a pairing the window missed (the
+prioritycheck defect of 09-20, mistakes #67, in a second report).
+Worse: it reads `None` in **all 13 archived divergence reports** — the
+nearest tier has never claimed a single pair in production, so the
+number offered as the window's justification has never existed.
+
+`nearest_unpaired_dt` is the population that can answer the question:
+for every fill no tier could pair, the |dt| to its nearest
+same-(market, side, price) counterpart among the opposite stream's
+still-unpaired fills, with no window bound at all. Measured on run
+20260803T142853 (34,639/34,704 fills, 261 leftovers — the worst benign
+window in the record): **182 leftovers have such a counterpart and all
+182 sit beyond the 2s window** — min 2.53s, median 267.7s, max
+15,543s (4.3h); 176 beyond 60s, 22 beyond 600s. The remaining 79 have
+no unpaired counterpart at any dt.
+
+So the window is vindicated, but now by a statistic that could have
+said otherwise: the leftovers are not near-misses a slightly wider
+window would rescue (2s → 60s would recover 6 of 182), they are the
+re-seed population `reseed_twin` already identifies by existence —
+225 of the 261. `no_counterpart` (79) legitimately exceeds
+`unexplained` (36) because this census only counts counterparts that
+were actually available to pair, while `reseed_twin` searches matched
+fills too. Re-run of the newest run 20260907T142900 is **bit-identical
+to the shipped report on every pre-existing field** (0 leftovers there,
+so the census is correctly empty — a converged run carries no evidence
+about the window either way, which is itself worth knowing).
+
   * `hyxlab-divergence.timer` (daily 01:20Z) runs
     `simulator.divergence --if-new`, which exits 0 in under a second when
     the selected run is already reported. The subject is

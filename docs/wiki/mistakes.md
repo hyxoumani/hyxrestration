@@ -2379,3 +2379,39 @@ tree it happens to run in is not evidence of anything.**
     whenever 0.95n is an integer, so for every n <= 20 the report
     published `max_ms` a second time under the name `p95_ms`. Nearest
     rank is `ceil(0.95n)-1`. Suite 1520 -> **1524**, verified red.
+
+68. **2026-09-20 -- #67's sweep: the divergence matcher sized its 2s
+    window with a mean taken over the pairs that window had already
+    admitted, and that field has read `None` in all 13 archived
+    reports.** #67's rule was applied to the other standing reports by
+    asking which published distribution is collected inside the branch
+    that gates it. `simulator/divergence.compare` builds the nearest
+    tier's candidate list under `if r[2] == s[2] and abs(r[0] - s[0])
+    <= window`, then publishes `nearest_dt_abs_mean_s` over exactly
+    those pairs -- the field EXP-004's own report named as the tier's
+    calibration information. Its maximum is the window edge by
+    construction. The second half is worse than the first: the nearest
+    tier has never claimed a pair in production, so the number offered
+    as the window's justification has never once had a value, and
+    nothing noticed because `None` reads as "nothing to report" rather
+    than as "no evidence exists".
+    **MEASURED** on run 20260803T142853 (the worst benign window in the
+    record, 261 leftovers): of the 182 leftovers with an available
+    same-price counterpart, **all 182 sit beyond the 2s window** --
+    min 2.53s, median 267.7s, max 4.3h; 176 beyond 60s. So the window
+    is fine, and for the first time that is a measurement: the
+    leftovers are the re-seed population, not near-misses (2s -> 60s
+    would rescue 6 of 182).
+    **WHY IT SURVIVED.** Same class as #67, found by deliberately
+    sweeping for it -- which is the point: the rule is only worth
+    having if it is run against the reports that already shipped, not
+    just the one where the defect was noticed.
+    Fix: `nearest_unpaired_dt` publishes the uncensored population
+    (n, no_counterpart, min/median/max, `over_s` census at the window,
+    10x the window, 60s and 600s), sought among the opposite stream's
+    still-unpaired fills -- what a WIDER window could actually have
+    paired, deliberately narrower than `reseed_twin`'s existence test.
+    `nearest_dt_abs_mean_s` keeps its name and its conditioned meaning
+    (#67's corollary) with the censoring stated at the field. Re-run of
+    20260907T142900 is bit-identical on every pre-existing field. Suite
+    1524 -> **1528**, verified red.

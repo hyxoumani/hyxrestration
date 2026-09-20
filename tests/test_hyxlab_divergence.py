@@ -854,3 +854,64 @@ def test_without_if_new_the_report_is_recomputed(tmp_path, monkeypatch):
     calls = _main_with(monkeypatch, ["--shadow-db", str(db), "--out", str(out)])
     assert len(calls) == 1
     assert json.loads((out / "done.json").read_text())["run_id"] == "done"
+
+
+def test_unpaired_dt_census_reports_a_counterpart_beyond_the_nearest_window():
+    """The window's own evidence must be able to fail. `nearest_dt_abs_mean_s`
+    is averaged over pairs the window already admitted, so its maximum IS the
+    window edge whatever the data does; the census counts, for every fill no
+    tier could pair, how far away its nearest same-price counterpart actually
+    sits — with no window bound (mistakes #67)."""
+    rep = compare([_shadow(5.0, T)], [_RF(4.0, T + timedelta(seconds=5))])
+    assert rep["matched_nearest"] == 0  # 5s > the 2s window
+    assert rep["nearest_dt_abs_mean_s"] is None  # conditioned sample is empty
+
+    census = rep["nearest_unpaired_dt"]
+    assert census["n"] == 2  # one entry per unpaired fill, both directions
+    assert census["no_counterpart"] == 0
+    assert census["min_s"] == census["max_s"] == 5.0
+    assert census["over_s"]["2"] == 2  # past the window, and visible
+    assert census["over_s"]["20"] == 0
+
+
+def test_conditioned_nearest_mean_stays_inside_the_window_the_census_does_not():
+    """One pairing inside the window and one 30s outside it: the shipped mean
+    reports only the admitted pair (and so reads reassuringly small), while the
+    census carries the 30s tail that sizes whether 2s is generous."""
+    shadow = [_shadow(5.0, T), _shadow(7.0, T + timedelta(minutes=10), price=0.3)]
+    replay = [
+        _RF(4.0, T + timedelta(milliseconds=300)),
+        _RF(6.0, T + timedelta(minutes=10, seconds=30), price=0.3),
+    ]
+    rep = compare(shadow, replay)
+    assert rep["matched_nearest"] == 1
+    assert rep["nearest_dt_abs_mean_s"] == 0.3
+    assert rep["nearest_unpaired_dt"]["max_s"] == 30.0
+    assert rep["nearest_unpaired_dt"]["over_s"]["2"] == 2
+
+
+def test_unpaired_fill_with_no_same_price_counterpart_is_counted_separately():
+    """A leftover with no same-price counterpart at any dt is not a window
+    problem at all — it is excluded from the dt census and counted, so a small
+    `n` can never be read as a small tail."""
+    rep = compare([_shadow(5.0, T, price=0.4)], [_RF(4.0, T + timedelta(seconds=5), price=0.9)])
+    census = rep["nearest_unpaired_dt"]
+    assert census["n"] == 0
+    assert census["no_counterpart"] == 2
+    assert census["max_s"] is None
+    assert census["over_s"]["2"] == 0
+
+
+def test_unpaired_dt_census_ignores_counterparts_another_fill_already_claimed():
+    """The census asks what a WIDER window could have paired, so it searches
+    only the opposite stream's still-unpaired fills — narrower than
+    `reseed_twin`, which tests existence against every fill including matched
+    ones. A leftover whose only price-twin is already spoken for counts as
+    `no_counterpart`, not as a window near-miss."""
+    shadow = [_shadow(5.0, T), _shadow(7.0, T + timedelta(hours=1))]
+    rep = compare(shadow, [_RF(5.0, T)])  # the 5.0 pair matches at the exact tier
+    assert rep["matched"] == 1
+    assert rep["unmatched_shadow"] == 1  # the 7.0 fill, same price as the twin
+    census = rep["nearest_unpaired_dt"]
+    assert census["n"] == 0
+    assert census["no_counterpart"] == 1

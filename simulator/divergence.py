@@ -184,6 +184,15 @@ def compare(
     (it does not net counts), so `reseed_twin` asserts an identical fill
     exists opposite, not that fill counts balance exactly. Samples of any
     unexplained fills are emitted so a nonzero count is never silent.
+
+    `nearest_unpaired_dt` sizes the WINDOW itself. The shipped
+    `nearest_dt_abs_mean_s` averages the pairs the window admitted, so
+    it is bounded by the window edge by construction and cannot report a
+    pairing the window missed; the census measures, for each unpaired
+    fill, the |dt| to its nearest same-(market, side, price) counterpart
+    among the opposite stream's OTHER unpaired fills with NO window
+    bound, plus the count of unpaired fills that have no such
+    counterpart at any dt.
     """
     from collections import defaultdict
 
@@ -334,6 +343,54 @@ def compare(
     unmatched_s_by_cause, unmatched_s_samples = _breakdown(unmatched_s, replay_econ)
     unmatched_r_by_cause, unmatched_r_samples = _breakdown(unmatched_r, shadow_econ)
 
+    # The nearest window's own evidence, UNCENSORED. `nearest_dt_abs_mean_s`
+    # is computed over the pairs the window already admitted -- the candidate
+    # list is filtered on `|dt| <= window` -- so it cannot report a pairing the
+    # window missed: its maximum is the window edge by construction, whatever
+    # the data does (mistakes #67). The census below asks the same question of
+    # the fills NO tier paired: how far away is each one's nearest
+    # same-(market, side, price) counterpart in the opposite stream, with no
+    # window bound at all. Unit is the unpaired FILL, not the pair, so the two
+    # directions are pooled and a mutually-nearest couple contributes twice --
+    # the question is "how many fills did the window fail to reach", not "how
+    # many pairs exist". A mass sitting just above `window` means the window is
+    # tight and the leftovers are timing, not disagreement; a mass far out is
+    # the re-seed signature `reseed_twin` already counts by existence alone.
+    # The counterpart is sought among the opposite stream's UNPAIRED fills
+    # only, which is narrower than `reseed_twin`'s existence test (that one
+    # searches every fill, matched ones included). Deliberate: this census
+    # asks what a WIDER window could have paired, and a counterpart already
+    # claimed by another fill was never available to pair. So
+    # `no_counterpart` legitimately exceeds `unexplained` -- measured 79 vs
+    # 36 on run 20260803T142853.
+    def _unpaired_dt(unmatched, opposite):
+        by_key = defaultdict(list)
+        for (m, side), f in opposite:
+            by_key[(m, side, f[2])].append(f[0])
+        out = []
+        for (m, side), f in unmatched:
+            cands = by_key.get((m, side, f[2]))
+            if cands:
+                out.append(min(abs((c - f[0]).total_seconds()) for c in cands))
+        return out
+
+    unpaired_dt = _unpaired_dt(unmatched_s, unmatched_r) + _unpaired_dt(unmatched_r, unmatched_s)
+    _w = window.total_seconds()
+    _cuts = sorted({_w, 10 * _w, 60.0, 600.0})
+    nearest_unpaired_dt = {
+        "population": (
+            "unpaired fills (either stream) that have a same-(market, side,"
+            " price) counterpart among the opposite stream's UNPAIRED fills at"
+            " ANY dt -- no window bound; one entry per unpaired fill"
+        ),
+        "n": len(unpaired_dt),
+        "no_counterpart": len(unmatched_s) + len(unmatched_r) - len(unpaired_dt),
+        "min_s": round(min(unpaired_dt), 6) if unpaired_dt else None,
+        "median_s": round(median(unpaired_dt), 6) if unpaired_dt else None,
+        "max_s": round(max(unpaired_dt), 6) if unpaired_dt else None,
+        "over_s": {f"{c:g}": sum(1 for d in unpaired_dt if d > c) for c in _cuts},
+    }
+
     deltas.sort()
     return {
         "matching_note": (
@@ -354,11 +411,17 @@ def compare(
         "match_rate_all_vs_shadow": round(n_all_s / n_s, 4) if n_s else None,
         "match_rate_all_vs_replay": round(n_all_r / n_r, 4) if n_r else None,
         "nearest_window_s": window.total_seconds(),
+        # Conditioned view, kept under its shipped name so archived
+        # readings stay comparable: these pairs were selected by
+        # `|dt| <= window`, so this mean says nothing about whether the
+        # window is wide enough. `nearest_unpaired_dt` is the population
+        # that can answer that.
         "nearest_dt_abs_mean_s": (
             round(sum(dt.total_seconds() for dt, _, _ in nearest_pairs) / n_nearest, 6)
             if nearest_pairs
             else None
         ),
+        "nearest_unpaired_dt": nearest_unpaired_dt,
         "price_delta_abs_mean_nearest": _abs_mean(nearest_deltas),
         "price_delta_abs_mean_split": _abs_mean(split_deltas),
         "price_delta_mean_all": round(sum(all_deltas) / len(all_deltas), 6) if all_deltas else None,
