@@ -2329,3 +2329,53 @@ tree it happens to run in is not evidence of anything.**
     member-naming exemption. Suite 1515 -> **1520**; verified red five
     ways (all five tests fail with the three straddlers restored,
     including the archive recomputation).
+
+67. **2026-09-20 -- the timing distribution quoted to prove a 2s pairing
+    window was "generous, not tight" was SAMPLED FROM INSIDE A 5ms
+    window, so it could not have reported a wide pairing if one existed
+    -- and when the sample was opened up, the widest pairing turned out
+    to use 90% of the budget.** `prioritycheck` is the probe the maker
+    queue bracket's mechanical foundation rests on: it verifies that a
+    trade print consumes the COMPLEMENT book level, and publishes the
+    (decrement_ts - print_ts) distribution that sizes `ABSORB_WINDOW`.
+    `check_market` appended `dt_ms` only in the `exact_match` branch --
+    the branch already gated on `|dt| <= EXACT_WINDOW` (5ms). So the
+    timing block's population was conditioned on the answer: `max_ms`
+    could never exceed 5ms, and the 159 `late_decrement` prints of the
+    2026-07-13 reading -- the entire 5ms-to-2s tail, i.e. precisely the
+    evidence that sizes the window -- were the ones it dropped. The
+    module docstring's claim ("confirms ABSORB_WINDOW=2s is generous,
+    not tight") was unfalsifiable by the statistic offered for it.
+    **MEASURED on 24h of fresh stream archive, 12,142 prints over 8
+    markets: the absorb-window population's `min_ms` is -1796.2ms.**
+    The conditioned sample reports -4.997ms for the same run. The true
+    tail is 360x wider than any number the old block could print, and
+    at 1.80s it sits at 90% of the 2.0s window -- a 1.1x margin, not
+    the ~400x the artifact implied. The census says the shape is
+    benign (229 pairings over 5ms, only 2 over 50ms, and those same 2
+    over 500ms), but that is a thing now MEASURED rather than assumed.
+    **WHY IT SURVIVED.** #64/#66's class again -- a report-only field
+    no check reads -- with a new mechanism: not arithmetic that is
+    subtly wrong, but a population that is subtly wrong. The five
+    statistics were each computed correctly; they were computed over a
+    sample selected by the very predicate under test. One reading
+    existed (2026-07-13) and looked excellent, because a sample clipped
+    at +-5ms cannot look anything else.
+    **RULE: a statistic offered as evidence about a threshold must be
+    drawn from a sample that could have violated that threshold. Before
+    publishing a distribution, name the branch the sample is collected
+    in and check whether that branch is gated on the quantity being
+    measured -- if it is, the report is a tautology with error bars.**
+    Corollary: keep the conditioned view, but NAME it. Readings taken
+    under the old rule are not comparable to the new population, only
+    to the sub-block, so the fix publishes `timing.exact_window` beside
+    the full one rather than silently redefining five key names.
+    Fix: `dt_ms` is collected for every absorb-window match, late ones
+    included; `timing` gains `population`, `n`, and an `over_ms` census
+    at 5/50/500ms so "the window is generous" is checkable from the
+    artifact instead of from prose. Same pass also fixed `p95_ms`,
+    which was `ordered[int(n * 0.95)]` -- the (floor(0.95n)+1)-th order
+    statistic, whose rank is >= 95% always and is EXACTLY the maximum
+    whenever 0.95n is an integer, so for every n <= 20 the report
+    published `max_ms` a second time under the name `p95_ms`. Nearest
+    rank is `ceil(0.95n)-1`. Suite 1520 -> **1524**, verified red.

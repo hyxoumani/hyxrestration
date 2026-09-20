@@ -19,8 +19,15 @@ horizon). This probe tests both halves against the whole stream archive:
   PREDICTED (side, price) inside the pairing window? And crucially, is
   the naive same-side mapping (taker=yes → yes@p) ever the better fit?
   If the complement mapping were coincidence, same-side would match too.
-- TIMING: the distribution of (decrement_ts - print_ts), which sizes the
-  ±1ms claim and confirms ABSORB_WINDOW=2s is generous, not tight.
+- TIMING: the distribution of (decrement_ts - print_ts) over every
+  absorb-window match, which sizes the ±1ms claim and is the only thing
+  here that can show ABSORB_WINDOW=2s is generous rather than tight.
+  Sampling only the exact-window matches cannot: that sample is bounded
+  by ±5ms by construction, so its max is the window edge, not the tail
+  (readings before 2026-09-20 published exactly that, and the 159 late
+  decrements of the 07-13 run -- the whole 5ms-to-2s tail -- were the
+  ones it dropped). The conditioned sub-distribution is kept as
+  `timing.exact_window` so those readings stay comparable to something.
 
 Residual no-matches are decomposed (decrement present but late; no
 decrement at the level at all = a coverage gap; batched with same-instant
@@ -36,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -47,6 +55,33 @@ STREAM_DB = "data/hyxstream.duckdb"
 EXACT_WINDOW = 0.005  # s: tight pairing for the exact-match rate / timing stats
 ABSORB_WINDOW = 2.0  # s: the queuebounds model's own pairing horizon
 PRICE_EPS = 1e-9
+
+
+def _p95(ordered: list[float]) -> float:
+    """Nearest-rank 95th percentile: the smallest value >= 95% of the sample.
+
+    `ordered[int(len(ordered) * 0.95)]` is the (floor(0.95n)+1)-th order
+    statistic, whose rank is >= 95% by construction and EQUALS the maximum
+    whenever 0.95n is an integer -- n=20 publishes max_ms twice under two
+    names. Nearest rank is ceil(0.95n)-1.
+    """
+    return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
+
+
+def _timing(ordered: list[float]) -> dict:
+    """Timing stats for an ALREADY-SORTED pairing-delay sample (ms)."""
+    return {
+        "n": len(ordered),
+        "min_ms": round(ordered[0], 3),
+        "median_ms": round(statistics.median(ordered), 3),
+        "p95_ms": round(_p95(ordered), 3),
+        "max_ms": round(ordered[-1], 3),
+        "within_1ms_frac": round(sum(1 for x in ordered if abs(x) <= 1) / len(ordered), 4),
+        # census of the tail, so "ABSORB_WINDOW=2s is generous" is a
+        # checkable claim in the artifact rather than prose: how many
+        # pairings needed more than 5ms, 50ms, 500ms of window.
+        "over_ms": {str(b): sum(1 for x in ordered if abs(x) > b) for b in (5, 50, 500)},
+    }
 
 
 def predicted_level(taker_side: str, print_price: float) -> tuple[str, float] | None:
@@ -92,6 +127,10 @@ def check_market(conn, market_id: str, since: datetime) -> dict:
         "late_decrement": 0,  # predicted decrement present but outside EXACT_WINDOW
         "no_decrement_at_level": 0,  # nothing at predicted level within ABSORB_WINDOW (gap)
         "batched_with_cancels": 0,  # decrement present but size != trade (merged)
+        # pairing delay for EVERY absorb-window match, exact and late alike.
+        # Conditioning this sample on EXACT_WINDOW would make the timing
+        # block unfalsifiable: it could not report a delay wider than the
+        # window it is quoted to justify.
         "dt_ms": [],
     }
     for ts, p, q, taker in trades:
@@ -109,9 +148,11 @@ def check_market(conn, market_id: str, since: datetime) -> dict:
         near_absorb = [
             (dts, dec) for dts, dec in idx.get(key, []) if abs((dts - ts).total_seconds()) <= ABSORB_WINDOW
         ]
-        if any(abs(dec - q) < PRICE_EPS for _, dec in near_absorb):
+        late = next((dts for dts, dec in near_absorb if abs(dec - q) < PRICE_EPS), None)
+        if late is not None:
             res["absorb_match"] += 1
             res["late_decrement"] += 1
+            res["dt_ms"].append((late - ts).total_seconds() * 1000)
         elif not near_absorb:
             res["no_decrement_at_level"] += 1
         else:
@@ -165,13 +206,13 @@ def main() -> None:
     dt_ms.sort()
     timing = {}
     if dt_ms:
-        timing = {
-            "min_ms": round(dt_ms[0], 3),
-            "median_ms": round(statistics.median(dt_ms), 3),
-            "p95_ms": round(dt_ms[int(len(dt_ms) * 0.95)], 3),
-            "max_ms": round(dt_ms[-1], 3),
-            "within_1ms_frac": round(sum(1 for x in dt_ms if abs(x) <= 1) / len(dt_ms), 4),
-        }
+        # the population is every absorb-window match; the exact-window
+        # sub-block is the same statistics conditioned on |dt| <= 5ms,
+        # which is what readings before 2026-09-20 published as `timing`.
+        timing = {"population": "absorb_match", **_timing(dt_ms)}
+        tight = [x for x in dt_ms if abs(x) <= EXACT_WINDOW * 1000]
+        if tight:
+            timing["exact_window"] = _timing(tight)
     report = {
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None, microsecond=0)),
         "window_hours": args.hours,
@@ -187,7 +228,12 @@ def main() -> None:
             " naive_would_match must stay ~0: it is the same-side mapping the"
             " complement rule replaces — a nonzero value would mean the"
             " mapping is ambiguous. no_decrement_at_level is coverage (gap),"
-            " not a mapping miss. Verifies WHICH level a trade consumes, not"
+            " not a mapping miss. `timing` is the pairing delay over EVERY"
+            " absorb-window match, late ones included, so it can report a"
+            " delay wider than the window it sizes; `timing.exact_window`"
+            " is the same statistics conditioned on |dt| <= 5ms, which is"
+            " what readings before 2026-09-20 published as `timing`."
+            " Verifies WHICH level a trade consumes, not"
             " front-vs-back order within it (that is the pess/opt bracket)."
         ),
         "per_market": per_market,
