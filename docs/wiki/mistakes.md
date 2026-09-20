@@ -2271,3 +2271,61 @@ tree it happens to run in is not evidence of anything.**
     naming a tied member anyway, DSR deflating an arbitrary tied member,
     `median` restored to the upper straddler, `moments` without the
     degenerate guard, and `n_trials` deduplicating identical variants).
+
+66. **2026-09-20 -- three report fields published as `median` were the
+    UPPER STRADDLER, and on the one with an archive the bias ran 7 of 9
+    readings in the flattering direction.** `sorted(xs)[len(xs) // 2]`
+    is the larger of the two middle values on an even population, never
+    the smaller and never their mean, so a field built that way is
+    biased in ONE direction by construction. Three live sites, found by
+    sweeping the whole repo for the pattern the 09-19 `iterate.py` fix
+    had just named:
+    * `atlas._quoted_verdict.gap_retained_median` -- the share of the
+      pooled implied-minus-realized gap that survives on two-sided
+      books, i.e. the headline diagnostic for how much of a flagged
+      bucket's edge is real, printed by the report and quoted on the
+      status page for weeks. **MEASURED by recomputing every archived
+      reading from its own published buckets: SEVEN of the nine have an
+      even `gap_retained_measurable`, and all seven published a number
+      ABOVE the true median** -- +0.0096, +0.0131 (x2), +0.0138,
+      +0.0215, +0.0349 (x2); worst `20260829T021631`, 0.4508 published
+      against a true 0.4159, 8.4% relative. The two odd readings were
+      right, which is why nothing ever looked wrong.
+    * `divergence.compare.price_delta_median` -- the signed fill-model
+      calibration haircut. Six of thirteen archived runs have an even
+      `matched`; all thirteen read exactly 0.0, so no archived number
+      moves, but this is the field that would carry a real haircut's
+      SIGN, and the upper straddler reads a symmetric disagreement as a
+      positive one.
+    * `shadow_diurnal` bound 14's `span_hours.median` -- in a file that
+      already owns a correct `_median` helper and uses it at its other
+      two median sites. Three sites, one wrong, no reason.
+    **WHY IT SURVIVED.** Same class as #64: none of the three is a
+    threshold, a verdict or a partition, so no check reads them. They
+    exist only in the report artifact and in prose -- outside every
+    guard the modules have. And the defect is two characters wide and
+    reads as correct: `[n // 2]` is what a median looks like.
+    **RULE: a field named `median` is a CLAIM about a population, and on
+    an even population the upper straddler is not that claim. Compute
+    it (`statistics.median`), or -- when the list holds CANDIDATES
+    rather than quantities, so no member is the median -- refuse to name
+    one, as `iterate._median_slot` does. The two cases are one axis
+    apart and take opposite fixes; which one applies is decided by
+    whether the thing being published has an identity.**
+    Corollary on scope: a one-directional arithmetic bias is only
+    visible against its own corrected series, and that series costs
+    NOTHING to derive when the inputs are published per row. Atlas
+    publishes `quoted_gap_retained` per bucket, so the whole nine-
+    reading correction is arithmetic on looks already taken -- no new
+    look spent, which is the only reason this was measurable at all
+    without burning one.
+    Fix: `statistics.median` at the atlas and divergence sites,
+    `_median` at the shadow_diurnal one, `price_delta_median` rounded to
+    6dp to match `price_delta_mean` beside it. Odd populations are
+    byte-identical, so readings stay comparable. Guarded by an AST walk
+    (`tests/test_report_medians.py`) that fails any dict field whose key
+    mentions `median` and whose value indexes at `... // 2`, with
+    `simulator/iterate.py` named -- not pattern-matched -- as the
+    member-naming exemption. Suite 1515 -> **1520**; verified red five
+    ways (all five tests fail with the three straddlers restored,
+    including the archive recomputation).

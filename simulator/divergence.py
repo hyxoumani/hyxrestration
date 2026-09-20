@@ -29,6 +29,7 @@ import argparse
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from statistics import median
 
 from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run
@@ -375,7 +376,12 @@ def compare(
         "match_rate_vs_shadow": round(matched / n_s, 4) if n_s else None,
         "match_rate_vs_replay": round(matched / n_r, 4) if n_r else None,
         "price_delta_mean": round(sum(deltas) / len(deltas), 6) if deltas else None,
-        "price_delta_median": deltas[len(deltas) // 2] if deltas else None,
+        # `statistics.median`, not `deltas[len(deltas) // 2]`: on an even
+        # `matched` the latter is the upper straddler, i.e. a signed
+        # fill-model bias reported HIGH by half the straddler gap. The
+        # whole record reads 0.0 here so nothing archived moves, but this
+        # is the number that would carry a real haircut's sign.
+        "price_delta_median": round(median(deltas), 6) if deltas else None,
         "price_delta_abs_mean": (
             round(sum(abs(d) for d in deltas) / len(deltas), 6) if deltas else None
         ),

@@ -1736,7 +1736,10 @@ def _lifetime_census(runs: list[dict]) -> dict:
                 1 for r in starved if r["lifetime"]["succession"] == "immediate"
             ),
             "span_hours": (
-                {"min": spans[0], "median": spans[len(spans) // 2], "max": spans[-1]}
+                # `_median`, the module's own correct helper, not
+                # `spans[len(spans) // 2]` -- this was the one of three
+                # median sites in this file that did not use it.
+                {"min": spans[0], "median": _r(_median(spans), 2), "max": spans[-1]}
                 if spans
                 else None
             ),

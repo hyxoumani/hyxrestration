@@ -260,7 +260,7 @@ import json
 import math
 from datetime import UTC, datetime
 from pathlib import Path
-from statistics import NormalDist
+from statistics import NormalDist, median
 
 import duckdb
 
@@ -1165,7 +1165,16 @@ def _quoted_verdict(buckets: list[dict]) -> dict:
         # the silent ones — the point estimate is readable where the test
         # is not, and it is the diagnostic the 08-02 pass actually used).
         "gap_retained_measurable": len(retained),
-        "gap_retained_median": (round(retained[len(retained) // 2], 4) if retained else None),
+        # `statistics.median`, not `retained[len(retained) // 2]`: the
+        # latter is the UPPER straddler of an even population, so the
+        # published number was biased toward MORE gap retained -- the
+        # flattering direction -- in 7 of the 9 archived readings
+        # (measured 2026-09-20: +0.0096 to +0.0349, worst 0.4508 vs a
+        # true 0.4159). `retained` is a list of quantities, not a list of
+        # candidates, so the even case has a median; the member-naming
+        # case one axis over is `iterate._median_slot`, which correctly
+        # refuses to name one (mistakes #65).
+        "gap_retained_median": (round(median(retained), 4) if retained else None),
         "gap_retained_min": round(retained[0], 4) if retained else None,
         "gap_retained_max": round(retained[-1], 4) if retained else None,
         "gap_reversed_on_quoted_books": sum(1 for r in retained if r < 0),
