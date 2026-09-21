@@ -2464,3 +2464,56 @@ tree it happens to run in is not evidence of anything.**
     report must publish the relaxed predicate's residual. A tier's own
     selection criteria are the one set of numbers it cannot use as
     evidence about itself.
+
+70. **2026-09-21 -- `LIVE_GRACE_S` claimed "~8x the worst observed gap";
+    the real figure is 0.24x on the live run, and the number was
+    measured outside the code so nothing could say so.** (#67's last
+    open thread, and the one that turned out to be load-bearing.)
+    `simulator/shadow_coverage.py` decides `live` by whether a run's
+    last equity tick is within 300s, and the comment sizing that
+    threshold read "the gap between consecutive ticks tops out at ~37s
+    (p99 ~35s) across every recent run, so 5 minutes is ~8x the worst
+    observed gap". No artifact carried the distribution, so the claim
+    was unfalsifiable from anything the repo produces.
+    **MEASURED, 308,027 ticks over 54 runs of the live ledger:** the
+    median (16.9s) and the p99 (~36s) are exactly as claimed. The MAX
+    is 21,027s -- 5.8 hours -- and the max is the only end of the
+    distribution this threshold is exposed to. **Twenty of the 54 runs
+    contain at least one gap past the grace, 150 gaps in total**, and
+    the current 221h run has 8 of its own with a max of 1,269s. So the
+    grace is 0.24x that run's worst gap, not 8x.
+    **THE CONSEQUENCE IS THIS MODULE'S OWN 08-01 CORRECTION, RUNNING
+    BACKWARDS.** Inside such a stall a LIVE run reads dead, and
+    `_bucket` moves its open fills from `pending` (censoring) to
+    `missed` (failure) -- the precise conflation `build_coverage` was
+    rewritten to refuse, reintroduced through the liveness predicate
+    rather than through the partition. Pooled over the ledger **1.92%
+    of shadow wall-clock sits inside a stall**, so roughly 1 reading in
+    52 is taken there. Checked rather than assumed: **none of the 9
+    archived readings landed in a stall window** (0.17 expected), so
+    nothing archived moves and nothing is being rescued.
+    **WHY IT SURVIVED.** Two halves of the sentence had different
+    epistemic status and read as one. The p99 was true and checkable in
+    spirit; the max was neither, and a reader who spot-checked the
+    typical gap found the comment accurate. The failure is #67's class
+    with the gate moved outside the program entirely: not a sample
+    conditioned on the predicate under test, but a sample that never
+    entered the artifact at all.
+    Fix: `tick_gap` (per-run and pooled) publishes n, median, nearest-
+    rank p95, max, `over_grace_n`, `grace_multiple_of_max` -- the
+    number the prose asserted was ~8 -- and `stall_exposure_frac`, the
+    share of a run's ticked span spent past the grace with no tick,
+    i.e. the prior that this reading's own `live` call is wrong.
+    Collected with no `WHERE` on the gap, which is the property under
+    test. `None` rather than a zeroed block when a run has one tick.
+    **`LIVE_GRACE_S` is UNCHANGED, deliberately**: re-sizing a
+    threshold off the observed max is how the wrong number got here,
+    and the archived readings stay comparable. Suite 1532 -> **1539**,
+    verified red seven ways.
+    **RULE.** A constant's justification is part of the program. If the
+    distribution that sizes a threshold is not emitted by an artifact
+    the repo produces, the comment is a claim no future reading can
+    contradict -- and the half of it that is wrong will be the tail,
+    because the tail is the half nobody spot-checks. Measure it in the
+    report, publish the margin as a multiple, and publish the exposure
+    the margin buys.

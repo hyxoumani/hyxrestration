@@ -104,6 +104,8 @@ This is a bound on OTHER readings, not a verdict on any strategy.
 
 import argparse
 import json
+import math
+import statistics
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -115,12 +117,76 @@ from hyxlab.store import connect_retry
 RECENT_RUNS = 5
 
 # A run is LIVE if its last equity tick is this recent. The shadow daemon
-# writes one tick per poll; measured on the live ledger the gap between
-# consecutive ticks tops out at ~37s (p99 ~35s) across every recent run,
-# so 5 minutes is ~8x the worst observed gap — generous enough that a
-# slow poll or a lock wait never mislabels a live run as dead, and short
-# enough that a run killed minutes ago is not still credited as pending.
+# writes one tick per poll, so the threshold is a bet on the inter-tick
+# gap distribution.
+#
+# CORRECTION (2026-09-21). This constant shipped with the prose "tops out
+# at ~37s (p99 ~35s) across every recent run, so 5 minutes is ~8x the
+# worst observed gap". The p99 is right and the max is not, and the max
+# is the only end of the distribution this threshold is exposed to. The
+# 8x was measured OUTSIDE the code, so no artifact could contradict it;
+# `tick_gap` (build_coverage) now measures it IN the report, over every
+# consecutive-tick pair in the ledger and gated on nothing — the sample
+# can exceed LIVE_GRACE_S, which is the whole point (mistakes #67).
+#
+# Measured on the live ledger at the correction, 308,027 ticks over 54
+# runs: median 16.9s and p99 ~36s as claimed, but the max is 21,027s
+# (5.8h) and TWENTY of the 54 runs contain at least one gap past the
+# grace — 150 gaps in total. The current 221h run's own max is 1,269s,
+# so the real figure is 0.24x the worst observed gap, not 8x.
+#
+# The consequence is the 08-01 correction running backwards: inside such
+# a stall a LIVE run reads dead, and its open fills move from `pending`
+# (censoring) to `missed` (failure) — the exact conflation this module
+# was built to refuse. Pooled over the whole ledger 1.92% of shadow
+# wall-clock sits inside a stall, so ~1 reading in 52 is taken there.
+# None of the 9 archived readings landed in one (0.17 expected), so
+# nothing archived moves and nothing is being rescued.
+#
+# The constant is UNCHANGED, deliberately, per the standing comparability
+# precedent and because re-sizing a threshold off the observed max is how
+# the wrong number got here. `tick_gap.over_grace_n` and
+# `stall_exposure_frac` are the tripwire instead: they say how exposed
+# each reading is, in the artifact, where a later pass can check it.
 LIVE_GRACE_S = 300
+
+
+def _p95(ordered: list[float]) -> float:
+    """Nearest-rank 95th percentile: the smallest value >= 95% of the
+    sample. `ordered[int(0.95 * n)]` has rank >= 95% by construction and
+    equals the maximum whenever 0.95n is an integer (prioritycheck._p95,
+    same fix). Nearest rank is ceil(0.95n) - 1."""
+    return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
+
+
+def _tick_gap(gaps: list[float]) -> dict | None:
+    """The inter-tick gap distribution LIVE_GRACE_S is a bet on.
+
+    `gaps` is every consecutive-tick delta in seconds, collected with no
+    predicate on its size — a statistic offered as evidence about a
+    threshold has to come from a sample that could have violated it.
+
+    None when fewer than two ticks exist: one tick has no gap, and a
+    zero would read as a perfect record rather than as no record.
+    """
+    if not gaps:
+        return None
+    ordered = sorted(gaps)
+    span = sum(gaps)
+    # Wall-clock the run spent PAST the grace with no tick — the share of
+    # this run's life in which a reading would have called it dead.
+    exposed = sum(g - LIVE_GRACE_S for g in gaps if g > LIVE_GRACE_S)
+    return {
+        "n": len(ordered),
+        "median_s": round(statistics.median(ordered), 3),
+        "p95_s": round(_p95(ordered), 3),
+        "max_s": round(ordered[-1], 3),
+        "over_grace_n": sum(1 for g in ordered if g > LIVE_GRACE_S),
+        # The number the old prose asserted was ~8. < 1 means the grace
+        # is SHORTER than a gap this run actually took.
+        "grace_multiple_of_max": round(LIVE_GRACE_S / ordered[-1], 3) if ordered[-1] > 0 else None,
+        "stall_exposure_frac": round(exposed / span, 6) if span > 0 else None,
+    }
 
 
 def _ratio(observed: float, missed: float) -> float | None:
@@ -254,6 +320,20 @@ def build_coverage(
         ledger.execute("SELECT run_id, max(ts) FROM shadow_equity GROUP BY run_id").fetchall()
     )
 
+    # Every consecutive-tick gap, per run. No WHERE on the gap: this is
+    # the sample that has to be able to exceed LIVE_GRACE_S for the
+    # liveness threshold's margin to be checkable at all.
+    gaps: dict[str, list[float]] = {}
+    for run_id, gap in ledger.execute(
+        "SELECT run_id, gap FROM ("
+        "  SELECT run_id,"
+        "    datesub('millisecond', lag(ts) OVER (PARTITION BY run_id ORDER BY ts), ts) / 1000.0"
+        "      AS gap"
+        "  FROM shadow_equity"
+        ") WHERE gap IS NOT NULL"
+    ).fetchall():
+        gaps.setdefault(run_id, []).append(float(gap))
+
     rows = ledger.execute(
         "SELECT run_id, started_at FROM shadow_runs ORDER BY started_at"
     ).fetchall()
@@ -339,6 +419,13 @@ def build_coverage(
                 "ended_at": end.isoformat() if end else None,
                 "life_hours": life_h,
                 "live": live,
+                # How close this reading's `live` call was to its own
+                # threshold, so the margin is in the artifact rather than
+                # implied by the boolean.
+                "since_last_tick_s": (
+                    None if end is None else round((now - end).total_seconds(), 3)
+                ),
+                "tick_gap": _tick_gap(gaps.get(run_id, [])),
                 "first_close": first_close.isoformat() if first_close else None,
                 "hours_to_first_outcome": hours_to_first,
                 "fills": len(fills),
@@ -393,6 +480,13 @@ def build_coverage(
         return {
             "runs": len(subset),
             "live_runs": sum(1 for r in subset if r["live"]),
+            # Pooled over the raw gaps, never averaged from the per-run
+            # blocks: a 20-tick run would otherwise weigh as much as a
+            # 40,000-tick one.
+            "tick_gap": _tick_gap([g for r in subset for g in gaps.get(r["run_id"], [])]),
+            "runs_with_gap_over_grace": sum(
+                1 for r in subset if (r["tick_gap"] or {}).get("over_grace_n", 0) > 0
+            ),
             "fills": sum(r["fills"] for r in subset),
             "observed_fills": obs_n,
             "unobserved_fills": missed_n + pending_n,
@@ -462,6 +556,22 @@ def main() -> None:
         f" ({recent['unresolved_fills']} of {recent['fills']} fills in markets"
         f" the archive has no result for)"
     )
+    # The liveness threshold's own margin, printed beside the coverage it
+    # decides: every `pending` on this page is a `live` call, and a stall
+    # past the grace turns those into `missed`.
+    tg = report["pooled"]["tick_gap"]
+    if tg is None:
+        print("[shadow_coverage] tick_gap: no run has two ticks; liveness margin unmeasured")
+    else:
+        print(
+            f"[shadow_coverage] tick_gap n={tg['n']} median={tg['median_s']}s"
+            f" p95={tg['p95_s']}s max={tg['max_s']}s;"
+            f" grace {LIVE_GRACE_S}s = {tg['grace_multiple_of_max']}x the worst gap,"
+            f" {tg['over_grace_n']} gaps past it in"
+            f" {report['pooled']['runs_with_gap_over_grace']} of {report['pooled']['runs']} runs"
+            f" ({tg['stall_exposure_frac']} of wall-clock, the chance this reading"
+            f" calls a live run dead)"
+        )
     print(
         "| run | life_h | live | fills | missed | pending | h_to_1st | cov_fills"
         " | cov_notl | settle_lo | settle_hi | h_to_1st_settle |"

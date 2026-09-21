@@ -482,3 +482,122 @@ def test_settlement_notional_tracks_size_not_count():
     r = _run(build_coverage(ledger, markets), "r1")
     assert r["settle_coverage_fills_floor"] == 0.25
     assert r["settle_coverage_notional_floor"] == 0.9375
+
+
+# --- the liveness threshold's own margin (2026-09-21, mistakes #67) ---------
+#
+# LIVE_GRACE_S shipped citing "~8x the worst observed gap", measured
+# outside the code. `tick_gap` measures it inside, and these tests pin the
+# property that makes it evidence rather than decoration: the sample is
+# NOT gated on the threshold it is offered as evidence about.
+
+
+def _gap_ledger(equity, run_id="r1"):
+    """A one-fill run whose equity ticks are given as offsets in seconds."""
+    return _ledger(
+        runs=[(run_id, T0)],
+        fills=[(run_id, "M", 1.0, 0.5)],
+        equity=[(run_id, T0 + timedelta(seconds=s)) for s in equity],
+    )
+
+
+def test_tick_gap_sample_includes_gaps_past_the_grace():
+    """LOAD-BEARING. The whole defect was a margin asserted from a sample
+    that could not contradict it. A run that stalled for twice the grace
+    must SHOW that gap: filter the sample to gaps <= LIVE_GRACE_S and
+    `max_s`, `over_grace_n` and `grace_multiple_of_max` all go quiet."""
+    ledger = _gap_ledger([0, 20, 20 + 2 * LIVE_GRACE_S, 20 + 2 * LIVE_GRACE_S + 20])
+    markets = _markets([("M", T0 + timedelta(hours=99))])
+
+    tg = _run(build_coverage(ledger, markets), "r1")["tick_gap"]
+    assert tg["n"] == 3
+    assert tg["max_s"] == float(2 * LIVE_GRACE_S)
+    assert tg["over_grace_n"] == 1
+    # The number the old prose said was ~8. Below 1 means the grace is
+    # SHORTER than a gap this run actually took.
+    assert tg["grace_multiple_of_max"] == 0.5
+
+
+def test_tick_gap_stall_exposure_is_the_share_of_life_past_the_grace():
+    """`stall_exposure_frac` is the prior that this reading's own `live`
+    call is wrong: wall-clock spent past the grace with no tick, over the
+    run's ticked span. 20 + 900 + 20 = 940s of span, 600s of it past the
+    grace."""
+    ledger = _gap_ledger([0, 20, 920, 940])
+    markets = _markets([("M", T0 + timedelta(hours=99))])
+
+    tg = _run(build_coverage(ledger, markets), "r1")["tick_gap"]
+    assert tg["stall_exposure_frac"] == round(600.0 / 940.0, 6)
+
+
+def test_tick_gap_is_none_rather_than_zero_for_a_single_tick():
+    """One tick has no gap. A 0.0 would read as a perfect record — the
+    distinction `_ratio` makes one field over."""
+    ledger = _gap_ledger([0])
+    markets = _markets([("M", T0 + timedelta(hours=99))])
+
+    r = _run(build_coverage(ledger, markets), "r1")
+    assert r["tick_gap"] is None
+    assert r["since_last_tick_s"] is not None
+
+
+def test_tick_gap_median_straddles_an_even_sample():
+    """#66: a field named median on an even population is not the upper
+    straddler. Gaps 10/20/30/40 -> 25.0, not 30.0."""
+    ledger = _gap_ledger([0, 10, 30, 60, 100])
+    markets = _markets([("M", T0 + timedelta(hours=99))])
+
+    assert _run(build_coverage(ledger, markets), "r1")["tick_gap"]["median_s"] == 25.0
+
+
+def test_tick_gap_p95_is_nearest_rank_not_the_maximum():
+    """#68: `ordered[int(0.95 * n)]` IS the maximum whenever 0.95n is an
+    integer. n=20 gaps of 1..20s must publish p95 19.0, not 20.0."""
+    ticks, t = [0], 0
+    for g in range(1, 21):
+        t += g
+        ticks.append(t)
+    ledger = _gap_ledger(ticks)
+    markets = _markets([("M", T0 + timedelta(hours=99))])
+
+    tg = _run(build_coverage(ledger, markets), "r1")["tick_gap"]
+    assert tg["n"] == 20
+    assert tg["max_s"] == 20.0
+    assert tg["p95_s"] == 19.0
+
+
+def test_pooled_tick_gap_pools_raw_gaps_rather_than_per_run_blocks():
+    """A 2-gap run must not weigh as much as a 4-gap one. Pooled over the
+    raw gaps the median of [10,10,10,10,100,100] is 10.0; averaging the
+    two runs' medians would give 55.0."""
+    ledger = _ledger(
+        runs=[("big", T0), ("small", T0)],
+        fills=[("big", "M", 1.0, 0.5), ("small", "M", 1.0, 0.5)],
+        equity=(
+            [("big", T0 + timedelta(seconds=10 * i)) for i in range(5)]
+            + [("small", T0 + timedelta(seconds=100 * i)) for i in range(3)]
+        ),
+    )
+    markets = _markets([("M", T0 + timedelta(hours=99))])
+
+    pooled = build_coverage(ledger, markets)["pooled"]
+    assert pooled["tick_gap"]["n"] == 6
+    assert pooled["tick_gap"]["median_s"] == 10.0
+    assert pooled["runs_with_gap_over_grace"] == 0
+
+
+def test_runs_with_gap_over_grace_counts_runs_not_gaps():
+    """One run stalling three times is one exposed run, not three."""
+    ledger = _ledger(
+        runs=[("stall", T0), ("clean", T0)],
+        fills=[("stall", "M", 1.0, 0.5), ("clean", "M", 1.0, 0.5)],
+        equity=(
+            [("stall", T0 + timedelta(seconds=1000 * i)) for i in range(4)]
+            + [("clean", T0 + timedelta(seconds=10 * i)) for i in range(4)]
+        ),
+    )
+    markets = _markets([("M", T0 + timedelta(hours=99))])
+
+    pooled = build_coverage(ledger, markets)["pooled"]
+    assert pooled["tick_gap"]["over_grace_n"] == 3
+    assert pooled["runs_with_gap_over_grace"] == 1
