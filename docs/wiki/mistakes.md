@@ -2517,3 +2517,64 @@ tree it happens to run in is not evidence of anything.**
     because the tail is the half nobody spot-checks. Measure it in the
     report, publish the margin as a multiple, and publish the exposure
     the margin buys.
+
+71. **2026-09-21 -- #70's sweep: every DuckDB attach budget in the repo
+    is sized by a wait-time distribution no artifact emits, and the
+    retry ladder's own outcome is BINARY -- so a budget eroding toward
+    its cliff is invisible until the run it kills.** (#70's rule
+    applied as a sweep: which OTHER threshold is justified by prose
+    nothing can contradict.) `hyxlab.store.connect_retry` is the kernel
+    helper every read-only attach goes through, and three budgets ride
+    it: its own default (15 x 2.0s), `atlas.ARCHIVE_ATTACH` (20 x 1.0s
+    x 1.3, ~214s) and `divergence.STREAM_ATTACH` (30 x 1.0s x 1.4,
+    ~639s). Each is justified by a measured distribution -- "FOUR OF
+    FIVE attempts died on a clean IOException after 30s", "the lock
+    samples free 87% of the time", "24 reader attaches gave p50 0.0s,
+    p90 7.6s, max 22.6s" -- and **the helper records none of it.** It
+    returns a connection or it raises, so an attach that succeeded on
+    its first attempt and one that succeeded on its nineteenth of
+    twenty are byte-identical in every report downstream.
+    **MEASURED, and the first production-shaped reading already shows
+    the tail is live**: three read-only attaches to the three live DBs
+    on 09-21 while `hyxlab-poly-sweep` was 10h into a run gave
+    hyxstream 0.008s and hyxshadow 0.114s -- and **hyxlab.duckdb took 6
+    attempts and 10.02s, 0.358 of the 28s default budget.** A third of
+    the way to a failure, on a run that read as instant. Both ends were
+    measured to make `budget_frac` an honest share: the common case is
+    ~11ms (p50 over 12 samples per DB) and a REFUSED attach returns in
+    0.03ms (measured against a held writer), so an exhausted ladder's
+    elapsed time IS its sleep total.
+    **WHY IT SURVIVED.** The same shape as #70 with the gate moved one
+    step further out: not a sample conditioned on the predicate under
+    test, not a sample kept outside the artifact, but a quantity the
+    program never forms at all. And the one place a wait WAS printed --
+    atlas's busy-archive line, `waited {ATTACH_BUDGET_S:.0f}s` --
+    formatted a CONSTANT as though it were an observation, so it
+    asserted "waited 214s" whatever the run had actually spent.
+    Fix: `attach_budget_s()` is now the single definition of the ladder
+    arithmetic every call-site comment was doing by hand (and that
+    `atlas.ATTACH_BUDGET_S` carried as a re-typed 214.0 literal);
+    `connect_retry` and `open_retry` record every attach -- gated on
+    nothing, success included -- as db / attempts / waited_s /
+    budget_s / `budget_frac`; `attach_wait_block()` publishes n, the
+    per-attach rows, `waited_s_max`, `waited_s_total`,
+    `budget_frac_max` (the margin the prose asserts is generous) and
+    `exhausted_n`. Atlas and divergence both carry the block, atlas
+    prints the margin beside the reading it paid for, and its failure
+    line now prints the MEASURED wait next to the budget. `None` rather
+    than a zeroed block when nothing attached, and `budget_frac` is
+    `None` on a one-attempt ladder that has no budget to spend a share
+    of. **No budget is re-sized** -- including the one this pass found
+    reaching furthest: `divergence.main` attaches the daemon-held
+    `hyxshadow.duckdb` on `connect_retry`'s brief-reader DEFAULT, which
+    that helper's own docstring calls inadequate against a 24/7 writer.
+    Re-sizing off prose is the #70 failure; `budget_frac` is the
+    evidence that would justify a change. Suite 1539 -> **1552**,
+    verified red eleven ways.
+    **RULE.** #70 says publish the distribution that sizes a threshold.
+    Its corollary: a retry ladder must publish what it SPENT, not only
+    whether it finished. A budget whose only observable is
+    succeeded/raised reports full health at 99% consumption, so the
+    first reading that can warn is the one that already failed -- and a
+    constant formatted into an operator line is not an observation, it
+    is the same claim with a decimal point.

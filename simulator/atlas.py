@@ -264,7 +264,14 @@ from statistics import NormalDist, median
 
 import duckdb
 
-from hyxlab.store import connect_retry, lock_holder
+from hyxlab.store import (
+    attach_budget_s,
+    attach_wait_block,
+    attach_waits,
+    connect_retry,
+    lock_holder,
+    reset_attach_waits,
+)
 
 HORIZONS = [("1h", 1), ("6h", 6), ("24h", 24), ("72h", 72), ("7d", 168)]
 Z95 = 1.959963985
@@ -1333,7 +1340,12 @@ def verdict_stability(out_dir: Path, current: dict) -> dict:
 #: would read as a hang, so exhausting the budget is an ANSWER, printed
 #: with the holder's identity, not a stack trace.
 ARCHIVE_ATTACH = {"retries": 20, "delay": 1.0, "backoff": 1.3, "max_delay": 20.0}
-ATTACH_BUDGET_S = 214.0  # nominal; see the arithmetic above
+#: DERIVED, not a literal. The "~3.6 min" above is this ladder's nominal
+#: sleep total, and it used to be re-typed here as 214.0 -- a second copy
+#: of an arithmetic that drifts the moment any of the four fields changes.
+#: It is the DENOMINATOR only: what the run actually waited is measured and
+#: published as `attach_wait` (mistakes #70).
+ATTACH_BUDGET_S = attach_budget_s(**ARCHIVE_ATTACH)
 
 
 def main() -> None:
@@ -1342,14 +1354,21 @@ def main() -> None:
     ap.add_argument("--out", default="reports/atlas")
     args = ap.parse_args()
 
+    reset_attach_waits()
     try:
         conn = connect_retry(args.db, read_only=True, **ARCHIVE_ATTACH)
     except duckdb.Error as exc:
         holder = lock_holder(exc)
+        # The MEASURED wait, not the nominal. This line printed
+        # `ATTACH_BUDGET_S` -- a constant -- as though it were an observation,
+        # so it asserted 214s whatever the run had actually spent.
+        waits = attach_waits()
+        waited = waits[-1].waited_s if waits else 0.0
         if holder:
             raise SystemExit(
                 f"[atlas] archive busy: a live writer holds {args.db} ({holder}).\n"
-                f"[atlas] waited {ATTACH_BUDGET_S:.0f}s; the poly sweep holds it for hours."
+                f"[atlas] waited {waited:.0f}s of a {ATTACH_BUDGET_S:.0f}s budget;"
+                " the poly sweep holds it for hours."
                 " Nothing is wrong — re-run when it finishes (collector.health"
                 " shows hyxlab-poly-sweep RUNNING)."
             ) from exc
@@ -1359,6 +1378,10 @@ def main() -> None:
         ) from exc
     atlas = build_atlas(conn)
     conn.close()
+    # After the attach, before the write: the cost of getting to the data is
+    # part of the reading, and on a run that SUCCEEDED it is the only place
+    # the budget's margin is readable at all.
+    atlas["attach_wait"] = attach_wait_block()
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1377,6 +1400,15 @@ def main() -> None:
         f"[atlas] {len(atlas['buckets'])} buckets, {len(flags)} flagged"
         f" ({len(atlas['flagged_robust'])} cluster-robust)"
     )
+    # The margin beside the reading it paid for: a run that spent 0.9 of its
+    # attach budget produced the same numbers as one that spent none, and
+    # only this line separates them before the day the budget runs out.
+    aw = atlas["attach_wait"]
+    if aw:
+        print(
+            f"[atlas] attach: {aw['n']} waited {aw['waited_s_total']:.1f}s,"
+            f" worst {aw['waited_s_max']:.1f}s = {aw['budget_frac_max']} of its budget"
+        )
     # the denominator, printed next to the count: "N of M buckets" reads as M
     # tests, and it never was. See mistakes #33.
     print(

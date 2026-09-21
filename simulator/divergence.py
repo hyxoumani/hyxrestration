@@ -33,7 +33,7 @@ from statistics import median
 
 from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run
-from hyxlab.store import connect_retry, open_retry
+from hyxlab.store import attach_wait_block, connect_retry, open_retry, reset_attach_waits
 from simulator.bookreplay import BOOK_GAPS, replay_snapshots, stream_events
 from simulator.registry import STRATEGIES
 from simulator.shadow import SHADOW_DB, STREAM_DB
@@ -543,6 +543,14 @@ def main() -> None:
     )
     args = ap.parse_args()
 
+    reset_attach_waits()
+    # NOTE the budget this one uses: `connect_retry`'s DEFAULT, 15 x 2.0s
+    # flat, which that helper's own docstring calls inadequate against a 24/7
+    # writer -- and `hyxshadow.duckdb` is owned by exactly such a daemon. It
+    # is deliberately NOT re-sized here on the strength of that argument
+    # (re-sizing off prose is how mistakes #70 happened); `attach_wait`
+    # publishes its measured `budget_frac` per run, and a reading near 1.0 is
+    # the evidence that would justify a change.
     with connect_retry(args.shadow_db) as conn:
         run_id = args.run or latest_complete_run(conn)
         if run_id is None:
@@ -596,6 +604,10 @@ def main() -> None:
         "latency_s": latency,
         "strategies": strategies,
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None)),
+        # Three attaches reach this report (shadow ledger, stream archive,
+        # market archive), on three different budgets, all of them justified
+        # by prose no artifact could contradict until now (mistakes #70).
+        "attach_wait": attach_wait_block(),
         **compare(
             shadow_fills,
             replay_fills,
