@@ -34,7 +34,14 @@ import requests
 
 from collector.venues import kalshi
 from hyxlab.lockid import instance_lock_or_reason, note_holder
-from hyxlab.store import Store, duck_connect, open_retry
+from hyxlab.store import (
+    Store,
+    attach_budget_s,
+    attach_wait_block,
+    duck_connect,
+    open_retry,
+    reset_attach_waits,
+)
 
 LOCK_FILE = "data/writer.lock"
 
@@ -674,6 +681,15 @@ def main() -> None:
     if lock is None:
         print(f"[sweep] {why}; aborting")
         sys.exit(75)
+    # Scope the attach ledger to THIS run: `writer_burst` spends the 300s
+    # `BURST_OPEN_RETRIES` ladder once per burst, ~2 bursts per series over
+    # ~3,709 series, and until now the only thing it ever published about
+    # that budget was `lock_skips` -- a counter that increments ONLY when
+    # the budget is exhausted (mistakes #72). Thirty days of `lock_skips: 0`
+    # therefore says nothing about whether the ladder is spending 8ms or
+    # 290s, and the one run that went over (09-10 06:10Z, dead at series
+    # ~600 of 3,656) had no warning in front of it by construction.
+    reset_attach_waits()
     try:
         totals = run_sweep(
             args.db,
@@ -686,7 +702,28 @@ def main() -> None:
             refetch_to=args.refetch_to,
         )
         skipped = totals.pop("lock_skipped", [])
+        # `rows=False`: the per-attach sample is thousands of rows here and
+        # the margin is the whole message. Printed on its own line, before
+        # the closing census -- which takes a burst of its own and would
+        # otherwise be the last word on a run it did not measure.
+        wait = attach_wait_block(rows=False)
         print(f"[sweep] done: {totals}")
+        if wait is not None:
+            frac = wait["budget_frac_max"]
+            # `attach_budget_s`, never `RETRIES * DELAY`: 150 attempts is
+            # 149 sleeps, so the hand-multiplied 300 is 2s wider than the
+            # ladder the fraction is a share of -- printing it beside
+            # `budget_frac_max` would make the two disagree (#71's atlas
+            # literal, one module over).
+            budget = attach_budget_s(BURST_OPEN_RETRIES, BURST_OPEN_DELAY_S)
+            print(
+                f"[sweep] attach_wait: {wait['n']} attaches, worst"
+                f" {wait['waited_s_max']:.1f}s of a {budget:.0f}s"
+                f" budget ({'n/a' if frac is None else f'{frac:.4f}'} of it),"
+                f" {wait['waited_s_total']:.1f}s spent waiting in total,"
+                f" {wait['exhausted_n']} exhausted",
+                flush=True,
+            )
         try:
             with writer_burst(args.db) as store:
                 for ticker, why in skipped:

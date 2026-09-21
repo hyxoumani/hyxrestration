@@ -414,6 +414,44 @@ _ATTACH_WAITS: list[AttachWait] = []
 _ATTACH_WAITS_MAX = 256
 
 
+@dataclass
+class _AttachTotals:
+    """Running aggregates over EVERY recorded attach, kept separately from
+    the bounded row list.
+
+    The rows are a SAMPLE and always were; the statistics must not be
+    (mistakes #72). `_ATTACH_WAITS_MAX` was written for callers that attach
+    two or three times, where retained == observed and the distinction is
+    invisible. `collector.sweep` attaches twice per series over ~3,709
+    series -- so a block computed from the retained rows would describe the
+    last ~3% of the run while carrying the run's name, and the statistic a
+    drop destroys first is `budget_frac_max`: a max is exactly the number
+    that lives in the observations you threw away. The 2026-09-10 06:10Z
+    sweep died at series ~600 of 3,656 on an exhausted open ladder; a block
+    keeping the last 256 would have held not one attach from the incident.
+    """
+
+    observed_n: int = 0
+    waited_s_total: float = 0.0
+    waited_s_max: float = 0.0
+    budget_frac_max: float | None = None
+    exhausted_n: int = 0
+
+    def add(self, w: AttachWait) -> None:
+        self.observed_n += 1
+        self.waited_s_total += w.waited_s
+        self.waited_s_max = max(self.waited_s_max, w.waited_s)
+        frac = w.budget_frac
+        if frac is not None:
+            self.budget_frac_max = (
+                frac if self.budget_frac_max is None else max(self.budget_frac_max, frac)
+            )
+        self.exhausted_n += int(not w.ok)
+
+
+_ATTACH_TOTALS = _AttachTotals()
+
+
 def attach_budget_s(
     retries: int, delay: float = 2.0, backoff: float = 1.0, max_delay: float | None = None
 ) -> float:
@@ -432,9 +470,9 @@ def attach_budget_s(
 
 
 def _record_attach(path: str | Path, attempts: int, waited_s: float, budget_s: float, ok: bool):
-    _ATTACH_WAITS.append(
-        AttachWait(Path(path).name, attempts, waited_s, budget_s, ok)
-    )
+    w = AttachWait(Path(path).name, attempts, waited_s, budget_s, ok)
+    _ATTACH_TOTALS.add(w)  # BEFORE the trim: the totals outlive the rows
+    _ATTACH_WAITS.append(w)
     del _ATTACH_WAITS[:-_ATTACH_WAITS_MAX]
 
 
@@ -445,26 +483,56 @@ def attach_waits() -> list[AttachWait]:
 def reset_attach_waits() -> None:
     """Called at the top of a report's `main` so the block describes THIS
     run's attaches and not whatever a test or an import did first."""
+    global _ATTACH_TOTALS
     _ATTACH_WAITS.clear()
+    _ATTACH_TOTALS = _AttachTotals()
 
 
-def attach_wait_block(waits: list[AttachWait] | None = None) -> dict | None:
+def attach_wait_block(
+    waits: list[AttachWait] | None = None, *, rows: bool = True
+) -> dict | None:
     """The report block. `None` when nothing attached through the retry
-    helpers -- an empty block would read as "attached instantly"."""
-    obs = attach_waits() if waits is None else list(waits)
-    if not obs:
-        return None
-    fracs = [w.budget_frac for w in obs if w.budget_frac is not None]
-    return {
-        "n": len(obs),
-        "attaches": [w.as_dict() for w in obs],
-        "waited_s_max": round(max(w.waited_s for w in obs), 3),
-        "waited_s_total": round(sum(w.waited_s for w in obs), 3),
+    helpers -- an empty block would read as "attached instantly".
+
+    `n` is the number of attaches OBSERVED, not the number of rows kept:
+    the row list is capped at `_ATTACH_WAITS_MAX` and the statistics come
+    from `_ATTACH_TOTALS`, which is never trimmed. `retained_n` and
+    `dropped_n` say so out loud, because a block that silently described
+    its own tail window would be the defect it exists to catch. Pass an
+    explicit `waits` list and it IS the population -- nothing was dropped
+    by definition.
+
+    `rows=False` omits the per-attach sample for callers that attach
+    thousands of times, where the rows are journal noise and the margin is
+    the whole message.
+    """
+    if waits is not None:
+        obs = list(waits)
+        if not obs:
+            return None
+        totals = _AttachTotals()
+        for w in obs:
+            totals.add(w)
+    else:
+        obs = attach_waits()
+        totals = _ATTACH_TOTALS
+        if not totals.observed_n:
+            return None
+    block = {
+        "n": totals.observed_n,
+        **({"attaches": [w.as_dict() for w in obs]} if rows else {}),
+        "retained_n": len(obs),
+        "dropped_n": totals.observed_n - len(obs),
+        "waited_s_max": round(totals.waited_s_max, 3),
+        "waited_s_total": round(totals.waited_s_total, 3),
         # The number the call-site comments assert is generous, now readable
         # from the artifact on a run that SUCCEEDED.
-        "budget_frac_max": round(max(fracs), 4) if fracs else None,
-        "exhausted_n": sum(1 for w in obs if not w.ok),
+        "budget_frac_max": (
+            None if totals.budget_frac_max is None else round(totals.budget_frac_max, 4)
+        ),
+        "exhausted_n": totals.exhausted_n,
     }
+    return block
 
 
 def connect_retry(
