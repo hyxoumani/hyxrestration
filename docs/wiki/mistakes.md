@@ -2578,3 +2578,77 @@ tree it happens to run in is not evidence of anything.**
     first reading that can warn is the one that already failed -- and a
     constant formatted into an operator line is not an observation, it
     is the same claim with a decimal point.
+
+72. **2026-09-21 -- #71's sweep: the widest retry ladder in the repo
+    publishes nothing but the count of times it went OVER, so its
+    artifact is censored to its own failures; and #71's ledger
+    computed its statistics from a row list capped at 256, so the one
+    caller that would have exposed this would have published its last
+    2% under the run's name.** (#71's rule applied to the ladders #71
+    did not reach. Class: a measurement whose population is selected
+    by the outcome -- #67's shape, one level up.)
+    **THE DEFECT, HALF ONE.** `collector.sweep.writer_burst` spends
+    `BURST_OPEN_RETRIES` -- 150 x 2.0s, at 298s the widest ladder in
+    the repo -- once per burst, and a `--limit 1` smoke measured **3
+    attaches for ONE series**, so a production run of 3,709 series
+    spends that ladder ~11,000 times. The only thing a run ever said
+    about it is `lock_skips`, which increments **only when the budget
+    is exhausted**. Thirty days of `lock_skips: 0` (measured
+    2026-09-21) is therefore equally consistent with every burst
+    opening in 8ms and with every burst spending 290 of its 298s. The
+    run that DID go over -- 2026-09-10 06:10Z, dead at series ~600 of
+    3,656 because a reader held `data/hyxlab.duckdb` past the budget
+    -- had nothing in front of it, by construction.
+    **MEASURED, from the one unit that does publish its wait.**
+    `writer_burst` takes the exclusive flock and THEN spins
+    `open_retry` while holding it, and `collector.collect` prints
+    `wait_s` for that same flock every cycle (EXP-963). Over **2,016
+    cycles / 7 days to 2026-09-21: p50 0.0s, p99 47.0s, max 95.0s**,
+    and **37 of the 51 cycles at >= 20s (73%) fall in the 06-08Z sweep
+    window** -- 12.5% of the day carrying **56% of all flock wait
+    time**. The ladder's spend is real and was legible only from
+    ANOTHER unit's instrument. It is also the mechanism by which
+    sweep's invisible wait becomes the collector's visible one: the
+    sweep's 298s open budget is spent inside collect's 240s
+    whole-cycle budget.
+    **THE DEFECT, HALF TWO -- in #71's own code, one day old.**
+    `attach_wait_block` computed `n`, `waited_s_max`,
+    `waited_s_total`, `budget_frac_max` and `exhausted_n` from
+    `_ATTACH_WAITS`, a list trimmed to the most recent 256. Atlas and
+    divergence attach three times, so retained == observed and the cap
+    is invisible -- which is exactly why it shipped. At ~11,000
+    attaches the block would describe the last ~2% of the run while
+    carrying the run's name, and **the first statistic a drop destroys
+    is `budget_frac_max`: a max lives in the observations you threw
+    away.** A block keeping the last 256 would have held not one
+    attach from the 09-10 incident.
+    **WHY IT SURVIVED.** Both halves are the same reflex: a bound
+    written for the caller in front of you, and a counter written for
+    the failure you are afraid of. Neither is wrong where it was
+    written. `_ATTACH_WAITS_MAX` is correct for a daemon that attaches
+    forever and for a report that attaches three times; `lock_skips`
+    is correct as a skip count. They become a defect only when the
+    number is read as a statement about a RUN, and nothing in either
+    artifact said which it was.
+    **FIX.** The rows stay a bounded SAMPLE and the statistics stop
+    being one: `_AttachTotals` accumulates at record time, is never
+    trimmed, and the block publishes `retained_n` / `dropped_n` out
+    loud so a truncated sample can never pass as a population. An
+    explicit `waits=` list IS its own population, so nothing is
+    dropped by definition. `attach_wait_block(rows=False)` for callers
+    whose per-attach sample is journal noise. `collector.sweep` calls
+    `reset_attach_waits()` at run start and prints the margin beside
+    `[sweep] done:` -- with the budget from `attach_budget_s`, never
+    `RETRIES * DELAY`, because 150 attempts is 149 sleeps and a
+    printed 300 would disagree with the fraction's own 298 (#71's
+    atlas literal, one module over). **No budget re-sized**, per #70.
+    Suite 1552 -> **1562**, verified red four ways against the exact
+    old semantics (statistics recomputed from the trimmed rows), plus
+    six more against the missing API.
+    **RULE.** A bounded buffer is a sample, and a statistic computed
+    over a sample must say so. The moment a capped list feeds a field
+    named `n`, `max` or `total`, the cap has silently redefined the
+    population -- and it does so invisibly for every caller small
+    enough to fit, which is every caller that reviews the code.
+    Corollary to #71: publishing what a ladder SPENT only works if the
+    publication covers every time it spent it.
