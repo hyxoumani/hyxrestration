@@ -2415,3 +2415,52 @@ tree it happens to run in is not evidence of anything.**
     (#67's corollary) with the censoring stated at the field. Re-run of
     20260907T142900 is bit-identical on every pre-existing field. Suite
     1524 -> **1528**, verified red.
+
+69. **2026-09-20 -- the divergence report's nearest tier can ONLY ever
+    pair fills that disagree on quantity, and quantity is the one thing
+    it never published.** #68 left the open question "the nearest tier
+    has matched zero pairs in 13 reports -- dead code, or unreachable
+    for a reason nobody has stated?". It is the second, and the reason
+    is structural. `compare`'s exact tier holds ONE candidate list per
+    (market, side) across its whole greedy pass and only ever POPS
+    matches from it, so every replay fill still in `r_left` was visible
+    to every shadow fill that became a leftover. Inside the nearest
+    window (2s, a strict subset of exact's 60s `MATCH_TOLERANCE`) the
+    only predicate that can have refused such a pair is `r[1] == s[1]`.
+    So every pair the tier is *able* to make has unequal qty -- while
+    its docstring said "Neither relaxed tier invents agreement" and the
+    two numbers it published about itself were a price delta that is
+    0.0 by selection and a |dt| bounded by the window. A nearest match
+    was therefore indistinguishable in the report from an exact one,
+    inside `matched_all_*` and `match_rate_all_*` and diluting
+    `price_delta_abs_mean_all` -- the haircut -- with a 0.0 sample per
+    pair, while the size disagreement it stood for appeared nowhere.
+    **MEASURED**: 30,000 random fill datasets through the real matcher,
+    12,397 of which reached the tier -- **0 equal-qty pairs**. The same
+    generator at `window=300s` (past the 60s tolerance, reachable via
+    `--nearest-window`) produces 1,278, so the invariant is a real
+    property of the shipped configuration and not a tautology.
+    And the zero in production is now explained rather than assumed:
+    **8 of the 13 archived runs have ZERO leftovers of any kind**, so
+    the tier had nothing to see at all; of the 5 that do, #68 measured
+    the worst (20260803T142853) at min counterpart dt **2.53s** -- the
+    nearest tier missed its closest reachable pair by 0.53s.
+    **WHY IT SURVIVED.** The tier was named for the wrong thing. "The
+    nearest tier" reads as a timing-offset rescue, and its shipped
+    evidence (|dt|, price delta) is entirely about timing and price --
+    so every review of it asked whether the WINDOW was right (#68) and
+    none asked what the pairs inside the window actually disagree on.
+    A tier that publishes only the quantities it selects on can never
+    report the one it does not.
+    Fix: `nearest_qty_delta` publishes the size gap (n, `equal_qty`,
+    mean/abs_mean/min/median/max, replay - shadow, even-straddling
+    median per #66). `equal_qty` is the tripwire for the one
+    configuration that breaks the proof -- a hand-widened
+    `--nearest-window` above 60s -- and is asserted at both settings.
+    The docstring's "neither relaxed tier invents agreement" is
+    corrected to say that nearest does, on qty, and can do nothing
+    else. Suite 1528 -> **1532**, verified red.
+    **RULE.** When a matcher relaxes a predicate to claim a pair, the
+    report must publish the relaxed predicate's residual. A tier's own
+    selection criteria are the one set of numbers it cannot use as
+    evidence about itself.

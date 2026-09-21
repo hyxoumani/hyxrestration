@@ -159,11 +159,15 @@ def compare(
     a clean window reports identically to v1 — the relaxed tiers only
     ever see exact's leftovers. Split-aware runs before nearest because
     the nearest key is qty-free and would otherwise consume one leg of
-    a partial-fill group. Neither relaxed tier invents agreement: split
-    demands partials at the same price summing exactly to the single
-    fill, nearest demands the exact same price; both are confined to
-    `window` (default 2s) and counted separately in the report so a
-    calibration read never silently mixes tiers.
+    a partial-fill group. Split does not invent agreement: it demands
+    partials at the same price summing exactly to the single fill.
+    NEAREST DOES, ON QUANTITY, AND CAN DO NOTHING ELSE: every pair it
+    is able to make disagrees on qty, because a replay fill still in
+    `r_left` was visible to every shadow fill that became a leftover
+    and the only predicate that can have refused it inside the nearest
+    window is `r[1] == s[1]` (see `nearest_qty_delta`). Both relaxed
+    tiers are confined to `window` (default 2s) and counted separately
+    in the report so a calibration read never silently mixes tiers.
 
     shadow_fills rows: (market_id, side, qty, price, fee, maker, ts).
 
@@ -193,6 +197,12 @@ def compare(
     among the opposite stream's OTHER unpaired fills with NO window
     bound, plus the count of unpaired fills that have no such
     counterpart at any dt.
+
+    `nearest_qty_delta` publishes the size gap the nearest tier absorbs.
+    It is the tier's ONLY divergence: its price delta is 0 by
+    construction and its |dt| is bounded by the window, so without this
+    census a nearest match is indistinguishable in the report from an
+    exact one while representing a strictly worse agreement.
     """
     from collections import defaultdict
 
@@ -275,6 +285,19 @@ def compare(
             nearest_pairs.append((dt, s_left[key][si], r_left[key][ri]))
     n_nearest = len(nearest_pairs)
     nearest_deltas = [r[2] - s[2] for _, s, r in nearest_pairs]  # 0 by construction
+    # The tier's only real divergence. Its price delta is 0 by selection and
+    # its |dt| is bounded by `window`, so a nearest match otherwise reads in
+    # the report exactly like an exact one -- while standing for a strictly
+    # weaker agreement. And it is a SIZE disagreement every time: the exact
+    # tier holds one candidate list per key across its whole greedy pass and
+    # only ever POPS matches from it, so every replay fill still in `r_left`
+    # was visible to every shadow fill that became a leftover. Inside the
+    # nearest window (2s, a subset of exact's 60s MATCH_TOLERANCE) the one
+    # predicate that can have refused the pair is `r[1] == s[1]`. So
+    # `equal_qty` is 0 whenever `window <= MATCH_TOLERANCE`; a hand-widened
+    # `--nearest-window` past 60s lapses the invariant, and that is what the
+    # field is for (mistakes #68).
+    nearest_qty_deltas = sorted(r[1] - s[1] for _, s, r in nearest_pairs)  # replay - shadow
     all_deltas = deltas + split_deltas + nearest_deltas
 
     def _abs_mean(vals):
@@ -397,7 +420,8 @@ def compare(
             "order-level tiers: exact (v1 floor: equal qty in a 60s"
             " window) alone decides matched/match_rate_*/price_delta_*;"
             " split (same-price partials summing exactly) and nearest"
-            " (same price, smallest |dt|) claim only exact's leftovers"
+            " (same price, smallest |dt|, ALWAYS a qty disagreement --"
+            " see nearest_qty_delta) claim only exact's leftovers"
             f" within {window.total_seconds()}s and are counted"
             " separately (v2); qty_match_* buckets quantity per minute"
             " and credits overlap, so split fills count"
@@ -422,6 +446,23 @@ def compare(
             else None
         ),
         "nearest_unpaired_dt": nearest_unpaired_dt,
+        "nearest_qty_delta": {
+            "population": (
+                "replay qty - shadow qty over the pairs the nearest tier"
+                " claimed; nonzero for every pair while the nearest window"
+                " stays within the exact tier's 60s tolerance, because qty is"
+                " the only predicate that can have refused them there"
+            ),
+            "n": n_nearest,
+            "equal_qty": sum(1 for d in nearest_qty_deltas if abs(d) <= _QTY_EPS),
+            "abs_mean": _abs_mean(nearest_qty_deltas),
+            "mean": (
+                round(sum(nearest_qty_deltas) / n_nearest, 6) if nearest_qty_deltas else None
+            ),
+            "min": round(nearest_qty_deltas[0], 6) if nearest_qty_deltas else None,
+            "median": round(median(nearest_qty_deltas), 6) if nearest_qty_deltas else None,
+            "max": round(nearest_qty_deltas[-1], 6) if nearest_qty_deltas else None,
+        },
         "price_delta_abs_mean_nearest": _abs_mean(nearest_deltas),
         "price_delta_abs_mean_split": _abs_mean(split_deltas),
         "price_delta_mean_all": round(sum(all_deltas) / len(all_deltas), 6) if all_deltas else None,

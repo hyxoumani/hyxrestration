@@ -915,3 +915,81 @@ def test_unpaired_dt_census_ignores_counterparts_another_fill_already_claimed():
     census = rep["nearest_unpaired_dt"]
     assert census["n"] == 0
     assert census["no_counterpart"] == 1
+
+
+def test_nearest_tier_publishes_the_qty_gap_it_absorbs():
+    """The nearest tier's price delta is 0 by selection and its |dt| is
+    bounded by the window, so without a qty census a nearest match reads in
+    the report exactly like an exact one while standing for a strictly weaker
+    agreement. Shadow 5 vs replay 4 at one price, 300ms apart: the report
+    must say the size gap is -1."""
+    rep = compare([_shadow(5.0, T)], [_RF(4.0, T + timedelta(milliseconds=300))])
+    assert rep["matched_nearest"] == 1
+    assert rep["price_delta_abs_mean_nearest"] == 0.0  # says nothing
+    census = rep["nearest_qty_delta"]
+    assert census["n"] == 1
+    assert census["equal_qty"] == 0
+    assert census["mean"] == -1.0  # replay - shadow
+    assert census["abs_mean"] == 1.0
+    assert census["min"] == census["median"] == census["max"] == -1.0
+
+
+def test_nearest_qty_census_median_straddles_evenly():
+    """Two pairs, gaps -1 and +3: the median is the midpoint, not the upper
+    straddler (mistakes #66)."""
+    shadow = [_shadow(5.0, T), _shadow(2.0, T + timedelta(minutes=10), price=0.3)]
+    replay = [
+        _RF(4.0, T + timedelta(milliseconds=300)),
+        _RF(5.0, T + timedelta(minutes=10, milliseconds=300), price=0.3),
+    ]
+    rep = compare(shadow, replay)
+    assert rep["matched_nearest"] == 2
+    census = rep["nearest_qty_delta"]
+    assert census["min"] == -1.0
+    assert census["max"] == 3.0
+    assert census["median"] == 1.0
+    assert census["mean"] == 1.0
+
+
+def test_nearest_tier_can_only_ever_pair_fills_that_disagree_on_qty():
+    """The structural claim behind the census, asserted against the real
+    matcher rather than argued in prose. The exact tier holds ONE candidate
+    list per key across its whole greedy pass and only ever pops matches from
+    it, so every replay fill still in `r_left` was visible to every shadow
+    fill that became a leftover; inside the nearest window (a subset of the
+    60s MATCH_TOLERANCE) the only predicate that can have refused the pair is
+    equal qty. Hence `equal_qty` is 0 on every reachable dataset -- which is
+    also why `matched_nearest` reading 0 in all 13 archived reports is NOT
+    dead code: it is the absence of same-price size disagreement inside 2s."""
+    random = __import__("random").Random(11)
+    fired = 0
+    for _ in range(3000):
+
+        def mk():
+            return (
+                random.choice([1.0, 2.0, 3.0, 5.0]),
+                T + timedelta(milliseconds=random.randint(0, 4000)),
+                random.choice([0.4, 0.5]),
+            )
+
+        shadow = [_shadow(q, t, price=p) for q, t, p in (mk() for _ in range(3))]
+        replay = [_RF(q, t, price=p) for q, t, p in (mk() for _ in range(3))]
+        census = compare(shadow, replay)["nearest_qty_delta"]
+        assert census["equal_qty"] == 0, census
+        fired += bool(census["n"])
+    assert fired > 500, f"invariant never exercised: {fired} datasets reached the tier"
+
+
+def test_widening_the_nearest_window_past_the_exact_tolerance_lapses_the_invariant():
+    """`equal_qty` is not a tautology assertion -- it is the tripwire for the
+    one configuration that breaks the proof. `--nearest-window` is settable,
+    and above the exact tier's 60s tolerance the nearest tier starts claiming
+    EQUAL-qty pairs the exact tier merely ran out of reach for, which is a
+    different (and undeclared) claim than the one its docstring makes."""
+    shadow = [_shadow(5.0, T)]
+    replay = [_RF(5.0, T + timedelta(seconds=120))]
+    assert compare(shadow, replay)["matched_nearest"] == 0  # 2s window: unreachable
+    wide = compare(shadow, replay, window=timedelta(seconds=300))
+    assert wide["matched_nearest"] == 1
+    assert wide["nearest_qty_delta"]["equal_qty"] == 1
+    assert wide["nearest_qty_delta"]["abs_mean"] == 0.0
