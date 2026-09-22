@@ -4,12 +4,14 @@ makes nonzero divergence on real runs attributable to infrastructure
 (late archive rows, gaps unknown live) rather than method noise."""
 
 import json
+import shutil
 import sys
 from datetime import datetime, timedelta
 
 import duckdb
 
 import simulator.divergence as mod
+from hyxlab import importclosure
 from hyxlab.models import MarketInfo
 from hyxlab.store import Store
 from hyxlab.streamstore import StreamStore
@@ -819,21 +821,80 @@ def _main_with(monkeypatch, argv, replay=None):
     return calls
 
 
-def test_if_new_skips_the_replay_when_the_run_is_already_reported(tmp_path, monkeypatch):
-    """What the daily timer runs.
+def _stamped(sha):
+    return json.dumps({"run_id": "done", "report_code": {"root": mod.REPORT_CODE_ROOT, "sha": sha}})
+
+
+def test_if_new_skips_the_replay_when_the_run_is_reported_BY_THIS_CODE(tmp_path, monkeypatch):
+    """What the daily timer runs on a day nothing changed.
 
     The subject only advances when the shadow daemon restarts, so on
     almost every day the report already exists. A daily unit that
-    re-derived it anyway would burn 30 minutes and 4G beside the live
+    re-derived it anyway would burn 9 minutes and 1.9G beside the live
     capture daemons to rewrite a file it already had.
     """
     db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
     out = tmp_path / "reports"
     out.mkdir()
-    (out / "done.json").write_text("{}")
+    same = _stamped(mod.report_code()["sha"])
+    (out / "done.json").write_text(same)
     calls = _main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])
     assert calls == []
-    assert (out / "done.json").read_text() == "{}"  # untouched, not rewritten
+    assert (out / "done.json").read_text() == same  # untouched, not rewritten
+
+
+def test_if_new_re_derives_when_the_report_was_made_by_DIFFERENT_code(tmp_path, monkeypatch):
+    """The whole of mistakes #76.
+
+    Keyed on run_id alone, this branch printed `nothing to do` for ten
+    consecutive days (journal 09-12 -> 09-21) while four passes shipped
+    `price_delta_median` (#66), `nearest_unpaired_dt` (#68),
+    `nearest_qty_delta` (#69) and `attach_wait` (#70/#71) into this
+    report — none of which ever reached an artifact, because the only
+    thing that advances run_id is a shadow-daemon restart.
+    """
+    db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "done.json").write_text(_stamped("0" * 64))
+    calls = _main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])
+    assert len(calls) == 1
+    fresh = json.loads((out / "done.json").read_text())
+    assert fresh["report_code"]["sha"] == mod.report_code()["sha"]
+
+
+def test_if_new_re_derives_an_UNSTAMPED_report(tmp_path, monkeypatch):
+    """Every one of the 8 reports in the archive on 2026-09-22 predates the
+    stamp. `no stamp` is `cannot prove it was made by today's code`, and an
+    unknown must not take the cheap branch (mistakes #74)."""
+    db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "done.json").write_text("{}")
+    assert len(_main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])) == 1
+
+
+def test_the_stamp_covers_the_whole_closure_not_just_this_file(tmp_path):
+    """`attach_wait` was added in `hyxlab/store.py`, not here. A stamp over
+    the root file alone would have answered `same code` for it."""
+    files, _lazy = importclosure.closure(mod.REPORT_CODE_ROOT)
+    assert "hyxlab/store.py" in files and "simulator/divergence.py" in files
+    assert mod.report_code()["files"] == len(files)
+
+
+def test_the_stamp_moves_when_any_closure_file_moves(tmp_path):
+    """Read off nothing: copy the repo, edit one non-root closure file, and
+    the sha must differ. A stamp that does not move is a stamp that cannot
+    trip the re-derive it exists to trip."""
+    repo = tmp_path / "repo"
+    shutil.copytree(importclosure.REPO_ROOT / "hyxlab", repo / "hyxlab")
+    shutil.copytree(importclosure.REPO_ROOT / "simulator", repo / "simulator")
+    shutil.copytree(importclosure.REPO_ROOT / "strategies", repo / "strategies")
+    before = importclosure.closure_sha(mod.REPORT_CODE_ROOT, repo)["sha"]
+    store = repo / "hyxlab" / "store.py"
+    store.write_text(store.read_text() + "\n# one comment\n")
+    after = importclosure.closure_sha(mod.REPORT_CODE_ROOT, repo)["sha"]
+    assert before != after
 
 
 def test_if_new_still_measures_a_run_that_has_no_report(tmp_path, monkeypatch):

@@ -31,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
 
+from hyxlab.importclosure import closure_sha
 from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run
 from hyxlab.store import attach_wait_block, connect_retry, open_retry, reset_attach_waits
@@ -512,6 +513,40 @@ def _rows(by):
 __all__ = ["compare", "latest_complete_run", "replay_run"]
 
 
+#: Root of the import closure whose bytes identify "the code that made this
+#: report". The root is this module and the closure is 28 repo files wide,
+#: which is the point: `attach_wait` (#70/#71) lives in `hyxlab/store.py`.
+REPORT_CODE_ROOT = "simulator.divergence"
+
+
+def report_code() -> dict[str, object]:
+    """Stamp identifying the code this run executes; never raises.
+
+    A failure stamps `sha: None` WITH the error rather than omitting the
+    field, because the consumer is a staleness test and "I could not tell"
+    has to be distinguishable from "unchanged" — the #74 direction: an
+    unknown must not read as the cheap answer.
+    """
+    try:
+        return closure_sha(REPORT_CODE_ROOT)
+    except (ValueError, OSError, SyntaxError) as exc:  # pragma: no cover - defensive
+        return {"root": REPORT_CODE_ROOT, "sha": None, "files": None, "error": str(exc)}
+
+
+def reported_code_sha(path: Path) -> str | None:
+    """The `report_code.sha` of an on-disk report, or None if it has none.
+
+    None covers both a report written before this field existed (every one
+    of the 8 in the archive on 2026-09-22) and an unreadable/!JSON file.
+    Both mean "cannot prove this was made by today's code".
+    """
+    try:
+        stamp = json.loads(path.read_text()).get("report_code")
+    except (OSError, ValueError):
+        return None
+    return stamp.get("sha") if isinstance(stamp, dict) else None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="shadow-vs-replay divergence report")
     ap.add_argument(
@@ -566,8 +601,30 @@ def main() -> None:
         # ignore this unit's failures.
         existing = Path(args.out) / f"{run_id}.json"
         if args.if_new and existing.exists():
-            print(f"[divergence] run {run_id} already reported in {existing} — nothing to do")
-            return
+            # THE SUBJECT IS (RUN, CODE), NOT THE RUN (mistakes #76). Keyed
+            # on run_id alone this branch printed "nothing to do" on ten
+            # consecutive days while four passes shipped five new fields
+            # into this report's closure; the field the 09-21 pass promoted
+            # to get a production reading could never have got one, because
+            # the only thing that advances run_id is a shadow-daemon restart
+            # and that restart is itself deferred by the panel guard.
+            #
+            # The sha is over the tree this process runs FROM, so a by-hand
+            # dev-tree run stamps dev's code into the shared report and the
+            # stable unit then re-derives until the promote lands. That is
+            # the safe direction: it costs one replay, measured at 9m06s /
+            # 1.9G peak (journal, 09-12), and it is paid at most once per
+            # change rather than once per day.
+            here = report_code()
+            there = reported_code_sha(existing)
+            if here["sha"] is not None and here["sha"] == there:
+                print(f"[divergence] run {run_id} already reported in {existing} — nothing to do")
+                return
+            print(
+                f"[divergence] run {run_id} is reported in {existing} but by DIFFERENT"
+                f" code (report {there} != {REPORT_CODE_ROOT} closure {here['sha']})"
+                " — re-deriving"
+            )
         started_at, latency, strategies, anchor = conn.execute(
             "SELECT started_at, latency_s, strategies, anchor FROM shadow_runs WHERE run_id=?",
             [run_id],
@@ -604,6 +661,9 @@ def main() -> None:
         "latency_s": latency,
         "strategies": strategies,
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None)),
+        # WHICH CODE PRODUCED THIS (mistakes #76). `--if-new` keys on it as
+        # well as on run_id, because the report is a function of BOTH.
+        "report_code": report_code(),
         # Three attaches reach this report (shadow ledger, stream archive,
         # market archive), on three different budgets, all of them justified
         # by prose no artifact could contradict until now (mistakes #70).

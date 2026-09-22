@@ -2838,3 +2838,57 @@ tree it happens to run in is not evidence of anything.**
     a membership record, not a duration record. And a drift explained by
     a mechanism is only explained once the mechanism is measured; "creeps
     with the universe" was never checked against the universe.
+
+76. **2026-09-22 -- the divergence report's `--if-new` cache was keyed on
+    the RUN and not on the CODE, so five fields shipped over four passes
+    to get a production reading could never get one.** (Class:
+    stale-artifact / cache-key; site: `simulator/divergence.py` `--if-new`.)
+    **WHAT.** The daily `hyxlab-divergence` unit runs `--if-new`, which
+    exits 0 without replaying when `reports/shadow_divergence/<run_id>.json`
+    exists. `run_id` is `latest_complete_run`, which advances ONLY when the
+    shadow daemon restarts. `hyxlab-shadow` has been up 257.7h with 0
+    restarts and its restart is deferred by the panel guard (8 of the 10
+    panel days), so the subject has not moved since 09-07. Journal, read
+    rather than assumed: the report was derived once at **09-13 01:29Z**
+    and the **nine** runs from 09-14 to 09-22 01:20Z each printed
+    `already reported ... nothing to do`.
+    **WHAT THAT COST.** Everything the last four passes added to this
+    report is absent from the only artifact: `nearest_unpaired_dt` (#68),
+    `nearest_qty_delta` (#69) and `attach_wait` (#70/#71) are not keys of
+    the on-disk JSON at all, and `price_delta_median` is there but computed
+    by the pre-#66 upper-straddler. #69's pass PROMOTED specifically to end
+    a six-pass deferral and get that reading into production.
+    **WHY IT SURVIVED FOUR PASSES.** Each pass wrote a NEXT-PASS line
+    predicting the reading, and the 09-22 02:45Z one asserted the 01:20Z
+    run "carries the first production `nearest_qty_delta`". It carried
+    nothing; it did not replay. One `journalctl -u hyxlab-divergence`
+    falsifies all four in a second -- and that is this repo's own #54 rule
+    ("prove a path ran by grepping for the line it prints, absence of the
+    line is the whole proof"), never applied to a REPORT because the rule
+    was filed under daemons.
+    **RULE.** A cache key must cover every input to the cached value. A
+    report is a function of (subject, code); keyed on the subject alone it
+    freezes at whatever code first produced the artifact, and it fails
+    SILENTLY at exactly the moment you add instrumentation -- i.e. when you
+    are looking for a reading. Corollary: the failure is invisible in the
+    unit's own logs, because "nothing to do" is the line a healthy day
+    prints too.
+    Fix: `hyxlab/importclosure.py` now owns the EXP-1276 closure walk (moved
+    out of `scripts/daemon_imports.py`, which is a CLI over it -- the
+    restart decision and the staleness decision must not hold two answers to
+    "which files does this module execute", the `attach_budget_s()` pattern
+    from #70). `closure_sha` hashes every file of the closure, path and
+    bytes; `report_code` stamps it into the report; `--if-new` skips only
+    when run_id AND sha match, and a missing or unreadable stamp re-derives
+    (#74's direction: an unknown must not take the cheap branch). The stamp
+    is the CLOSURE, not the root file -- `attach_wait` lives in
+    `hyxlab/store.py`, so a root-file stamp would have answered "same code"
+    for #70/#71. Not a hand-bumped version constant, because a constant
+    somebody must remember to bump is the class of claim #70 and #71 were.
+    Cost of the mechanical answer: a comment-only edit also re-derives, at a
+    measured 9m06s / 1.9G peak (journal 09-12), paid at most once per change
+    instead of once per day. Swept: `--if-new` is the only artifact cache of
+    this shape in `collector/`, `simulator/` and `hyxlab/`.
+    `tests/test_hyxlab_divergence.py` pins the skip, both re-derive paths
+    and that the sha moves when a non-root closure file moves; verified red
+    by restoring the run_id-only branch (2 failures).
