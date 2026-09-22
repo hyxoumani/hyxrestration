@@ -2814,3 +2814,27 @@ tree it happens to run in is not evidence of anything.**
     promote.sh is about to decide for itself -- read its output and
     report THAT, because it is the component with both the authority
     and the correct input.
+
+75. **2026-09-22 -- the capture-gap budget summed `stream_gaps` rows that
+    are not disjoint, so every outage after 08-18 counted 2-3x, and the
+    09-17 calibration was read off the inflated sum.** (collector/qa.py
+    `_capture_gap_minutes`; class: measurement / calibration.)
+    **WHAT.** streamd writes one row per REASON, not per outage: a
+    `reconnect`, a `seq_reset` over the same span (added 08-18, ffcbc06),
+    and a `dead_air` when the outage began silent (added 08-10). Each
+    addition was correct for the readers it was written for -- all of
+    them ask "is t inside a gap?", where a duplicate changes nothing. The
+    one reader that asks "how LONG was capture lost?" was written on 09-17,
+    a month after the duplicates began, and summed. The 09-22 host OOM
+    storm read 83.8 books minutes against a true 34.9.
+    **WHY IT SURVIVED.** The calibration replay ran over the same summing
+    function it was calibrating, so it could not see the inflation, and it
+    then EXPLAINED the inflation: the comment attributed a 0.6 -> 3.8
+    min/day rise to the subscribed universe growing. Merged, the floor is
+    flat (2.6 / 2.2 / 2.3 Jul / Aug / Sep). A plausible cause was supplied
+    for an artifact, and nothing tested the cause.
+    **RULE.** Before summing durations from an event table, check that its
+    rows are disjoint -- a table whose writers emit one row per REASON is
+    a membership record, not a duration record. And a drift explained by
+    a mechanism is only explained once the mechanism is measured; "creeps
+    with the universe" was never checked against the universe.
