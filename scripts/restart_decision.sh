@@ -15,6 +15,12 @@
 # needs_restart ROOT_MODULE FALLBACK_REGEX
 #   Returns 0 iff the daemon whose ExecStart module is ROOT_MODULE must be
 #   restarted. Primary: intersect CHANGED with the daemon's static import
+#   --allow-empty is REQUIRED here and is not a formality: a promotion can
+#   legitimately move nothing a given daemon runs, and this is the caller
+#   that actually pipes the change set, so it is the one entitled to say an
+#   empty set is expected. Without the flag daemon_imports refuses an
+#   input-less intersect (mistakes #74) — a hand-run one printed nothing,
+#   read as "unaffected", and mispredicted a stream restart.
 #   closure (scripts/daemon_imports.py — lazy imports included, since a
 #   running daemon would load NEW code mid-run on its next lazy import: a
 #   half-old/half-new process). Fallback: if the tool errors, use the old
@@ -24,7 +30,8 @@ needs_restart() {
     local root="$1" fallback_regex="$2" hits
     [[ "${FORCE_RESTART:-0}" == 1 ]] && return 0
     if hits=$(printf '%s\n' "${CHANGED:-}" \
-              | "$DEV/.venv/bin/python" "$DEV/scripts/daemon_imports.py" intersect "$root"); then
+              | "$DEV/.venv/bin/python" "$DEV/scripts/daemon_imports.py" \
+                    intersect "$root" --allow-empty); then
         if [[ -n "$hits" ]]; then
             echo "   $root executes changed file(s): $(tr '\n' ' ' <<<"$hits")"
             return 0

@@ -30,11 +30,14 @@ Usage:
     daemon_imports.py closure ROOT [--json]
         Print the closure, one repo-relative path per line (sorted).
         --json emits {"root":..., "files":[...], "lazy":[...]}.
-    daemon_imports.py intersect ROOT
+    daemon_imports.py intersect ROOT [--allow-empty]
         Read changed paths (one per line) on stdin; print those inside
         ROOT's closure. Exit 0 whether or not any match; exit 2 on any
         error (unresolvable root, syntax error...) so callers can fall
-        back conservatively.
+        back conservatively. Exit 2 ALSO when stdin supplies no paths at
+        all unless --allow-empty is given: an unfed intersect would
+        otherwise print nothing and read as "this daemon is unaffected",
+        which is the unsafe answer (mistakes #74).
 """
 
 from __future__ import annotations
@@ -208,6 +211,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("command", choices=["closure", "intersect"])
     ap.add_argument("root", help="dotted root module, e.g. collector.streamd")
     ap.add_argument("--json", action="store_true", dest="as_json")
+    ap.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="`intersect` only: accept an empty change set on stdin instead of"
+        " refusing (mistakes #74). promote.sh passes this; a hand-run"
+        " intersect should not.",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -229,7 +239,41 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # intersect: changed paths on stdin, print those the daemon executes.
+    #
+    # REFUSE AN UNFED `intersect` (mistakes #74). Starved of input this
+    # command intersects the empty set, prints nothing and exits 0 -- which
+    # reads exactly like "this daemon is unaffected, skip the restart", the
+    # unsafe direction. On 2026-09-22 that silence was taken as evidence for
+    # three daemon roots and a 239.7h `hyxlab-stream` run was predicted safe
+    # minutes before promote.sh correctly restarted it.
+    #
+    # THE GUARD IS "NO INPUT ARRIVED", NOT `isatty`. The first attempt at
+    # this checked `sys.stdin.isatty()` and WOULD NOT HAVE CAUGHT THE CASE
+    # IT WAS WRITTEN FOR: an agent shell's stdin is not a terminal either,
+    # so it hits EOF immediately and reads as a legitimate empty pipe --
+    # exactly the path that produced the wrong answer. A TTY check protects
+    # a human at a keyboard, who is not the actor that made this mistake.
+    #
+    # An empty change set IS legitimate for promote.sh (a promotion can move
+    # nothing a daemon runs), so that caller declares it with
+    # `--allow-empty`. Requiring the flag makes "I have a file list and it
+    # happens not to match" distinguishable from "I never supplied one",
+    # which is the whole of the defect. Use `closure` for the
+    # diff-independent question "does this daemon run this file?".
     changed = {line.strip() for line in sys.stdin if line.strip()}
+    if not changed and not args.allow_empty:
+        print(
+            "daemon_imports: `intersect` reads changed paths on stdin and got"
+            f" NONE, so it would print nothing and imply '{args.root} is"
+            " unaffected' without having looked at anything. Pipe the file"
+            " list in (e.g. `git diff --name-only stable..main | ... intersect"
+            f" {args.root}`); pass --allow-empty if an empty change set is"
+            f" genuinely expected; or use `closure {args.root}` to ask whether"
+            " the daemon runs a file at all.",
+            file=sys.stderr,
+        )
+        return 2
+
     for f in sorted(changed & files):
         print(f)
     return 0

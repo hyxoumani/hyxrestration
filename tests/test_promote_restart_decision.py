@@ -479,3 +479,69 @@ def test_promote_sh_wires_the_young_run_guard_into_the_defer_path():
     restart_at = text.index('systemctl --user restart "${RESTART[@]}"')
     assert guard_at < defer_at < restart_at
     subprocess.run(["bash", "-n", str(REPO / "scripts" / "promote.sh")], check=True)
+
+
+# ------------------------------------- mistakes #74: a starved `intersect`
+def test_intersect_refuses_when_stdin_supplied_no_paths():
+    """THE 2026-09-22 mistake, made a hook. `intersect` reads changed paths
+    on stdin. Run with none it intersects the EMPTY SET, prints nothing and
+    exits 0 — byte-identical to a genuine "this daemon is unaffected, skip
+    the restart", and wrong in the restart-too-little direction. That
+    silence was read as evidence for three daemon roots minutes before
+    promote.sh correctly restarted a 239.7h hyxlab-stream run.
+
+    THE GUARD IS "NO INPUT ARRIVED", NOT `isatty`. The first attempt used a
+    TTY check and would not have caught the case it was written for: an
+    agent shell's stdin is not a terminal either, so it EOFs immediately and
+    looks like a legitimate empty pipe — the exact path that produced the
+    wrong answer."""
+    res = subprocess.run(
+        [PY, TOOL, "intersect", "collector.streamd"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 2, "a starved intersect exited 0 as if unaffected"
+    assert res.stdout == "", "it printed a verdict it had no input for"
+    assert "stdin" in res.stderr and "closure" in res.stderr, (
+        "the refusal must name the missing input and the diff-independent alternative"
+    )
+
+
+def test_intersect_accepts_a_declared_empty_change_set():
+    """THE DISCRIMINATION, and why the guard is a flag rather than a ban. A
+    promotion can legitimately move nothing a given daemon runs, so the
+    caller that actually pipes the change set declares that with
+    --allow-empty. Requiring the flag is what makes "I have a file list and
+    it happens not to match" distinguishable from "I never supplied one"."""
+    res = subprocess.run(
+        [PY, TOOL, "intersect", "collector.streamd", "--allow-empty"],
+        input="",
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0 and res.stdout == ""
+
+
+def test_restart_decision_passes_allow_empty_so_a_no_op_promote_still_skips():
+    """The bash caller must keep working on an empty diff — if the flag were
+    missing, needs_restart() would see exit 2 and fall back to the coarse
+    regex, restarting daemons on every no-op promotion."""
+    src = (REPO / "scripts" / "restart_decision.sh").read_text()
+    assert "--allow-empty" in src, "the piped caller lost its empty-set declaration"
+    assert decide("", *STREAM_ARGS).strip().endswith("SKIP")
+    assert "WARNING" not in decide("", *STREAM_ARGS), "it fell back to the regex"
+
+
+def test_intersect_names_the_kalshi_venue_for_streamd_when_actually_fed():
+    """The answer the starved run should have given, and the one promote.sh
+    acted on: collector/venues/kalshi.py is in streamd's closure, so a pass
+    that edits it restarts the stream daemon."""
+    res = subprocess.run(
+        [PY, TOOL, "intersect", "collector.streamd"],
+        input="collector/breadth.py\ncollector/venues/kalshi.py\ndocs/wiki/status.md\n",
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0
+    assert res.stdout.split() == ["collector/venues/kalshi.py"]

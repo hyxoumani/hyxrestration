@@ -2742,3 +2742,75 @@ tree it happens to run in is not evidence of anything.**
     it ("an exception was raised before a response existed"): the
     mechanism varies with the network path, so the untested twin is
     already in production waiting.
+74. **2026-09-22 -- `daemon_imports.py intersect` reads the changed-file
+    list from STDIN. Run by hand with no redirect it intersects the
+    EMPTY SET, prints nothing, and exits 0 -- which is byte-identical
+    to "this daemon is unaffected, safe to skip the restart". I read
+    that silence as evidence for all three daemon roots, wrote "nothing
+    restarts" into the status page, and the promote then correctly
+    restarted a 239.7h `hyxlab-stream` run.** (Class: a check whose
+    unfed answer is its SAFE-LOOKING answer. Agent-process mistake, not
+    a code defect.)
+    **WHAT HAPPENED.** The pass changed `collector/venues/kalshi.py`.
+    Before committing I ran `daemon_imports.py intersect
+    collector.streamd` (and `simulator.shadow`, `simulator.simui`),
+    got empty output three times, and concluded no daemon would
+    restart. `scripts/restart_decision.sh` invokes the same tool as
+    `printf '%s\n' "$CHANGED" | daemon_imports.py intersect "$root"` --
+    the file list is PIPED IN. With no pipe, stdin is empty, so the
+    intersection is empty by construction. Proven both ways after the
+    fact: fed the real list it prints `collector/venues/kalshi.py` for
+    `collector.streamd`, matching promote.sh's decision exactly; fed
+    `/dev/null` it prints nothing and exits 0.
+    **WHY THE SILENCE WAS PERSUASIVE.** Empty output is the tool's
+    normal way of saying "no intersection", and "no intersection" is
+    the answer I was hoping for. There is no distinguishing signal: no
+    warning, no nonzero exit, no echo of how many input paths it read.
+    The failure mode is therefore invisible at exactly the moment it
+    costs the most -- and it errs toward restarting too LITTLE, the
+    direction `restart_decision.sh`'s own header comment promises never
+    to fail silently in ("conservative in the 'restart too much'
+    direction, never 'restart too little' silently"). That promise
+    holds for the tool ERRORING; it does not cover the tool being
+    starved.
+    **COST, AND THE PART THAT WAS NOT LUCK.** The 239.7h stream run
+    ended and the reconnect added 2 `seq_reset` gaps. `simulator.shadow`
+    was NOT restarted -- `intersect` is empty for it even when fed
+    correctly -- so the 8-of-10 panel, the asset the guard exists for,
+    survived because the guard is real, not because I checked properly.
+    The restart also delivered item (5), the first production
+    `shutdown; stats` line, which PASSED (1.336s of a pinned 180s
+    `TimeoutStopSec`, drain committed, zero loss lines) -- a genuine
+    gain, arrived at by accident, and it does not retire the mistake.
+    **FIX (escalated straight to a hook, since the gotcha had already
+    cost something).** `intersect` now EXITS 2 when stdin supplies no
+    paths, naming the missing input and pointing at `closure`. The
+    legitimate empty case -- a promotion that moves nothing a given
+    daemon runs -- is declared by the caller that actually pipes the
+    change set: `restart_decision.sh` passes `--allow-empty`. Requiring
+    the flag is the whole point, because it makes "I have a file list
+    and it happens not to match" distinguishable from "I never supplied
+    one", which is precisely the distinction the tool could not express.
+    A test pins that the bash caller keeps the flag: without it
+    `needs_restart()` sees exit 2, falls back to the coarse regex, and
+    restarts daemons on every no-op promotion.
+    **THE FIRST VERSION OF THIS FIX WAS WRONG IN THE SAME WAY AS THE
+    BUG, and that is the most useful line in the entry.** I first
+    guarded on `sys.stdin.isatty()`, reasoning that a pipe is never a
+    TTY so promote.sh could not trip it. It would NOT HAVE CAUGHT THE
+    CASE IT WAS WRITTEN FOR: an agent shell's stdin is not a terminal
+    either, so it EOFs immediately and reads as a legitimate empty pipe
+    -- the exact path that produced the wrong answer. A TTY check
+    protects a human at a keyboard, who is not the actor that made this
+    mistake. Caught only by asking "which stdin did I actually have?"
+    rather than trusting the model of it. Same shape as #73 one entry
+    up: a predicate keyed on the MECHANISM (is this a terminal?)
+    instead of the condition (did any input arrive?).
+    **RULE.** A check whose input arrives on stdin must be given it or
+    made to refuse; **silence is not evidence, and here silence was the
+    dangerous answer.** Prefer the diff-independent question when one
+    exists (`closure <root>` takes no stdin and cannot be starved).
+    And never write a restart prediction into the status page that
+    promote.sh is about to decide for itself -- read its output and
+    report THAT, because it is the component with both the authority
+    and the correct input.
