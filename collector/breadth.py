@@ -300,14 +300,14 @@ def collect_breadth_once(
     """One cycle: enumerate (no lock held), then write in one burst."""
     t0 = time.monotonic()
     # Zeroed here and read below so `http_retries` describes THIS cycle. A
-    # retried timeout is invisible everywhere else: it no longer fails the
+    # retried fault is invisible everywhere else: it no longer fails the
     # unit, so the health digest's failure history cannot see it, and a
     # silently-degrading network would look exactly like a healthy one.
-    kalshi.reset_transport_retries()
+    kalshi.reset_retry_counts()
     markets, truncated = fetch_universe(
         session=session, pause_s=pause_s, close_window_h=close_window_h
     )
-    http_retries = kalshi.transport_retries()
+    retries = kalshi.retry_counts()
     fetch_s = time.monotonic() - t0
 
     ts = datetime.now(UTC)
@@ -335,7 +335,24 @@ def collect_breadth_once(
         "inserted": inserted,
         "truncated": truncated,
         "cutoff_volume_24h": cutoff,
-        "http_retries": http_retries,
+        # ALL retry classes, so the name is finally true: until 2026-09-21
+        # this counted transport retries only, and read 0 through every 429
+        # the 08-02 ladder ever absorbed. Comparable with the archived
+        # series in one direction only — it can report retries where the old
+        # field reported none, never the reverse.
+        "http_retries": retries["total"],
+        # The split, because a rising total says "the network is worse" and
+        # these say who to ask: our socket, Kalshi's edge, or our own rate.
+        "retries": retries,
+        # mistakes #71. `transport` and `gateway` share one per-walk
+        # allowance and `fetch_universe` performs exactly ONE walk per
+        # cycle, so this is that walk's honest consumption. The 4 lost
+        # cycles of 09-13/09-21 each spent 0 of it — the ladder did not
+        # exist for their fault class — and a cycle that starts surviving on
+        # 1.0 is one blip from failing again.
+        "walk_budget_frac": round(
+            (retries["transport"] + retries["gateway"]) / kalshi.TRANSPORT_TRIES, 3
+        ),
         "fetch_s": round(fetch_s, 1),
         "total_s": round(time.monotonic() - t0, 1),
     }

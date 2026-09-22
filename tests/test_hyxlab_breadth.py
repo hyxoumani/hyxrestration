@@ -734,9 +734,9 @@ class _FlakySession:
 
 @pytest.fixture(autouse=True)
 def _zero_transport_retries():
-    kalshi.reset_transport_retries()
+    kalshi.reset_retry_counts()
     yield
-    kalshi.reset_transport_retries()
+    kalshi.reset_retry_counts()
 
 
 def test_a_read_timeout_does_not_throw_away_the_pages_that_succeeded(monkeypatch):
@@ -777,14 +777,144 @@ def test_a_connection_error_is_retried_too(monkeypatch):
 
 
 def test_an_http_error_is_not_retried_as_if_it_were_a_lost_packet():
-    """DISCRIMINATION. An HTTPError is an ANSWER — retrying it burns the
-    budget on a request that will never succeed and hides the real status
-    behind a timeout-shaped delay. Only transport errors are retryable."""
+    """DISCRIMINATION. An HTTPError RAISED by the session is an ANSWER —
+    retrying it burns the budget on a request that will never succeed and
+    hides the real status behind a timeout-shaped delay.
+
+    Narrowed 2026-09-21: this used to claim "only transport errors are
+    retryable", which was the over-broad half of the 09-08 fix. The gateway
+    STATUSES are retryable (see the tests below); an HTTPError arriving as a
+    raised exception, and every 4xx, are not."""
     sess = _FlakySession([requests.exceptions.HTTPError("400")], [])
 
     with pytest.raises(requests.exceptions.HTTPError):
         kalshi.get_markets(status="open", session=sess, pause_s=0.0)
     assert sess.calls == 1, "an HTTP answer was retried"
+
+
+def test_a_504_does_not_throw_away_the_pages_that_succeeded(monkeypatch):
+    """THE 2026-09-21 defect, and the un-retried twin of the 09-08 one. The
+    09-08 fix drew its line at whether a response object exists, which is a
+    fact about Python's exception plumbing: a 504 Gateway Time-out is the
+    same physical event as a ReadTimeout — the origin never answered — and
+    differs only in whether Kalshi's edge ran out of patience before our
+    30s `timeout` did.
+
+    Measured: 4 of 4 504s in 15 days of journal killed a whole
+    `collector.breadth` cycle mid-walk with a live cursor, and 4 of 4
+    recovered unaided on the next 5-minute firing."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    seq = [
+        _FakeResp({"markets": [_mkt("A", 1)], "cursor": "c1"}),
+        _FakeResp({}, status=504),
+        _FakeResp({"markets": [_mkt("B", 1)], "cursor": ""}),
+    ]
+
+    class S:
+        calls = 0
+
+        def get(self, url, params=None, timeout=None):
+            S.calls += 1
+            return seq.pop(0)
+
+    out = kalshi.get_markets(status="open", session=S(), max_pages=5, pause_s=0.0)
+
+    assert [m["ticker"] for m in out] == ["A", "B"], "page 1 was discarded by the 504"
+    assert S.calls == 3, "the gatewayed page was not re-issued"
+
+
+def test_502_and_503_are_retried_for_the_same_reason_as_504(monkeypatch):
+    """The class is "the origin did not answer", not "504". Pinning the fix
+    to the one status that happened to be observed is exactly how 09-08
+    bought a second incident 13 days later."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+
+    for status in (502, 503):
+        kalshi.reset_retry_counts()
+        sess = _FlakySession([], [])
+        seq = [
+            _FakeResp({}, status=status),
+            _FakeResp({"markets": [_mkt("A", 1)], "cursor": ""}),
+        ]
+        sess.get = lambda url, params=None, timeout=None: seq.pop(0)  # noqa: B023
+
+        out = kalshi.get_markets(status="open", session=sess, pause_s=0.0)
+        assert [m["ticker"] for m in out] == ["A"], f"HTTP {status} was not retried"
+        assert kalshi.gateway_retries() == 1
+
+
+def test_a_500_is_not_retried_because_the_origin_did_answer(monkeypatch):
+    """THE DISCRIMINATION THAT KEEPS THIS HONEST, on this repo's own
+    evidence. A 500 means the origin answered, and the one 500 we have a
+    record of is PERSISTENT: Polymarket's Gamma tail fault (probed
+    2026-08-22) answers the last page of a long walk with a 500 on demand,
+    reproduced in four daylight probes at three different volume bands.
+    Retrying that spends the walk's whole allowance on a request that
+    cannot succeed, leaving a subsequent real timeout with nothing."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            calls["n"] += 1
+            return _FakeResp({}, status=500)
+
+    with pytest.raises(AssertionError, match="HTTP 500"):
+        kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+    assert calls["n"] == 1, "a 500 was retried as if the origin had not answered"
+    assert kalshi.gateway_retries() == 0
+
+
+def test_a_persistent_gateway_outage_still_fails_the_unit(monkeypatch):
+    """Bounded, then surfaced unchanged. An exhausted budget must hand the
+    504 back for `raise_for_status()` to fail on, or this retry converts a
+    dead upstream into a silently empty tape — strictly worse than the lost
+    cycle it replaces, and the 2026-09-06 truncation mistake again."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            calls["n"] += 1
+            return _FakeResp({}, status=504)
+
+    with pytest.raises(AssertionError, match="HTTP 504"):
+        kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+    assert calls["n"] == kalshi.TRANSPORT_TRIES + 1
+
+
+def test_the_gateway_class_shares_the_transport_walk_budget(monkeypatch):
+    """ONE allowance, not two, because the two classes are one event and the
+    per-walk bound exists to cap total added wall-clock. A second allowance
+    would double the worst case this timer was sized against."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    seq = [
+        _FakeResp({}, status=504),  # spends retry 1 of 2
+        requests.exceptions.ReadTimeout("t"),  # spends retry 2 of 2
+        _FakeResp({}, status=504),  # nothing left
+    ]
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            item = seq.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    with pytest.raises(AssertionError, match="HTTP 504"):
+        kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+    assert kalshi.retry_counts()["gateway"] == 1
+    assert kalshi.retry_counts()["transport"] == 1
 
 
 def test_a_persistent_outage_still_fails_the_unit(monkeypatch):
@@ -862,8 +992,74 @@ def test_the_retry_is_counted_so_a_rising_rate_is_not_invisible(monkeypatch):
     kalshi.get_markets(status="open", session=sess, pause_s=0.0)
     assert kalshi.transport_retries() == 1
 
-    kalshi.reset_transport_retries()
+    kalshi.reset_retry_counts()
     assert kalshi.transport_retries() == 0
+
+
+def test_the_429_ladder_is_counted_too(monkeypatch):
+    """A #71-CLASS HOLE OF ITS OWN, found alongside the 504. The 429 ladder
+    has existed since 2026-08-02 and incremented NOTHING, so the field
+    breadth published as `http_retries` was blind to the one retry class
+    that predated it: 3,796 of 3,799 archived cycles read 0, and not one of
+    those zeros could ever have been a 429. A budget whose only observable
+    is succeeded/raised reports full health at 99% consumption."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    seq = [
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({"markets": [_mkt("A", 1)], "cursor": ""}),
+    ]
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            return seq.pop(0)
+
+    kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+    assert kalshi.rate_limit_retries() == 2
+    assert kalshi.retry_counts()["total"] == 2, "a 429 did not reach the published total"
+
+
+def test_the_published_total_covers_every_retry_class():
+    """DERIVED, not re-typed: the three classes are what the module spends,
+    so `total` must be their sum or a new class added later reports as
+    health. This is the check that fails when a fourth ladder arrives
+    without a counter."""
+    counts = kalshi.retry_counts()
+    classes = {k: v for k, v in counts.items() if k != "total"}
+
+    assert set(classes) == {"transport", "gateway", "rate_limit"}
+    assert counts["total"] == sum(classes.values())
+
+
+def test_the_cycle_summary_splits_the_retry_classes_and_names_its_budget_share(
+    tmp_path, monkeypatch
+):
+    """A pooled count rising says only "the network is worse"; the split
+    says who to ask — our socket, Kalshi's edge, or our own rate. And
+    `walk_budget_frac` is mistakes #71 applied to the ladder this pass
+    widened: `fetch_universe` does exactly one walk, so a cycle surviving
+    on 1.0 is one blip from the failure that has no artifact at all."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    db = str(tmp_path / "b.duckdb")
+    seq = [
+        _FakeResp({}, status=504),
+        _FakeResp({"markets": [_mkt("A", 5)], "cursor": ""}),
+    ]
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            return seq.pop(0)
+
+    out = breadth.collect_breadth_once(db, n=10, session=S(), lock_file=str(tmp_path / "l"))
+
+    assert out["retries"]["gateway"] == 1
+    assert out["retries"]["transport"] == 0
+    assert out["http_retries"] == 1, "the 504 retry never reached the operator's line"
+    assert out["walk_budget_frac"] == round(1 / kalshi.TRANSPORT_TRIES, 3)
 
 
 def test_the_cycle_summary_reports_this_cycles_retries_only(tmp_path, monkeypatch):

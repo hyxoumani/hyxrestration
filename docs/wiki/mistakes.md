@@ -2652,3 +2652,93 @@ tree it happens to run in is not evidence of anything.**
     enough to fit, which is every caller that reviews the code.
     Corollary to #71: publishing what a ladder SPENT only works if the
     publication covers every time it spent it.
+73. **2026-09-22 -- the 2026-09-08 retry fix drew its boundary at
+    whether a RESPONSE OBJECT EXISTS, which is a fact about Python's
+    exception plumbing rather than about whether a retry can succeed;
+    so it shipped retrying a ReadTimeout and leaving its identical
+    twin, a 504 Gateway Time-out, fatal. Four lost `collector.breadth`
+    cycles followed, three of them FIVE DAYS AFTER the fix -- and
+    those three were seen, triaged, and dismissed as symptoms of a
+    different, already-fixed cause.** (Class: a fix whose predicate is
+    drawn from the mechanism that reported the fault instead of the
+    fault's own semantics -- plus the triage failure that let it
+    survive a second look.)
+    **THE DEFECT.** `collector/venues/kalshi.py` had two retry
+    ladders: `_TRANSPORT_ERRORS` (Timeout, ConnectionError) retried on
+    a per-walk budget, and everything else handed to
+    `raise_for_status()`. The 09-08 comment justified the split in so
+    many words -- "`requests` raises these BEFORE any response object
+    exists" -- and excluded `HTTPError` because such responses "are
+    answers, not lost packets". That clause is true of 4xx and FALSE
+    of the gateway class. A 504 means an intermediary gave up waiting
+    for the origin: the origin never answered. It is the same physical
+    event as a ReadTimeout and differs only in whether Kalshi's edge
+    ran out of patience before our own 30s `timeout` did. Which of the
+    two you observe is a property of the network path, not of the
+    fault -- so a fix for one that excludes the other is a fix keyed
+    on the reporting mechanism.
+    **MEASURED.** Fifteen days of journal: **four 504s, all four on
+    `collector.breadth`, all four killing a whole cycle mid-walk with
+    a live cursor, all four recovering unaided on the next 5-minute
+    firing** -- 09-13 19:33/20:07/20:24Z and 09-21 00:37Z. That is the
+    exact signature, 4 for 4, that the 09-08 fix was written for; the
+    ladder simply could not see them.
+    **WHY IT SURVIVED, AND THIS IS THE HALF WORTH KEEPING.** The three
+    on 09-13 DID reach the health digest as `RECENT hyxlab-breadth 3x`
+    and were triaged in the 09-14 08:30Z status entry: "came from the
+    same flood: 504 Gateway Time-out while paging deep into the 250k-row
+    walk. Those runs failed; they were not a separate fault." The
+    parlay flood was real, concurrent, and had just been fixed, so
+    attributing them to it explained the timing and closed the class.
+    **09-21 falsifies it:** that 504 fired on a 9,229-market, ~10-page,
+    8.5-second walk with `truncated: False` -- the healthy
+    post-`mve_filter` configuration. Walk depth was a coincidence, not
+    a cause; a gateway does not care how many pages preceded it. The
+    dismissal was not lazy, it was *unfalsifiable as written*: it named
+    no observation that would have distinguished "flood symptom" from
+    "independent fault", and the one that would have -- does it recur
+    once the flood is gone? -- was available only by waiting.
+    **FIX.** `_GATEWAY_STATUSES = (502, 503, 504)`, the
+    "origin did not answer" statuses, retried by
+    `_get_transport_retrying` on the SAME per-walk `_TransportBudget`
+    -- one allowance, not two, because the classes are one event and
+    the per-walk bound exists to cap added wall-clock, which a second
+    allowance would double. An exhausted budget returns the gateway
+    response unchanged so `raise_for_status()` fails the unit exactly
+    as before: bounded, then surfaced, never swallowed.
+    **500 IS DELIBERATELY EXCLUDED**, on this repo's own evidence: a
+    500 means the origin answered, and the one 500 in the record is
+    PERSISTENT, not transient -- Polymarket's Gamma tail fault (probed
+    2026-08-22) answers the last page of a long walk with a 500 on
+    demand, reproduced in four daylight probes across three volume
+    bands. Retrying that spends the walk's whole allowance on a
+    request that cannot succeed.
+    **SECOND, SMALLER HOLE, #71's class.** The field `breadth`
+    published as `http_retries` counted transport retries ONLY, so it
+    was blind to the 429 ladder that had existed since 2026-08-02:
+    3,796 of 3,799 archived cycles read 0 and not one of those zeros
+    could ever have been a 429. Retries are now counted per class
+    (`transport` / `gateway` / `rate_limit`) with `total` derived, so
+    a rising count says who to ask rather than just "the network is
+    worse", and `walk_budget_frac` publishes what the shared ladder
+    SPENT -- `fetch_universe` performs exactly one walk per cycle, so
+    it is that walk's honest consumption. **No budget re-sized**, per
+    #70.
+    **NOT WIDENED, and recorded instead:** `get_market_trades` and
+    `get_series_list` bypass every ladder with a bare `sess.get` (the
+    former says so in a comment). Extending it there changes the
+    budget arithmetic for a multi-thousand-ticker sweep, unlike
+    breadth's single 10-page walk, and is its own decision with its
+    own measurement. Suite 1562 -> **1570**, verified red four ways
+    (gateway class emptied; 500 admitted; 429 counter removed; and a
+    per-response budget, which does not merely fail but HANGS --
+    confirming the shared budget is load-bearing for termination).
+    **RULE.** When a fault is dismissed as a symptom of a concurrent
+    cause, the dismissal must name the observation that would
+    distinguish the two -- otherwise it is a coincidence promoted to a
+    diagnosis, and it closes the class. And when fixing a transient
+    fault, write the predicate from the fault's SEMANTICS ("the origin
+    did not answer"), never from the mechanism that happened to report
+    it ("an exception was raised before a response existed"): the
+    mechanism varies with the network path, so the untested twin is
+    already in production waiting.

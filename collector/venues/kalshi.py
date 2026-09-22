@@ -86,6 +86,38 @@ def _log_429_headers(resp: Any, url: str) -> None:
 # swallow HTTPError and TooManyRedirects, which are answers, not lost packets.
 _TRANSPORT_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
 
+# THE 2026-09-21 CORRECTION. The comment above drew its line in the wrong
+# place: at whether a RESPONSE OBJECT EXISTS, which is a fact about Python's
+# exception plumbing, not about whether a retry can succeed. A 504 Gateway
+# Time-out says an intermediary gave up waiting for the origin — the origin
+# never answered — which is the SAME physical event as a ReadTimeout, and
+# differs only in whether Kalshi's edge ran out of patience before our 30s
+# `timeout` did. So the clause "HTTPError ... are answers, not lost packets"
+# is true of 4xx and false of the gateway class, and the 09-08 fix shipped
+# retrying one twin while leaving the other fatal.
+#
+# Measured, 15 days of journal: FOUR 504s, every one of them on
+# `collector.breadth`, every one killing a whole cycle mid-walk with a live
+# cursor, and every one recovering unaided on the next 5-minute firing —
+# 4/4, the exact signature the 09-08 fix was written for.
+#
+# THE THREE ON 09-13 WERE SEEN AND DISMISSED, and that is why this class
+# survived a fix aimed at it. The 09-14 08:30Z status entry triaged them as
+# "the same flood: 504 Gateway Time-out while paging deep into the 250k-row
+# walk ... not a separate fault". 09-21 19:37Z falsifies that: it fired on a
+# 9,229-market, ~10-page, 8.5-second walk with `truncated: False`, i.e. the
+# healthy post-`mve_filter` configuration. Walk depth was a coincidence of
+# timing, not a cause; a gateway does not care how many pages preceded it.
+#
+# 500 IS DELIBERATELY EXCLUDED, on this repo's own evidence: a 500 means the
+# origin DID answer, and the one 500 we have a record of is persistent, not
+# transient — Polymarket's Gamma tail fault (probed 2026-08-22) answers the
+# last page of a long walk with a 500 on demand, reproduced in four daylight
+# probes. Retrying that burns the budget on a request that cannot succeed.
+# 502/503/504 are the "no answer from the origin" statuses; they are what a
+# lost packet looks like once a CDN is in the path.
+_GATEWAY_STATUSES = (502, 503, 504)
+
 # Retries are budgeted per WALK, not per request, and this is why: breadth is a
 # oneshot on a 5-minute timer walking ~9 pages, so a per-request budget makes
 # the worst case 9x the retry cost and a network-wide outage would push a cycle
@@ -97,31 +129,80 @@ _TRANSPORT_ERRORS = (requests.exceptions.Timeout, requests.exceptions.Connection
 TRANSPORT_TRIES = 2
 _TRANSPORT_BACKOFF_S = 2.0
 
-# Count of transport retries actually spent. A retried timeout no longer fails
+# Counts of retries actually spent, PER CLASS. A retried fault no longer fails
 # the unit, so it vanishes from the health digest's failure history — the rate
 # has to surface SOMEWHERE or this fix buys the lost cycle back by making the
 # underlying network fault invisible, which is the 2026-09-06 truncation
-# mistake wearing new clothes. Callers reset it and report it per cycle. Safe
-# as module state only because every reader here is a single-threaded oneshot.
+# mistake wearing new clothes. Callers reset them and report them per cycle.
+# Safe as module state only because every reader here is a single-threaded
+# oneshot.
+#
+# SPLIT BY CLASS, not pooled, because the three mean different things to an
+# operator: `transport` is our own socket, `gateway` is Kalshi's edge failing
+# to reach Kalshi, `rate_limit` is us being told to slow down. A pooled
+# counter rising says only "the network is worse"; these say who to ask.
+#
+# `rate_limit` is new here and closes a #71-class hole of its own: the 429
+# ladder has existed since 2026-08-02 and counted NOTHING, so the field
+# `collector.breadth` published as `http_retries` was blind to the one retry
+# class that predated it. 3,796 of 3,799 archived cycles read 0 and three
+# read 1; none of those zeros could ever have been a 429.
 _TRANSPORT_RETRIES = 0
+_GATEWAY_RETRIES = 0
+_RATE_LIMIT_RETRIES = 0
 
 
 def transport_retries() -> int:
-    """Transport retries spent since the last `reset_transport_retries()`."""
+    """Transport retries spent since the last `reset_retry_counts()`."""
     return _TRANSPORT_RETRIES
 
 
-def reset_transport_retries() -> None:
-    global _TRANSPORT_RETRIES
+def gateway_retries() -> int:
+    """Gateway-status (502/503/504) retries spent since the last reset."""
+    return _GATEWAY_RETRIES
+
+
+def rate_limit_retries() -> int:
+    """429 retries spent since the last reset."""
+    return _RATE_LIMIT_RETRIES
+
+
+def retry_counts() -> dict[str, int]:
+    """Every retry class spent since the last `reset_retry_counts()`.
+
+    `total` is the sum and is what a caller should publish under a name like
+    `http_retries`; the per-class members are what makes a rising total
+    actionable.
+    """
+    return {
+        "transport": _TRANSPORT_RETRIES,
+        "gateway": _GATEWAY_RETRIES,
+        "rate_limit": _RATE_LIMIT_RETRIES,
+        "total": _TRANSPORT_RETRIES + _GATEWAY_RETRIES + _RATE_LIMIT_RETRIES,
+    }
+
+
+def reset_retry_counts() -> None:
+    global _TRANSPORT_RETRIES, _GATEWAY_RETRIES, _RATE_LIMIT_RETRIES
     _TRANSPORT_RETRIES = 0
+    _GATEWAY_RETRIES = 0
+    _RATE_LIMIT_RETRIES = 0
 
 
 class _TransportBudget:
     """A retry allowance shared by every request in one walk."""
 
     def __init__(self, tries: int = TRANSPORT_TRIES) -> None:
+        self.tries = tries
         self.remaining = tries
         self.delay = _TRANSPORT_BACKOFF_S
+        # mistakes #71: a budget whose only observable is succeeded/raised
+        # reports full health at 99% consumption. This ladder now serves two
+        # fault classes off one allowance, so how much of it a SUCCESSFUL
+        # walk consumed is the thing that goes from 0 to fatal without ever
+        # being reported in between.
+        self.spent = 0
+        self.waited_s = 0.0
 
     def take(self) -> float | None:
         """Consume one retry, returning how long to wait; None when spent."""
@@ -130,7 +211,13 @@ class _TransportBudget:
         self.remaining -= 1
         wait = self.delay
         self.delay *= 2
+        self.spent += 1
+        self.waited_s += wait
         return wait
+
+    def budget_frac(self) -> float:
+        """Share of the walk's retry allowance this walk actually spent."""
+        return self.spent / self.tries if self.tries else 0.0
 
 
 def _get_transport_retrying(
@@ -140,18 +227,26 @@ def _get_transport_retrying(
     timeout: int,
     budget: _TransportBudget,
 ) -> requests.Response:
-    """One GET, retrying lost packets until `budget` is spent, then raising.
+    """One GET, retrying "the origin did not answer" until `budget` is spent.
 
-    Bounded and then re-raised, never swallowed: a persistent outage must
-    still fail the unit. What this removes is the case where one blip in a
-    multi-page walk throws away every page that already succeeded.
+    Two fault classes, one allowance, because they are one event: a lost
+    packet raised by `requests` before any response exists, and a 502/503/504
+    handed back by an intermediary that itself gave up on the origin. See
+    `_GATEWAY_STATUSES` for why the 09-08 version caught only the first.
+
+    Bounded and then re-raised or returned-as-is, never swallowed: a
+    persistent outage must still fail the unit, so an exhausted budget
+    re-raises the transport error and returns the gateway response for
+    `raise_for_status()` to turn into the HTTPError it always was. What this
+    removes is the case where one blip in a multi-page walk throws away
+    every page that already succeeded.
     """
     import time as _time
 
-    global _TRANSPORT_RETRIES
+    global _TRANSPORT_RETRIES, _GATEWAY_RETRIES
     while True:
         try:
-            return sess.get(url, params=params, timeout=timeout)
+            resp = sess.get(url, params=params, timeout=timeout)
         except _TRANSPORT_ERRORS as e:
             wait = budget.take()
             if wait is None:
@@ -164,6 +259,24 @@ def _get_transport_retrying(
                 flush=True,
             )
             _time.sleep(wait)
+            continue
+
+        if resp.status_code not in _GATEWAY_STATUSES:
+            return resp
+        wait = budget.take()
+        if wait is None:
+            # Budget spent. Hand the gateway response back unchanged so the
+            # caller's `raise_for_status()` fails the unit exactly as it did
+            # before this retry existed.
+            return resp
+        _GATEWAY_RETRIES += 1
+        print(
+            f"[kalshi] WARNING: gateway retry in {wait:.0f}s"
+            f" ({budget.remaining} left this walk) for {url}:"
+            f" HTTP {resp.status_code}",
+            flush=True,
+        )
+        _time.sleep(wait)
 
 
 def _get_with_429_retry(
@@ -186,9 +299,15 @@ def _get_with_429_retry(
 
     The two budgets are separate on purpose: sharing one counter would let
     three 429s — the case it was already handling correctly — leave a
-    subsequent timeout with no retry at all.
+    subsequent timeout with no retry at all. The GATEWAY class shares the
+    transport allowance rather than getting a third, because a 504 and a
+    ReadTimeout are one event (see `_GATEWAY_STATUSES`) and the per-walk
+    bound exists to cap total added wall-clock, which a second allowance
+    would double.
     """
     import time as _time
+
+    global _RATE_LIMIT_RETRIES
 
     budget = transport_budget if transport_budget is not None else _TransportBudget()
     delay = 5.0
@@ -204,6 +323,7 @@ def _get_with_429_retry(
             wait = float(retry_after) if retry_after else delay
         except ValueError:
             wait = delay
+        _RATE_LIMIT_RETRIES += 1
         _time.sleep(min(wait, 60.0))
         delay *= 2
     raise AssertionError("unreachable")  # pragma: no cover
