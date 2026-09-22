@@ -96,10 +96,18 @@ KALSHI_MAINT_END_H = 10
 #: The quantity is bounded -- minutes of a fixed-length window -- so a
 #: constant is the bound this failure mode earns (the #29 test), unlike the
 #: clock-offset threshold that mistakes #25-27 retired for chasing an
-#: unbounded drift. The benign floor DOES creep with the subscribed universe
-#: (0.6 min/day in July, 3.8 in September), and that universe is itself
-#: capped at 1000 markets by `breadth`; the measured value is printed on
-#: every run, pass or fail, so the creep is readable long before it trips.
+#: unbounded drift.
+#:
+#: RE-REPLAYED 2026-09-22 after `_capture_gap_minutes` learned to merge
+#: overlapping rows (76 slots): the calibration above was read off a SUM that
+#: counted every post-08-18 outage 2-3x. On the merged measure the same three
+#: incidents fail (60.2, 57.3, 263.0) plus 09-22 (the host OOM storm, 34.9
+#: books / 37.9 trades -- genuine loss), and the worst benign mature window
+#: is 6.4 (08-28), not 12.2. The "creep with the subscribed universe" this
+#: comment used to report (0.6 -> 3.8 min/day) was the duplicate rows: the
+#: merged non-incident mean is flat, 2.6 / 2.2 / 2.3 min for Jul / Aug / Sep.
+#: 30 is kept unchanged -- it still separates every incident from every
+#: benign window; tightening it now would be tuning to the new reading.
 CAPTURE_GAP_BUDGET_MIN = 30.0
 
 # Lock-wait budget. Measured 2026-08-02: `hyxlab-collect` is OnCalendar
@@ -560,23 +568,38 @@ def _capture_gap_minutes(conn, now: datetime, hours: float) -> dict[str, tuple[f
     otherwise contributes its whole length to a window it only partly
     overlaps, which is how a single old outage would keep failing a rolling
     check long after it ended.
+
+    Then MERGED per channel, because the rows are not disjoint. One outage
+    writes a `reconnect` row, a `seq_reset` row over the same span (since
+    2026-08-18, ffcbc06) and, when it began as dead air, a `dead_air` row
+    too (since 08-10) -- each correct for its excusing readers, which only
+    ask "is t inside a gap?". Summed, those rows counted every outage 2-3x.
+    Measured 2026-09-22: the 04:11-04:53Z host OOM storm read 83.8 books /
+    75.8 trades minutes against a true 34.9 / 37.9.
     """
     lo = now - timedelta(hours=hours)
     rows = conn.execute(
         "SELECT channel, started_at, ended_at FROM stream_gaps"
         " WHERE venue = 'kalshi' AND channel IN ('books', 'trades')"
-        " AND ended_at > ? AND started_at < ?",
+        " AND ended_at > ? AND started_at < ?"
+        " ORDER BY channel, started_at",
         [lo, now],
     ).fetchall()
-    out: dict[str, tuple[float, float]] = {c: (0.0, 0.0) for c in ("books", "trades")}
+    merged: dict[str, list[list[datetime]]] = {c: [] for c in ("books", "trades")}
     for channel, g0, g1 in rows:
         a, b = max(g0, lo), min(g1, now)
         if b <= a:
             continue
-        maint = maintenance_overlap_s(a, b)
-        budgeted = max(0.0, (b - a).total_seconds() - maint)
-        prev = out.get(channel, (0.0, 0.0))
-        out[channel] = (prev[0] + budgeted / 60, prev[1] + maint / 60)
+        spans = merged[channel]
+        if spans and a <= spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], b)
+        else:
+            spans.append([a, b])
+    out: dict[str, tuple[float, float]] = {}
+    for channel, spans in merged.items():
+        maint = sum(maintenance_overlap_s(a, b) for a, b in spans)
+        total = sum((b - a).total_seconds() for a, b in spans)
+        out[channel] = (max(0.0, total - maint) / 60, maint / 60)
     return out
 
 

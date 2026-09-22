@@ -1802,6 +1802,37 @@ def test_a_long_non_maintenance_gap_is_budgeted(tmp_path):
     assert load["books"][1] == 0.0
 
 
+def test_one_outage_written_as_several_rows_counts_once(tmp_path):
+    # The real 2026-09-22 04:11Z shape: streamd writes dead_air, reconnect
+    # and seq_reset rows over (nearly) the same span. THE MUTANT THIS KILLS:
+    # summing the rows, which read 83.8 books minutes against a true 34.9.
+    mon = THU - timedelta(days=3)
+    t0 = mon + timedelta(hours=4, minutes=11)
+    rows = [
+        ("kalshi", "books", t0, t0 + timedelta(minutes=14.3), "dead_air"),
+        ("kalshi", "books", t0, t0 + timedelta(minutes=14.5), "reconnect"),
+        ("kalshi", "books", t0, t0 + timedelta(minutes=14.5), "seq_reset"),
+        # A second, disjoint outage still adds its own length.
+        ("kalshi", "books", t0 + timedelta(minutes=24), t0 + timedelta(minutes=42), "reconnect"),
+        ("kalshi", "books", t0 + timedelta(minutes=24), t0 + timedelta(minutes=42), "seq_reset"),
+    ]
+    conn = _gap_db(tmp_path / "s.duckdb", rows)
+    load = qa._capture_gap_minutes(conn, mon + timedelta(hours=6), 26.0)
+    conn.close()
+    assert load["books"][0] == pytest.approx(14.5 + 18.0)
+    assert load["trades"] == (0.0, 0.0)
+
+
+def test_overlapping_rows_inside_maintenance_are_reported_once(tmp_path):
+    # The maintenance minutes are REPORTED every run, so they must merge too.
+    a, b = THU + timedelta(hours=7), THU + timedelta(hours=7, minutes=20)
+    rows = [("kalshi", "books", a, b, r) for r in ("dead_air", "reconnect", "seq_reset")]
+    conn = _gap_db(tmp_path / "s.duckdb", rows)
+    load = qa._capture_gap_minutes(conn, THU + timedelta(hours=10), 26.0)
+    conn.close()
+    assert load["books"] == (0.0, pytest.approx(20.0))
+
+
 def test_capture_gap_is_clipped_to_the_window(tmp_path):
     # A 10h outage whose last 30 minutes fall inside the window contributes
     # 30 minutes, not 600. Without clipping a single old outage would keep
