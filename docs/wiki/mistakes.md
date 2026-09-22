@@ -2892,3 +2892,10 @@ tree it happens to run in is not evidence of anything.**
     `tests/test_hyxlab_divergence.py` pins the skip, both re-derive paths
     and that the sha moves when a non-root closure file moves; verified red
     by restoring the run_id-only branch (2 failures).
+    **Verified in the real unit, both directions, the same pass** (not
+    deferred to a next-pass note -- the habit that let this sit for nine
+    days): against the unstamped artifact `hyxlab-divergence` printed
+    `but by DIFFERENT code (report None != ... closure 3635c64...) --
+    re-deriving` and replayed in 8m58s / 1.6G peak for an identical
+    18,982-fill result now carrying `report_code`; started again 13s later
+    it printed `already reported ... nothing to do` and exited at once.
