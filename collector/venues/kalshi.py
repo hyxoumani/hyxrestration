@@ -147,9 +147,36 @@ _TRANSPORT_BACKOFF_S = 2.0
 # `collector.breadth` published as `http_retries` was blind to the one retry
 # class that predated it. 3,796 of 3,799 archived cycles read 0 and three
 # read 1; none of those zeros could ever have been a 429.
+#
+# A COUNT IS NOT A CONSUMPTION, AND FOR THIS CLASS THE TWO COME APART. The
+# transport/gateway allowance is per WALK, so its count and its budget
+# fraction carry the same information and `_TransportBudget.budget_frac`
+# reports it. The 429 ladder is per REQUEST -- `_get_with_429_retry` builds a
+# fresh `tries`-attempt loop for every page, and `get_markets` walks up to
+# `max_pages` of them -- so the SUM below cannot say how close any one page
+# came to failing. Measured on the first 48h of production readings
+# (2026-09-21..23, 421 breadth cycles): 19 cycles spent rate-limit retries,
+# 12 at 1 and 7 at 2, against 1 transport and 1 gateway all window. A `2` is
+# either one page at 2 of its 3 allowed -- one 429 from failing the cycle --
+# or two pages at 1 of 3, which is not close to anything, and the published
+# number does not distinguish them. mistakes #71 at the site #73 created: the
+# class that actually fires in production is the one whose ladder publishes
+# only what it counted, never what it spent.
+#
+# THE WORST REQUEST, NOT THE MEAN, because the failure is per request: one
+# page exhausting its ladder raises and kills the walk however comfortable
+# every other page was. Averaging over pages would be a statistic whose value
+# FALLS as the walk gets longer, reporting the deepest walks as the safest.
 _TRANSPORT_RETRIES = 0
 _GATEWAY_RETRIES = 0
 _RATE_LIMIT_RETRIES = 0
+_RATE_LIMIT_WORST_FRAC = 0.0
+
+#: Attempts per request in the 429 ladder, so the ALLOWANCE is one fewer --
+#: the last attempt does not retry, it `raise_for_status()`es. The fraction
+#: below is over the allowance, matching `_TransportBudget.budget_frac`: 1.0
+#: means the next 429 on that request fails the cycle.
+RATE_LIMIT_TRIES = 4
 
 
 def transport_retries() -> int:
@@ -165,6 +192,14 @@ def gateway_retries() -> int:
 def rate_limit_retries() -> int:
     """429 retries spent since the last reset."""
     return _RATE_LIMIT_RETRIES
+
+
+def rate_limit_budget_frac() -> float:
+    """Share of ONE request's 429 allowance spent by the WORST request since
+    the last reset, in [0, 1]. See the block above `_RATE_LIMIT_RETRIES` for
+    why the sum of retries cannot answer this and why the worst request is
+    the right reduction."""
+    return _RATE_LIMIT_WORST_FRAC
 
 
 def retry_counts() -> dict[str, int]:
@@ -184,9 +219,11 @@ def retry_counts() -> dict[str, int]:
 
 def reset_retry_counts() -> None:
     global _TRANSPORT_RETRIES, _GATEWAY_RETRIES, _RATE_LIMIT_RETRIES
+    global _RATE_LIMIT_WORST_FRAC
     _TRANSPORT_RETRIES = 0
     _GATEWAY_RETRIES = 0
     _RATE_LIMIT_RETRIES = 0
+    _RATE_LIMIT_WORST_FRAC = 0.0
 
 
 class _TransportBudget:
@@ -284,7 +321,7 @@ def _get_with_429_retry(
     url: str,
     params: dict[str, Any],
     timeout: int = 30,
-    tries: int = 4,
+    tries: int = RATE_LIMIT_TRIES,
     transport_budget: _TransportBudget | None = None,
 ) -> requests.Response:
     """GET honoring 429 Retry-After with capped exponential fallback, and
@@ -307,9 +344,16 @@ def _get_with_429_retry(
     """
     import time as _time
 
-    global _RATE_LIMIT_RETRIES
+    global _RATE_LIMIT_RETRIES, _RATE_LIMIT_WORST_FRAC
 
     budget = transport_budget if transport_budget is not None else _TransportBudget()
+    # THIS request's consumption. Local, because the allowance is per request
+    # and the module-level worst is a reduction over these -- see the block
+    # above `_RATE_LIMIT_RETRIES`.
+    # NOT a separate counter: every iteration that does not return reaches
+    # the retry below, so the retries spent by THIS request are exactly
+    # `attempt + 1` and a second variable could only drift from it.
+    allowance = max(tries - 1, 0)
     delay = 5.0
     for attempt in range(tries):
         resp = _get_transport_retrying(sess, url, params, timeout, budget)
@@ -324,6 +368,19 @@ def _get_with_429_retry(
         except ValueError:
             wait = delay
         _RATE_LIMIT_RETRIES += 1
+        spent = attempt + 1
+        if allowance:
+            _RATE_LIMIT_WORST_FRAC = max(_RATE_LIMIT_WORST_FRAC, spent / allowance)
+        # Printed for the same reason the transport and gateway ladders print,
+        # and it is the reason this hole stayed open: those two put a line in
+        # the journal naming what was left, and the 429 branch -- the class
+        # that fires most -- put nothing anywhere. 19 retries over the first
+        # 48h of production readings left exactly zero journal lines.
+        print(
+            f"[kalshi] WARNING: rate-limit retry in {min(wait, 60.0):.0f}s"
+            f" ({allowance - spent} left this request) for {url}: HTTP 429",
+            flush=True,
+        )
         _time.sleep(min(wait, 60.0))
         delay *= 2
     raise AssertionError("unreachable")  # pragma: no cover

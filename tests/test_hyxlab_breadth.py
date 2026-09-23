@@ -1105,3 +1105,159 @@ def test_the_429_budget_and_the_transport_budget_are_separate(monkeypatch):
 
     out = kalshi.get_markets(status="open", session=S(), pause_s=0.0)
     assert [m["ticker"] for m in out] == ["A"]
+
+
+def test_the_same_rate_limit_count_means_two_different_distances_from_failure(monkeypatch):
+    """THE READING THAT MOTIVATED THIS, from the first 48h of production
+    `retries` lines (2026-09-21..23, 421 breadth cycles): 19 cycles spent
+    rate-limit retries -- 12 at 1 and 7 at 2 -- against 1 transport and 1
+    gateway all window. The class that actually fires is the one whose
+    ladder published only its count.
+
+    `rate_limit: 2` is TWO states. The 429 allowance is per REQUEST and a
+    walk is many pages, so two retries is either one page at 2 of 3 -- one
+    429 from raising and killing the cycle -- or two pages at 1 of 3, which
+    is not close to anything. The sum is identical in both. This test is the
+    two cases side by side: the count cannot tell them apart and the
+    fraction must."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+
+    def _walk(seq):
+        class S:
+            def get(self, url, params=None, timeout=None):
+                return seq.pop(0)
+
+        kalshi.reset_retry_counts()
+        kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+        return kalshi.retry_counts()["rate_limit"], kalshi.rate_limit_budget_frac()
+
+    r429 = lambda: _FakeResp({}, status=429, headers={"Retry-After": "1"})  # noqa: E731
+
+    # ONE page, two of its three retries spent.
+    one_page_deep, deep_frac = _walk(
+        [r429(), r429(), _FakeResp({"markets": [_mkt("A", 1)], "cursor": ""})]
+    )
+    # TWO pages, one retry each -- same total, half the worst-case exposure.
+    two_pages_shallow, shallow_frac = _walk(
+        [
+            r429(),
+            _FakeResp({"markets": [_mkt("A", 1)], "cursor": "c"}),
+            r429(),
+            _FakeResp({"markets": [_mkt("B", 1)], "cursor": ""}),
+        ]
+    )
+
+    assert one_page_deep == two_pages_shallow == 2, "the count cannot distinguish them"
+    assert deep_frac == 2 / (kalshi.RATE_LIMIT_TRIES - 1)
+    assert shallow_frac == 1 / (kalshi.RATE_LIMIT_TRIES - 1)
+    assert deep_frac > shallow_frac, "the fraction did not separate what the count merged"
+
+
+def test_the_rate_limit_fraction_is_the_worst_request_not_the_mean(monkeypatch):
+    """A MEAN OVER PAGES FALLS AS THE WALK GETS LONGER, so it would report
+    the deepest walks -- the ones with the most chances to exhaust -- as the
+    safest. The failure is per request: one page spending its last retry
+    raises and kills the whole cycle however comfortable the other nine
+    were. The reduction has to be the max."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    seq = [
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({"markets": [_mkt("A", 1)], "cursor": "c"}),
+    ] + [_FakeResp({"markets": [_mkt(f"P{i}", 1)], "cursor": "c"}) for i in range(7)] + [
+        _FakeResp({"markets": [_mkt("Z", 1)], "cursor": ""})
+    ]
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            return seq.pop(0)
+
+    kalshi.reset_retry_counts()
+    kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+
+    # One page at the edge, eight clean ones after it. A mean would read
+    # 3/(3*9) = 0.11 and call this walk healthy.
+    assert kalshi.rate_limit_budget_frac() == 1.0, "the exhausted page was averaged away"
+    assert kalshi.retry_counts()["rate_limit"] == 3
+
+
+def test_the_rate_limit_fraction_resets_with_the_counts(monkeypatch):
+    """Per-CYCLE like every other retry field: breadth's loop mode reuses the
+    process, so a worst-case that only ever rises would report the first bad
+    page forever."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    seq = [
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({"markets": [_mkt("A", 1)], "cursor": ""}),
+    ]
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            return seq.pop(0)
+
+    kalshi.reset_retry_counts()
+    kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+    assert kalshi.rate_limit_budget_frac() > 0
+
+    kalshi.reset_retry_counts()
+    assert kalshi.rate_limit_budget_frac() == 0.0
+
+
+def test_a_rate_limit_retry_leaves_a_journal_line(monkeypatch, capsys):
+    """19 rate-limit retries over the first 48h of production left EXACTLY
+    ZERO journal lines, while the 2 transport/gateway retries in the same
+    window left one each naming what was left. That asymmetry is half of why
+    this hole stayed open: the loudest ladder was the one that almost never
+    fires."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    seq = [
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({"markets": [_mkt("A", 1)], "cursor": ""}),
+    ]
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            return seq.pop(0)
+
+    kalshi.reset_retry_counts()
+    kalshi.get_markets(status="open", session=S(), pause_s=0.0)
+
+    line = capsys.readouterr().out
+    assert "rate-limit retry" in line
+    assert "left this request" in line, "the line must name the REQUEST's allowance, not a walk's"
+    assert "429" in line
+
+
+def test_the_cycle_summary_publishes_the_rate_limit_budget_share(tmp_path, monkeypatch):
+    """The per-cycle line is the only artifact these readings have -- the
+    breadth cycle row does not carry them -- so a fraction that is not in
+    this dict is not measured anywhere."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    db = str(tmp_path / "b.duckdb")
+    seq = [
+        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+        _FakeResp({"markets": [_mkt("A", 5)], "cursor": ""}),
+    ]
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            return seq.pop(0)
+
+    out = breadth.collect_breadth_once(db, n=10, session=S(), lock_file=str(tmp_path / "l"))
+
+    assert out["retries"]["rate_limit"] == 1
+    assert out["rate_limit_budget_frac"] == round(1 / (kalshi.RATE_LIMIT_TRIES - 1), 3)
+    # NOT folded into the walk fraction: the two allowances have no shared
+    # denominator, so a term from one in the other is arithmetic on nothing.
+    assert out["walk_budget_frac"] == 0.0

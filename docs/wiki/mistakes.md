@@ -3007,3 +3007,44 @@ tree it happens to run in is not evidence of anything.**
     tripwire, per #70, and the 09-24 06:10Z sweep is the first run whose own
     split is readable. 5 tests, red-verified against the old semantics
     (suite 1592 -> 1597).
+
+79. **2026-09-23 -- the retry class that actually fires in production was
+    the one publishing only its count.** The 09-21 fix (#73) split
+    `http_retries` into `transport`/`gateway`/`rate_limit` and gave the
+    transport/gateway ladder a `walk_budget_frac`. It gave the 429 ladder a
+    counter and nothing else, and the first 48h of production readings say
+    that is backwards. **Measured 2026-09-21..23, 421 breadth cycles: 19
+    spent rate-limit retries (12 at 1, 7 at 2) against 1 transport and 1
+    gateway all window.** The class with the budget fraction fired twice;
+    the class with only a count fired nineteen times.
+    **AND THE COUNT IS AMBIGUOUS IN EXACTLY THE WAY THE FRACTION EXISTS TO
+    RESOLVE.** The transport allowance is per WALK, so its count and its
+    consumption carry the same information. The 429 allowance is per
+    REQUEST -- `_get_with_429_retry` builds a fresh 4-attempt loop for every
+    page and `get_markets` walks up to 10 of them -- so `rate_limit: 2` is
+    either ONE page at 2 of its 3 allowed retries, one 429 from raising and
+    killing the cycle, or TWO pages at 1 of 3, which is not close to
+    anything. Seven cycles read 2 this window and nothing on the box can say
+    which they were. The 429 branch also printed NOTHING: the 2
+    transport/gateway retries each left a journal line naming what was left,
+    the 19 rate-limit retries left zero lines, which is the other half of
+    why the hole survived a pass aimed at it.
+    **RULE: when a fix gives a family of ladders one observable, check the
+    observable against EACH ladder's concurrency unit, not against the one
+    it was written for. `spent/budget` is a different quantity per walk than
+    per request, and the sum over requests is not a consumption of
+    anything.** The corollary is a ranking rule: instrument by MEASURED
+    firing rate, not by which class the fix was chasing -- #73 was written
+    for a 504 seen once and shipped its best observable to that class.
+    Fix: `_get_with_429_retry` tracks the worst single request's share of
+    its own allowance (`RATE_LIMIT_TRIES - 1`, since the last attempt raises
+    rather than retries) into `kalshi.rate_limit_budget_frac()`, reset with
+    the counts; `collector.breadth` publishes it as `rate_limit_budget_frac`
+    beside `walk_budget_frac`, deliberately NOT folded into it -- the two
+    allowances share no denominator. THE WORST REQUEST, NOT THE MEAN: a mean
+    over pages falls as the walk deepens, so it would report the walks with
+    the most chances to exhaust as the safest. The 429 branch now prints a
+    WARNING naming the REQUEST's remaining allowance, matching the other two
+    ladders. NO BUDGET RE-SIZED, per #70. 6 tests, red-verified four ways
+    (worst-tracking removed; a mean substituted for the max; the print
+    removed; the field unpublished) -- suite 1597 -> 1602.

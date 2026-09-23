@@ -353,6 +353,13 @@ def collect_breadth_once(
         "walk_budget_frac": round(
             (retries["transport"] + retries["gateway"]) / kalshi.TRANSPORT_TRIES, 3
         ),
+        # The 429 ladder's equivalent, and it needs its own field rather than
+        # a term in the one above because its allowance is per REQUEST: one
+        # walk is up to MAX_PAGES of them, each with a fresh ladder, so there
+        # is no single denominator the two classes share. This is the worst
+        # single request's share -- 1.0 means one page was one 429 away from
+        # failing the cycle, whatever `retries['rate_limit']` summed to.
+        "rate_limit_budget_frac": round(kalshi.rate_limit_budget_frac(), 3),
         "fetch_s": round(fetch_s, 1),
         "total_s": round(time.monotonic() - t0, 1),
     }
