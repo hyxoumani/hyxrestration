@@ -2899,3 +2899,60 @@ tree it happens to run in is not evidence of anything.**
     re-deriving` and replayed in 8m58s / 1.6G peak for an identical
     18,982-fill result now carrying `report_code`; started again 13s later
     it printed `already reported ... nothing to do` and exited at once.
+
+77. **2026-09-23 -- the one verdict branch that ASSERTS an effect had never
+    run in 54 runs of ledger history, and when it finally ran it published
+    neither its control nor its margin.** (Class: the-number-a-reader-quotes
+    / untested-branch; site: `simulator/shadow_diurnal.py`
+    `level_shape_verdict`, swept to `level_split_verdict` and
+    `settlement_verdict`.)
+    **WHAT.** Run `20260912T023431` banked its 10th panel day overnight --
+    the FIRST run ever to reach `panel_days_needed`, on a ledger where the
+    two longest predecessors died at 9 and 8 -- so `level_shape_status`
+    read `powered` and 11Z cleared the ceiling at -129.1/hr,
+    p=0.001953 <= 0.002083. That fired the `sig` branch of
+    `level_shape_verdict`, which no reading in this repo's history had ever
+    taken. The string a status page quotes said "HOUR-OF-DAY LEVEL EFFECT at
+    11Z" and stopped, while `settlement_status` in the very next field read
+    CONFOUNDED: 47 of 240 contributing rows carried a settlement, the hour
+    keeps -109.5 of its -129.1 over 2 of 10 draws, and the balanced control
+    ranks it 4 of 24. The two had only ever been read together because the
+    CLI happens to print them adjacently.
+    **AND THE MARGIN WAS NOT WHERE IT LOOKED.** p=0.00195 beside a 0.00208
+    ceiling reads as "just cleared, marginal". It is the opposite: `_sign_p`
+    is granular in 2^-n, so at 10 draws 0.001953 (10 of 10) is the ONLY
+    value under the ceiling and the next rung down the ladder is 0.0215
+    (9 of 10) -- ten times over, from ONE day moving. Between
+    `panel_days_needed` (10) and `panel_days_needed_one_dissent` (14) the
+    test is all-or-nothing: the panel can report a unanimous hour and
+    nothing weaker, and every claim it makes is retracted by one day.
+    **WHY IT SURVIVED FIFTEEN BOUNDS.** Every one of them hardened a branch
+    that RUNS. `underpowered` and `FLAT` make no positive claim, so their
+    prose needed no control; `sig` was dead code with a live audience. A
+    branch no reading has ever taken is not covered by the fact that the
+    module is careful.
+    **RULE: a verdict branch that has never executed is unreviewed, however
+    old the module is. When a threshold is finally crossed, read the branch
+    it unlocks BEFORE reading the number it prints -- and a claim's margin
+    is stated in the unit the reader can act on (days), never in the p
+    value, whenever the test statistic is granular.**
+    Fix (bound 16): `claim_margin` publishes per named hour its k/n,
+    `flip_margin_days` and `unanimous`, plus the panel's
+    `min_flip_margin_days` -- None, not an empty block, when no hour clears;
+    `panel_days_needed_one_dissent` sits beside `panel_days_needed`; and the
+    `sig` verdict carries the margin in days and the settlement control's
+    status in its own sentence. `level_shape_status`, `significant_hours`
+    and `sign_p_ceiling` UNCHANGED, the same refusal bound 15 made.
+    **Swept the same pass** (the `reports.md` rule): bound 15 stopped the
+    LEVEL verdict naming a tied argmin and left the identical
+    `min(table, key=sign_p)` at two more sites -- `level_split_verdict`,
+    whose "a MARKING move on the standing book" is the loudest claim this
+    module makes about one hour, and `_settlement_control`, which SCORES
+    that hour and can return `survives` on it. 26 of the 29 archived panel
+    states have a tied minimum, so on most of the archive both sentences
+    named an hour the clock picked. The split now names no hour when the
+    minimum names none, and otherwise defers to the control out loud
+    (`reval` is a residual and absorbs settlement, bound 11); the control
+    keeps its subject -- a control needs one -- and says in its prose and in
+    `settlement_check.anchor_tied_n` that the subject came from a tie.
+    11 tests, all red-verified against the old module (suite 1581 -> 1592).
