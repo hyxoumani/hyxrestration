@@ -172,6 +172,40 @@ _GATEWAY_RETRIES = 0
 _RATE_LIMIT_RETRIES = 0
 _RATE_LIMIT_WORST_FRAC = 0.0
 
+# THE SAME REDUCTION FOR THE TRANSPORT/GATEWAY CLASS, and it exists because
+# the per-WALK claim above is true of exactly ONE of this module's four
+# multi-request loops. `get_markets` threads one `_TransportBudget` through
+# its pages; `get_markets_ascending`, `get_markets_by_tickers` and
+# `get_candles` each let the `transport_budget=` default construct a FRESH
+# budget per request -- not by decision, by omission of a keyword argument,
+# which is why the 2026-09-08 comment's "2x30s reads + 2s + 4s backoff = 66s"
+# marginal bound is off by the request count for three of the four. The
+# keyword is REQUIRED as of 2026-09-23 so a call site must name its unit.
+#
+# `retries / TRANSPORT_TRIES` -- what `collector.breadth` publishes as
+# `walk_budget_frac` -- is a sum over budgets divided by ONE budget's
+# denominator, and is correct there only because `fetch_universe` performs a
+# single walk. A caller holding thousands of budgets (`collector.sweep`)
+# needs the worst one, for the #79 reason: the failure is per budget, and a
+# mean over budgets falls as the run gets longer, reporting the longest runs
+# as the safest.
+_TRANSPORT_WORST_FRAC = 0.0
+
+# 429s ON AN ENDPOINT WITH NO LADDER AT ALL. `get_trades` -- the trade tape --
+# calls `sess.get` directly, so every counter above is structurally blind to
+# it, and it is where this exchange's 429s actually land: measured over the
+# 17 days 2026-09-07..23 of `hyxlab-sweep` journal, 714 of them, ~42 per run,
+# every single run, against a whole-repo total of 19 retried 429s in the
+# richest 48h breadth window. NOT a term in `total` below -- `total` counts
+# retries SPENT, and these spent nothing; they were raised at the caller.
+# Counting them is not a claim that they are losses. They are not: of the 714,
+# 670 were re-fetched by `hyxlab-tradepass` and the 44 still pending had all
+# closed within 3 days, with the recovered cohort 82.4% `empty` against an
+# 86.5% control over the same close-time window (verified 2026-09-23). The
+# counter exists because that check took a journal scrape and two archive
+# queries, and nothing on the box published the population at all.
+_RATE_LIMIT_UNRETRIED = 0
+
 #: Attempts per request in the 429 ladder, so the ALLOWANCE is one fewer --
 #: the last attempt does not retry, it `raise_for_status()`es. The fraction
 #: below is over the allowance, matching `_TransportBudget.budget_frac`: 1.0
@@ -202,6 +236,19 @@ def rate_limit_budget_frac() -> float:
     return _RATE_LIMIT_WORST_FRAC
 
 
+def transport_budget_frac() -> float:
+    """Share of ONE walk's transport/gateway allowance spent by the WORST
+    budget since the last reset, in [0, 1]. See the block above
+    `_TRANSPORT_WORST_FRAC` for why a caller with many budgets cannot get
+    this from `retry_counts()`."""
+    return _TRANSPORT_WORST_FRAC
+
+
+def rate_limit_unretried() -> int:
+    """429s seen on endpoints with no retry ladder since the last reset."""
+    return _RATE_LIMIT_UNRETRIED
+
+
 def retry_counts() -> dict[str, int]:
     """Every retry class spent since the last `reset_retry_counts()`.
 
@@ -213,17 +260,23 @@ def retry_counts() -> dict[str, int]:
         "transport": _TRANSPORT_RETRIES,
         "gateway": _GATEWAY_RETRIES,
         "rate_limit": _RATE_LIMIT_RETRIES,
+        # Deliberately outside `total`: a 429 nobody retried spent no
+        # allowance. It is a fault the archive absorbed elsewhere, not a
+        # retry -- see the block above `_RATE_LIMIT_UNRETRIED`.
+        "rate_limit_unretried": _RATE_LIMIT_UNRETRIED,
         "total": _TRANSPORT_RETRIES + _GATEWAY_RETRIES + _RATE_LIMIT_RETRIES,
     }
 
 
 def reset_retry_counts() -> None:
     global _TRANSPORT_RETRIES, _GATEWAY_RETRIES, _RATE_LIMIT_RETRIES
-    global _RATE_LIMIT_WORST_FRAC
+    global _RATE_LIMIT_WORST_FRAC, _TRANSPORT_WORST_FRAC, _RATE_LIMIT_UNRETRIED
     _TRANSPORT_RETRIES = 0
     _GATEWAY_RETRIES = 0
     _RATE_LIMIT_RETRIES = 0
     _RATE_LIMIT_WORST_FRAC = 0.0
+    _TRANSPORT_WORST_FRAC = 0.0
+    _RATE_LIMIT_UNRETRIED = 0
 
 
 class _TransportBudget:
@@ -250,6 +303,12 @@ class _TransportBudget:
         self.delay *= 2
         self.spent += 1
         self.waited_s += wait
+        # Fed here rather than by the caller because THIS is the only place
+        # that knows a budget moved: the three per-request call sites hold a
+        # budget object that is discarded the moment the request returns, so
+        # a reduction computed anywhere else would read the survivors only.
+        global _TRANSPORT_WORST_FRAC
+        _TRANSPORT_WORST_FRAC = max(_TRANSPORT_WORST_FRAC, self.budget_frac())
         return wait
 
     def budget_frac(self) -> float:
@@ -322,7 +381,8 @@ def _get_with_429_retry(
     params: dict[str, Any],
     timeout: int = 30,
     tries: int = RATE_LIMIT_TRIES,
-    transport_budget: _TransportBudget | None = None,
+    *,
+    transport_budget: _TransportBudget,
 ) -> requests.Response:
     """GET honoring 429 Retry-After with capped exponential fallback, and
     retrying transport errors against a separate, per-walk budget.
@@ -333,6 +393,12 @@ def _get_with_429_retry(
     4,947 closed markets unarchived while inside Kalshi's ~60-90d purge
     window. The candles path had per-request 429 handling; the markets page
     loop did not.
+
+    `transport_budget` is REQUIRED, with no default, because the default was
+    the thing that chose the transport ladder's concurrency unit: three of
+    this module's four multi-request loops got a fresh per-REQUEST budget
+    purely by not passing the keyword, against a module policy that says per
+    WALK in so many words. A call site must now state which it is.
 
     The two budgets are separate on purpose: sharing one counter would let
     three 429s — the case it was already handling correctly — leave a
@@ -346,7 +412,7 @@ def _get_with_429_retry(
 
     global _RATE_LIMIT_RETRIES, _RATE_LIMIT_WORST_FRAC
 
-    budget = transport_budget if transport_budget is not None else _TransportBudget()
+    budget = transport_budget
     # THIS request's consumption. Local, because the allowance is per request
     # and the module-level worst is a reduction over these -- see the block
     # above `_RATE_LIMIT_RETRIES`.
@@ -530,7 +596,17 @@ def get_markets_ascending(
             }
             if cursor:
                 params["cursor"] = cursor
-            body = _get_with_429_retry(sess, f"{BASE}/markets", params).json()
+            # PER REQUEST, stated rather than defaulted. The unit is the
+            # right one here for a reason `get_markets` does not have: this
+            # loop RETRIES ITSELF, narrowing the window and discarding the
+            # attempt, so a walk-wide allowance would be consumed by probes
+            # whose rows are thrown away and then be absent for the accepted
+            # window. The cost is that the marginal wall-clock bound scales
+            # with the probe count, which is why the consumption is now
+            # published (`transport_budget_frac`).
+            body = _get_with_429_retry(
+                sess, f"{BASE}/markets", params, transport_budget=_TransportBudget()
+            ).json()
             page_markets = body.get("markets", [])
             out.extend(page_markets)
             cursor = body.get("cursor") or ""
@@ -627,7 +703,12 @@ def get_markets_by_tickers(
             params: dict[str, Any] = {"tickers": ",".join(batch), "limit": 1000}
             if cursor:
                 params["cursor"] = cursor
-            body = _get_with_429_retry(sess, f"{BASE}/markets", params).json()
+            # PER REQUEST, stated rather than defaulted: batches are
+            # independent worklists, and one batch exhausting a shared
+            # allowance would leave every later batch unprotected.
+            body = _get_with_429_retry(
+                sess, f"{BASE}/markets", params, transport_budget=_TransportBudget()
+            ).json()
             for m in body.get("markets", []):
                 seen[m["ticker"]] = m
             cursor = body.get("cursor") or ""
@@ -675,6 +756,8 @@ def get_trades(
             # sweep_series' except and is printed there) — capture the headers
             # before raise_for_status throws them away.
             _log_429_headers(resp, f"{BASE}/markets/trades")
+            global _RATE_LIMIT_UNRETRIED
+            _RATE_LIMIT_UNRETRIED += 1
         resp.raise_for_status()
         body = resp.json()
         out.extend(body.get("trades", []))
@@ -763,6 +846,10 @@ def get_candlesticks(
             sess,
             url,
             {"start_ts": chunk_start, "end_ts": chunk_end, "period_interval": period_interval},
+            # PER REQUEST, stated rather than defaulted. A 60d hourly capture
+            # is many chunks and they are stitched, not retried: losing a
+            # middle chunk loses the range, so each carries its own allowance.
+            transport_budget=_TransportBudget(),
         )
         for c in resp.json().get("candlesticks", []):
             ts = c.get("end_period_ts")

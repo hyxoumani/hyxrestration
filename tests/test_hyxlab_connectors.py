@@ -500,7 +500,13 @@ def test_exhausted_429s_each_captured_before_the_raise(monkeypatch):
 
     monkeypatch.setattr("time.sleep", lambda s: None)
     with pytest.raises(requests.HTTPError):
-        k._get_with_429_retry(_Sess(), f"{k.BASE}/markets", {}, tries=2)
+        k._get_with_429_retry(
+            _Sess(),
+            f"{k.BASE}/markets",
+            {},
+            tries=2,
+            transport_budget=k._TransportBudget(),
+        )
 
     assert len(_sink_rows()) == 2  # the final, fatal 429's headers are kept too
 

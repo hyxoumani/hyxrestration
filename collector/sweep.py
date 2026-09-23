@@ -690,6 +690,15 @@ def main() -> None:
     # 290s, and the one run that went over (09-10 06:10Z, dead at series
     # ~600 of 3,656) had no warning in front of it by construction.
     reset_attach_waits()
+    # Same scoping, same reason, for the HTTP ladders -- and this one had no
+    # reader at all. `collector.breadth`, a 3.5-second oneshot, publishes four
+    # retry fields for a population of 19 retried 429s per 48h. This run
+    # drives every multi-request loop in the Kalshi client across ~3,700
+    # series for ~10.5 hours and published NOTHING about any of them, while
+    # its journal carried ~42 trade-tape 429s per run, every run, for the 17
+    # days anyone has looked (2026-09-07..23, 714 of them). The ladder that
+    # fires most is again the one with no instrument on it (#71, #79).
+    kalshi.reset_retry_counts()
     try:
         totals = run_sweep(
             args.db,
@@ -737,6 +746,27 @@ def main() -> None:
                 f" {wait['exhausted_n']} exhausted",
                 flush=True,
             )
+        # WORST BUDGET, NOT THE MEAN, and a fraction beside every count: this
+        # run holds thousands of per-request transport budgets, so
+        # `retries / TRANSPORT_TRIES` -- breadth's `walk_budget_frac`, correct
+        # there because `fetch_universe` walks once -- would be a sum over
+        # budgets divided by one budget's denominator. `unretried` is printed
+        # apart from `total` because it is not a retry: it is the trade-tape
+        # 429 class, which has no ladder and is recovered by
+        # `hyxlab-tradepass` instead (670 of 714 re-fetched as of 2026-09-23,
+        # the rest closed within 3 days). A rise in it is a reason to look at
+        # tradepass's backlog, not at this ladder.
+        counts = kalshi.retry_counts()
+        print(
+            f"[sweep] http_retries: {counts['total']} spent"
+            f" (transport {counts['transport']}, gateway {counts['gateway']},"
+            f" rate_limit {counts['rate_limit']}), worst walk"
+            f" {kalshi.transport_budget_frac():.3f} of its transport budget,"
+            f" worst request {kalshi.rate_limit_budget_frac():.3f} of its 429"
+            f" budget, {counts['rate_limit_unretried']} unretried 429s"
+            f" (trade tape, no ladder)",
+            flush=True,
+        )
         try:
             with writer_burst(args.db) as store:
                 for ticker, why in skipped:

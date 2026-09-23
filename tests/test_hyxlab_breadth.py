@@ -1027,10 +1027,17 @@ def test_the_published_total_covers_every_retry_class():
     health. This is the check that fails when a fourth ladder arrives
     without a counter."""
     counts = kalshi.retry_counts()
-    classes = {k: v for k, v in counts.items() if k != "total"}
+    spent = {k: v for k, v in counts.items() if k not in ("total", "rate_limit_unretried")}
 
-    assert set(classes) == {"transport", "gateway", "rate_limit"}
-    assert counts["total"] == sum(classes.values())
+    assert set(spent) == {"transport", "gateway", "rate_limit"}
+    assert counts["total"] == sum(spent.values())
+    # `rate_limit_unretried` is published and deliberately OUT of `total`: a
+    # 429 raised at the caller with no ladder behind it (the trade tape)
+    # consumed no allowance, so summing it into a retry total would make the
+    # 714 of 2026-09-07..23 read as 714 successful recoveries. It is still
+    # required to be present -- the class this assertion exists to catch is a
+    # fault class with no counter, not a fault class outside the sum.
+    assert "rate_limit_unretried" in counts
 
 
 def test_the_cycle_summary_splits_the_retry_classes_and_names_its_budget_share(
@@ -1261,3 +1268,130 @@ def test_the_cycle_summary_publishes_the_rate_limit_budget_share(tmp_path, monke
     # NOT folded into the walk fraction: the two allowances have no shared
     # denominator, so a term from one in the other is arithmetic on nothing.
     assert out["walk_budget_frac"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-23: the transport ladder's concurrency unit, and the 429 class with
+# no ladder at all. `collector.breadth` is a 3.5s oneshot publishing four
+# retry fields for 19 retried 429s per 48h; `collector.sweep` is a 10.5h run
+# over ~3,700 series that published none, while its journal carried 714
+# trade-tape 429s over 17 days. Both halves are instrument, not policy: no
+# budget is re-sized here (#70).
+# ---------------------------------------------------------------------------
+
+
+def test_the_transport_budget_keyword_is_required_so_a_call_site_names_its_unit():
+    """THE DEFECT MECHANISM. Three of this module's four multi-request loops
+    got a fresh PER-REQUEST transport budget against a module policy that
+    says per WALK -- not by decision, by omitting a keyword argument, which
+    nothing failed on. A default that silently picks a concurrency unit is
+    the #79 shape: the next call site must state which unit it is."""
+    import inspect
+
+    sig = inspect.signature(kalshi._get_with_429_retry)
+    param = sig.parameters["transport_budget"]
+    assert param.default is inspect.Parameter.empty, "the unit is defaultable again"
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_every_multi_request_loop_passes_a_budget_it_names():
+    """Derived from the source, not re-typed: every `_get_with_429_retry`
+    call in the client must hand it a budget. A new loop that forgets now
+    fails to import-time-resolve rather than silently choosing per-request."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(kalshi.__file__).read_text()
+    tree = ast.parse(src)
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_get_with_429_retry"
+    ]
+    assert len(calls) >= 4, "a call site vanished; this guard is measuring nothing"
+    for c in calls:
+        assert any(kw.arg == "transport_budget" for kw in c.keywords), ast.dump(c)
+
+
+def test_the_worst_transport_budget_survives_the_budget_that_held_it(monkeypatch):
+    """A per-request budget is discarded the moment its request returns, so a
+    reduction computed by the caller would read the survivors only. The worst
+    one must be recorded where it is spent."""
+    import time as _t
+
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    kalshi.reset_retry_counts()
+    assert kalshi.transport_budget_frac() == 0.0
+
+    budget = kalshi._TransportBudget(tries=2)
+    budget.take()
+    assert kalshi.transport_budget_frac() == 0.5
+    del budget  # the request is over and its budget is gone
+    assert kalshi.transport_budget_frac() == 0.5, "the spent budget took its reading with it"
+
+    # WORST, not mean: a later healthy budget must not average the bad one away.
+    kalshi._TransportBudget(tries=2)  # constructed, never spent
+    assert kalshi.transport_budget_frac() == 0.5
+
+    spent = kalshi._TransportBudget(tries=2)
+    spent.take()
+    spent.take()
+    assert kalshi.transport_budget_frac() == 1.0
+    kalshi.reset_retry_counts()
+    assert kalshi.transport_budget_frac() == 0.0
+
+
+def test_the_trade_tape_429_is_counted_though_nothing_retries_it(monkeypatch):
+    """714 of these over 2026-09-07..23, ~42 per sweep run, every run --
+    against 19 retried 429s in the richest 48h breadth window. `get_trades`
+    calls `sess.get` directly, so every other counter in the module is
+    structurally blind to the class that fires most."""
+    import pytest
+    import requests
+
+    class _Resp:
+        status_code = 429
+        headers: dict = {}
+
+        def raise_for_status(self):
+            raise requests.HTTPError(response=self)
+
+    class S:
+        def get(self, url, params=None, timeout=None):
+            return _Resp()
+
+    monkeypatch.setattr(kalshi, "_log_429_headers", lambda *a: None)
+    kalshi.reset_retry_counts()
+    with pytest.raises(requests.HTTPError):
+        kalshi.get_trades("KXTEST-1", session=S())
+
+    counts = kalshi.retry_counts()
+    assert counts["rate_limit_unretried"] == 1
+    assert kalshi.rate_limit_unretried() == 1
+    # NOT a retry: nothing was spent and nothing recovered here. Folding it
+    # into `total` would report the 714 as 714 successful recoveries.
+    assert counts["total"] == 0
+    assert counts["rate_limit"] == 0
+    kalshi.reset_retry_counts()
+    assert kalshi.retry_counts()["rate_limit_unretried"] == 0
+
+
+def test_the_sweep_publishes_the_retry_ledger_it_spent():
+    """The biggest consumer of these ladders in the repo published nothing
+    about any of them. Derived from the source: the run must reset the
+    counters to scope them to itself, and print the worst budget FRACTION --
+    not `retries / TRANSPORT_TRIES`, which is a sum over thousands of
+    per-request budgets divided by one budget's denominator."""
+    import pathlib
+
+    src = pathlib.Path("collector/sweep.py").read_text()
+    assert "kalshi.reset_retry_counts()" in src, "the ledger spans every run ever"
+    assert "kalshi.transport_budget_frac()" in src
+    assert "kalshi.rate_limit_budget_frac()" in src
+    assert "rate_limit_unretried" in src
+    # CODE only: the comment above the print names the wrong arithmetic in
+    # order to rule it out, and a substring check cannot tell the two apart.
+    code = "\n".join(ln.split("#", 1)[0] for ln in src.splitlines())
+    assert "TRANSPORT_TRIES" not in code, "the sweep divided a sum by one budget's denominator"
