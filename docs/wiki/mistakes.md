@@ -3066,3 +3066,63 @@ tree it happens to run in is not evidence of anything.**
     like the conservative default, so the reasoning behind it is not asked
     for the evidence that shipping would have to produce. Promoted the same
     pass once measured; shadow never restarted, panel run intact.
+
+80. **2026-09-23 -- the endpoint where this exchange's 429s actually land
+    has no retry ladder, no counter, and the safety net named in its
+    comment had never been checked. And the biggest consumer of every
+    other ladder published nothing at all.** #79 closed the gap between a
+    retry class's count and its consumption. The sweep of that fix asked
+    which OTHER observables are shared by ladders with different
+    concurrency units, and the answer indicted the instrument's placement
+    rather than its arithmetic.
+    **MEASURED FIRST, in one journal scrape nobody had run: `hyxlab-sweep`,
+    2026-09-07..23, 714 trade-tape 429s -- ~42 per run, EVERY run, 17 runs
+    for 17 days.** Against which the richest breadth window ever recorded
+    is 19 retried 429s per 48h. `collector.breadth` is a 3.5-second oneshot
+    publishing four retry fields; `collector.sweep` is a 10.5-hour run over
+    ~3,700 series driving every multi-request loop in the Kalshi client,
+    and it published none. It did not even reset the module counters, so
+    they spanned every run since the process model was written.
+    **DEFECT 1: THE TRANSPORT LADDER'S CONCURRENCY UNIT WAS SET BY KEYWORD
+    OMISSION.** The module comment states the policy in so many words --
+    "Retries are budgeted per WALK, not per request, and this is why" --
+    and computes a marginal bound from it: "2x30s reads + 2s + 4s backoff =
+    66s". `get_markets` threads one `_TransportBudget` through its pages.
+    `get_markets_ascending`, `get_markets_by_tickers` and `get_candles`
+    each got a FRESH budget per request, because `transport_budget=` had a
+    default and they did not pass it. Three of four loops silently ran a
+    unit the policy above them denies, and the 66s bound is off by their
+    request count. **RULE: a parameter whose default SELECTS A CONCURRENCY
+    UNIT must not have one.** Which unit is right is a per-loop judgement
+    (here, per-request is correct for all three: the window-narrowing probe
+    discards its own attempts, and candle chunks are stitched, not
+    retried). What is never right is choosing it by not typing it.
+    **DEFECT 2: `get_trades` CALLS `sess.get` DIRECTLY, so every counter in
+    the module is structurally blind to the class that fires most.** Same
+    shape as the 08-02 markets-page hole and the 09-08 transport hole: the
+    ladder exists, and one endpoint is outside it.
+    **VERIFIED, NOT ASSUMED -- and the verification is what set the fix.**
+    The `except` arm carries a comment: "hyxlab-tradepass.timer's daily
+    retro-pass is what actually catches it". Never checked in 17 days of it
+    firing. It HOLDS: of the 714, **670 carry a `trades_swept` row**, the
+    44 that do not had all closed within 3 days (normal oldest-first
+    tradepass lag, far inside the ~64d retention clock), and the recovered
+    cohort is **82.4% `empty` against an 86.5% control** over the same
+    close-time window -- so the recovery is real capture, not a cosmetic
+    row. That is why this pass shipped a COUNTER and not a ladder: the
+    population is recovered, and adding retries would spend wall-clock on
+    a fault the archive already absorbs.
+    Fix: `transport_budget` is required and keyword-only, each site naming
+    its unit and why; `_TRANSPORT_WORST_FRAC` recorded inside
+    `_TransportBudget.take()` (a per-request budget is discarded the moment
+    its request returns, so a reduction computed by the caller reads the
+    survivors only) and exposed as `transport_budget_frac()`;
+    `rate_limit_unretried` counted in `get_trades` and published OUTSIDE
+    `total`, because a 429 nobody retried spent no allowance and folding it
+    in would report 714 faults as 714 recoveries; `collector.sweep` resets
+    the ledger per run and prints it beside `attach_wait`. Never
+    `retries / TRANSPORT_TRIES` -- that is a sum over thousands of budgets
+    divided by ONE budget's denominator, and it is correct in breadth only
+    because `fetch_universe` walks exactly once. NO BUDGET RE-SIZED (#70),
+    no behaviour changed. 5 tests, each red-verified by reverting its
+    target; suite 1602 -> 1607.
