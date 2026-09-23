@@ -3048,3 +3048,21 @@ tree it happens to run in is not evidence of anything.**
     ladders. NO BUDGET RE-SIZED, per #70. 6 tests, red-verified four ways
     (worst-tracking removed; a mean substituted for the max; the print
     removed; the field unpublished) -- suite 1597 -> 1602.
+
+    **POSTSCRIPT, same pass -- the deferral attached to this fix was itself
+    unverified.** The commit shipping #79 declined to promote, on the stated
+    ground that `collector/venues/kalshi.py` is in the SHADOW daemon's
+    closure and `hyxlab-shadow` is pinned to old code until the 09-27 panel
+    re-read. Both halves of that were wrong and one command says so:
+    `daemon_imports.py intersect simulator.shadow` over the change set is
+    EMPTY, and `promote.sh`'s shadow restart predicate is
+    `^(simulator|strategies|hyxlab)/`, which a `collector/`-only change
+    cannot match. The true cost of promoting was one `hyxlab-stream`
+    restart. **RULE: the closure guard is cheap and exact, so a promote
+    DEFERRAL has to clear it exactly like a promote does. A deferral is a
+    claim about the import graph, and reciting which daemon is currently
+    pinned is a claim about the SCHEDULE -- the two feel alike and only one
+    of them is checkable.** The asymmetry is what hides it: deferring looks
+    like the conservative default, so the reasoning behind it is not asked
+    for the evidence that shipping would have to produce. Promoted the same
+    pass once measured; shadow never restarted, panel run intact.
