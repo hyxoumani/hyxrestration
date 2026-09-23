@@ -16,8 +16,10 @@ MEASURED 2026-09-21, both ends. Common case, all three live DBs while
 `hyxlab-poly-sweep` was 10h into a run: p50 11ms, max 14ms -- the ledger is
 almost always boring, which is exactly why a threshold sized by its tail
 needs the tail written down. Refused case, a read-only attach against a held
-writer: p50 0.03ms, so the elapsed time of an exhausted ladder IS its sleep
-total and `budget_frac` is a true share, not an approximation.
+writer: p50 0.03ms, so the elapsed time of an EXHAUSTED ladder is its sleep
+total. That last clause was then read as true of every attach, which is
+mistakes #78 -- a SUCCEEDING attach pays ~10ms of open cost that no budget
+governs. `slept_s` / `open_s` split it; see `test_sweep_attach_wait.py`.
 
 Deliberately NOT a re-sizing of any budget: re-sizing off a freshly observed
 number is how the `LIVE_GRACE_S` prose got wrong, and archived readings stay
@@ -88,11 +90,13 @@ def test_a_successful_attach_is_recorded_too(tmp_path):
     connect_retry(db, read_only=False).close()
     (w,) = attach_waits()
     assert (w.db, w.attempts, w.ok) == ("ok.duckdb", 1, True)
-    assert w.waited_s >= 0.0
-    # A real share of a real budget: creating the file costs milliseconds
-    # against a 28s ladder, so the field is a small NUMBER -- not absent,
-    # not rounded away.
-    assert 0.0 <= w.budget_frac < 0.01
+    # Creating the file costs milliseconds, and NONE of it is the budget's:
+    # the ladder was never entered, so `slept_s` is 0 and `open_s` carries
+    # the whole cost (mistakes #78).
+    assert w.waited_s > 0.0
+    assert w.slept_s == 0.0
+    assert w.open_s == pytest.approx(w.waited_s)
+    assert w.budget_frac == 0.0
 
 
 def test_the_exhausted_attach_is_recorded_before_the_raise(monkeypatch):
@@ -131,9 +135,9 @@ def test_the_block_reports_the_worst_attach_not_the_last(tmp_path):
     """`budget_frac_max` is the margin. Pooling three attaches on three
     different budgets and publishing the final one would hide the tight
     one -- and the divergence report makes exactly three."""
-    store_mod._record_attach("a.duckdb", 1, 0.5, 10.0, True)
-    store_mod._record_attach("b.duckdb", 9, 90.0, 100.0, True)
-    store_mod._record_attach("c.duckdb", 1, 0.1, 638.7, True)
+    store_mod._record_attach("a.duckdb", 1, 0.5, 10.0, True, 0.5)
+    store_mod._record_attach("b.duckdb", 9, 90.0, 100.0, True, 90.0)
+    store_mod._record_attach("c.duckdb", 1, 0.1, 638.7, True, 0.1)
     block = attach_wait_block()
     assert block["n"] == 3
     assert block["waited_s_max"] == 90.0
@@ -178,9 +182,9 @@ def test_atlas_failure_line_prints_the_measured_wait_not_the_constant(monkeypatc
     with pytest.raises(SystemExit) as exc:
         atlas.main()
     msg = str(exc.value)
-    # The real elapsed is ~0s here (sleep is stubbed) and the budget is 214s.
+    # The real sleep is ~0s here (sleep is stubbed) and the budget is 214s.
     # A line that cannot tell those apart is the defect.
-    assert "waited 0s of a 214s budget" in msg
+    assert "spent 0s of a 214s budget" in msg
     assert "hyxlab-poly-sweep" in msg
 
 

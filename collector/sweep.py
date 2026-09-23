@@ -716,11 +716,24 @@ def main() -> None:
             # `budget_frac_max` would make the two disagree (#71's atlas
             # literal, one module over).
             budget = attach_budget_s(BURST_OPEN_RETRIES, BURST_OPEN_DELAY_S)
+            # SLEPT, not elapsed, and the two printed apart (mistakes #78).
+            # The first production line, 09-22 11:52Z, read "96.3s spent
+            # waiting in total" over 7,483 attaches. A successful open of the
+            # 20GB archive costs 7.2ms median (measured 2026-09-23, 30
+            # read-only opens, first excluded; the read-write path here also
+            # runs `_SCHEMA` and costs MORE), so >= 53.8s of that 96.3s --
+            # at least 56%, plausibly all of it -- was this sweep opening its
+            # own database, not waiting for anyone. `contended_n` is the
+            # count a max and a total cannot give: one 96s block and 48 x 2s
+            # are the same two numbers, and only one of them is a reason to
+            # touch the budget.
             print(
-                f"[sweep] attach_wait: {wait['n']} attaches, worst"
-                f" {wait['waited_s_max']:.1f}s of a {budget:.0f}s"
+                f"[sweep] attach_wait: {wait['n']} attaches,"
+                f" {wait['contended_n']} contended, worst sleep"
+                f" {wait['slept_s_max']:.1f}s of a {budget:.0f}s"
                 f" budget ({'n/a' if frac is None else f'{frac:.4f}'} of it),"
-                f" {wait['waited_s_total']:.1f}s spent waiting in total,"
+                f" {wait['slept_s_total']:.1f}s slept in total"
+                f" + {wait['open_s_total']:.1f}s opening,"
                 f" {wait['exhausted_n']} exhausted",
                 flush=True,
             )

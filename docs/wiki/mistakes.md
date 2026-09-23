@@ -2956,3 +2956,54 @@ tree it happens to run in is not evidence of anything.**
     keeps its subject -- a control needs one -- and says in its prose and in
     `settlement_check.anchor_tied_n` that the subject came from a tie.
     11 tests, all red-verified against the old module (suite 1581 -> 1592).
+
+78. **2026-09-23 -- "96.3s spent waiting in total" was mostly the sweep
+    opening its own database, because the attach ledger charges the retry
+    budget for work the budget does not govern.** (Class:
+    the-number-a-reader-quotes / statistic-measures-something-else; site:
+    `hyxlab/store.py` `AttachWait`, swept to `collector/sweep.py` and
+    `simulator/atlas.py`.)
+    **WHAT.** #71 put every attach on a ledger and #72 made its statistics
+    describe the whole run rather than the retained tail. Both recorded ONE
+    number per attach: `waited_s`, the elapsed time inside the retry helper,
+    which is the sleeps PLUS the cost of the open attempts themselves. The
+    justification is on the line above the dataclass, and it is a true
+    statement about the wrong case: "a refused attach itself costs 0.03ms,
+    so the elapsed time IS the sleep ladder". That holds for an EXHAUSTED
+    ladder, which was the case measured. A SUCCEEDING attach pays the full
+    cost of opening the file, and the ladder it is being charged to was
+    never entered.
+    **AT THREE ATTACHES IT IS INVISIBLE; AT 7,483 IT IS THE WHOLE NUMBER.**
+    The divergence report makes three attaches and publishes 0.008s / 0.011s
+    against 28s and 58s budgets -- `budget_frac` 0.0003, noise. The first
+    production sweep line, 09-22 11:52Z, published 7,483 attaches and "96.3s
+    spent waiting in total". Measured 2026-09-23, 30 read-only opens of the
+    20GB archive, first excluded: 7.2ms median, 9.1ms max. That is **53.8s
+    of the 96.3s at minimum -- 56%** -- and the sweep's open is read-WRITE,
+    which runs `_SCHEMA` on every burst and costs more, so the honest
+    reading is that the published contention figure may be entirely open
+    cost and the ladder may never have been entered at all.
+    **AND NOTHING PUBLISHED COULD TELL.** `waited_s_max` 2.0s and
+    `waited_s_total` 96.3s are the same two numbers for one 96s block (one
+    long reader) and for 48 x 2s (constant beating) -- and those two call
+    for opposite decisions about a 298s budget. The ledger exists to make a
+    budget's erosion readable before the run it kills; it was reporting a
+    quantity that erodes with the SIZE OF THE ARCHIVE instead.
+    **RULE: a statistic named after a budget must be measured in the same
+    unit the budget is denominated in. A retry budget is a sum of sleeps, so
+    its numerator is sleep -- not elapsed time in the function that sleeps.
+    And when the per-observation cost is small but the count is large,
+    "negligible" is a claim about the product, not about the cost: re-derive
+    it at the new n before carrying the old justification forward.**
+    Fix: `AttachWait` records `slept_s` (timed AROUND `time.sleep`, not
+    summed from the intended delays -- a stubbed sleep must read as zero and
+    a real one overshoots) alongside `waited_s`, and exposes
+    `open_s = waited_s - slept_s`. `budget_frac` is now `slept_s / budget_s`
+    -- a sleep against a sleep budget -- and stays `None` only when there is
+    no budget, so 0.0 now means the real statement "the ladder existed and
+    was never entered". The block adds `slept_s_max`, `slept_s_total`,
+    `open_s_total` and `contended_n`; the sweep line and the atlas lines
+    print the two costs apart. NO BUDGET RE-SIZED: `budget_frac_max` is the
+    tripwire, per #70, and the 09-24 06:10Z sweep is the first run whose own
+    split is readable. 5 tests, red-verified against the old semantics
+    (suite 1592 -> 1597).

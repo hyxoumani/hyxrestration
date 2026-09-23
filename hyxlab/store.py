@@ -370,10 +370,28 @@ def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
 # So the wait is recorded here, on EVERY attach, gated on nothing -- the
 # common case is ~10ms (measured 2026-09-21 against all three live DBs while
 # `hyxlab-poly-sweep` was 10h into a run: p50 11ms, max 14ms) and the common
-# case is not the point. The tail is. A refused attach itself costs 0.03ms
-# (measured against a held writer), so the elapsed time IS the sleep ladder:
-# `budget_frac` is the share of the configured budget this attach spent, i.e.
-# the margin the prose asserts is generous.
+# case is not the point. The tail is.
+#
+# ELAPSED IS NOT WAIT, AND ON A BIG RUN IT IS MOSTLY NOT WAIT (mistakes #78).
+# The argument above this line used to end "a refused attach itself costs
+# 0.03ms, so the elapsed time IS the sleep ladder" -- true, and true only of
+# the REFUSED case it was measured on. A SUCCEEDING attach pays the ~10ms of
+# actually opening the file, and the ledger was charging that to the retry
+# budget. At three attaches (atlas, divergence) 30ms is invisible. At the
+# sweep's 7,483 it is the majority of the published total: the first
+# production reading, 2026-09-22 11:52Z, printed "96.3s spent waiting in
+# total" for a run whose opens alone account for ~65s of it at the measured
+# 8.7ms, and whose whole contended span may be as little as 15 sleeps.
+#
+# So an attach now records both halves. `slept_s` is time spent INSIDE
+# `time.sleep`, measured rather than summed from the intended delays (a
+# stubbed sleep must read as zero, and a real one overshoots); `waited_s`
+# stays the elapsed total, so `open_s = waited_s - slept_s` is the cost of
+# the opens themselves. `budget_frac` is `slept_s / budget_s` -- a sleep
+# against a sleep budget, which is what "the share of the budget this attach
+# spent" always claimed to be. `contended_n` counts the attaches that slept
+# at all, because a max and a total cannot tell one 96s block from 48 x 2s,
+# and that is the difference between one long reader and constant beating.
 #
 # Deliberately NOT a re-sizing of any budget. Re-sizing a threshold off a
 # freshly observed max is how the wrong number got into `LIVE_GRACE_S`;
@@ -382,19 +400,38 @@ def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
 
 @dataclass(frozen=True)
 class AttachWait:
-    """One attach's cost. `budget_s` is the ladder's nominal sleep total."""
+    """One attach's cost, split into the two things it is made of.
+
+    `waited_s` is the elapsed time in the retry helper; `slept_s` is the part
+    of it spent in `time.sleep`, i.e. the part the retry budget actually
+    pays for. `budget_s` is the ladder's nominal sleep total, so `budget_frac`
+    is `slept_s / budget_s` and not a share of a number that includes work
+    the budget does not govern (mistakes #78).
+    """
 
     db: str
     attempts: int
     waited_s: float
     budget_s: float
     ok: bool
+    slept_s: float = 0.0
+
+    @property
+    def open_s(self) -> float:
+        """Elapsed minus slept: the cost of the open attempts themselves.
+
+        Clamped at 0 -- the two are read from the same clock but not in one
+        atomic step, so a tiny negative is measurement noise, not a finding.
+        """
+        return max(self.waited_s - self.slept_s, 0.0)
 
     @property
     def budget_frac(self) -> float | None:
         # None, not 0.0: a one-attempt ladder has no budget to spend a share
         # of, and a zeroed field reads as "measured, and it was fine".
-        return self.waited_s / self.budget_s if self.budget_s > 0 else None
+        # 0.0 against a REAL budget is a different statement and a true one:
+        # the ladder existed and was never entered.
+        return self.slept_s / self.budget_s if self.budget_s > 0 else None
 
     def as_dict(self) -> dict:
         frac = self.budget_frac
@@ -402,6 +439,8 @@ class AttachWait:
             "db": self.db,
             "attempts": self.attempts,
             "waited_s": round(self.waited_s, 3),
+            "slept_s": round(self.slept_s, 3),
+            "open_s": round(self.open_s, 3),
             "budget_s": round(self.budget_s, 1),
             "budget_frac": None if frac is None else round(frac, 4),
             "ok": self.ok,
@@ -434,6 +473,10 @@ class _AttachTotals:
     observed_n: int = 0
     waited_s_total: float = 0.0
     waited_s_max: float = 0.0
+    slept_s_total: float = 0.0
+    slept_s_max: float = 0.0
+    open_s_total: float = 0.0
+    contended_n: int = 0
     budget_frac_max: float | None = None
     exhausted_n: int = 0
 
@@ -441,6 +484,12 @@ class _AttachTotals:
         self.observed_n += 1
         self.waited_s_total += w.waited_s
         self.waited_s_max = max(self.waited_s_max, w.waited_s)
+        self.slept_s_total += w.slept_s
+        self.slept_s_max = max(self.slept_s_max, w.slept_s)
+        self.open_s_total += w.open_s
+        # "slept at all" is the contention test: the ladder is only entered
+        # when an open is REFUSED, so one sleep means one collision.
+        self.contended_n += int(w.slept_s > 0.0)
         frac = w.budget_frac
         if frac is not None:
             self.budget_frac_max = (
@@ -469,8 +518,15 @@ def attach_budget_s(
     return total
 
 
-def _record_attach(path: str | Path, attempts: int, waited_s: float, budget_s: float, ok: bool):
-    w = AttachWait(Path(path).name, attempts, waited_s, budget_s, ok)
+def _record_attach(
+    path: str | Path,
+    attempts: int,
+    waited_s: float,
+    budget_s: float,
+    ok: bool,
+    slept_s: float = 0.0,
+):
+    w = AttachWait(Path(path).name, attempts, waited_s, budget_s, ok, slept_s)
     _ATTACH_TOTALS.add(w)  # BEFORE the trim: the totals outlive the rows
     _ATTACH_WAITS.append(w)
     del _ATTACH_WAITS[:-_ATTACH_WAITS_MAX]
@@ -488,9 +544,7 @@ def reset_attach_waits() -> None:
     _ATTACH_TOTALS = _AttachTotals()
 
 
-def attach_wait_block(
-    waits: list[AttachWait] | None = None, *, rows: bool = True
-) -> dict | None:
+def attach_wait_block(waits: list[AttachWait] | None = None, *, rows: bool = True) -> dict | None:
     """The report block. `None` when nothing attached through the retry
     helpers -- an empty block would read as "attached instantly".
 
@@ -525,6 +579,15 @@ def attach_wait_block(
         "dropped_n": totals.observed_n - len(obs),
         "waited_s_max": round(totals.waited_s_max, 3),
         "waited_s_total": round(totals.waited_s_total, 3),
+        # The half the budget actually pays for, and the half it does not
+        # (mistakes #78). `waited_s_total` alone reads as contention and on a
+        # thousands-of-attaches run it is mostly the cost of the opens.
+        "slept_s_max": round(totals.slept_s_max, 3),
+        "slept_s_total": round(totals.slept_s_total, 3),
+        "open_s_total": round(totals.open_s_total, 3),
+        # How many attaches met a holder at all -- a max plus a total cannot
+        # separate one long block from many short ones.
+        "contended_n": totals.contended_n,
         # The number the call-site comments assert is generous, now readable
         # from the artifact on a run that SUCCEEDED.
         "budget_frac_max": (
@@ -562,6 +625,10 @@ def connect_retry(
 
     budget = attach_budget_s(retries, delay, backoff, max_delay)
     started = time.monotonic()
+    # MEASURED, not summed from `wait`: a stubbed sleep must read as zero
+    # slept (the atlas busy-line test turns on exactly that) and a real one
+    # overshoots its argument. See mistakes #78.
+    slept = 0.0
     wait = delay
     for attempt in range(retries):
         try:
@@ -569,16 +636,18 @@ def connect_retry(
             private_spill(conn, path)
             cgroup_memory_limit(conn)
             spill_cap(conn, path)
-            _record_attach(path, attempt + 1, time.monotonic() - started, budget, True)
+            _record_attach(path, attempt + 1, time.monotonic() - started, budget, True, slept)
             return conn
         except duckdb.Error:
             if attempt == retries - 1:
                 # Recorded BEFORE the raise: an exhausted budget is the one
                 # observation the ledger most needs, and the caller re-raises
                 # out of every frame that could have recorded it.
-                _record_attach(path, attempt + 1, time.monotonic() - started, budget, False)
+                _record_attach(path, attempt + 1, time.monotonic() - started, budget, False, slept)
                 raise
+            before = time.monotonic()
             time.sleep(wait)
+            slept += time.monotonic() - before
             wait *= backoff
             if max_delay is not None:
                 wait = min(wait, max_delay)
@@ -603,16 +672,19 @@ def open_retry(
 
     budget = attach_budget_s(retries, delay)
     started = time.monotonic()
+    slept = 0.0
     for attempt in range(retries):
         try:
             store = Store(path, read_only=read_only)
-            _record_attach(path, attempt + 1, time.monotonic() - started, budget, True)
+            _record_attach(path, attempt + 1, time.monotonic() - started, budget, True, slept)
             return store
         except duckdb.Error:
             if attempt == retries - 1:
-                _record_attach(path, attempt + 1, time.monotonic() - started, budget, False)
+                _record_attach(path, attempt + 1, time.monotonic() - started, budget, False, slept)
                 raise
+            before = time.monotonic()
             time.sleep(delay)
+            slept += time.monotonic() - before
     raise AssertionError("unreachable")
 
 

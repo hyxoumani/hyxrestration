@@ -1363,11 +1363,15 @@ def main() -> None:
         # `ATTACH_BUDGET_S` -- a constant -- as though it were an observation,
         # so it asserted 214s whatever the run had actually spent.
         waits = attach_waits()
-        waited = waits[-1].waited_s if waits else 0.0
+        # SLEPT, not elapsed: this line is about the budget, and the budget
+        # is a sleep total (mistakes #78). On this path the two nearly agree
+        # -- a refused open costs 0.03ms -- but the label must still name the
+        # quantity it prints.
+        waited = waits[-1].slept_s if waits else 0.0
         if holder:
             raise SystemExit(
                 f"[atlas] archive busy: a live writer holds {args.db} ({holder}).\n"
-                f"[atlas] waited {waited:.0f}s of a {ATTACH_BUDGET_S:.0f}s budget;"
+                f"[atlas] spent {waited:.0f}s of a {ATTACH_BUDGET_S:.0f}s budget;"
                 " the poly sweep holds it for hours."
                 " Nothing is wrong — re-run when it finishes (collector.health"
                 " shows hyxlab-poly-sweep RUNNING)."
@@ -1406,8 +1410,10 @@ def main() -> None:
     aw = atlas["attach_wait"]
     if aw:
         print(
-            f"[atlas] attach: {aw['n']} waited {aw['waited_s_total']:.1f}s,"
-            f" worst {aw['waited_s_max']:.1f}s = {aw['budget_frac_max']} of its budget"
+            f"[atlas] attach: {aw['n']} waited {aw['waited_s_total']:.1f}s"
+            f" ({aw['slept_s_total']:.1f}s slept, {aw['contended_n']} contended),"
+            f" worst sleep {aw['slept_s_max']:.1f}s"
+            f" = {aw['budget_frac_max']} of its budget"
         )
     # the denominator, printed next to the count: "N of M buckets" reads as M
     # tests, and it never was. See mistakes #33.
