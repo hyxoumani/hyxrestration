@@ -301,6 +301,48 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      are not independent tests. `level_shape_status`, `significant_hours`
      and `sign_p_ceiling` are UNCHANGED, per the cross-report
      comparability precedent at every tier before this one.
+ 16. THE ONE BRANCH THAT ASSERTS AN EFFECT HAD NEVER RUN, AND IT PUBLISHED
+     NEITHER ITS CONTROL NOR ITS MARGIN. 2026-09-23 is the first time in
+     this ledger's 54-run history that `level_shape_status` read POWERED
+     with a significant hour: run `20260912T023431` banked the 10th panel
+     day and 11Z came in at -129.1/hr, p=0.001953 against the 0.002083
+     ceiling. `level_shape_verdict` is the string a status page quotes,
+     and its `sig` branch said "HOUR-OF-DAY LEVEL EFFECT at 11Z" and
+     stopped -- while `settlement_status` in the next field read
+     CONFOUNDED (47 of 240 contributing rows carried a settlement; the
+     hour keeps -109.5 of -129.1 over 2 of 10 draws, and the balanced
+     control ranks it 4th). The two were only ever read together because
+     the CLI prints them adjacently. That is mistakes #63's rule -- the
+     number a READER quotes -- at this module's loudest sentence, and it
+     was invisible for eight bounds because the branch had never fired.
+     AND THE MARGIN IS NOT IN p. p=0.00195 beside a 0.00208 ceiling reads
+     as "just cleared". It is the opposite: `_sign_p` is granular in
+     2^-n, so at 10 draws 0.001953 (10 of 10) is the ONLY value under the
+     ceiling and the next rung is 0.0215 (9 of 10) -- ten times over,
+     from a single day moving. A panel between `panel_days_needed` (10)
+     and `panel_days_needed_one_dissent` (14) can report unanimity and
+     nothing weaker, so its every claim is retracted by one day.
+     Fix (bound 16): `claim_margin` publishes per named hour its k/n, its
+     `flip_margin_days` and whether it is `unanimous`, plus the panel's
+     `min_flip_margin_days`; `panel_days_needed_one_dissent` sits beside
+     `panel_days_needed`; and the `sig` verdict carries the margin in
+     DAYS and the settlement control's status in its own sentence.
+     `level_shape_status`, `significant_hours` and `sign_p_ceiling` are
+     UNCHANGED -- this is what the claim says, not what it is.
+     AND THE SWEEP, because a defect found by a lens is swept the same
+     pass. Bound 15 stopped the LEVEL verdict naming a tied argmin and
+     left the SAME `min(table, key=sign_p)` at two more sites: the split
+     verdict, whose "a MARKING move on the standing book" is the loudest
+     claim this module makes about one hour, and the settlement control,
+     which SCORES that hour and can read `survives` on it. 26 of the 29
+     archived panel states have a tied minimum, so on most of the archive
+     both sentences name an hour the clock picked. Fixed here: the split
+     names no hour when the minimum names none and otherwise defers to
+     the control out loud (`reval` is a residual and absorbs settlement,
+     bound 11); the control keeps its subject -- it needs one -- and says
+     in its own prose and in `settlement_check.anchor_tied_n` that the
+     subject came from a tie, so nothing under it reads as attached to a
+     claim the level test never made.
 """
 
 from __future__ import annotations
@@ -361,6 +403,23 @@ SPLIT_STATUSES = ("scorable", "unscorable")
 #: absent measurement: every draw at the hour under test is contaminated,
 #: or the hour has no deviation to attribute.
 SETTLEMENT_STATUSES = ("clean", "survives", "confounded", "unscorable")
+#: Bound 16 (2026-09-23). What each settlement status means IN the level
+#: verdict's own sentence. The control's full prose lives in
+#: `settlement_verdict`, and until this ledger's first POWERED level
+#: reading (2026-09-23, run `20260912T023431`, 11Z at the ceiling) the
+#: two were only ever read together because the CLI happens to print
+#: them adjacently. `level_shape_verdict` is the string a status page
+#: quotes, and the one branch of it that asserts an effect asserted a
+#: marking move with the control that could not clear it one field away
+#: -- mistakes #63's rule about the number a reader QUOTES, at the
+#: module's loudest sentence.
+_CONTROL_CLAUSE: dict[str, str] = {
+    "clean": "no contributing row carried a settlement, so there was nothing"
+    " to control for, which is NOT a passed test",
+    "survives": "the named hour keeps its deviation on settlement-free rows",
+    "confounded": "this panel cannot separate the marking move from settlement",
+    "unscorable": "the control was not readable on this panel",
+}
 #: WHY a settlement control is `unscorable`, because the status alone
 #: pools unlike absences (bound 11c). The first three never REACHED the
 #: control and say nothing at all about contamination; the last two are
@@ -684,6 +743,41 @@ def _days_needed(ceiling: float) -> int:
     return n
 
 
+def _days_needed_with_dissent(ceiling: float, dissent: int = 1) -> int:
+    """Smallest draw count at which an hour with `dissent` day(s) on the
+    other side still clears `ceiling`.
+
+    Bound 16 (2026-09-23). `_days_needed` answers "when does the panel
+    stop being unpowerable", and between that count and this one the
+    test is ALL-OR-NOTHING: only a unanimous hour can clear, so the
+    reading has no margin at all. At the 24-hour clock's 0.00208 ceiling
+    those are 10 and 14 -- four panel days apart, and the ledger's first
+    powered reading landed inside the gap.
+    """
+    n = dissent + 1
+    while _sign_p(n - dissent, n) > ceiling:
+        n += 1
+    return n
+
+
+def _flip_margin(k: int, n: int, ceiling: float) -> int:
+    """How many days may flip sides before `k` of `n` stops clearing.
+
+    The margin a reader needs is in DAYS, not in p. `_sign_p` is granular
+    in 2^-n, so the distance between a cleared ceiling and a missed one
+    is never the difference of the two p values: at 10 draws the only p
+    under 0.00208 is the unanimous 0.00195, and the next reading down the
+    ladder is 0.0215 -- an order of magnitude over, from one day moving.
+    Counted off the MAJORITY side, because that is the side a flip
+    leaves.
+    """
+    m = max(k, n - k)
+    d = 0
+    while m - d - 1 >= 0 and _sign_p(m - d - 1, n) <= ceiling:
+        d += 1
+    return d
+
+
 def _strongest_hour(table: list[dict], hours_tested: int) -> dict:
     """The lowest per-hour sign p, and whether it names one hour at all.
 
@@ -785,15 +879,33 @@ def _level_split(
     r_span = _r(max(p["demeaned_reval"] for p in table) - min(p["demeaned_reval"] for p in table))
     strongest = min(table, key=lambda p: p["sign_p"])
     share = strongest["reval_share"]
+    # Bound 16's sweep, second site. Bound 15 stopped the LEVEL verdict
+    # naming a tied argmin and left this one, two functions over, naming
+    # the same hour off the same `min()` -- and this is the sentence that
+    # says "a MARKING move", the loudest claim the module makes about
+    # one hour. A tie is a tie here too.
+    anchor = _strongest_hour(table, len(table))
     verdict = (
         f"REVAL carries the hour-of-day shape at {carried} of {len(table)}"
-        f" hours. At the strongest hour {strongest['hour_of_day']:02d}Z the"
-        f" {strongest['demeaned']:+g}/hr deviation is reval"
-        f" {strongest['demeaned_reval']:+g} against drag"
-        f" {strongest['demeaned_drag']:+g}"
-        + (f" ({share:.0%} reval)" if share is not None else "")
-        + " -- a MARKING move on the standing book, not what that hour's"
-        f" fills cost on the way in. Across the clock the drag deviation"
+        f" hours."
+        + (
+            f" NO hour is named: the minimum sign p is a {anchor['tied_n']}-way"
+            f" tie at p={anchor['sign_p']:g} over {anchor['of_hours_tested']}"
+            " hours tested, so the split is read per hour off the table rather"
+            " than quoted at an hour the clock picked (bound 15)."
+            if anchor["hour_of_day"] is None
+            else f" At the strongest hour {strongest['hour_of_day']:02d}Z the"
+            f" {strongest['demeaned']:+g}/hr deviation is reval"
+            f" {strongest['demeaned_reval']:+g} against drag"
+            f" {strongest['demeaned_drag']:+g}"
+            + (f" ({share:.0%} reval)" if share is not None else "")
+            + " -- a MARKING move on the standing book, not what that hour's"
+            " fills cost on the way in, SUBJECT to the settlement control:"
+            " `reval` is a residual and absorbs settlement as well as marking"
+            " (bound 11), so read `settlement_verdict` before calling this"
+            " marking."
+        )
+        + f" Across the clock the drag deviation"
         f" spans {d_span} against reval's {r_span}, which is the CEILING on"
         " any hour-of-day transaction-cost explanation of this shape. Exact"
         " identity per row, so it needs no power; which term carries an hour"
@@ -996,12 +1108,27 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
     n_flipped = sum(1 for q in sweep if q["flipped"])
     strongest = min(table, key=lambda p: p["sign_p"])
     hod = strongest["hour_of_day"]
+    # Bound 16's sweep. The SUBJECT of this control is the argmin, and on
+    # 26 of the 29 archived panel states that argmin is a tie `min()`
+    # resolves by clock order (bound 15). The selection stays -- a
+    # control needs a subject -- but the prose may not present a tied
+    # pick as "the strongest hour" full stop, because then the whole
+    # control reads as attached to a claim the level test never made.
+    anchor = _strongest_hour(table, len(table))
+    tie_note = (
+        ""
+        if anchor["hour_of_day"] is not None
+        else f" The hour under test is one of a {anchor['tied_n']}-way tie at"
+        f" p={anchor['sign_p']:g} over {anchor['of_hours_tested']} hours tested,"
+        " taken by clock order: this control has a SUBJECT, but the level test"
+        " named no hour, so nothing below attaches to a claim (bound 15)."
+    )
     free = [r for r in srows[hod] if not r["n_settlements"]]
     n_dirty_hours = sum(1 for p in table if p["n_settlement_rows"])
     head = (
         f"{len(dirty)} of {len(rows)} contributing rows over {n_dirty_hours} hour(s)"
         f" carried a settlement, so bound 5's 'the big reval hours carry zero"
-        f" settlements' does NOT hold on this panel."
+        f" settlements' does NOT hold on this panel." + tie_note
     )
     if not free:
         return _settlement_absent(
@@ -1051,6 +1178,9 @@ def _settlement_control(srows: dict[int, list[dict]], table: list[dict]) -> dict
     status = "survives" if retained >= SETTLEMENT_RETAIN and rank == 1 else "confounded"
     check = {
         "hour_of_day": hod,
+        # How many hours shared the minimum this subject was taken from.
+        # 1 means the data chose it; anything more means the clock did.
+        "anchor_tied_n": anchor["tied_n"],
         "demeaned": strongest["demeaned"],
         "n_settlement_rows": len(srows[hod]) - len(free),
         "n_free_rows": len(free),
@@ -1337,6 +1467,10 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
                 "sign_p_ceiling": None,
                 "best_achievable_sign_p": None,
                 "panel_days_needed": None,
+                # No clock was searched, so there is no ceiling to count
+                # days against and no claim to bound (bound 16).
+                "panel_days_needed_one_dissent": None,
+                "claim_margin": None,
                 "by_hour_of_day": [],
                 "significant_hours": [],
                 # Bound 15: no clock was searched, so there is no best of
@@ -1425,6 +1559,36 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
     needed = _days_needed(ceiling)
     status = "underpowered" if best_p > ceiling else "powered"
     sig = [p for p in table if p["sign_p"] <= ceiling]
+    dissent_needed = _days_needed_with_dissent(ceiling)
+    # Bound 16: the margin of the CLAIM, in the unit a reader can act on.
+    # None and not an empty block when nothing clears: a panel with no
+    # named hour has no claim to bound, and an empty `hours` list beside
+    # a `min_flip_margin_days: 0` would read as "a claim with no margin".
+    claim = (
+        {
+            "rule": "the margin of a sign-test claim is in DAYS, not in p:"
+            " `_sign_p` is granular in 2^-n, so the distance from a cleared"
+            " ceiling to a missed one is a whole rung of the ladder and never"
+            " the difference of the two p values",
+            "hours": [
+                {
+                    "hour_of_day": p["hour_of_day"],
+                    "n_below_centre": p["n_below_centre"],
+                    "n_effective": p["n_effective"],
+                    "sign_p": p["sign_p"],
+                    "unanimous": p["n_below_centre"] in (0, p["n_effective"]),
+                    "flip_margin_days": _flip_margin(
+                        p["n_below_centre"], p["n_effective"], ceiling
+                    ),
+                }
+                for p in sig
+            ],
+        }
+        if sig
+        else None
+    )
+    if claim:
+        claim["min_flip_margin_days"] = min(h["flip_margin_days"] for h in claim["hours"])
     cums = [p["cum_demeaned"] for p in table]
     detrended_span = _r(max(cums) - min(cums))
     strongest = _strongest_hour(table, hours_tested)
@@ -1467,11 +1631,35 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
         named = ", ".join(
             f"{p['hour_of_day']:02d}Z {p['demeaned']:+g} (p={p['sign_p']:g})" for p in sig
         )
+        margin_txt = ", ".join(
+            f"{m['hour_of_day']:02d}Z {m['n_below_centre']}/{m['n_effective']} below the"
+            f" centre, {m['flip_margin_days']} day(s)"
+            for m in claim["hours"]
+        )
         verdict = (
             f"HOUR-OF-DAY LEVEL EFFECT at {len(sig)} of {hours_tested} hours"
             f" tested, sign p <= {ceiling:.5f}: {named}. The raw level column"
             f" spans {raw_span}; with the run's own {drift}/day drift removed"
             f" the hour-of-day shape spans {detrended_span}."
+            f" MARGIN IN DAYS, not in p ({margin_txt}):"
+            + (
+                f" the narrowest named hour is retracted by a SINGLE day moving"
+                f" to the other side. p is granular in 2^-n, so the rung below"
+                f" the cleared one at {max_draws} draws is"
+                f" p={_sign_p(max_draws - 1, max_draws):g} -- an order of"
+                f" magnitude over the ceiling, from one day. This panel can"
+                f" report a unanimous hour and nothing weaker;"
+                f" {dissent_needed} panel days are needed before an hour with ONE"
+                f" day on the other side could clear {ceiling:.5f}."
+                if claim["min_flip_margin_days"] == 0
+                else f" the narrowest named hour still clears with"
+                f" {claim['min_flip_margin_days']} day(s) flipped."
+            )
+            + f" SETTLEMENT CONTROL: {control['settlement_status']} --"
+            f" {_CONTROL_CLAUSE[control['settlement_status']]}"
+            + (f" ({control['settlement_absence']})" if control["settlement_absence"] else "")
+            + ". Read `settlement_verdict` beside this sentence, never this"
+            " sentence alone."
         )
     else:
         verdict = (
@@ -1503,6 +1691,12 @@ def _level_decomposition(hours: list[dict], panel: list[str], raw_span: float | 
             "sign_p_ceiling": round(ceiling, 6),
             "best_achievable_sign_p": round(best_p, 6),
             "panel_days_needed": needed,
+            # Bound 16. Between `panel_days_needed` and this count the test
+            # is all-or-nothing -- powered, and able to report unanimity
+            # only. The distance between the two is not a detail: at the
+            # 24-hour ceiling it is 10 vs 14 panel days.
+            "panel_days_needed_one_dissent": dissent_needed,
+            "claim_margin": claim,
             "by_hour_of_day": table,
             "significant_hours": [p["hour_of_day"] for p in sig],
             # Bound 15. Beside `significant_hours`, never instead of it:

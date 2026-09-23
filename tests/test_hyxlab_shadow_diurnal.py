@@ -2190,3 +2190,187 @@ def test_significant_hours_and_the_ceiling_are_untouched_by_bound_15(tmp_path):
     assert set(lvl["significant_hours"]) <= set(range(24))
     assert lvl["sign_p_ceiling"] == round(0.05 / lvl["hours_tested"], 6)
     assert lvl["level_shape_status"] in ("underpowered", "powered")
+
+
+# ---------------------------------------------------------------- bound 16
+# The `sig` branch of `level_shape_verdict` had never run in 54 runs of
+# ledger history: 2026-09-23 is the first POWERED reading with a
+# significant hour. It asserted the effect and published neither the
+# settlement control that could not clear it nor the margin -- which is
+# in DAYS, because `_sign_p` is granular in 2^-n.
+
+
+def _unanimous_ledger(n_days, hod=12, settlements=()):
+    """A live run whose `hod` loses an extra 40/hr EVERY day, so that
+    hour is unanimously below the leave-one-out centre and every other
+    hour ties. `settlements` is a list of (day_index, hour_of_day)."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    now_min = int((now - T0).total_seconds() // 60)
+    start = (now_min // 1440) * 1440 - n_days * 1440
+    eq, level = [("R", start - 30, 0.0)], 0.0
+    minute = start
+    while minute + 60 <= now_min:
+        level += -10.0 + (-40.0 if (minute // 60) % 24 == hod else 0.0)
+        eq.append(("R", minute + 30, level))
+        eq.append(("R", minute + 59, level))
+        minute += 60
+    eq.append(("R", now_min - 1, level))
+    setts = [("R", start + d * 1440 + h * 60 + 20) for (d, h) in settlements]
+    return _ledger(eq, settlements=setts)
+
+
+def test_the_margin_of_a_sign_test_claim_is_counted_in_days_not_in_p():
+    """0.00195 beside a 0.00208 ceiling reads as "just cleared". At 10
+    draws it is the ONLY value under the ceiling; the next rung is
+    0.0215, ten times over, from one day moving."""
+    from simulator.shadow_diurnal import _days_needed, _days_needed_with_dissent, _flip_margin
+
+    ceiling = 0.05 / 24
+    assert _days_needed(ceiling) == 10  # unanimity becomes possible
+    assert _days_needed_with_dissent(ceiling) == 14  # one dissent becomes possible
+    # Between them the test is ALL-OR-NOTHING, and that is the margin.
+    assert _flip_margin(10, 10, ceiling) == 0
+    assert _flip_margin(13, 13, ceiling) == 0
+    assert _flip_margin(14, 14, ceiling) == 1
+    # Counted off the majority side, whichever side that is.
+    assert _flip_margin(0, 10, ceiling) == _flip_margin(10, 10, ceiling)
+
+
+def test_a_powered_claim_publishes_the_days_that_would_retract_it():
+    led = _unanimous_ledger(10)
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["level_shape_status"] == "powered"
+    assert lvl["significant_hours"] == [12]
+    cm = lvl["claim_margin"]
+    assert [h["hour_of_day"] for h in cm["hours"]] == [12]
+    assert cm["hours"][0]["unanimous"] is True
+    assert cm["min_flip_margin_days"] == 0
+    assert lvl["panel_days_needed_one_dissent"] == 14
+    v = lvl["level_shape_verdict"]
+    assert "MARGIN IN DAYS, not in p" in v
+    assert "retracted by a SINGLE day" in v
+    assert "10/10 below the centre, 0 day(s)" in v
+
+
+def test_a_claim_with_room_to_spare_says_so_rather_than_crying_fragile():
+    """The fragility sentence is a reading, not a decoration: a panel
+    long enough to survive a flip must print the other branch."""
+    led = _unanimous_ledger(14)
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["level_shape_status"] == "powered"
+    assert lvl["claim_margin"]["min_flip_margin_days"] == 1
+    v = lvl["level_shape_verdict"]
+    assert "still clears with 1 day(s) flipped" in v
+    assert "retracted by a SINGLE day" not in v
+
+
+def test_the_verdict_that_asserts_an_effect_names_its_settlement_control():
+    """mistakes #63 at this module's loudest sentence: the string a
+    status page quotes asserted a marking move with CONFOUNDED sitting
+    one field away."""
+    # Every draw at 12Z but two carries a settlement -> contaminated.
+    led = _unanimous_ledger(10, settlements=[(d, 12) for d in range(1, 9)])
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["level_shape_status"] == "powered" and lvl["significant_hours"] == [12]
+    assert lvl["settlement_status"] in SETTLEMENT_STATUSES
+    v = lvl["level_shape_verdict"]
+    assert f"SETTLEMENT CONTROL: {lvl['settlement_status']}" in v
+    assert "`settlement_verdict`" in v
+
+
+def test_a_clean_control_is_named_in_the_claim_as_not_a_passed_test():
+    led = _unanimous_ledger(10)
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["settlement_status"] == "clean"
+    assert "SETTLEMENT CONTROL: clean" in lvl["level_shape_verdict"]
+    assert "NOT a passed test" in lvl["level_shape_verdict"]
+
+
+def test_no_named_hour_means_no_margin_block_rather_than_a_zero_margin():
+    """An empty `hours` list beside `min_flip_margin_days: 0` would read
+    as a claim with no margin, which is the opposite of no claim."""
+    led = _live_clock_ledger(3, lambda d, hod: -10.0)
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["level_shape_status"] == "underpowered"
+    assert lvl["claim_margin"] is None
+    # ...and the ceiling arithmetic is still published, because it is a
+    # property of the clock and not of any claim.
+    assert lvl["panel_days_needed_one_dissent"] == 14
+
+
+def test_bound_16_left_the_status_the_ceiling_and_the_named_hours_alone():
+    """Cross-report comparability, the same refusal bound 15 made."""
+    led = _unanimous_ledger(10)
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["level_shape_status"] in LEVEL_STATUSES
+    assert lvl["sign_p_ceiling"] == round(0.05 / lvl["hours_tested"], 6)
+    assert lvl["significant_hours"] == [
+        p["hour_of_day"] for p in lvl["by_hour_of_day"] if p["sign_p"] <= lvl["sign_p_ceiling"]
+    ]
+
+
+def test_the_split_verdict_does_not_name_an_hour_the_clock_picked():
+    """Bound 16's sweep. Bound 15 stopped the LEVEL verdict naming a
+    tied argmin and left this one -- the sentence that says "a MARKING
+    move" -- reading the same `min()` two functions over."""
+    led = _live_clock_ledger(4, lambda d, hod: -10.0)  # flat: 24-way tie
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["level_split_status"] == "scorable"
+    assert lvl["strongest_hour"]["tied_n"] == 24
+    v = lvl["level_split_verdict"]
+    assert "NO hour is named" in v and "24-way tie" in v
+    assert "At the strongest hour" not in v
+    # The per-hour split itself is untouched -- it is an exact identity.
+    assert lvl["reval_carried_hours"] == 24
+
+
+def test_a_named_split_hour_defers_to_the_settlement_control():
+    """`reval` is a residual and absorbs settlement (bound 11), so
+    "a MARKING move" is a claim the control can take away."""
+    led = _unanimous_ledger(10)
+    lvl = _level(_run(build_diurnal(led, None)))
+    v = lvl["level_split_verdict"]
+    assert "At the strongest hour 12Z" in v
+    assert "SUBJECT to the settlement control" in v
+    assert "`settlement_verdict`" in v
+
+
+def _two_hour_ledger(n_days, hods=(0, 1), settlements=()):
+    """`_unanimous_ledger` with TWO hours equally deep, so the minimum
+    sign p is a tie and `min()` must break it by clock order."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    now_min = int((now - T0).total_seconds() // 60)
+    start = (now_min // 1440) * 1440 - n_days * 1440
+    eq, level = [("R", start - 30, 0.0)], 0.0
+    minute = start
+    while minute + 60 <= now_min:
+        level += -10.0 + (-40.0 if (minute // 60) % 24 in hods else 0.0)
+        eq.append(("R", minute + 30, level))
+        eq.append(("R", minute + 59, level))
+        minute += 60
+    eq.append(("R", now_min - 1, level))
+    setts = [("R", start + d * 1440 + h * 60 + 20) for (d, h) in settlements]
+    return _ledger(eq, settlements=setts)
+
+
+def test_the_settlement_control_says_when_its_subject_came_from_a_tie():
+    """The control needs a subject, so the selection stays -- but a tied
+    pick presented as "the strongest hour" reads as a control attached to
+    a claim the level test never made. Here it goes all the way to a
+    SURVIVES on an hour the clock chose."""
+    led = _two_hour_ledger(4, settlements=[(d, 0) for d in (1, 2)] + [(d, 5) for d in (1, 2)])
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["strongest_hour"]["tied_n"] == 2
+    assert lvl["settlement_status"] == "survives"
+    assert lvl["settlement_check"]["hour_of_day"] == 0  # the alphabet, not the data
+    assert lvl["settlement_check"]["anchor_tied_n"] == 2
+    v = lvl["settlement_verdict"]
+    assert "2-way tie" in v and "taken by clock order" in v and "bound 15" in v
+
+
+def test_an_untied_control_subject_carries_no_tie_note():
+    led = _unanimous_ledger(10, settlements=[(d, 12) for d in range(1, 9)])
+    lvl = _level(_run(build_diurnal(led, None)))
+    assert lvl["strongest_hour"]["tied_n"] == 1
+    assert lvl["settlement_check"]["anchor_tied_n"] == 1
+    assert "taken by clock order" not in lvl["settlement_verdict"]
