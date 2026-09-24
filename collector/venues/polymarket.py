@@ -21,6 +21,112 @@ VENUE = "polymarket"
 
 from hyxlab.models import MarketInfo, Snapshot  # noqa: E402
 
+# --- Retry / fault ledger -----------------------------------------------
+#
+# The #80 question, asked of this client: which of its loops share a retry
+# allowance, and which of its fault classes sit outside every ladder?
+#
+# Three loops, three different concurrency units, and only ONE of them has a
+# ladder at all:
+#   * `iter_markets_by_volume`'s keyset page fetch -- a 4-attempt ladder whose
+#     unit is one PAGE (the allowance is 3; the last attempt does not retry,
+#     it falls through to the restart path).
+#   * the same function's chain restart -- unit is one WALK, budget
+#     `max_restarts`. Not a retry of a request and never summed with one.
+#   * `trades_tail`'s offset pagination -- NO ladder. A non-list body ends the
+#     tail early and returns what it has, which the sweep archives as if it
+#     were the whole tail.
+#
+# That last class is this venue's analogue of kalshi's unretried 429s, and it
+# is far bigger than anything the sweep's own `errors` total was reporting:
+# measured over 2026-09-01..23 of `hyxlab-poly-sweep` journal, 1,356 early
+# stops (1,099 HTTP 429, 257 HTTP 408), ~80 per run, every run, while `done:`
+# reported `errors` between 1 and 8. 687 of the 1,356 returned ZERO prints.
+#
+# Counting them is not a claim that they are losses. They are not: no market
+# is starved -- of 1,297 distinct markets 1,239 stopped early on exactly one
+# day, 57 on two and 1 on three, and the next sweep re-fetches the same tail
+# from offset 0 against a 3,000-print cap that binds on 0.052% of market-days
+# (74 of 140,975, archive-measured 2026-09-24). The daily re-sweep is the
+# absorber, exactly as `hyxlab-tradepass` is for kalshi. The counter exists
+# because establishing that took a journal scrape and two archive queries,
+# and nothing on the box published the population at all.
+#
+# So: no ladder added and NO BUDGET RE-SIZED (#70). Retries that were never
+# spent must not be reported as recoveries, so the unretried classes are
+# published OUTSIDE `total`.
+
+#: Backoff schedule for one keyset page. The trailing `None` is the attempt
+#: that does NOT retry, so the ALLOWANCE is one fewer than the length.
+KEYSET_BACKOFF_S: tuple[int | None, ...] = (5, 15, 45, None)
+
+_KEYSET_RETRIES = 0
+_KEYSET_WORST_FRAC = 0.0
+_KEYSET_RESTARTS = 0
+_TAIL_TRUNCATED = 0
+_TAIL_TRUNCATED_EMPTY = 0
+
+
+def keyset_retries() -> int:
+    """Keyset page retries spent since the last `reset_retry_counts()`."""
+    return _KEYSET_RETRIES
+
+
+def keyset_budget_frac() -> float:
+    """Share of ONE page's retry allowance spent by the WORST page since the
+    last reset, in [0, 1]; 1.0 means some page used its last retry and the
+    next failure there would have dropped the chain to a restart.
+
+    The worst page, not the mean: a mean over pages falls as the walk
+    deepens, reporting the walks with the most chances to exhaust as the
+    safest. Recorded inside the page loop, because a per-page allowance is
+    discarded the moment the page returns and a caller-side reduction would
+    see the survivors only (the #79/#80 lesson).
+    """
+    return _KEYSET_WORST_FRAC
+
+
+def tail_truncated() -> int:
+    """`trades_tail` calls that ended early on an error body since the last
+    reset -- a partial tail archived as if complete. No ladder covers this;
+    see the block above."""
+    return _TAIL_TRUNCATED
+
+
+def retry_counts() -> dict[str, int]:
+    """Every retry class spent since the last `reset_retry_counts()`.
+
+    `total` is the sum over the classes that actually SPENT a retry
+    allowance, and is what a caller should publish under a name like
+    `http_retries`; the per-class members are what makes a rising total
+    actionable.
+    """
+    return {
+        "keyset_page": _KEYSET_RETRIES,
+        # Outside `total`: a walk restart's unit is the WALK, not a request.
+        # Summing it with page retries would be arithmetic over two
+        # denominators that share nothing.
+        "keyset_restart": _KEYSET_RESTARTS,
+        # Outside `total`: nobody retried these, so they spent no allowance.
+        # Reporting ~80 faults per run as ~80 recoveries is the error this
+        # counter exists to avoid.
+        "tail_truncated": _TAIL_TRUNCATED,
+        # The strictly worse subset: the tail came back with no prints at
+        # all, so the market contributed nothing to the run.
+        "tail_truncated_empty": _TAIL_TRUNCATED_EMPTY,
+        "total": _KEYSET_RETRIES,
+    }
+
+
+def reset_retry_counts() -> None:
+    global _KEYSET_RETRIES, _KEYSET_WORST_FRAC, _KEYSET_RESTARTS
+    global _TAIL_TRUNCATED, _TAIL_TRUNCATED_EMPTY
+    _KEYSET_RETRIES = 0
+    _KEYSET_WORST_FRAC = 0.0
+    _KEYSET_RESTARTS = 0
+    _TAIL_TRUNCATED = 0
+    _TAIL_TRUNCATED_EMPTY = 0
+
 
 def get_gamma_markets(
     session: requests.Session | None = None, **params: Any
@@ -111,6 +217,8 @@ def iter_markets_by_volume(
     """
     import time
 
+    global _KEYSET_RETRIES, _KEYSET_WORST_FRAC, _KEYSET_RESTARTS
+
     sess = session or requests.Session()
     out: list[dict[str, Any]] = []
     seen: set[Any] = set()
@@ -134,7 +242,8 @@ def iter_markets_by_volume(
         if cursor:
             params["after_cursor"] = cursor
         body = None
-        for attempt, backoff_s in enumerate((5, 15, 45, None)):
+        allowance = len(KEYSET_BACKOFF_S) - 1  # the trailing None does not retry
+        for attempt, backoff_s in enumerate(KEYSET_BACKOFF_S):
             resp = sess.get(f"{GAMMA}/markets/keyset", params=params, timeout=30)
             try:
                 candidate = resp.json()
@@ -150,6 +259,10 @@ def iter_markets_by_volume(
                 flush=True,
             )
             if backoff_s is not None:
+                _KEYSET_RETRIES += 1
+                # Recorded here, not after the loop: this page's allowance is
+                # gone the moment the page returns.
+                _KEYSET_WORST_FRAC = max(_KEYSET_WORST_FRAC, (attempt + 1) / allowance)
                 time.sleep(backoff_s)
         if body is None:
             last_vol = float(out[-1].get("volumeNum") or 0) if out else None
@@ -162,6 +275,7 @@ def iter_markets_by_volume(
                 # The tail fault, not a dead walk: re-open below the last
                 # row instead of losing everything under it.
                 restarts += 1
+                _KEYSET_RESTARTS += 1
                 print(
                     f"[poly] keyset chain restart {restarts} below volume"
                     f" {last_vol:g} at {len(out)} markets (page {page_idx},"
@@ -270,6 +384,8 @@ def trades_tail(
     """Most recent prints for one market. HARD CAP (probed): the data-api
     serves at most the LAST 3,000 trades per market, ever — a tail
     sample, not a tape. The full forward tape is the WS stream."""
+    global _TAIL_TRUNCATED, _TAIL_TRUNCATED_EMPTY
+
     sess = session or requests.Session()
     out: list[dict[str, Any]] = []
     for offset in range(0, max_offset, 500):
@@ -280,6 +396,9 @@ def trades_tail(
         )
         body = resp.json()
         if not isinstance(body, list):  # error object with HTTP 200
+            _TAIL_TRUNCATED += 1
+            if not out:
+                _TAIL_TRUNCATED_EMPTY += 1
             print(
                 f"[poly] trades_tail {condition_id[:16]} stopped early at"
                 f" {len(out)} prints (non-list body, status {getattr(resp, 'status_code', '?')})",

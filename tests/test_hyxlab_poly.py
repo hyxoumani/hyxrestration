@@ -3,6 +3,9 @@ round-trips, YES-normalization of trades."""
 
 from datetime import UTC, datetime
 
+import pytest
+
+from collector.venues import polymarket as poly
 from collector.venues.polymarket import (
     gamma_market_info,
     iter_markets_by_volume,
@@ -335,3 +338,135 @@ def test_want_top_n_does_not_silence_incomplete(monkeypatch, capsys):
     sess = _AlwaysError({})
     assert iter_markets_by_volume(0.0, session=sess, max_pages=1, want_top_n=True) == []
     assert "INCOMPLETE" in capsys.readouterr().out
+
+
+# --- Retry / fault ledger (#81) -----------------------------------------
+#
+# Three loops, three concurrency units, one ladder. The counters exist so
+# the population behind each class is readable from the run itself; see the
+# block above `KEYSET_BACKOFF_S` for the measurements that motivated them.
+
+
+class _TailSession:
+    """data-api /trades pages, with an optional error object partway."""
+
+    def __init__(self, pages, status=429):
+        self.pages = pages  # offset -> list, or a dict to end the tail early
+        self.status = status
+
+    def get(self, url, params=None, timeout=None):
+        assert url.endswith("/trades")
+        body = self.pages[params["offset"]]
+        status = self.status
+
+        class R:
+            status_code = status
+
+            def json(self):
+                return body
+
+        return R()
+
+
+def _trade(i):
+    return {"price": "0.5", "size": 1, "timestamp": 1783480483, "conditionId": "0xabc"}
+
+
+def test_tail_truncation_is_counted_and_split_by_emptiness():
+    poly.reset_retry_counts()
+    # Stops at offset 0: nothing captured at all, the strictly worse case.
+    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "rate limited"}}))
+    assert poly.retry_counts()["tail_truncated"] == 1
+    assert poly.retry_counts()["tail_truncated_empty"] == 1
+    # Stops at offset 500: a partial tail, archived as if complete.
+    poly.trades_tail(
+        "0xbeef",
+        session=_TailSession({0: [_trade(i) for i in range(500)], 500: {"error": "boom"}}),
+    )
+    assert poly.retry_counts()["tail_truncated"] == 2
+    assert poly.retry_counts()["tail_truncated_empty"] == 1
+
+
+def test_tail_truncation_stays_outside_total():
+    """A fault nobody retried spent no allowance. Folding ~80 per run into
+    `total` would report the sweep's faults as its recoveries."""
+    poly.reset_retry_counts()
+    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "rate limited"}}))
+    counts = poly.retry_counts()
+    assert counts["tail_truncated"] == 1
+    assert counts["total"] == 0
+
+
+def test_clean_tail_counts_nothing():
+    poly.reset_retry_counts()
+    poly.trades_tail("0xfeed", session=_TailSession({0: [_trade(0)]}))
+    assert poly.retry_counts()["tail_truncated"] == 0
+
+
+def test_keyset_retries_counted_and_worst_page_fraction_recorded(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    poly.reset_retry_counts()
+    sess = _KeysetSession(
+        {None: {"markets": [_mkt("1", 500.0)], "next_cursor": None}},
+        error_first=True,
+    )
+    iter_markets_by_volume(100.0, session=sess)
+    counts = poly.retry_counts()
+    assert counts["keyset_page"] == 1
+    assert counts["total"] == 1  # this one IS a spent allowance
+    # One retry of an allowance of three.
+    assert poly.keyset_budget_frac() == pytest.approx(1 / 3)
+
+
+def test_keyset_budget_frac_is_the_worst_page_not_the_mean(monkeypatch):
+    """A mean over pages falls as the walk deepens, reporting the walks with
+    the most chances to exhaust as the safest."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    poly.reset_retry_counts()
+    sess = _TailFaultSession()
+    iter_markets_by_volume(100.0, session=sess)
+    # The faulting page burned its whole allowance; the clean pages around
+    # it must not dilute the reading.
+    assert poly.keyset_budget_frac() == pytest.approx(1.0)
+    assert poly.retry_counts()["keyset_page"] == 3
+
+
+def test_chain_restart_counted_outside_total(monkeypatch):
+    """A restart's unit is the WALK; a page retry's is the PAGE. Summing
+    them is arithmetic over two denominators that share nothing."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    poly.reset_retry_counts()
+    iter_markets_by_volume(100.0, session=_TailFaultSession())
+    counts = poly.retry_counts()
+    assert counts["keyset_restart"] == 1
+    assert counts["total"] == counts["keyset_page"]
+
+
+def test_reset_clears_every_class(monkeypatch):
+    """Module-level counters span every run in the process otherwise -- the
+    bug #80 found in kalshi's ledger."""
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    poly.reset_retry_counts()
+    iter_markets_by_volume(100.0, session=_TailFaultSession())
+    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "x"}}))
+    assert any(v for v in poly.retry_counts().values())
+    poly.reset_retry_counts()
+    assert set(poly.retry_counts().values()) == {0}
+    assert poly.keyset_budget_frac() == 0.0
+
+
+def test_sweep_resets_the_ledger_and_publishes_it(monkeypatch, tmp_path):
+    """A sweep's `done:` line must read this run, not every run since boot."""
+    from collector import poly_sweep
+
+    poly.reset_retry_counts()
+    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "stale"}}))
+    assert poly.retry_counts()["tail_truncated"] == 1  # leaked in from "before"
+
+    monkeypatch.setattr(poly, "iter_markets_by_volume", lambda *a, **k: [])
+    monkeypatch.setattr(poly_sweep, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    totals = poly_sweep.sweep(str(tmp_path / "t.duckdb"), 10000.0)
+    assert totals["http_retries"]["tail_truncated"] == 0
+    assert totals["http_retries"]["total"] == 0
+    assert totals["keyset_budget_frac"] == 0.0
+    assert totals["error_classes"] == {}

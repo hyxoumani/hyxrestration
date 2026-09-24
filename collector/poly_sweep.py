@@ -67,6 +67,9 @@ def sweep(
 ) -> dict:
     sess = requests.Session()
     sess.headers["User-Agent"] = "hyxlab-research"
+    # Module-level counters span every run in the process otherwise -- the
+    # bug #80 found in kalshi's ledger. One run, one reading.
+    poly.reset_retry_counts()
 
     now = datetime.now(UTC)
     print("[poly] enumerating markets via Gamma (volume-desc)...", flush=True)
@@ -95,7 +98,11 @@ def sweep(
         "n_prices": 0,
         "n_trades": 0,
     }
-    totals = {"markets": 0, "errors": 0}
+    totals: dict = {"markets": 0, "errors": 0}
+    # `errors` alone cannot say WHAT failed: 23 days of journal carry 107
+    # HTTPError and 4 ConnectionError under one integer. Keyed by class, a
+    # rising total is actionable without a journal scrape.
+    error_classes: dict[str, int] = {}
     t0 = time.monotonic()
 
     for i, m in enumerate(markets):
@@ -127,7 +134,9 @@ def sweep(
             time.sleep(REQUEST_PAUSE_S)
         except Exception as exc:
             totals["errors"] += 1
-            print(f"[poly] {type(exc).__name__} at {cond[:16]}: {str(exc)[:80]}", flush=True)
+            name = type(exc).__name__
+            error_classes[name] = error_classes.get(name, 0) + 1
+            print(f"[poly] {name} at {cond[:16]}: {str(exc)[:80]}", flush=True)
             time.sleep(2)
         totals["markets"] += 1
         if len(batch["infos"]) >= FLUSH_MARKETS or i == len(markets) - 1:
@@ -135,6 +144,7 @@ def sweep(
                 _flush(db, batch)
             except Exception as exc:  # batch is cleared only on success
                 totals["errors"] += 1
+                error_classes["flush"] = error_classes.get("flush", 0) + 1
                 print(f"[poly] flush failed, batch held: {str(exc)[:80]}", flush=True)
         if (i + 1) % 200 == 0:
             rate = (i + 1) / (time.monotonic() - t0)
@@ -147,6 +157,13 @@ def sweep(
     _flush(db, batch)
     totals["n_prices"], totals["n_trades"] = batch["n_prices"], batch["n_trades"]
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
+    totals["error_classes"] = error_classes
+    # The per-class retry/fault ledger this run spent. `tail_truncated` is
+    # the population the `errors` total was structurally blind to -- ~80 per
+    # run, absorbed by the next sweep, published so the absorber can be
+    # re-checked from the box instead of a journal scrape.
+    totals["http_retries"] = poly.retry_counts()
+    totals["keyset_budget_frac"] = round(poly.keyset_budget_frac(), 3)
     return totals
 
 

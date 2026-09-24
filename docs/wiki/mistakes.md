@@ -3126,3 +3126,57 @@ tree it happens to run in is not evidence of anything.**
     because `fetch_universe` walks exactly once. NO BUDGET RE-SIZED (#70),
     no behaviour changed. 5 tests, each red-verified by reverting its
     target; suite 1602 -> 1607.
+
+81. **2026-09-24 -- the same two questions, asked of the OTHER venue's
+    client: one loop has a ladder, three have counters, and the class that
+    fires eighty times a run was outside both.** Classification: instrument
+    blindness (same family as #78/#79/#80). #80 closed with an explicit
+    open item -- `get_trades` was now counted, but `poly_sweep`'s client had
+    been asked neither question. Asking them found a bigger population than
+    the one that motivated the question.
+    **THE THREE LOOPS, AND THEIR UNITS.** `iter_markets_by_volume` has a
+    4-attempt ladder whose unit is one PAGE (allowance 3; the trailing
+    `None` falls through to the restart path instead of retrying), and a
+    chain-restart budget whose unit is one WALK. `prices_history_range`
+    loops chunks with no ladder, and raises into `sweep`'s per-market
+    `except`. `trades_tail` loops offsets with no ladder AND does not raise:
+    a non-list body `break`s and returns the prints it has, which the sweep
+    archives as though it were the whole tail.
+    **MEASURED: 1,356 early stops over 2026-09-01..23 of the
+    `hyxlab-poly-sweep` journal -- 1,099 HTTP 429, 257 HTTP 408, ~80 per
+    run, every run -- while the same runs' `done:` line reported `errors`
+    between 1 and 8.** 687 of the 1,356 came back with ZERO prints, so the
+    market contributed nothing that run. The counter the operator actually
+    reads was off by two orders of magnitude on this class, because the
+    class never touched it.
+    **VERIFIED, NOT ASSUMED -- and again the verification set the fix.**
+    The absorber here is the next day's sweep, which re-fetches the tail
+    from offset 0. It HOLDS: of 1,297 distinct markets, **1,239 stopped
+    early on exactly one day, 57 on two, 1 on three** -- no market is
+    starved, so the fault is venue noise the daily re-sweep re-collects,
+    not a systematic hole. The one bound is the documented 3,000-print cap,
+    and that binds on **74 of 140,975 market-days (0.052%)**, archive-
+    measured. So, exactly as in #80: a COUNTER, no ladder, and NO BUDGET
+    RE-SIZED (#70). Retrying here would spend wall-clock on a fault the
+    archive already absorbs.
+    Fix: a ledger in `collector/venues/polymarket.py` mirroring kalshi's
+    names -- `keyset_page` (the only class that SPENDS an allowance, so the
+    only term in `total`), `keyset_restart`, `tail_truncated` and its
+    strictly-worse subset `tail_truncated_empty`, all three published
+    OUTSIDE `total`. A restart's unit is the WALK and a page retry's is the
+    PAGE; summing them is arithmetic over two denominators that share
+    nothing, the #79 error. `keyset_budget_frac()` records the WORST page's
+    share inside the page loop -- a per-page allowance is gone the moment
+    the page returns, and a mean over pages falls as the walk deepens,
+    reporting the walks with the most chances to exhaust as the safest.
+    `poly_sweep` resets the ledger per run (module counters otherwise span
+    every run in the process -- the bug #80 found in kalshi's) and publishes
+    it in `done:`, alongside `error_classes`, which splits the single
+    `errors` integer that had been carrying 107 `HTTPError` and 4
+    `ConnectionError` under one name. No behaviour changed: `trades_tail`'s
+    unguarded `resp.json()` was left alone deliberately, since 23 days of
+    journal show no `JSONDecodeError` -- instrument first, and let the
+    reading choose the next change. 8 tests, six red-verified by reverting
+    their target (counter removed; tail folded into `total`; mean
+    substituted for worst page; restarts folded into `total`; sweep's reset
+    removed; ledger unpublished). Suite 1607 -> 1615.
