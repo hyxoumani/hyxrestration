@@ -3307,3 +3307,46 @@ tree it happens to run in is not evidence of anything.**
     each red-verified by reverting its own target (floor removed; gap
     exclusion removed; delta-free intervals counted; no-oracle guard
     removed; last-write-wins replaced by a signed sum). Suite 1620 -> 1625.
+
+84. **2026-09-24 -- the counter added to retire a journal scrape could not
+    retire it: the fact was per-market and per-depth, and a count discards
+    both.** `collector/venues/polymarket.py` declines a retry ladder on
+    `trades_tail` by an explicit, documented decision -- ~80 early stops a
+    run (measured 81% HTTP 429, 19% HTTP 408) are absorbed because the next
+    daily sweep re-fetches the same tail from offset 0. The ledger comment
+    said the `tail_truncated` counter was published "so the absorber can be
+    re-checked from the box instead of a journal scrape." It could not be.
+    The absorber's claim is that the ARCHIVED tail ends up holding more
+    prints than the truncated pass returned -- a statement about one market
+    and one depth -- and the published count keeps neither the market nor
+    the depth. Re-checking it this pass still cost a 1,358-line journal
+    scrape plus two archive queries, which is exactly the cost the counter
+    was added to remove. The original justification was also weaker than it
+    read: "1,239 of 1,297 markets stopped early on exactly one day" is a
+    histogram of DATES and establishes that a later sweep RAN, never that
+    it went DEEPER; a sweep that re-visits a market and truncates again, or
+    re-visits and archives nothing new, satisfies the date argument and
+    falsifies the absorber. Measured directly instead, over all 1,299
+    distinct markets ever logged stopping early: 1,296 hold strictly more
+    archived prints than their deepest truncated pass, 3 hold exactly as
+    many, ZERO hold fewer -- including all 351 that returned no prints at
+    all on an already-CLOSED market, the cohort with no live tape left to
+    refill it. The decision survives; what changed is that it now rests on
+    a measurement. Fix: archive the stops as ROWS (`poly_tail_stops`:
+    market, when, prints reached, status) and re-run the measurement in SQL
+    daily (`qa.qa_poly_tail_absorbed`). A stop inside a 48h grace -- two of
+    the ~15h sweep cycles -- is EXCLUDED rather than passed, because the
+    next sweep has not run and the archive holds no evidence either way;
+    passing there would make the check loudest exactly where it knows
+    least. The rows ride in the flush batch instead of being drained at the
+    client, so a failed flush retries the row rather than archiving a short
+    tail with no record that it was short. Falsified in passing: the
+    guard's own comment claimed "error object with HTTP 200" -- the
+    statuses are 429 and 408. Rule: **before publishing a counter to
+    retire a manual check, write down the query the check will become and
+    confirm the counter's SHAPE can answer it. A tally cannot settle a
+    per-entity claim, and a distribution of when something happened cannot
+    settle a claim about how much of it was recovered.** 12 tests (4 client
+    + 8 QA); three repo registries (STAMP/WITNESS, UNREAD's now-dead
+    `trades` exemption, the writer-lock mutator set) were caught unprompted
+    by the meta-tests. Suite 1625 -> 1638.
