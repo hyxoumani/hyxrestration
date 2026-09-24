@@ -401,6 +401,13 @@ TAPE_DRAIN_GRACE_H = 30.0
 # same tolerance the freshness checks use.
 TAPE_SWEEP_STALL_H = 26.0
 
+# A polymarket tail stop is re-fetched by the NEXT poly sweep, and that sweep
+# is daily but SLOW: measured elapsed 895.9 min on 2026-09-24 and 898.3 on
+# 09-23, so a market truncated near the end of one run is not re-visited until
+# ~15h into the next. 48h is two full cycles -- the first one the absorber
+# needs, the second so a single skipped or aborted run is not read as rot.
+POLY_TAIL_ABSORB_GRACE_H = 48.0
+
 _failures: list[str] = []
 _skipped: list[str] = []
 #: Every check name this run actually EXECUTED, pass or fail. A SKIPPED section
@@ -1659,9 +1666,74 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
         check("gdelt news fresh (< 30h)", age_h < 30, f"age {age_h:.1f}h")
 
     qa_tape_coverage(conn, now)
+    qa_poly_tail_absorbed(conn, now)
     conn.close()
     _record_ok("archive", now)
     return pull_age_d
+
+
+def qa_poly_tail_absorbed(conn, now: datetime) -> None:
+    """Every polymarket tail that stopped early must have been out-fetched by
+    a later sweep — MORE archived prints than the truncated pass returned.
+
+    `trades_tail` has no retry ladder by decision (see the ledger at the top
+    of `collector/venues/polymarket.py`): ~80 stops a run, 429s and 408s,
+    absorbed because the next daily sweep re-fetches the same tail from
+    offset 0. That decision is only as good as the absorber, and the absorber
+    is a claim about DEPTH per market that the published count cannot test.
+    This tests it.
+
+    A stop younger than POLY_TAIL_ABSORB_GRACE_H is EXCLUDED, not passed: the
+    next sweep has not run yet, so the archive holds no evidence either way
+    and calling that green would make the check loudest exactly when it knows
+    least. Beyond the grace, a market no deeper than its worst stop is a FAIL
+    — the sweep stopped re-visiting it, and every later stop on that market
+    is then a real hole rather than a re-fetchable one.
+    """
+    name = "polymarket truncated tails absorbed by a later sweep"
+    n_stops = conn.execute("SELECT count(*) FROM poly_tail_stops").fetchone()[0]
+    if not n_stops:
+        # The poly_prices/news_items idiom: the table fills only once a sweep
+        # runs with the recorder, so an archive that predates it stays green
+        # rather than alarming about its own age.
+        check(name, True, "no tail stops recorded yet")
+        return
+
+    rows = conn.execute(
+        """
+        SELECT s.market_id, max(s.prints) AS worst, max(s.stopped_at) AS last_stop,
+               COALESCE(t.n, 0) AS archived
+        FROM poly_tail_stops s
+        LEFT JOIN (
+            SELECT market_id, count(*) AS n FROM trades WHERE venue='polymarket' GROUP BY 1
+        ) t ON t.market_id = s.market_id
+        WHERE s.stopped_at < ? - INTERVAL (?) HOUR
+        GROUP BY s.market_id, t.n
+        """,
+        [now, POLY_TAIL_ABSORB_GRACE_H],
+    ).fetchall()
+    if not rows:
+        check(name, True, f"{n_stops} stop(s) recorded, all inside the re-sweep grace")
+        return
+
+    starved = sorted((r for r in rows if r[3] <= r[1]), key=lambda r: r[3] - r[1])
+    if starved:
+        worst = ", ".join(f"{r[0][:16]} {r[3]}<={r[1]}" for r in starved[:5])
+        check(
+            name,
+            False,
+            f"{len(starved)} of {len(rows)} truncated market(s) hold no more prints than "
+            f"their deepest truncated pass returned: {worst}",
+        )
+    else:
+        deepest = min(r[3] - r[1] for r in rows)
+        check(
+            name,
+            True,
+            f"{len(rows)} truncated market(s) past the "
+            f"{POLY_TAIL_ABSORB_GRACE_H:g}h grace all out-fetched, "
+            f"thinnest margin +{deepest} prints",
+        )
 
 
 def read_signals_fetch(path: str) -> tuple[dict[str, datetime], datetime | None, int]:

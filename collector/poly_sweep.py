@@ -53,10 +53,18 @@ def _flush(db: str, batch: dict) -> None:
                 batch["n_prices"] += store.insert_poly_prices(batch["prices"])
             if batch["trades"]:
                 batch["n_trades"] += store.insert_trades(batch["trades"])
+            # Carried in the batch, not drained from the client here: a
+            # failed flush holds the batch and retries it, and a stop drained
+            # inside the failing burst would be the one row the retry no
+            # longer has -- archiving a short tail with no record that it was
+            # short, which is precisely the blindness this table removes.
+            if batch["tail_stops"]:
+                batch["n_tail_stops"] += store.insert_poly_tail_stops(batch["tail_stops"])
         finally:
             store.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
     batch["infos"], batch["stats"], batch["prices"], batch["trades"] = [], [], [], []
+    batch["tail_stops"] = []
 
 
 def sweep(
@@ -95,8 +103,10 @@ def sweep(
         "stats": [],
         "prices": [],
         "trades": [],
+        "tail_stops": [],
         "n_prices": 0,
         "n_trades": 0,
+        "n_tail_stops": 0,
     }
     totals: dict = {"markets": 0, "errors": 0}
     # `errors` alone cannot say WHAT failed: 23 days of journal carry 107
@@ -131,6 +141,7 @@ def sweep(
             batch["trades"].extend(
                 poly.poly_trade_row(t) for t in poly.trades_tail(cond, session=sess)
             )
+            batch["tail_stops"].extend(poly.take_tail_stops())
             time.sleep(REQUEST_PAUSE_S)
         except Exception as exc:
             totals["errors"] += 1
@@ -156,12 +167,15 @@ def sweep(
             )
     _flush(db, batch)
     totals["n_prices"], totals["n_trades"] = batch["n_prices"], batch["n_trades"]
+    totals["n_tail_stops"] = batch["n_tail_stops"]
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["error_classes"] = error_classes
     # The per-class retry/fault ledger this run spent. `tail_truncated` is
     # the population the `errors` total was structurally blind to -- ~80 per
-    # run, absorbed by the next sweep, published so the absorber can be
-    # re-checked from the box instead of a journal scrape.
+    # run, absorbed by the next sweep. The COUNT alone could not re-check
+    # that absorber (the claim is per market and per depth); `n_tail_stops`
+    # counts the same faults archived as rows, which can, and does in
+    # `qa.qa_poly_tail_absorbed`.
     totals["http_retries"] = poly.retry_counts()
     totals["keyset_budget_frac"] = round(poly.keyset_budget_frac(), 3)
     return totals

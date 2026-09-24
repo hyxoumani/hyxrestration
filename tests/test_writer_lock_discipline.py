@@ -392,6 +392,7 @@ def test_the_mutator_set_is_derived_and_complete():
         "insert_news",
         "insert_poly_prices",
         "insert_poly_stats",
+        "insert_poly_tail_stops",
         "insert_snapshots",
         "insert_trades",
         "insert_vintages",

@@ -68,6 +68,7 @@ STAMP: dict[str, str | None] = {
     "trades_swept": "swept_at",
     "poly_prices": "ts",
     "poly_market_stats": "ts",
+    "poly_tail_stops": "stopped_at",
     "series": "updated_at",
     "sweep_log": "swept_at",
     "watermarks": None,  # last_close_ts is the swept market's close, not ingest
@@ -136,6 +137,16 @@ WITNESS: dict[str, str] = {
         "2026-09-05 that guard at least SAYS so (a bounded SKIP escalating "
         "to FAIL, see tests/test_qa_silent_guards.py), but a skip is not an "
         "age check and poly_prices remains the witness."
+    ),
+    "poly_tail_stops": (
+        "A FAULT-ONLY table: `trades_tail` writes a row only when a tail "
+        "stops early, so a sweep that truncated nothing writes nothing and "
+        "the newest row is as old as the last bad night. Age is therefore "
+        "not a health signal here -- a stale one is the good outcome. The "
+        "writer's liveness is watched where it is meaningful, by 'poly "
+        "prices fresh (< 30h old)' over the same sweep's poly_prices rows, "
+        "and the table's CONTENT is judged by 'polymarket truncated tails "
+        "absorbed by a later sweep', which reads it every run."
     ),
     "series": (
         "Upserted whole by the 06:10Z sweep; its liveness IS the sweep's, "

@@ -48,9 +48,25 @@ from hyxlab.models import MarketInfo, Snapshot  # noqa: E402
 # day, 57 on two and 1 on three, and the next sweep re-fetches the same tail
 # from offset 0 against a 3,000-print cap that binds on 0.052% of market-days
 # (74 of 140,975, archive-measured 2026-09-24). The daily re-sweep is the
-# absorber, exactly as `hyxlab-tradepass` is for kalshi. The counter exists
-# because establishing that took a journal scrape and two archive queries,
-# and nothing on the box published the population at all.
+# absorber, exactly as `hyxlab-tradepass` is for kalshi.
+#
+# THAT ARGUMENT WAS A DISTRIBUTION OF DATES, NOT A MEASUREMENT OF DEPTH, and
+# the two can disagree: stopping early on exactly one day says a later sweep
+# RAN, never that it went deeper than the truncated pass did. Measured
+# directly 2026-09-24 over all 1,299 distinct markets ever logged stopping
+# early (2026-09-01..24): 1,296 hold strictly MORE archived prints today than
+# the deepest truncated pass ever returned, 3 hold exactly as many, and ZERO
+# hold fewer -- including all 351 that came back with no prints at all on an
+# already-CLOSED market, the cohort with no live tape to refill it. The
+# absorber is verified, not assumed, and the decision below stands on the
+# measurement rather than on the date histogram.
+#
+# The counter exists because establishing that took a journal scrape and two
+# archive queries, and nothing on the box published the population at all --
+# and the COUNT, which is all the counter published, is the one shape of the
+# fact that cannot re-check it: the re-check is per market and per depth. So
+# the stops are also archived as rows (`poly_tail_stops`), and
+# `qa.qa_poly_tail_absorbed` re-runs the paragraph above in SQL, daily.
 #
 # So: no ladder added and NO BUDGET RE-SIZED (#70). Retries that were never
 # spent must not be reported as recoveries, so the unretried classes are
@@ -65,6 +81,13 @@ _KEYSET_WORST_FRAC = 0.0
 _KEYSET_RESTARTS = 0
 _TAIL_TRUNCATED = 0
 _TAIL_TRUNCATED_EMPTY = 0
+
+# The same faults as rows rather than as a tally: (condition_id, stopped_at,
+# prints, status). A count cannot say whether the next sweep went deeper than
+# the truncated pass did, which is the entire absorber claim -- see
+# `Store.insert_poly_tail_stops`. Drained by the caller, not read, so a long
+# run does not hold every stop of the run in memory.
+_TAIL_STOPS: list[tuple[str, datetime, int, int]] = []
 
 
 def keyset_retries() -> int:
@@ -91,6 +114,15 @@ def tail_truncated() -> int:
     reset -- a partial tail archived as if complete. No ladder covers this;
     see the block above."""
     return _TAIL_TRUNCATED
+
+
+def take_tail_stops() -> list[tuple[str, datetime, int, int]]:
+    """Drain the recorded early stops: (market_id, stopped_at, prints,
+    status). Drains rather than reads so each stop is handed to exactly one
+    flush; `tail_truncated()` keeps the run-level count regardless."""
+    global _TAIL_STOPS
+    out, _TAIL_STOPS = _TAIL_STOPS, []
+    return out
 
 
 def retry_counts() -> dict[str, int]:
@@ -126,6 +158,7 @@ def reset_retry_counts() -> None:
     _KEYSET_RESTARTS = 0
     _TAIL_TRUNCATED = 0
     _TAIL_TRUNCATED_EMPTY = 0
+    _TAIL_STOPS.clear()
 
 
 def get_gamma_markets(
@@ -395,10 +428,23 @@ def trades_tail(
             timeout=30,
         )
         body = resp.json()
-        if not isinstance(body, list):  # error object with HTTP 200
+        # An error OBJECT where a list belongs, under a real error status:
+        # measured over 2026-09-01..24, 1,358 stops carried 429 (81%) or 408
+        # (19%) and nothing else. The status is recorded, not just logged,
+        # because the two classes have different remedies if the absorber
+        # described at the top of this module ever stops absorbing.
+        if not isinstance(body, list):
             _TAIL_TRUNCATED += 1
             if not out:
                 _TAIL_TRUNCATED_EMPTY += 1
+            _TAIL_STOPS.append(
+                (
+                    condition_id,
+                    datetime.now(UTC),
+                    len(out),
+                    int(getattr(resp, "status_code", 0) or 0),
+                )
+            )
             print(
                 f"[poly] trades_tail {condition_id[:16]} stopped early at"
                 f" {len(out)} prints (non-list body, status {getattr(resp, 'status_code', '?')})",

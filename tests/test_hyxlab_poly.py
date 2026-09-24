@@ -470,3 +470,111 @@ def test_sweep_resets_the_ledger_and_publishes_it(monkeypatch, tmp_path):
     assert totals["http_retries"]["total"] == 0
     assert totals["keyset_budget_frac"] == 0.0
     assert totals["error_classes"] == {}
+
+
+# --- tail stops as ROWS, not just a tally (2026-09-24) -------------------
+#
+# The count could never re-check the absorber it was added to make
+# re-checkable: "the next sweep re-fetches the tail" is a claim about DEPTH
+# per market, and a count discards both the market and the depth. Verifying
+# it took a 1,358-line journal scrape. These rows make it SQL.
+
+
+def test_tail_stop_is_recorded_with_its_market_depth_and_status():
+    poly.reset_retry_counts()
+    poly.trades_tail(
+        "0x" + "a" * 62,
+        session=_TailSession({0: [{"t": 1}] * 500, 500: {"error": "rate limited"}}, status=429),
+    )
+    stops = poly.take_tail_stops()
+    assert len(stops) == 1
+    market_id, stopped_at, prints, status = stops[0]
+    # The FULL condition id, not the 16-char prefix the log line carries:
+    # the archive join is on market_id and a prefix does not join.
+    assert market_id == "0x" + "a" * 62
+    assert (prints, status) == (500, 429)
+    assert stopped_at.tzinfo is not None
+
+
+def test_taking_the_stops_drains_them_so_two_flushes_cannot_double_insert():
+    poly.reset_retry_counts()
+    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "x"}}))
+    assert len(poly.take_tail_stops()) == 1
+    assert poly.take_tail_stops() == []
+    # Draining the rows must not disturb the run-level count: the `done:`
+    # line reports the run, and the run had one stop however often it flushed.
+    assert poly.retry_counts()["tail_truncated"] == 1
+
+
+def test_reset_clears_the_stop_rows_too():
+    poly.reset_retry_counts()
+    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "x"}}))
+    poly.reset_retry_counts()
+    assert poly.take_tail_stops() == []
+
+
+def test_a_held_batch_keeps_its_stops_for_the_retry(monkeypatch, tmp_path):
+    """A flush that fails holds the batch and retries it. A stop drained
+    inside the failing burst would be the one row the retry no longer has --
+    a short tail archived with no record that it was short."""
+    from collector import poly_sweep
+
+    monkeypatch.setattr(poly_sweep, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    batch = {
+        "infos": [],
+        "stats": [],
+        "prices": [],
+        "trades": [],
+        "tail_stops": [("0xdead", datetime(2026, 9, 24, tzinfo=UTC), 500, 429)],
+        "n_prices": 0,
+        "n_trades": 0,
+        "n_tail_stops": 0,
+    }
+    boom = {"n": 0}
+    real = Store.insert_poly_tail_stops
+
+    def flaky(self, rows):
+        boom["n"] += 1
+        if boom["n"] == 1:
+            raise RuntimeError("writer lost the race")
+        return real(self, rows)
+
+    monkeypatch.setattr(Store, "insert_poly_tail_stops", flaky)
+    db = str(tmp_path / "t.duckdb")
+    with pytest.raises(RuntimeError):
+        poly_sweep._flush(db, batch)
+    assert batch["tail_stops"], "the held batch dropped the stop it must retry"
+    poly_sweep._flush(db, batch)
+    assert batch["n_tail_stops"] == 1
+    store = Store(db)
+    assert store.conn.execute("SELECT count(*) FROM poly_tail_stops").fetchone()[0] == 1
+    store.close()
+
+
+def test_the_sweep_persists_a_stop_as_a_row(monkeypatch, tmp_path):
+    from collector import poly_sweep
+
+    market = {"conditionId": "0xbeef", "clobTokenIds": '["yes","no"]', "question": "q"}
+    # Only the open walk: `sweep` enumerates open markets and then recently
+    # closed ones, and one market in both walks is two visits, not one.
+    monkeypatch.setattr(
+        poly, "iter_markets_by_volume", lambda *a, **k: [] if k.get("closed") else [market]
+    )
+    monkeypatch.setattr(poly, "prices_history_range", lambda *a, **k: [])
+    monkeypatch.setattr(poly, "trades_tail", lambda cond, session=None: _stop_and_return(cond))
+    monkeypatch.setattr(poly_sweep, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    monkeypatch.setattr(poly_sweep, "REQUEST_PAUSE_S", 0.0)
+    db = str(tmp_path / "t.duckdb")
+    totals = poly_sweep.sweep(db, 10000.0)
+    assert totals["n_tail_stops"] == 1
+    store = Store(db)
+    row = store.conn.execute("SELECT market_id, prints, status FROM poly_tail_stops").fetchone()
+    store.close()
+    assert row == ("0xbeef", 120, 408)
+
+
+def _stop_and_return(cond):
+    """A tail that truncated: the client records the stop, returns what it
+    has, and the sweep must archive both."""
+    poly._TAIL_STOPS.append((cond, datetime.now(UTC), 120, 408))
+    return []

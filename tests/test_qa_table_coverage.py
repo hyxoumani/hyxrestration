@@ -64,14 +64,6 @@ UNREAD: dict[str, str] = {
         "Same witness as `series`: it is written by, and only by, the run "
         "that 'sweep ran in last 36h' already watches."
     ),
-    "trades": (
-        "326M rows, written by tradepass/sweep/poly_sweep — and watched "
-        "harder than a max(ts) could: 'trade tape covers retention window' "
-        "judges PER-MARKET persistence via trades_swept, and "
-        "qa_batch_run_budget watches the backfill's 4.0h wall clock. A "
-        "table-level freshness check would be strictly weaker and would read "
-        "green off any one market still landing."
-    ),
     "observations": (
         "NO LIVE WRITER. Only collector/backfill.py writes it and that is a "
         "hand-run tool; measured 2026-09-04 the newest row is 2026-07-06 "

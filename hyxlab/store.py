@@ -138,6 +138,13 @@ CREATE TABLE IF NOT EXISTS poly_prices (
     ts        TIMESTAMP NOT NULL,
     price     DOUBLE NOT NULL
 );
+CREATE TABLE IF NOT EXISTS poly_tail_stops (
+    market_id  VARCHAR NOT NULL,
+    stopped_at TIMESTAMP NOT NULL,
+    prints     INTEGER NOT NULL,   -- prints the tail reached before the stop
+    status     INTEGER,            -- HTTP status that ended it (429 / 408)
+    PRIMARY KEY (market_id, stopped_at)
+);
 CREATE TABLE IF NOT EXISTS poly_market_stats (
     market_id VARCHAR NOT NULL,
     ts        TIMESTAMP NOT NULL,
@@ -959,6 +966,25 @@ class Store:
         see migration_2)."""
         rows = [(r[0], _naive_utc(r[1]), *r[2:]) for r in rows]
         self.conn.executemany("INSERT INTO poly_market_stats VALUES (?,?,?,?)", rows)
+
+    def insert_poly_tail_stops(self, rows: list[tuple]) -> int:
+        """(market_id, stopped_at, prints, status) — one row per `trades_tail`
+        call that ended on an error status instead of the end of the tape.
+
+        The COUNT of these was already published (`http_retries
+        .tail_truncated`) and the count is the one thing that cannot answer
+        the question the counter exists for. "The next sweep re-fetches the
+        tail" is a claim about DEPTH per market: it is true exactly when the
+        archived tail later exceeds the prints that truncated pass returned,
+        and the count discards both the market and the depth. Verifying it on
+        2026-09-24 therefore needed a journal scrape for 1,358 log lines plus
+        two archive queries — the scrape the counter was added to retire.
+        With these rows the same check is SQL (`qa_poly_tail_absorbed`).
+
+        Keyed (market_id, stopped_at) so a re-flushed batch dedups; a market
+        that stops early on several days keeps one row per day."""
+        rows = [(r[0], _naive_utc(r[1]), *r[2:]) for r in rows]
+        return self.insert_new("poly_tail_stops", rows, ["market_id", "stopped_at"])
 
     def poly_price_watermarks(self) -> dict[str, datetime]:
         """token_id -> latest captured price ts (for incremental backfill)."""
