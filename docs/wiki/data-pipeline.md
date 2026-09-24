@@ -225,6 +225,20 @@ size; poly market_id = CLOB token id), `stream_trades`, `stream_gaps`
 (closed intervals of broken coverage — reconnects, Kalshi seq jumps,
 daemon downtime; replay must treat books as unknown inside a gap until
 the next snapshot re-seeds).
+**POLY L2 IS ABSENT, NOT THIN, BEFORE 2026-09-24.** The `price_change`
+parser read the venue's documented list key (`changes`, asset on the
+frame) instead of the wire's (`price_changes`, asset per ENTRY), so every
+delta parsed to nothing from the first day of capture: 242,828,734 poly
+`book_events` over 07-08 → 09-24, **zero** of them `delta`. What is
+archived is only the reconnect/refresh `book` seed, ~35 per token per
+day — 13.6% of poly trades in the last 14 days have a book frame within
+2s of them, median 26s, p90 23 min. No verdict rests on it
+(`simulator.capabilities` already declares polymarket
+`INDEPENDENT_NO_BOOK`), but no analysis may read that span as a book
+either. Fixed + instrumented 09-24 (mistakes #82): poly now writes
+`kind='void'` rows for any frame that archives no level, `streamd`
+publishes `poly_void` apart from `poly_events`, and QA's void check is
+per-venue with `price_change` deliberately NOT benign.
 **Kalshi weekly maintenance, Thursdays ~06:00-10:00Z**: 26-38 `dead_air`
 gaps, each followed by a reconnect that comes back silent. Kalshi trades
 fall to ~2k in the 07Z hour, against 200-400k/h on either side. Replay and

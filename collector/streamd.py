@@ -568,6 +568,16 @@ class Daemon:
                         if events:
                             self.store.append_events(events)
                             self._count("poly_events", len(events))
+                            # Void rows are archived like any other event, but
+                            # they are counted APART: folded into poly_events
+                            # a frame type the parser stopped understanding
+                            # reads as capture, which is the failure mode that
+                            # hid #82 for 78 days. The 5-min stats line is the
+                            # operator's fastest reader of a wire change; QA's
+                            # void check is the slow one.
+                            voids = sum(1 for e in events if e.kind == "void")
+                            if voids:
+                                self._count("poly_void", voids)
                         if trades:
                             self.store.append_trades(trades)
                             self._count("poly_trades", len(trades))

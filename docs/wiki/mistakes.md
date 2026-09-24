@@ -3180,3 +3180,80 @@ tree it happens to run in is not evidence of anything.**
     their target (counter removed; tail folded into `total`; mean
     substituted for worst page; restarts folded into `total`; sweep's reset
     removed; ledger unpublished). Suite 1607 -> 1615.
+
+82. **2026-09-24 -- the delta frame was parsed against the venue's DOCS and
+    never against the wire, so 78 days of polymarket book capture holds
+    242,828,734 rows and not one delta.** Class: `unverified-claim` +
+    `vacuous-assertion` -- the same pair as #12 and #77, here about a WIRE
+    FORMAT. `collector/venues/polymarket_ws.py` read `obj["changes"]` with
+    a frame-level `asset_id`, per a docstring headed "Verified live
+    2026-07-06". The live wire (re-probed 2026-09-24, 412 frames in 90s)
+    sends `price_changes`, with `asset_id` on each ENTRY and none on the
+    frame -- one frame spans both legs of a market. So `obj.get("changes")
+    or []` was empty for every delta ever received, and `_parse_one`
+    returned `([], [])`: **no row, no counter, no log.** Archive: 07-08 ->
+    09-24, 242,828,734 poly `book_events`, `kind='delta'` count **zero**.
+    **WHY IT SURVIVED 78 DAYS -- three independent silencers.** (1) The
+    unit test `test_poly_price_change_carries_absolute_size` was written
+    from the same docstring, so it pinned the shape the server has never
+    sent and passed green the whole time. (2) Kalshi's parser has written
+    `kind='void'` rows since 2026-07-30 for exactly this hazard -- its own
+    comment says "a new frame type silently swallowed here would otherwise
+    just thin the book capture" -- and polymarket had no equivalent. (3)
+    QA's `void frames are known types` check was scoped `venue = 'kalshi'`,
+    so even a void row would not have been read. A device invented for one
+    venue and not carried to the other leaves the second venue in the state
+    the first was in before the fix.
+    **THE ARCHIVE DAMAGE IS REAL AND BOUNDED, AND THE BOUND WAS CHECKED,
+    NOT ASSUMED.** What survives is only the reconnect/refresh `book` seed,
+    ~35 frames per token per day: of 49,534 poly trades over 14 days, just
+    **6,728 (13.6%) have a book frame within 2s** -- median wait to the
+    next frame 26s, p90 1,397s. A trade removes liquidity, so a book stream
+    carrying its own changes would follow every one within milliseconds.
+    Poly L2 before 09-24 is a sparse stale image, not a stream, and no
+    absorber exists -- unlike #80/#81, where the next day's sweep re-fetched
+    what was dropped. **So this pass shipped the FIX, not a counter**: the
+    opposite verdict from the two passes before it, and the same rule
+    produced both -- verify the absorber first, and let the answer choose.
+    Blast radius is nil for conclusions: `simulator.capabilities` already
+    declares polymarket `INDEPENDENT_NO_BOOK` and `simulator.bookreplay`
+    raises `NotImplementedError` on any non-kalshi event, so no verdict
+    ever read this table.
+    **SECOND DEFECT, SAME ROOT.** The reply to the daemon's idle `PING` is
+    the bare text `PONG`; `parse_message` fed it to `json.loads`, which
+    raised through `poly_books`' read loop into the reconnect handler.
+    **802 `JSONDecodeError` reconnects in 24 days of journal -- the largest
+    poly-books fault class by 9x** (next: 46 `ConnectionClosedError`), each
+    one tearing down the connection and writing a coverage gap. The
+    keepalive meant to hold the socket open was what kept closing it. The
+    old `return [], []` even carried the comment "tick_size_change / PONG /
+    unknown", naming a frame that could never reach that line.
+    **THIRD CLAIM, RE-TESTED BECAUSE THE OTHER TWO FELL.** "size is the NEW
+    ABSOLUTE size, not a signed change" is the one part of the 07-06 note
+    that held -- and the obvious witness does not prove it: scoring both
+    readings against the server's own `best_bid`/`best_ask`, carried on
+    every entry, gives **1730/1730 for BOTH**, because a top-of-book
+    witness only sees which prices are non-empty and the two readings agree
+    on that until a level empties. The discriminating test replays 150s of
+    live deltas from a seed book, then opens a second connection for a
+    fresh server `book`: 2,068 deltas (622 of them `size: 0`) over 96
+    assets, **absolute-replace reproduces 944/948 touched levels (99.58%),
+    signed-add 138/948 (14.56%)**. A witness that cannot separate two
+    readings is not evidence for either -- that is the trap #77 named, met
+    again here.
+    Fix: parse `price_changes` with the per-entry `asset_id` (frame-level
+    only as fallback); name `PONG` in `KEEPALIVE_REPLIES` so it returns
+    empty while ANY other non-JSON text still raises loudly; and give
+    polymarket kalshi's void device -- every frame that archives no level
+    and no trade writes `kind='void'` with `side` = the frame's
+    `event_type`, including an empty `book` ladder and an empty
+    `price_changes`. `streamd` counts `poly_void` APART from `poly_events`
+    (folded in, a frame type the parser stopped understanding would read as
+    capture -- the exact failure being fixed). QA's void check is now
+    per-venue with a per-venue benign set, and **`price_change` is
+    deliberately NOT benign for polymarket**: a delta frame that archives
+    no level is a parse failure until proven otherwise, which is the single
+    reading that would have gone red on day one. Rule: **a wire-format
+    docstring is a claim about a server, and only a capture of that server
+    verifies it -- a unit test built from the same docstring tests the
+    docstring.** Suite 1615 -> 1620 (3 parser + 2 QA).

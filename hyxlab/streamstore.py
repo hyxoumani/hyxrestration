@@ -17,7 +17,19 @@ over convenience — replay logic interprets):
 - polymarket book_events: kind='snap' rows are absolute level sizes;
   kind='delta' (price_change) rows carry the NEW ABSOLUTE size at that
   price (not a signed change). side is 'bid'/'ask'; market_id is the
-  CLOB token (asset) id.
+  CLOB token (asset) id. kind='void' rows record a frame that archived
+  no level, with `side` = the frame's event_type (same device, and same
+  rationale, as kalshi's).
+  **2026-07-08 -> 2026-09-24 HOLDS NO POLYMARKET DELTAS AT ALL.** The
+  parser read the venue's documented list key, not the one on the wire,
+  so 242,828,734 poly book rows in that span are ALL reconnect/refresh
+  `book` seeds -- roughly 35 per token per day, a sampled image and not
+  a stream. Measured: only 13.6% of poly trades in the last 14 days have
+  a book frame within 2s of them (median 26s, p90 23 min). Nothing
+  downstream consumed it (`simulator.capabilities` already declares
+  polymarket INDEPENDENT_NO_BOOK), so no verdict rests on it -- but any
+  analysis reaching back past 09-24 must treat poly L2 as absent, not
+  thin. See mistakes #82.
 - stream_gaps: closed intervals where coverage is broken (reconnects,
   seq gaps, daemon downtime). Replay must treat books as unknown inside
   a gap until the next snapshot re-seeds them.

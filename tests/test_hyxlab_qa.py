@@ -220,6 +220,51 @@ def test_legacy_void_row_without_frame_type_cannot_trip_the_check(tmp_path):
     assert "void frames are known types" not in failed
 
 
+def test_poly_price_change_void_trips_the_check(tmp_path):
+    """The widening that #82 needed. Until 2026-09-24 this query was scoped
+    `venue = 'kalshi'`, so a polymarket delta frame that archived no level
+    -- the exact 78-day fault -- could not be read even once poly wrote void
+    rows. `price_change` is NOT in polymarket's benign set for that reason:
+    a delta carrying nothing is a parse failure until proven otherwise."""
+    from collector.venues.polymarket_ws import parse_message as poly_parse
+
+    store = _stream_with_books(
+        tmp_path / "s.duckdb",
+        [(_book_frame("delta", 1, "0.40", "1.00"), NOW - timedelta(minutes=30))],
+    )
+    # a delta frame whose list key the parser does not understand
+    store.append_events(
+        poly_parse(
+            {"event_type": "price_change", "market": "0xabc", "changes": [{"price": "0.4"}]},
+            NOW - timedelta(minutes=29),
+        )[0]
+    )
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "void frames are known types" in failed
+
+
+def test_poly_empty_book_void_is_benign(tmp_path):
+    """Discrimination control for the venue-scoped benign set: an empty poly
+    ladder is a real state (no resting orders) and must not red the check,
+    or the widening above is merely always-red for polymarket."""
+    from collector.venues.polymarket_ws import parse_message as poly_parse
+
+    store = _stream_with_books(
+        tmp_path / "s.duckdb",
+        [(_book_frame("delta", 1, "0.40", "1.00"), NOW - timedelta(minutes=30))],
+    )
+    store.append_events(
+        poly_parse(
+            {"event_type": "book", "asset_id": "tok1", "bids": [], "asks": []},
+            NOW - timedelta(minutes=29),
+        )[0]
+    )
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "void frames are known types" not in failed
+
+
 def test_void_row_records_the_frame_type(tmp_path):
     """Field-level: the type must reach `side`, else the check above can
     only ever see ''."""

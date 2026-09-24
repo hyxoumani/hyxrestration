@@ -700,10 +700,10 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     # unattributable, so they are counted but cannot trip the check; they
     # roll out of the window on their own.
     voids = conn.execute(
-        "SELECT side, count(*) FROM book_events"
-        " WHERE venue = 'kalshi' AND kind = 'void'"
+        "SELECT venue, side, count(*) FROM book_events"
+        " WHERE kind = 'void'"
         " AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)"
-        " GROUP BY side ORDER BY 2 DESC",
+        " GROUP BY venue, side ORDER BY 3 DESC",
         [now, int(hours)],
     ).fetchall()
     # `unsubscribed` is a control ack too, and the SERVER sends it: streamd
@@ -711,23 +711,40 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     # Kalshi's Thursday 07-09Z maintenance, whose dead-air storm every Thursday
     # since 08-13 shows. The capture it costs is already the channel's
     # dead-air gap row; this check exists to catch a DATA frame nobody parses.
-    benign = {
-        "orderbook_snapshot",
-        "subscribed",
-        "unsubscribed",
-        "ok",
-        "error",
-        "heartbeat",
-        "pong",
+    #
+    # The benign set is PER VENUE and the two are not alike. Scoping this
+    # query to kalshi was itself a hole: polymarket gained void rows only
+    # with #82, and a check that cannot see them leaves the venue in the
+    # exact state kalshi was in before 2026-07-30. For polymarket only an
+    # empty-ladder `book` is benign (a real state: no resting orders).
+    # `price_change` is deliberately NOT benign -- a delta frame that
+    # archives no level is what a renamed wire key looks like, and that is
+    # the failure this check exists to make loud. `tick_size_change` carries
+    # no book level by design.
+    BENIGN = {
+        "kalshi": {
+            "orderbook_snapshot",
+            "subscribed",
+            "unsubscribed",
+            "ok",
+            "error",
+            "heartbeat",
+            "pong",
+        },
+        "polymarket": {"book", "tick_size_change"},
     }
-    unknown = [(t, n) for t, n in voids if t and t not in benign]
-    legacy = sum(n for t, n in voids if not t)
+    unknown = [(v, t, n) for v, t, n in voids if t and t not in BENIGN.get(v, set())]
+    legacy = sum(n for _, t, n in voids if not t)
     check(
         "void frames are known types",
         not unknown,
-        f"{sum(n for _, n in voids)} void frames"
+        f"{sum(n for _, _, n in voids)} void frames"
         + (f" ({legacy} legacy unattributed)" if legacy else "")
-        + ("; UNKNOWN " + ", ".join(f"{t}x{n}" for t, n in unknown) if unknown else "; all known"),
+        + (
+            "; UNKNOWN " + ", ".join(f"{v}/{t}x{n}" for v, t, n in unknown)
+            if unknown
+            else "; all known"
+        ),
     )
 
     # Capture-gap budget. The seq check above and the reconstruction below

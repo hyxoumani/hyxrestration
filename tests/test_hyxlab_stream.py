@@ -207,15 +207,66 @@ def test_poly_book_snapshot_and_array_frames():
 
 
 def test_poly_price_change_carries_absolute_size():
+    """The frame shape here is a LIVE CAPTURE (2026-09-24), not the venue's
+    documented one. The test this replaces asserted `changes` + a frame-level
+    `asset_id`, passed green for 78 days, and pinned a shape the server has
+    never sent -- every real delta parsed to nothing (mistakes #82)."""
     frame = {
         "event_type": "price_change",
-        "asset_id": "tok1",
+        "market": "0x5db9",
         "timestamp": "1751889601000",
-        "changes": [{"price": "0.45", "side": "SELL", "size": "0"}],
+        "price_changes": [
+            {
+                "asset_id": "tok1",
+                "price": "0.45",
+                "size": "0",
+                "side": "SELL",
+                "best_bid": "0.44",
+                "best_ask": "0.46",
+            },
+            {
+                "asset_id": "tok2",
+                "price": "0.55",
+                "size": "538.73",
+                "side": "BUY",
+                "best_bid": "0.55",
+                "best_ask": "0.56",
+            },
+        ],
     }
     events, _ = polymarket_ws.parse_message(frame, RECV)
+    assert len(events) == 2
+    a, b = events
+    # One frame spans BOTH legs, so the asset comes from the ENTRY.
+    assert (a.market_id, a.kind, a.side, a.qty) == ("tok1", "delta", "ask", 0.0)  # 0 = removed
+    assert (b.market_id, b.kind, b.side, b.qty) == ("tok2", "delta", "bid", 538.73)
+
+
+def test_poly_frame_that_archives_nothing_is_a_void_row():
+    """The device that would have made #82 loud on day one. A delta frame
+    whose list key the parser does not recognise must leave an attributable
+    row, not silence -- and `price_change` is not in QA's benign set."""
+    frame = {"event_type": "price_change", "market": "0xabc", "changes": [{"price": "0.4"}]}
+    events, trades = polymarket_ws.parse_message(frame, RECV)
     (e,) = events
-    assert (e.kind, e.side, e.qty) == ("delta", "ask", 0.0)  # 0 = level removed
+    assert trades == []
+    assert (e.kind, e.side, e.market_id) == ("void", "price_change", "0xabc")
+
+
+def test_poly_empty_book_ladder_is_a_void_row():
+    frame = {"event_type": "book", "asset_id": "tok1", "bids": [], "asks": []}
+    events, _ = polymarket_ws.parse_message(frame, RECV)
+    (e,) = events
+    assert (e.kind, e.side, e.market_id) == ("void", "book", "tok1")
+
+
+def test_poly_keepalive_reply_is_not_json_and_must_not_raise():
+    """`PONG` is the bare-text answer to the daemon's idle PING. Letting
+    json.loads raise through the read loop tore the poly connection down
+    802 times in 24 days -- the largest poly-books fault class on record."""
+    assert polymarket_ws.parse_message("PONG", RECV) == ([], [])
+    with pytest.raises(json.JSONDecodeError):
+        polymarket_ws.parse_message("SOMETHING ELSE", RECV)  # any other text stays loud
 
 
 def test_poly_last_trade_price_becomes_trade():
