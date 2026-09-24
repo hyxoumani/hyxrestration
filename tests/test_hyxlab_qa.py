@@ -272,6 +272,147 @@ def test_void_row_records_the_frame_type(tmp_path):
     assert [(e.kind, e.side, e.seq) for e in events] == [("void", "orderbook_snapshot_v2", 7)]
 
 
+# --- polymarket delta replay ------------------------------------------------
+#
+# The void check catches a frame this parser stopped UNDERSTANDING. Nothing
+# caught a frame it understands WRONGLY -- and mistakes #82's third claim was
+# exactly that choice, absolute-replace vs signed-add, both of which archive
+# plausible rows and pass every other check. See qa.POLY_REPLAY_MIN_AGREE.
+
+
+def _poly_book(asset, bids, asks):
+    return {
+        "event_type": "book",
+        "asset_id": asset,
+        "bids": [{"price": str(p), "size": str(q)} for p, q in bids],
+        "asks": [{"price": str(p), "size": str(q)} for p, q in asks],
+    }
+
+
+def _poly_delta(asset, changes):
+    """changes: (side, price, size) with size in the WIRE's meaning."""
+    return {
+        "event_type": "price_change",
+        "market": "0xcond",
+        "price_changes": [
+            {"asset_id": asset, "side": side, "price": str(p), "size": str(q)}
+            for side, p, q in changes
+        ],
+    }
+
+
+def _poly_stream(path, frames_at, gaps=()):
+    from collector.venues.polymarket_ws import parse_message as poly_parse
+
+    store = _stream_with_books(
+        path, [(_book_frame("delta", 1, "0.40", "1.00"), NOW - timedelta(minutes=50))]
+    )
+    for frame, ts in frames_at:
+        store.append_events(poly_parse(frame, ts)[0])
+    for venue, channel, a, b in gaps:
+        store.append_gap(venue, channel, a, b, "test")
+    store.flush()
+    return store
+
+
+def test_poly_delta_replay_matches_next_snapshot(tmp_path):
+    """Control. Absolute-replace: the deltas restate level sizes and the
+    closing snapshot agrees, so the check must be silent -- otherwise it is
+    merely always-red and proves nothing below."""
+    t = [NOW - timedelta(minutes=m) for m in (40, 39, 38, 30)]
+    _poly_stream(
+        tmp_path / "s.duckdb",
+        [
+            (_poly_book("tok1", [(0.40, 10)], [(0.60, 20)]), t[0]),
+            (_poly_delta("tok1", [("BUY", 0.40, 7)]), t[1]),
+            (_poly_delta("tok1", [("SELL", 0.60, 0)]), t[2]),
+            (_poly_book("tok1", [(0.40, 7)], []), t[3]),
+        ],
+    )
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "poly deltas replay to the next snapshot" not in failed
+
+
+def test_signed_add_parse_is_invisible_to_void_but_trips_the_replay_check(tmp_path):
+    """THE load-bearing one. Read `size` as a signed CHANGE instead of the
+    absolute size -- the reading mistakes #82 had to discriminate against --
+    and every row still archives: a level, a side, a price, a plausible
+    quantity. The void check cannot see it (nothing was unparsed) and the seq
+    check cannot see it (polymarket has no seq). Only the venue's own next
+    snapshot can, and it must."""
+    t = [NOW - timedelta(minutes=m) for m in (40, 39, 30)]
+    _poly_stream(
+        tmp_path / "s.duckdb",
+        [
+            (_poly_book("tok1", [(0.40, 10)], [(0.60, 20)]), t[0]),
+            # signed-add would archive 10 + 7 = 17 here; the wire means 7
+            (_poly_delta("tok1", [("BUY", 0.40, 17)]), t[1]),
+            (_poly_book("tok1", [(0.40, 7)], [(0.60, 20)]), t[2]),
+        ],
+    )
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "void frames are known types" not in failed
+    assert "book seq contiguous or gap-marked" not in failed
+    assert "poly deltas replay to the next snapshot" in failed
+
+
+def test_poly_replay_skips_gap_spanning_intervals(tmp_path):
+    """Discrimination control. Across a reconnect the deltas that would close
+    the book were never received, so the interval mismatches by construction.
+    Counting it would red the check on every reconnect -- 21 in four days --
+    which is the alarm fatigue that makes a check unread."""
+    t = [NOW - timedelta(minutes=m) for m in (40, 39, 30)]
+    _poly_stream(
+        tmp_path / "s.duckdb",
+        [
+            (_poly_book("tok1", [(0.40, 10)], []), t[0]),
+            (_poly_delta("tok1", [("BUY", 0.40, 9)]), t[1]),
+            (_poly_book("tok1", [(0.40, 3)], []), t[2]),
+        ],
+        gaps=[("polymarket", "market", t[1], t[1] + timedelta(seconds=5))],
+    )
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "poly deltas replay to the next snapshot" not in failed
+
+
+def test_poly_replay_ignores_delta_free_intervals(tmp_path):
+    """Vacuity guard, sized so it KILLS the mutant. A snapshot pair with no
+    delta between them asserts only that a snapshot equals itself. Counting
+    those levels does not merely pad the ratio -- it drowns the evidence: 200
+    idle levels beside one wrong delta interval read 0.995, over the floor,
+    so a dead or misparsed delta feed holds the check green exactly the way
+    78 days of #82 did. The only interval carrying a delta must decide."""
+    t = [NOW - timedelta(minutes=m) for m in (40, 39, 38, 30)]
+    idle = [(0.01 * i, 10) for i in range(1, 101)]
+    _poly_stream(
+        tmp_path / "s.duckdb",
+        [
+            (_poly_book("tok1", idle, idle), t[0]),
+            (_poly_book("tok1", idle, idle), t[1]),
+            (_poly_book("tok2", [(0.50, 10)], []), t[1]),
+            (_poly_delta("tok2", [("BUY", 0.50, 4)]), t[2]),
+            (_poly_book("tok2", [(0.50, 9)], []), t[3]),
+        ],
+    )
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "poly deltas replay to the next snapshot" in failed
+
+
+def test_poly_deltas_with_no_replayable_interval_is_not_a_pass(tmp_path):
+    """A stream that stopped re-seeding has no oracle at all. Reporting that
+    green is the vacuous pass the check exists to refuse."""
+    t = [NOW - timedelta(minutes=m) for m in (40, 39)]
+    _poly_stream(
+        tmp_path / "s.duckdb",
+        [
+            (_poly_book("tok1", [(0.40, 10)], []), t[0]),
+            (_poly_delta("tok1", [("BUY", 0.40, 7)]), t[1]),
+        ],
+    )
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "poly deltas replay to the next snapshot" in failed
+
+
 def test_reconnect_seq_restart_is_not_a_hole(tmp_path):
     """seq is connection-scoped and restarts at 1 on reconnect, while Kalshi
     reuses sid=1 for each new connection. Grouping by sid alone welds the

@@ -3257,3 +3257,53 @@ tree it happens to run in is not evidence of anything.**
     docstring is a claim about a server, and only a capture of that server
     verifies it -- a unit test built from the same docstring tests the
     docstring.** Suite 1615 -> 1620 (3 parser + 2 QA).
+
+83. **2026-09-24 -- the void device catches a frame the parser stopped
+    UNDERSTANDING; nothing caught one it understands WRONGLY, and #82's own
+    third claim was exactly that.** #82 shipped polymarket the void device
+    and widened QA's void check per venue. Both read a STRUCTURAL failure:
+    a frame that archives no row at all. Neither can see the other half of
+    what #82 had to decide. Its third claim -- `size` is the new ABSOLUTE
+    size, not a signed change -- was a choice between two readings that
+    both archive a level, a side, a price and a plausible quantity. Read it
+    the wrong way and every row is present, every void count stays zero,
+    the seq check stays green (polymarket carries no sequence number at
+    all), and the book is silently wrong. The measured gap between the two
+    readings was 99.58% vs 14.56%; nothing standing in the repo could have
+    told them apart.
+    **THE ORACLE WAS ALREADY IN THE ARCHIVE AND FREE.** `streamd` re-seeds
+    each polymarket token with a full `book` frame ~35x/day, so every
+    consecutive snapshot pair is a stated end state: replay the deltas
+    between them from the earlier image and compare to the later one.
+    Measured over the first 5.6h of capture after #82 went live -- the
+    whole history there is, because the table held ZERO deltas before it --
+    **446 gap-free intervals over 100 tokens, 48,102 levels, 2 disagree,
+    444 intervals exact (0.99996)**. The 8 further mismatches the raw query
+    showed were all reconnect-spanning and the gap exclusion drops them;
+    the 2 survivors are the venue's own snapshot/delta race, which no
+    ordering key can resolve because polymarket sends no sequence number.
+    **THE CLASS SWEEP CAME BACK NEGATIVE, WHICH IS ALSO A RESULT.** Kalshi
+    cannot have this check: it re-seeds only on SUBSCRIBE, so every
+    consecutive snapshot pair spans a reconnect by construction -- 4,266
+    delta-carrying pairs in the same 24h, **zero** gap-free. The oracle is
+    unavailable there, not missing. Kalshi instead has a sequence number
+    and signed deltas, so loss and over-subtraction are both already read;
+    polymarket has neither, which is why the venue with no seq is the one
+    that gets the replay oracle.
+    Fix: QA check `poly deltas replay to the next snapshot`, floor
+    `POLY_REPLAY_MIN_AGREE = 0.99` -- three orders of magnitude below the
+    measured 0.99996 and two above the 0.1456 the WRONG parse scores, so it
+    cannot be tuned to noise. Intervals a coverage gap touches are skipped
+    (the deltas that would close the book were never received), and
+    intervals carrying NO delta are skipped too: 200 idle levels beside one
+    wrong delta interval read 0.995, over the floor, so counting them lets
+    a dead feed hold the check green in exactly the way 78 days of #82 did.
+    A window with deltas but not one snapshot PAIR fails outright -- that
+    is the seeding itself dying, and it must not read as a pass. Rule: **a
+    check that reads whether a frame PARSED is not a check that it parsed
+    CORRECTLY. When two readings of the same field both produce plausible
+    rows, only the venue's own restatement of the end state can separate
+    them -- find the free oracle before choosing the threshold.** 5 tests,
+    each red-verified by reverting its own target (floor removed; gap
+    exclusion removed; delta-free intervals counted; no-oracle guard
+    removed; last-write-wins replaced by a signed sum). Suite 1620 -> 1625.

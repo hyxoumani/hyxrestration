@@ -110,6 +110,38 @@ KALSHI_MAINT_END_H = 10
 #: benign window; tightening it now would be tuning to the new reading.
 CAPTURE_GAP_BUDGET_MIN = 30.0
 
+#: Polymarket delta-replay floor. The void check catches a frame this parser
+#: stopped UNDERSTANDING; nothing catches a frame it understands WRONGLY.
+#: That is not hypothetical here — mistakes #82's third claim was exactly a
+#: choice between two readings of the same field (absolute-replace vs
+#: signed-add), both of which archive plausible rows, both of which pass void
+#: and pass the seq check, and one of which is wrong. Polymarket is the only
+#: venue where an exact oracle for that class is free: streamd re-seeds each
+#: token with a full `book` frame ~35x/day, so every consecutive snapshot pair
+#: is a stated end state to replay the intervening deltas against.
+#: Measured 2026-09-24, the first 5.6h of capture after #82 went live (the
+#: whole history there is — the table held ZERO deltas before it): 446
+#: gap-free intervals over 100 tokens, 48,102 levels, **2 disagree**, 444
+#: intervals exact. The 8 further mismatches the raw query showed were all
+#: reconnect-spanning and the gap exclusion drops them. The two survivors are
+#: the venue's own snapshot/delta race — polymarket carries no sequence
+#: number, so `recv_ts` is the only ordering available and a frame in flight
+#: at the snapshot's own instant cannot be placed. 0.99 is three orders of
+#: magnitude below the measured 0.99996 and two above the reading the WRONG
+#: parse gives: the same discriminating probe scored signed-add at 0.1456.
+#: A floor between those cannot be tuned to noise.
+#:
+#: The class sweep this implies was run and came back NEGATIVE, which is worth
+#: writing down so the next pass does not re-ask: kalshi cannot have this
+#: check. It re-seeds a book only on SUBSCRIBE, so every consecutive snapshot
+#: pair spans a reconnect by construction -- measured over the same 24h, 4,266
+#: pairs carry deltas and **zero** of them are gap-free. The oracle is not
+#: missing there, it is unavailable. What kalshi has instead is a sequence
+#: number (the seq check reads loss directly) and signed deltas (whose
+#: non-negativity check reads over-subtraction); polymarket has NEITHER, which
+#: is why the venue with no seq is the one that gets the replay oracle.
+POLY_REPLAY_MIN_AGREE = 0.99
+
 # Lock-wait budget. Measured 2026-08-02: `hyxlab-collect` is OnCalendar
 # `*:0/5` and `hyxlab-qa` is `07:00:00 UTC` — a 5-minute boundary — so the
 # two start in the SAME SECOND every day, by construction. The collector
@@ -800,6 +832,111 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         """
     ).fetchone()[0]
     check("reconstructed book levels non-negative", neg == 0, f"{neg} negative levels")
+
+    # Polymarket delta replay against the venue's own next snapshot. The check
+    # above is signed-delta arithmetic and says nothing here (poly sizes are
+    # absolute and never negative, so it excludes the venue by construction) --
+    # which left polymarket with NO reconstruction check at all, the third
+    # silencer of mistakes #82 repeating one line down from where it was fixed.
+    # Replay is "last write wins per (side, price)": seed from the snapshot
+    # frame at `a`, apply every delta strictly inside (a, b), compare the
+    # non-empty levels to the snapshot frame at `b`. Intervals a coverage gap
+    # touches are skipped for the same reason the kalshi query skips them --
+    # the deltas that would close the book were never received. Intervals
+    # carrying no delta are skipped too: they assert only that a snapshot
+    # equals itself, and counting them would let a dead delta feed hold the
+    # agreement ratio at 1.0. See POLY_REPLAY_MIN_AGREE.
+    levels, agree, ivals, bad_ivals = conn.execute(
+        """
+        WITH frame AS (
+          SELECT DISTINCT market_id, recv_ts FROM book_events
+          WHERE venue='polymarket' AND kind='snap'
+            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
+        ), iv AS (
+          SELECT market_id, recv_ts AS a,
+                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
+          FROM frame QUALIFY b IS NOT NULL
+        ), clean AS (
+          SELECT * FROM iv WHERE NOT EXISTS (
+            SELECT 1 FROM stream_gaps g
+            WHERE g.venue IN ('polymarket', '*') AND g.channel IN ('market', '*')
+              AND g.started_at <= iv.b AND coalesce(g.ended_at, iv.b) >= iv.a)
+        ), src AS (
+          SELECT c.market_id, c.a, c.b, e.side, e.price, e.qty, e.recv_ts, e.kind
+          FROM clean c JOIN book_events e
+            ON e.venue='polymarket' AND e.market_id = c.market_id
+           AND ((e.kind='snap' AND e.recv_ts = c.a)
+             OR (e.kind='delta' AND e.recv_ts > c.a AND e.recv_ts < c.b))
+        ), tested AS (
+          SELECT market_id, a, b FROM src WHERE kind='delta' GROUP BY 1, 2, 3
+        ), recon AS (
+          SELECT s.market_id, s.a, s.side, s.price, arg_max(s.qty, s.recv_ts) AS qty
+          FROM src s JOIN tested t USING (market_id, a, b)
+          GROUP BY 1, 2, 3, 4
+        ), truth AS (
+          SELECT t.market_id, t.a, e.side, e.price, e.qty
+          FROM tested t JOIN book_events e
+            ON e.venue='polymarket' AND e.market_id = t.market_id
+           AND e.kind='snap' AND e.recv_ts = t.b
+        ), cmp AS (
+          SELECT coalesce(r.market_id, u.market_id) AS market_id,
+                 coalesce(r.a, u.a) AS a,
+                 CASE WHEN abs(coalesce(r.qty, 0) - coalesce(u.qty, 0)) < 1e-6
+                      THEN 1 ELSE 0 END AS ok
+          FROM (SELECT * FROM recon WHERE qty > 0) r
+          FULL OUTER JOIN (SELECT * FROM truth WHERE qty > 0) u
+            ON r.market_id = u.market_id AND r.a = u.a AND r.side = u.side
+           AND abs(r.price - u.price) < 1e-9
+        )
+        SELECT count(*), coalesce(sum(ok), 0), count(DISTINCT (market_id, a)),
+               count(DISTINCT CASE WHEN ok = 0 THEN (market_id, a) END)
+        FROM cmp
+        """,
+        [now, int(hours)],
+    ).fetchone()
+    # A window carrying deltas but not one snapshot PAIR to replay them into
+    # is NOT a pass: that is what a stream which stopped re-seeding looks
+    # like, and the oracle is gone without a single check going red — the
+    # vacuous-green this check exists to refuse. Pairs are counted BEFORE the
+    # gap exclusion on purpose. Losing every interval to reconnects is a
+    # window this check cannot speak about (say so on the line), while losing
+    # every PAIR is the seeding itself failing.
+    poly_deltas, pairs = conn.execute(
+        """
+        WITH d AS (
+          SELECT count(*) AS n FROM book_events
+          WHERE venue='polymarket' AND kind='delta'
+            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
+        ), frame AS (
+          SELECT DISTINCT market_id, recv_ts FROM book_events
+          WHERE venue='polymarket' AND kind='snap'
+            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
+        ), iv AS (
+          SELECT market_id, recv_ts AS a,
+                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
+          FROM frame QUALIFY b IS NOT NULL
+        )
+        SELECT d.n, (SELECT count(*) FROM iv WHERE EXISTS (
+                 SELECT 1 FROM book_events e
+                 WHERE e.venue='polymarket' AND e.kind='delta'
+                   AND e.market_id = iv.market_id
+                   AND e.recv_ts > iv.a AND e.recv_ts < iv.b)) FROM d
+        """,
+        [now, int(hours), now, int(hours)],
+    ).fetchone()
+    frac = agree / levels if levels else 0.0
+    check(
+        "poly deltas replay to the next snapshot",
+        (frac >= POLY_REPLAY_MIN_AGREE) if ivals else (poly_deltas == 0 or pairs > 0),
+        f"{ivals}/{pairs} gap-free intervals ({bad_ivals} inexact), {levels} levels,"
+        f" {frac:.5f} agree, floor {POLY_REPLAY_MIN_AGREE}"
+        + (
+            f"; {poly_deltas} deltas, "
+            + ("every interval gap-excused" if pairs else "NO snapshot pair to replay into")
+            if not ivals
+            else ""
+        ),
+    )
 
     # `recv_ts - src_ts` is NOT latency: it is (box clock offset + transport
     # latency), and the offset dominates by two orders of magnitude. Measured
