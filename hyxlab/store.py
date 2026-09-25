@@ -11,6 +11,7 @@ rule) holds three tables:
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -311,6 +312,73 @@ def spill_cap(conn, path: str | Path) -> None:
 #: the whole point: it is the difference between "come back later" and
 #: "the archive is broken", and those two want opposite reactions.
 _LOCK_HOLDER_RE = re.compile(r"Conflicting lock is held in (\S+) \(PID (\d+)\)")
+#: ...and the file it could not lock, which is what turns the PID from a
+#: number into a verifiable claim (see `_holder_name`).
+_LOCK_FILE_RE = re.compile(r'Could not set lock on file "([^"]+)"')
+#: Indirected for the tests ONLY. A holder's unit, command line and open
+#: descriptors all come from one kernel filesystem, and a test that cannot
+#: build a holder cannot check any of the three -- the alternative is
+#: asserting against whatever cgroup the suite happens to run in, which is a
+#: `.scope` under a shell and `hyxlab-autoloop.service` under the loop.
+_PROC = Path("/proc")
+
+
+def _holder_unit(pid: str) -> str | None:
+    """The systemd unit `pid` runs under, from its cgroup — or None.
+
+    The cgroup line is `0::/user.slice/.../app.slice/hyxlab-stream.service`;
+    the last component that looks like a unit IS the attribution. Readable
+    only while the process lives, which is why every caller resolves at the
+    moment of the collision and never afterwards.
+    """
+    try:
+        line = (_PROC / pid / "cgroup").read_text().strip().rsplit("/", 1)[-1]
+    except OSError:
+        return None
+    return line if line.endswith((".service", ".scope", ".slice")) else None
+
+
+def _holder_cmd(pid: str) -> str | None:
+    """`python -m simulator.run_l2`-shaped summary of `pid`'s command line.
+
+    The fallback for a holder with no unit — an interactive `python -m ...`,
+    which on this box is a real and recurring class of long reader (three of
+    the 2026-09-25 stall episodes were an autonomous pass's own probes).
+    """
+    try:
+        argv = (_PROC / pid / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    parts = [a.decode("utf-8", "replace") for a in argv if a]
+    if not parts:
+        return None
+    parts[0] = Path(parts[0]).name
+    return " ".join(parts)[:80]
+
+
+def _holds_file(pid: str, path: str) -> bool | None:
+    """Does `pid` have `path` open? True/False, or None if unanswerable.
+
+    A held DuckDB file lock is an flock on an OPEN descriptor, so the
+    holder's `/proc/<pid>/fd` is a direct answer and not a heuristic — it
+    is the one check that separates the real holder from a PID that was
+    recycled between DuckDB's refusal and this lookup. None (not False)
+    when the fd table is unreadable (another user's process, or the holder
+    exited mid-scan): "I could not look" must not read as "it was not it".
+    """
+    try:
+        fds = list((_PROC / pid / "fd").iterdir())
+    except OSError:
+        return None
+    seen = False
+    for fd in fds:
+        try:
+            if os.path.realpath(fd) == path:
+                return True
+            seen = True
+        except OSError:
+            continue
+    return False if seen else None
 
 
 def lock_holder(exc: BaseException) -> str | None:
@@ -331,11 +399,45 @@ def lock_holder(exc: BaseException) -> str | None:
     this is a function and not a regex at each call site: `collector.qa`
     got it right, `simulator.atlas` re-derived neither half and printed
     the traceback.
+
+    THE NAME DuckDB SUPPLIES CANNOT ATTRIBUTE ANYTHING HERE, and that is
+    what this function adds. Its first capture is the EXECUTABLE, which on
+    this box is `/usr/bin/python3.14` for `hyxlab-stream`, `hyxlab-shadow`,
+    `hyxlab-divergence`, every sweep, and every ad-hoc probe alike — so the
+    string it produced was the same string for every holder there has ever
+    been. On 2026-09-25 a 3,057 s stall drove 387,856 rows out of streamd's
+    buffer into the torn-append sidecar, and the ledger recorded that
+    interpreter path against it; the culprit was identified a pass later by
+    ELIMINATION over which timers had fired in the window, on an inference
+    the ledger could neither support nor refute. The cgroup names the unit
+    outright, and it is legible only while the holder is alive — minutes
+    later `/proc/<pid>` is gone and the question is permanently unanswerable.
+
+    So the name is resolved here, at the collision: unit if there is one,
+    else the command line, else the interpreter path as before. Where the
+    message also names the FILE, the claim is VERIFIED against the holder's
+    open descriptors rather than asserted, because a PID is only evidence
+    if it still refers to the process DuckDB meant.
+
+    LIMIT, WRITTEN DOWN RATHER THAN IMPLIED: a read-only DuckDB lock is
+    SHARED, so several processes may hold the file while the message names
+    exactly one. This names *a* holder, never the whole set — and the
+    verdict (None vs not-None) is deliberately unchanged by any of the
+    above, so every existing caller's live-writer-vs-broken-archive
+    discriminator reads exactly as it did before.
     """
     m = _LOCK_HOLDER_RE.search(str(exc))
-    if not m or not Path(f"/proc/{m.group(2)}").exists():
+    if not m or not (_PROC / m.group(2)).exists():
         return None
-    return f"{m.group(1)} pid {m.group(2)}"
+    exe, pid = m.group(1), m.group(2)
+    name = _holder_unit(pid) or _holder_cmd(pid) or exe
+    mf = _LOCK_FILE_RE.search(str(exc))
+    if mf and _holds_file(pid, mf.group(1)) is False:
+        # Alive, but not on this file: the PID was recycled, or the holder
+        # let go between DuckDB's attempt and this lookup. Naming it without
+        # the caveat is how an instrument indicts an innocent.
+        return f"{name} pid {pid} (no longer holds {Path(mf.group(1)).name})"
+    return f"{name} pid {pid}"
 
 
 def duck_connect(path: str | Path, *, read_only: bool = False, **kw):

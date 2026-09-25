@@ -2558,6 +2558,23 @@ def qa_stream_stalls(
     def _cap_rows(e: dict) -> int:
         return int(e.get("spilled") or 0) - int(e.get("handoff") or 0)
 
+    def _held_by(eps: list[dict], sep: str) -> str:
+        """`<sep>held by <unit>, <unit>` over `eps`, or "" when none is named.
+
+        Empty rather than "unknown" for an episode written before the daemon
+        resolved holders (2026-09-25) and for one whose error named no live
+        PID: both are absence of evidence, and a check that printed "held by
+        unknown" would read as a finding about the holder instead of about
+        the record. Distinct across the episodes, first-seen order kept --
+        the ledger's own order is the order they arrived in.
+        """
+        seen: list[str] = []
+        for e in eps:
+            for h in e.get("holders") or []:
+                if h not in seen:
+                    seen.append(h)
+        return f"{sep}held by {', '.join(seen)}" if seen else ""
+
     spilled = [e for e in episodes if _cap_rows(e) > 0]
     handoff = [e for e in episodes if int(e.get("handoff") or 0) > 0]
     longest = max(episodes, key=lambda e: float(e["duration_s"]))
@@ -2567,6 +2584,7 @@ def qa_stream_stalls(
         f"{len(episodes)} episode(s) in {hours:g}h; longest {float(longest['duration_s']):.0f}s "
         f"({longest['started'][:16]}Z"
         + (", still open when last written" if longest.get("state") == "open" else "")
+        + _held_by([longest], ", ")
         + f"), peak {peak} rows held"
         + (f", {open_n} never recorded an end" if open_n else "")
         + (
@@ -2590,7 +2608,7 @@ def qa_stream_stalls(
             name,
             False,
             f"{len(spilled)} episode(s) hit SPILL_CAP and moved {rows} row(s) out of memory "
-            f"to the sidecar — {shape}",
+            f"to the sidecar{_held_by(spilled, ' — ')} — {shape}",
         )
         return
     check(name, True, shape)

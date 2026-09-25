@@ -1769,6 +1769,76 @@ Format: what happened → root cause → error type → prevention tier
     composition; verified red four ways (both holes against the pre-fix
     store, the budget charge removed, `DRAIN_LOCK_WAIT_S = 40`).
 
+88. **2026-09-25 -- the lock-holder instrument named the interpreter, and
+    on this box every holder is the same interpreter.** The 09-25 QA run
+    failed `streamd flush stalls stay inside the buffer`: 22 episodes in
+    24 h, longest **3,057 s**, peak **400,154 rows** held in RAM, and one
+    episode past `SPILL_CAP` that moved **387,856 rows** into the JSONL
+    sidecar whose torn-append path is a known archive-hole class. Cause,
+    now measured rather than inferred: `hyxlab-divergence` took a
+    read-only attach on the live `hyxstream.duckdb` at 01:20:09Z and let
+    go at 02:05:54Z -- **45 m 45 s** -- because `replay_run` holds the
+    connection across the whole replay and not merely across its queries,
+    and a read-only DuckDB handle takes a shared lock the writer cannot
+    get past. Its OWN published `attach_wait` block for that run reads
+    `attempts 1, waited_s 0.010, contended_n 0, budget_frac 0.0`: a
+    flawless attach reading, emitted by the process that was at that
+    moment wedging the capture daemon. Root cause of the BLINDNESS, which
+    is the transferable half: `hyxlab.store.lock_holder` -- written
+    precisely so a reader could name who held a file, and already used by
+    `collector.qa`, `simulator.atlas` and the stall ledger -- returned
+    DuckDB's first capture, the holder's EXECUTABLE. On this box that is
+    `/usr/bin/python3.14` for the divergence replay, the shadow daemon,
+    every sweep, `streamd` itself and every ad-hoc probe alike, so the
+    string it produced was the SAME STRING for every holder there has
+    ever been. `FlushStalls.last_error` even carries a comment saying
+    "30 minutes without who held the lock is half the finding"; the
+    finding was half-missing anyway, because the half it kept could not
+    discriminate. The attribution was therefore made a pass later by
+    ELIMINATION over which timers had fired in the window. It was right
+    (the journal confirms PID 3026564 is `hyxlab-divergence`) and it was
+    luck: the ledger's 250 episodes name at least three distinct long
+    holders, and one of them is `hyxlab-shadow` -- a 24/7 daemon that no
+    window-elimination can ever exclude, and the holder of 170 of those
+    250 episodes. The name was in `/proc/<pid>/cgroup` the whole time,
+    and ONLY while the holder lived: minutes later the directory is gone
+    and the question is permanently unanswerable. An instrument whose
+    input evaporates has one chance to read it, and this one spent that
+    chance copying a string that was constant across its whole domain.
+    Fix: `lock_holder` resolves the unit from the holder's cgroup (else
+    its command line, else the old executable path), and VERIFIES the PID
+    against the holder's open descriptors where the message also names
+    the file -- a held flock is an open fd, which is the only thing that
+    separates the real holder from a recycled PID; "could not look"
+    returns None rather than a refutation, so thin evidence never
+    discredits a true holder. Its VERDICT (None = dead PID = the archive
+    is unreachable; not-None = a live writer = come back later) is
+    deliberately byte-for-byte unchanged, so no caller's
+    wait-vs-incident discriminator moves. `FlushStalls` resolves at the
+    failed flush -- the only moment it can -- and records the DISTINCT
+    holders as a list, because a holder changes mid-episode (measured:
+    09-20 20:19Z was PID 2828640 at its 300 s heartbeat and 2830076 at
+    its 600 s one), bounded so a record cannot grow with the stall's
+    duration, guarded so a lookup that raises costs an episode its name
+    and never the tape. The QA check names the holder on both arms.
+    Rule: **an instrument that identifies a culprit must be checked
+    against the population it has to DISCRIMINATE, not against one
+    example. A field that is constant across every case it will ever see
+    is not evidence, however precisely it is recorded -- and where its
+    source is a live process, the only correct time to read it is at the
+    collision.** 19 tests (`tests/test_lock_holder_attribution.py` plus
+    the ledger/reader half in `tests/test_stream_stalls.py`), each
+    red-verified by reverting its own target; one of them had to be
+    rewritten after the revert showed it green, because the FAIL arm's
+    holder text was being satisfied by the shape line's -- #85's shape,
+    caught by #85's own method. Suite 1681 -> 1700. NOT fixed and named
+    as the next item: the 45-minute hold itself. ~97 % of it is
+    simulation with an idle connection (the repo's own measurement puts a
+    2-day window's read at 13.6 s, so ~83 s of the 2,745), but a
+    streaming `fetchmany` cursor cannot release the file it is reading,
+    so shortening it means copying the window out first -- a design that
+    needs its copy cost measured before it is built.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

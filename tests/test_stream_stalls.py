@@ -446,6 +446,7 @@ def _ep(
     spilled=0,
     peak=1000,
     handoff=None,
+    holders=None,
 ) -> dict:
     rec = {
         "at": (started + timedelta(seconds=duration)).isoformat(),
@@ -456,6 +457,7 @@ def _ep(
         "peak_pending": peak,
         "spilled": spilled,
         "error": "OSError: IO Error",
+        "holders": list(holders or []),
     }
     if handoff is not None:
         rec.update(interrupted=True, handoff=handoff)
@@ -674,3 +676,177 @@ def test_a_capped_episode_a_restart_interrupted_still_fails(tmp_path):
     failed, skipped, out = _run_check(path=path, journal_fails=240, now=NOW)
     assert failed == {"streamd flush stalls stay inside the buffer"}, out
     assert "moved 34400 row(s)" in out
+
+
+# --------------------------------------------------------------------------
+# who held the lock (2026-09-25)
+#
+# The ledger measured a 3,057 s stall that spilled 387,856 rows and recorded
+# `/usr/bin/python3.14` against it -- the string every holder on this box
+# produces. The unit lives in `/proc/<pid>/cgroup` and evaporates with the
+# process, so it is resolved at the failed flush or never; see
+# tests/test_lock_holder_attribution.py for the resolver itself.
+# --------------------------------------------------------------------------
+
+
+def _held(monkeypatch, *names):
+    """Make `lock_holder` answer `names` in order, then repeat the last."""
+    seq = list(names)
+    monkeypatch.setattr(streamd, "lock_holder", lambda exc: seq.pop(0) if len(seq) > 1 else seq[0])
+
+
+def test_the_episode_names_the_unit_that_held_the_lock(monkeypatch, tmp_path):
+    """The finding, in one record. `duration_s` and `spilled` were always
+    there; the name of the process that caused them was not, and a pass had
+    to reconstruct it from which timers had fired."""
+    _held(monkeypatch, "hyxlab-divergence.service pid 3026564")
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    s.failed(400_000, 387_856, _err(), T0)
+    s.ok(T0 + timedelta(seconds=3057))
+
+    (rec,) = _records(log)
+    assert rec["holders"] == ["hyxlab-divergence.service pid 3026564"]
+
+
+def test_a_holder_that_changes_mid_episode_is_kept_as_a_list(monkeypatch, tmp_path):
+    """Measured, not hypothetical: the 09-20 20:19Z episode was held by PID
+    2828640 at its 300 s heartbeat and by 2830076 at its 600 s one. A
+    single-valued field would report whichever end of the stall the reader
+    happened to open."""
+    _held(monkeypatch, "a.service pid 1", "b.service pid 2")
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    s.failed(10, 0, _err(), T0)
+    s.failed(20, 0, _err(), T0 + timedelta(seconds=15))
+    s.ok(T0 + timedelta(seconds=30))
+
+    (rec,) = _records(log)
+    assert rec["holders"] == ["a.service pid 1", "b.service pid 2"]
+
+
+def test_one_holder_across_a_long_stall_is_recorded_once(monkeypatch, tmp_path):
+    """A stall is ~200 failed flushes; the holder is one fact, not 200."""
+    _held(monkeypatch, "hyxlab-shadow.service pid 7")
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    for i in range(50):
+        s.failed(10, 0, _err(), T0 + timedelta(seconds=15 * i))
+    s.ok(T0 + timedelta(seconds=800))
+
+    assert _records(log)[-1]["holders"] == ["hyxlab-shadow.service pid 7"]
+
+
+def test_the_holder_list_is_bounded(monkeypatch, tmp_path):
+    """One record per heartbeat for the length of the stall: the record's size
+    must not grow with the stall's duration, which is precisely the quantity
+    the pathological case maximises."""
+    seq = iter(f"u{i}.service pid {i}" for i in range(500))
+    monkeypatch.setattr(streamd, "lock_holder", lambda exc: next(seq))
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    for i in range(200):
+        s.failed(10, 0, _err(), T0 + timedelta(seconds=15 * i))
+    s.ok(T0 + timedelta(seconds=3100))
+
+    assert len(_records(log)[-1]["holders"]) == streamd.FlushStalls.HOLDERS_MAX
+
+
+def test_an_unnamed_holder_writes_an_empty_list_not_a_missing_key(tmp_path):
+    """`lock_holder` returns None for a disk error and for a lock left behind
+    by a DEAD process -- both real, and both a reading. A key that vanished
+    there would be indistinguishable from a record written before the field
+    existed, which is the one thing a reader must be able to tell apart."""
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    s.failed(10, 0, _err(), T0)
+    s.ok(T0 + timedelta(seconds=15))
+
+    assert _records(log)[0]["holders"] == []
+
+
+def test_the_holders_reset_with_the_episode(monkeypatch, tmp_path):
+    """Same reason `spilled` and `peak_pending` reset: carrying one episode's
+    holder into the next indicts a unit that was not running."""
+    _held(monkeypatch, "a.service pid 1", "b.service pid 2")
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    s.failed(10, 0, _err(), T0)
+    s.ok(T0 + timedelta(seconds=15))
+    s.failed(10, 0, _err(), T0 + timedelta(seconds=60))
+    s.ok(T0 + timedelta(seconds=75))
+
+    first, second = _records(log)
+    assert first["holders"] == ["a.service pid 1"]
+    assert second["holders"] == ["b.service pid 2"]
+
+
+def test_a_resolver_that_raises_never_takes_down_the_daemon(monkeypatch, tmp_path):
+    """The holder lookup reads a filesystem that is racing the holder's exit.
+    It sits in the flush-failure path of the daemon whose one job is not
+    losing what it saw, so it may cost an episode its name and nothing more."""
+    monkeypatch.setattr(streamd, "lock_holder", lambda exc: 1 / 0)
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    s.failed(10, 0, _err(), T0)
+    s.ok(T0 + timedelta(seconds=15))
+
+    assert _records(log)[0]["holders"] == []
+
+
+def test_the_spill_failure_names_the_holder(tmp_path):
+    """The read side. The 2026-09-25 FAIL line said 387,856 rows and not who,
+    and that gap is what cost a pass of archaeology.
+
+    THE CAPPED EPISODE IS DELIBERATELY NOT THE LONGEST ONE. Written the
+    obvious way -- one episode, both the longest and the spiller -- this test
+    passed with the spill arm's holder text deleted, because the shape line
+    embedded in the same message names the LONGEST episode's holder and the
+    two were the same record. That is #85's shape: a test satisfied by a
+    mechanism other than the one it names. Duration and spill are
+    independent (a short burst at a high row rate reaches SPILL_CAP; a long
+    stall at a quiet hour does not), so separating them is also the truthful
+    case."""
+    path = _ledger(
+        tmp_path,
+        _ep(T0, 3057.0, peak=180_000, holders=["hyxlab-shadow.service pid 9"]),
+        _ep(
+            T0 + timedelta(hours=1),
+            600.0,
+            spilled=387_856,
+            peak=400_154,
+            holders=["hyxlab-divergence.service pid 3"],
+        ),
+    )
+    failed, _, out = _run_check(path=path, journal_fails=200, now=NOW)
+    assert failed == {"streamd flush stalls stay inside the buffer"}
+    assert "to the sidecar — held by hyxlab-divergence.service pid 3" in out
+
+
+def test_the_passing_shape_names_the_longest_episodes_holder(tmp_path):
+    """A stall inside the buffer is not a failure and IS the drift signal, so
+    the green line has to carry the name too -- a holder that starts appearing
+    on the longest episode is the thing a reader is watching for."""
+    path = _ledger(
+        tmp_path,
+        _ep(T0, 15.0),
+        _ep(
+            T0 + timedelta(minutes=30),
+            1756.0,
+            peak=180_000,
+            holders=["hyxlab-shadow.service pid 9"],
+        ),
+    )
+    failed, skipped, out = _run_check(path=path, journal_fails=140, now=NOW)
+    assert not failed and not skipped, out
+    assert "held by hyxlab-shadow.service pid 9" in out
+
+
+def test_an_episode_with_no_holder_says_nothing_rather_than_unknown(tmp_path):
+    """Absence of evidence about the holder is not a finding about the holder.
+    Every episode written before 2026-09-25 is in this state, and a line
+    reading "held by unknown" would make each of them look like a defect."""
+    path = _ledger(tmp_path, _ep(T0, 1756.0, peak=180_000))
+    failed, skipped, out = _run_check(path=path, journal_fails=140, now=NOW)
+    assert not failed and not skipped, out
+    assert "held by" not in out

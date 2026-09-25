@@ -35,8 +35,17 @@ _HELD = "Conflicting lock is held in /usr/bin/python3.14 (PID {pid})"
 
 
 def test_lock_holder_names_a_live_writer():
-    """PID 1 always exists on Linux, so this is the live-holder branch."""
-    assert lock_holder(duckdb.Error(_HELD.format(pid=1))) == "/usr/bin/python3.14 pid 1"
+    """PID 1 always exists on Linux, so this is the live-holder branch.
+
+    The NAME is no longer `/usr/bin/python3.14`: since 2026-09-25 the holder
+    is resolved to its systemd unit, because the interpreter path is the same
+    string for every holder this box has ever had and so attributed nothing
+    (tests/test_lock_holder_attribution.py). What this test still owns is the
+    branch -- a live PID yields a holder -- so it asserts the pid and refuses
+    the old answer rather than pinning whatever PID 1's cgroup is called."""
+    out = lock_holder(duckdb.Error(_HELD.format(pid=1)))
+    assert out is not None and out.endswith(" pid 1")
+    assert not out.startswith("/usr/bin/")
 
 
 def test_lock_holder_rejects_a_dead_pid():

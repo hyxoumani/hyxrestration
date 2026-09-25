@@ -44,6 +44,7 @@ import websockets
 
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
 from hyxlab.lockid import db_owner_lock_or_reason
+from hyxlab.store import lock_holder
 from hyxlab.streamstore import StreamStore
 
 FLUSH_SECS = 15.0
@@ -228,6 +229,12 @@ class FlushStalls:
     daemon whose one job is not losing what it saw.
     """
 
+    #: Distinct holders retained per episode. Two is the most any episode in
+    #: the 250-episode ledger has ever shown; the headroom is for a stall long
+    #: enough to outlive several readers, and the bound is what keeps one
+    #: record from growing with the stall's duration.
+    HOLDERS_MAX = 8
+
     def __init__(self, path: str | Path | None = None) -> None:
         # Resolved at WRITE time, never bound here: STALL_LOG is relative to
         # the working directory and the suite patches it (the same default-arg
@@ -241,6 +248,9 @@ class FlushStalls:
         # episode that ended is the one an operator reads after the fact, and
         # "30 minutes" without "who held the lock" is half the finding.
         self.last_error = ""
+        # Distinct lock holders seen during the open episode, resolved to a
+        # systemd unit at the moment of the collision (see `observe`).
+        self.holders: list[str] = []
         self._last_written: datetime | None = None
 
     def _write(self, rec: dict) -> None:
@@ -264,6 +274,12 @@ class FlushStalls:
                 "peak_pending": self.peak_pending,
                 "spilled": self.spilled,
                 "error": self.last_error,
+                # Always present, empty list included: "nothing named a live
+                # holder" is a reading (a disk error, or a lock left behind by
+                # a dead process), and a key that vanishes in that case would
+                # be indistinguishable from an old record written before the
+                # field existed.
+                "holders": list(self.holders),
                 **extra,
             }
         )
@@ -295,6 +311,19 @@ class FlushStalls:
         leave the reader (which keeps the LONGEST per `started`) picking
         between them on a tie -- where the one it must not pick is the one
         without the handoff count.
+
+        THE HOLDER IS RESOLVED HERE AND CAN BE RESOLVED NOWHERE ELSE. The
+        name lives in `/proc/<pid>/cgroup`, which stops existing when the
+        holder exits -- so an episode whose holder is not named at the
+        collision can never be attributed afterwards. It was not, and the
+        cost came due on 2026-09-25: a 3,057 s stall spilled 387,856 rows,
+        and the unit responsible was named a pass later by eliminating the
+        timers that had NOT fired in the window. That inference happened to
+        be right (`hyxlab-divergence`, PID 3026564, confirmed against the
+        journal), and it could not have separated any of the three long
+        holders this box actually has -- the divergence replay, the shadow
+        daemon, and an autonomous pass's own probes -- because DuckDB names
+        the holder's EXECUTABLE and all three are `/usr/bin/python3.14`.
         """
         if self.started is None:
             self.started = now
@@ -302,6 +331,25 @@ class FlushStalls:
             self._last_written = None
         self.fails += 1
         self.last_error = _short_err(exc)
+        # DISTINCT and first-seen order, because a holder CHANGES mid-episode:
+        # the 09-20 20:19Z episode was held by PID 2828640 at 300 s and by
+        # 2830076 at 600 s, so a single-valued field would have reported
+        # whichever end of the stall the reader happened to look at. Capped
+        # so a pathological episode cannot grow the record without bound --
+        # and the cap also ends the per-failure /proc lookups once reached.
+        if len(self.holders) < self.HOLDERS_MAX:
+            # Best-effort exactly as the ledger's writes are, and for a
+            # stronger reason: the lookup reads a filesystem that is racing
+            # the holder's exit, from inside the flush-FAILURE path of the
+            # daemon whose one job is not losing what it saw. It may cost an
+            # episode its name; it may not cost the tape.
+            try:
+                who = lock_holder(exc)
+            except Exception as exc2:  # noqa: BLE001 — see above
+                _log(f"stall holder unresolvable ({type(exc2).__name__}: {exc2})")
+                who = None
+            if who and who not in self.holders:
+                self.holders.append(who)
         self.peak_pending = max(self.peak_pending, pending)
         self.spilled = max(self.spilled, spilled)
 
@@ -348,6 +396,7 @@ class FlushStalls:
         self.peak_pending = 0
         self.spilled = 0
         self.last_error = ""
+        self.holders = []
 
 
 def _short_err(exc: BaseException) -> str:
