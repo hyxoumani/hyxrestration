@@ -90,3 +90,18 @@ def _no_cwd_rooted_duckdb_scratch():
         f"cwd-rooted duckdb scratch left in the repo root: {leaked}."
         " Pass an absolute path (tmp_path) to any connect helper."
     )
+
+
+# --- Verdict reachability -------------------------------------------------
+# A QA check that is printed, on data it really reads, can still have a FAIL
+# arm nothing reaches (mistakes #85). The recorder goes in at conftest import
+# so it is around `collector.qa.check` for every test in the session, and the
+# verdict is reported from `pytest_sessionfinish`, where the evidence is
+# finally complete. See tests/verdict_audit.py.
+from tests import verdict_audit  # noqa: E402
+
+verdict_audit.install()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    verdict_audit.report(session, exitstatus)

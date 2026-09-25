@@ -3405,3 +3405,52 @@ tree it happens to run in is not evidence of anything.**
     history: `PASS -- 1218 truncated market(s) past the 48h grace all
     absorbed -- 1215 out-fetched (thinnest margin +4 prints), 3 re-visited
     by a later run at the same depth`.
+
+86. **2026-09-25 -- two standing QA checks had never once been driven red,
+    and nothing in this repo could tell.** #85's rule was to ask, before
+    shipping a check, which of its verdicts are REACHABLE. Asked of every
+    check in `collector/qa.py`, the answer needs evidence rather than
+    reading: a FAIL arm is demonstrably reachable when something has
+    reached it. Measured by wrapping `collector.qa.check` for one whole
+    suite run (1,650 tests) and recording every verdict it emitted. 25
+    production checks reached a verdict and **two of them had never been
+    failed by any test in the repo: `kalshi mirror invariant` (55 greens,
+    0 reds) and `trade price/qty domains` (29 greens, 0 reds)**. Both are
+    invariant tripwires over data this project does not produce -- the
+    venue's own quote fields, the firehose's own prints -- which is exactly
+    the class whose query can match nothing at all (a renamed column, a
+    `venue` filter that never matches, a window that excludes everything)
+    and read green forever with nobody the wiser. They are also the class
+    with no natural red: production has never violated either invariant, so
+    the check has never been exercised by the thing it watches, and the
+    suite was the only place it could be. Probed directly, both DO go red
+    (`no_ask=0.99` against `yes_bid=0.44` prints `FAIL kalshi mirror
+    invariant -- 1 violations`; a `StreamTrade` at price 0.0 / qty 0.0
+    prints `FAIL trade price/qty domains -- 1 bad rows in window`), so this
+    was an UNPROVEN verdict and not a dead one -- but that distinction was
+    unavailable until somebody spent the ten minutes, which is the defect.
+    Fix: the two red tests, each written through the PRODUCTION writer
+    (`Store.insert_snapshots`, `StreamStore.append_trades`) rather than a
+    raw INSERT, because the reachability question worth asking is whether a
+    writer can produce the state; plus the audit that found them, made
+    standing. `tests/verdict_audit.py` records every verdict the suite
+    reaches and `pytest_sessionfinish` fails the session when a name seen
+    GREEN was never seen RED. The asymmetry is deliberate: a red-only name
+    is a mutant test doing its job, while a check that greens the morning
+    run and has never been shown capable of anything else is a claim nobody
+    has tested. It reports from `sessionfinish` because the evidence is not
+    complete until the last test has run, and it declines any session that
+    selected, deselected or reordered -- a partial run would indict every
+    check it did not reach. Declarations must name a test file that exists
+    and are reported STALE the moment the session stops agreeing with them.
+    Rule: **a check whose FAIL arm nothing has ever reached is an untested
+    claim, and "the suite is green" is precisely what it looks like. Derive
+    reachability from EXECUTION rather than from reading the source, and
+    keep deriving it -- the next check ships green too.** Stated limits, in
+    the module: this does not claim the red arm fires on the RIGHT input,
+    nor that the state a test built is one a writer can produce (#85 would
+    have passed this audit), and it is satisfiable by calling `qa.check`
+    with a production name directly. It is a floor under the mutant tests,
+    not a substitute for them. 26 tests; the audit itself red-verified by
+    disabling the two new reds and watching a 1,674-green session exit 1
+    naming both. Suite 1650 -> 1676.

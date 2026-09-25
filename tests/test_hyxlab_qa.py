@@ -2073,3 +2073,61 @@ def test_healthy_stream_reports_the_capture_gap_check(tmp_path):
     qa._ran.clear()
     _run(None, tmp_path, stream=tmp_path / "s.duckdb")
     assert qa.CAPTURE_GAP_CHECK in qa._ran
+
+
+def test_bad_trade_domain_trips_the_domain_check(tmp_path):
+    """The FAIL arm of `trade price/qty domains`, which the whole suite drove
+    green 29 times and red zero times until this test (mistakes #85, the
+    verdict-reachability audit in tests/verdict_audit.py).
+
+    Written through `append_trades` rather than by raw INSERT because that is
+    the reachability question worth asking: nothing between the wire and the
+    table validates the domain -- `StreamStore._insert` executes the values it
+    is handed -- so a venue that starts quoting a settled market at 0.0, or a
+    parser that reads a size field as zero, lands exactly this row.
+    """
+    from hyxlab.streamstore import StreamTrade
+
+    store = _fresh_stream(tmp_path / "s.duckdb")
+    store.append_trades(
+        [StreamTrade("kalshi", "M1", NOW, NOW, price=0.0, qty=0.0, taker_side="yes", seq=2)]
+    )
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "trade price/qty domains" in failed
+
+
+def test_mirror_violation_trips_the_mirror_invariant(tmp_path):
+    """The FAIL arm of `kalshi mirror invariant` — 55 greens and no reds in
+    the suite before this test, same audit as above.
+
+    Kalshi runs ONE mirrored book, so `no_ask != 1 - yes_bid` is never
+    opportunity; it means the pipeline corrupted quote fields. The row goes in
+    through `insert_snapshots`, which is the only path production uses and
+    which checks nothing about the relationship — a swapped side or a unit
+    slip in `collector/venues/kalshi.py` writes it unchallenged.
+    """
+    from hyxlab.models import Snapshot
+
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    store.insert_snapshots(
+        [
+            Snapshot(
+                venue="kalshi",
+                market_id="M1",
+                ts=NOW,
+                yes_bid=0.44,
+                yes_ask=0.46,
+                no_bid=0.54,
+                no_ask=0.99,  # mirror says 0.56
+                yes_bid_size=1,
+                yes_ask_size=1,
+                no_bid_size=1,
+                no_ask_size=1,
+            )
+        ]
+    )
+    store.log_sweep("KXTEST", NOW, NOW, 1, 1, "ok")
+    store.close()
+    assert "kalshi mirror invariant" in _run(None, tmp_path, archive=db)
