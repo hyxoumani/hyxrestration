@@ -3350,3 +3350,58 @@ tree it happens to run in is not evidence of anything.**
     + 8 QA); three repo registries (STAMP/WITNESS, UNREAD's now-dead
     `trades` exemption, the writer-lock mutator set) were caught unprompted
     by the meta-tests. Suite 1625 -> 1638.
+
+85. **2026-09-25 -- the check written to test the absorber could only ever
+    fail on the one reading that is not a hole.** #84 shipped
+    `qa.qa_poly_tail_absorbed` to re-run the absorber measurement in SQL
+    daily: a polymarket market that truncated its trade tail must end up
+    holding MORE archived prints than the truncated pass returned, and
+    `archived <= worst` is a FAIL. But the truncated pass ARCHIVES the
+    prints it did get, and nothing in this repo deletes from `trades`
+    (grepped: the only `DELETE FROM` in the packages is `schema_meta`), so
+    `archived >= worst` holds STRUCTURALLY. The strict half of that
+    comparison is unreachable, and the ONLY verdict depth can ever produce
+    is equality -- on which the check fails. Measured over the whole
+    recorded population (1,299 markets, 2026-09-06..24 of the journal):
+    3 markets sit at exactly equal depth, worst 500 and archived 500, and
+    every one of them was re-visited by 1-2 later sweep runs that found the
+    same 500 prints. `prints` is always a multiple of the 500-row page --
+    the loop `break`s on a short page, so only a full page can be followed
+    by the request that errors -- so a tape of exactly 500 ends there and
+    what got the 429 is only the request that would have CONFIRMED the end.
+    Nothing was lost in any of the three. The check as shipped would have
+    gone red on its first judged reading, on three healthy markets, for the
+    one reason it could go red at all; and the hole it was written to catch
+    -- a tape that was longer and was never completed -- produces the very
+    same equality, so depth cannot tell them apart in either direction.
+    **The oracle was already in the archive, for the second pass running.**
+    `poly_sweep` writes one `poly_market_stats` row per ENUMERATED market
+    per run, sharing that run's start instant, appended before the tail
+    fetch; a row whose `ts` is after the market's LAST stop is a run that
+    came back and did NOT truncate it, because if it had, that stop would be
+    the last one. Fix: absorbed = deeper, OR equal and re-visited by a later
+    run. Stranded (equal, never re-visited) is the reachable hole and reads
+    0 of 1,299 today; a shallower tape is reported apart, since its remedy
+    is unrelated. The comparison must be against the LAST STOP and not the
+    run that produced it -- the sweep takes ~15h, so a stop's wall clock is
+    always hours AFTER its own run's start instant, and a naive `ts > stop`
+    at run granularity reads every truncating run as its own absorber.
+    Separately, #84's population was journal-only and the journal had
+    already rotated away everything before 09-06, so
+    `collector.poly_tail_backfill` recovers the 1,358 stops before they
+    expire: 16-char prefixes resolved against `markets` with ambiguous and
+    unmatched ones REPORTED AND DROPPED rather than guessed, an unreadable
+    marker line refusing the whole run (#82), and stops at or after the live
+    recorder's first row skipped so journald's second-resolution stamps
+    cannot sit beside the recorder's microsecond ones as near-duplicates
+    that the (market_id, stopped_at) key will not dedup. Rule: **before
+    shipping a check, ask which of its verdicts are REACHABLE. A comparison
+    whose strict half is excluded by an invariant is not a test of the claim
+    -- it is a test of the invariant, and it will fire on the boundary case
+    instead. Derive the failure set on real data BEFORE the first scheduled
+    run, not from the first red.** 12 tests, each red-verified by reverting
+    its own target; the writer-lock meta-test caught the new write site
+    unprompted. Suite 1638 -> 1650. First live reading, with the recovered
+    history: `PASS -- 1218 truncated market(s) past the 48h grace all
+    absorbed -- 1215 out-fetched (thinnest margin +4 prints), 3 re-visited
+    by a later run at the same depth`.
