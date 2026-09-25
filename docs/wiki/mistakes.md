@@ -3454,3 +3454,68 @@ tree it happens to run in is not evidence of anything.**
     not a substitute for them. 26 tests; the audit itself red-verified by
     disabling the two new reds and watching a 1,674-green session exit 1
     naming both. Suite 1650 -> 1676.
+
+87. **2026-09-25 -- the memory cap that would have saved the box was
+    never declared, and the mechanism that needed it tested green
+    throughout.** At 10:00Z `hyxlab-qa.service` reached **48.1 GiB anon**
+    and the kernel's **global** OOM killer answered: `constraint=
+    CONSTRAINT_NONE, global_oom`, **21 kills across 10 unrelated
+    services** -- prometheus (x2), prometheus-config-reloader (x4),
+    alertmanager (x2), redis-server (x2), argocd-repo-server (x2),
+    argocd-notifications (x2), local-path-provisioner (x2),
+    node_exporter, gpg-agent, tini (x2). QA itself was killed **last**,
+    71 s after it invoked the OOM killer at 05:00:22 CDT, because the
+    k8s besteffort pods sharing this box advertise `oom_score_adj=1000`
+    and are chosen first regardless of size -- 10-27 MB each. The one
+    thing on the box that was actually eating it had the lowest score in
+    the room. Root cause: `hyxlab.memcap` exists to prevent exactly this
+    -- it sizes DuckDB's `memory_limit` from the cgroup instead of from
+    host RAM (EXP-1374, written 2026-08-26 after `hyxlab-stream` was
+    OOM-killed by its own 2G cap) and `hyxlab.store` applies it at every
+    connect chokepoint -- and it is documented as, and is, a **no-op
+    where no cap is declared**: `duck_memory_limit()` returns None so an
+    uncapped box keeps DuckDB's own default. `hyxlab-qa.service`
+    declared no `MemoryMax`, no ancestor slice declared one, so QA
+    opened the 26 GB stream archive believing it owned 80% of the box =
+    48.2 GiB, and the poly delta-replay check -- reading a full 24 h for
+    the first time, 2,428 intervals, exactly as the 09-25 02:35Z status
+    page predicted it would -- took 48.1 of them. **The mechanism was
+    green in ten tests the entire time, and one of them,
+    `test_no_cgroup_cap_leaves_duckdb_alone`, certifies the OFF state as
+    correct behaviour.** It asks whether the no-op no-ops. It never asks
+    whether production is in it -- and it could not, because the
+    precondition lives in a systemd unit file that no Python test
+    opened. Measured against the offending query on a read-only attach,
+    DuckDB limit pinned by hand: 1.8 GiB -> `OutOfMemoryException`,
+    refused cleanly; 2.7 GiB -> 3.44 G peak RSS, 31.8 s; 3.7 GiB ->
+    4.36 G, 35.2 s; 5.5 GiB -> 6.19 G, 35.6 s; all three returning the
+    **identical** answer with **zero** spill, and ~48 GiB -> dead box.
+    Wall time is FLAT across a 2x range of limits and peak RSS tracks
+    the limit at ~limit + 0.7 G: the extra 42 GiB bought nothing at all.
+    That is EXP-1374's finding restated -- **the limit is not a budget
+    the work fits into, it IS the footprint** -- and the fleet shows the
+    same thing in aggregate: the one batch unit that did declare a cap,
+    `hyxlab-divergence` at 8G, runs at p50 1.9 G / max 4.2 G, while
+    every uncapped batch unit runs at p50 11-18 G. They are not doing
+    more work; they are being handed a bigger buffer and filling it.
+    Fix: `MemoryMax=12G` on the QA unit (DUCK_SHARE=0.5 -> a 6 G DuckDB
+    limit, ~2.2x the measured floor), and `tests/test_unit_memory_caps.py`
+    to make the precondition standing -- units DISCOVERED from
+    `scripts/systemd/`, "opens a DuckDB" answered by walking the
+    entrypoint's real import graph rather than by an enumeration that
+    cannot fail when a unit is added, and the seven still-uncapped
+    DuckDB units held in an `UNCAPPED` debt list that cannot outlive its
+    debt (an entry must name a unit that is really uncapped and really
+    reaches an attach, so paying one off deletes its line). A vacuity
+    guard asserts the walk still finds the unit that actually died.
+    Rule: **a guard that is correct-when-off is not a guard until
+    something checks that production turned it on, and the switch is
+    usually in a file the guard's own tests cannot see. Test the
+    PRECONDITION where it lives, not the mechanism where it is
+    convenient.** Also: `OOMScoreAdjust` orders victims, it does not
+    bound a blast radius -- the 2026-07-20 tuning ranks hyxlab units
+    against each other, which says nothing when hyxlab IS the pressure.
+    Only a cgroup cap turns a global OOM into a kill of the offender.
+    5 tests, each red-verified by reverting its own target. Suite
+    1676 -> 1681. Verified end-to-end: QA re-run under the cap finished
+    in 74 s, `Result=exit-code` not `oom-kill`.
