@@ -59,6 +59,12 @@ ALLOWED: dict[str, tuple[str, str]] = {
     ),
     "collector/backfill.py::backfill_iem": ("BURST", "EXP-1370; one burst per station"),
     "collector/breadth.py::collect_breadth_once": ("BURST", "reuses sweep.writer_burst"),
+    "collector/poly_tail_backfill.py::main": (
+        "BURST",
+        "one-shot journal recovery: the whole journalctl scrape, parse and"
+        " prefix resolution happen on a READ-ONLY store, and the single"
+        " writer_burst carries only the finished rows",
+    ),
     "collector/reconcile.py::reconcile": (
         "BURST",
         "a batch that resolved to nothing takes no lock at all",
@@ -299,8 +305,7 @@ def test_burst_and_flock_claims_are_true_of_the_source():
         facts = sites[key]
         if disp == "BURST":
             assert facts["burst"], (
-                f"{key} is labelled BURST but at least one of its writes is"
-                " outside writer_burst"
+                f"{key} is labelled BURST but at least one of its writes is outside writer_burst"
             )
         elif disp == "FLOCK":
             assert facts["flock"], f"{key} is labelled FLOCK but never takes fcntl.LOCK_EX"
@@ -324,7 +329,9 @@ def test_a_caller_disposition_names_a_caller_that_holds_the_lock():
         # allowlist: `collect.main` and `migrate.main` hold the lock and
         # write nothing themselves, so they are not write sites at all.
         named = re.findall(r"[\w/]+\.py::[\w.]+", why)
-        assert named, f"{key}: a CALLER reason must name the caller that holds the lock, got {why!r}"
+        assert named, (
+            f"{key}: a CALLER reason must name the caller that holds the lock, got {why!r}"
+        )
         for caller in named:
             rel, _, qual = caller.partition("::")
             assert _find_function(rel, qual) is not None, (
@@ -341,9 +348,7 @@ def test_a_writer_that_opens_the_archive_itself_must_hold_the_lock():
     a function opens the archive read-write and writes to it, the lock is
     its own responsibility and nobody else's."""
     offenders = [
-        k
-        for k, f in write_sites().items()
-        if f["opens_rw"] and not (f["burst"] or f["flock"])
+        k for k, f in write_sites().items() if f["opens_rw"] and not (f["burst"] or f["flock"])
     ]
     assert not offenders, (
         "opens the archive read-write and writes with no writer lock: "
@@ -358,9 +363,7 @@ def test_backfill_does_not_hold_the_archive_across_its_rest_calls():
     allowlist edit. `main` must not open the archive read-write at all:
     its fetch loops run for hours between writes."""
     src = ast.parse((ROOT / "collector" / "backfill.py").read_text())
-    main = next(
-        n for n in src.body if isinstance(n, ast.FunctionDef) and n.name == "main"
-    )
+    main = next(n for n in src.body if isinstance(n, ast.FunctionDef) and n.name == "main")
     assert not _opens_for_write(main), (
         "collector.backfill.main holds a read-write archive connection across"
         " every REST call of a multi-hour run — H1 of the 2026-07-11 review"

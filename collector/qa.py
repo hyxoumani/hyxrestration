@@ -1674,7 +1674,9 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
 
 def qa_poly_tail_absorbed(conn, now: datetime) -> None:
     """Every polymarket tail that stopped early must have been out-fetched by
-    a later sweep — MORE archived prints than the truncated pass returned.
+    a later sweep — either the archive holds MORE prints than the truncated
+    pass returned, or a later sweep RUN re-visited the market and found the
+    same tape.
 
     `trades_tail` has no retry ladder by decision (see the ledger at the top
     of `collector/venues/polymarket.py`): ~80 stops a run, 429s and 408s,
@@ -1683,12 +1685,39 @@ def qa_poly_tail_absorbed(conn, now: datetime) -> None:
     is a claim about DEPTH per market that the published count cannot test.
     This tests it.
 
+    DEPTH ALONE CANNOT TEST IT, WHICH IS WHY THE RE-VISIT ORACLE IS HERE.
+    The truncated pass archives the prints it did get, and nothing in this
+    repo ever deletes from `trades`, so `archived >= worst` holds
+    STRUCTURALLY — the only reading depth can ever produce is equality, and
+    equality is ambiguous between the two cases that matter:
+
+      * the tape really ends at the truncation boundary (`prints` is always a
+        multiple of the 500-row page, so a tape of exactly 500 stops there
+        and the offset-500 request that would have confirmed the end got a
+        429 instead) — nothing was lost; or
+      * the tape was longer and no pass ever completed it — those prints are
+        gone for good.
+
+    `poly_market_stats` separates them and was already in the archive:
+    `poly_sweep` writes one row per ENUMERATED market per run, sharing that
+    run's start instant, appended before the tail fetch. A row whose `ts` is
+    after this market's LAST stop is therefore a run that re-visited the
+    market and did NOT truncate it — if it had, that stop would be the last
+    one. The comparison must be against the last stop and not the run that
+    produced it: a sweep takes ~15h, so a stop's wall clock is always HOURS
+    AFTER its own run's start instant, and `ts > last_stop` is what excludes
+    the containing run.
+
+    Measured over the whole recorded population on 2026-09-25 (1,299 markets,
+    2026-09-06..24): 1,184 deeper and re-visited, 112 deeper on markets that
+    closed and aged out of the sweep's window, 3 exactly equal and ALL THREE
+    re-visited by later runs that found the same 500 prints, 0 shallower. The
+    depth-only reading this replaces called those 3 a hole.
+
     A stop younger than POLY_TAIL_ABSORB_GRACE_H is EXCLUDED, not passed: the
     next sweep has not run yet, so the archive holds no evidence either way
     and calling that green would make the check loudest exactly when it knows
-    least. Beyond the grace, a market no deeper than its worst stop is a FAIL
-    — the sweep stopped re-visiting it, and every later stop on that market
-    is then a real hole rather than a re-fetchable one.
+    least.
     """
     name = "polymarket truncated tails absorbed by a later sweep"
     n_stops = conn.execute("SELECT count(*) FROM poly_tail_stops").fetchone()[0]
@@ -1701,14 +1730,18 @@ def qa_poly_tail_absorbed(conn, now: datetime) -> None:
 
     rows = conn.execute(
         """
-        SELECT s.market_id, max(s.prints) AS worst, max(s.stopped_at) AS last_stop,
-               COALESCE(t.n, 0) AS archived
-        FROM poly_tail_stops s
-        LEFT JOIN (
+        WITH stopped AS (
+            SELECT market_id, max(prints) AS worst, max(stopped_at) AS last_stop
+            FROM poly_tail_stops
+            WHERE stopped_at < ? - INTERVAL (?) HOUR
+            GROUP BY market_id
+        ), tape AS (
             SELECT market_id, count(*) AS n FROM trades WHERE venue='polymarket' GROUP BY 1
-        ) t ON t.market_id = s.market_id
-        WHERE s.stopped_at < ? - INTERVAL (?) HOUR
-        GROUP BY s.market_id, t.n
+        )
+        SELECT s.market_id, s.worst, COALESCE(t.n, 0) AS archived,
+               (SELECT count(*) FROM poly_market_stats p
+                 WHERE p.market_id = s.market_id AND p.ts > s.last_stop) AS later_runs
+        FROM stopped s LEFT JOIN tape t ON t.market_id = s.market_id
         """,
         [now, POLY_TAIL_ABSORB_GRACE_H],
     ).fetchall()
@@ -1716,24 +1749,44 @@ def qa_poly_tail_absorbed(conn, now: datetime) -> None:
         check(name, True, f"{n_stops} stop(s) recorded, all inside the re-sweep grace")
         return
 
-    starved = sorted((r for r in rows if r[3] <= r[1]), key=lambda r: r[3] - r[1])
-    if starved:
-        worst = ", ".join(f"{r[0][:16]} {r[3]}<={r[1]}" for r in starved[:5])
-        check(
-            name,
-            False,
-            f"{len(starved)} of {len(rows)} truncated market(s) hold no more prints than "
-            f"their deepest truncated pass returned: {worst}",
-        )
-    else:
-        deepest = min(r[3] - r[1] for r in rows)
-        check(
-            name,
-            True,
-            f"{len(rows)} truncated market(s) past the "
-            f"{POLY_TAIL_ABSORB_GRACE_H:g}h grace all out-fetched, "
-            f"thinnest margin +{deepest} prints",
-        )
+    # Shallower than the deepest truncated pass: impossible while nothing
+    # deletes from `trades`, so it is an invariant breach and not a hole —
+    # named apart because the remedy is different (something pruned the tape).
+    shallower = [r for r in rows if r[2] < r[1]]
+    # Equal AND never re-visited: the one reachable hole. The sweep stopped
+    # coming back, so whether the tape ended at the boundary is now unknowable
+    # and any prints past it are lost.
+    stranded = [r for r in rows if r[2] == r[1] and not r[3]]
+    if shallower or stranded:
+        bits = []
+        if stranded:
+            worst = ", ".join(
+                f"{r[0][:16]} {r[2]}={r[1]} prints, 0 later runs" for r in stranded[:4]
+            )
+            bits.append(
+                f"{len(stranded)} of {len(rows)} truncated market(s) hold no more prints "
+                f"than their deepest truncated pass returned AND were never re-visited "
+                f"by a later sweep run: {worst}"
+            )
+        if shallower:
+            bits.append(
+                f"{len(shallower)} market(s) hold FEWER prints than a truncated pass "
+                f"already returned, which nothing in this repo can do: "
+                + ", ".join(f"{r[0][:16]} {r[2]}<{r[1]}" for r in shallower[:4])
+            )
+        check(name, False, "; ".join(bits))
+        return
+
+    deeper = [r for r in rows if r[2] > r[1]]
+    revisited = [r for r in rows if r[2] == r[1] and r[3]]
+    deepest = min((r[2] - r[1] for r in deeper), default=0)
+    check(
+        name,
+        True,
+        f"{len(rows)} truncated market(s) past the {POLY_TAIL_ABSORB_GRACE_H:g}h grace "
+        f"all absorbed — {len(deeper)} out-fetched (thinnest margin +{deepest} prints), "
+        f"{len(revisited)} re-visited by a later run at the same depth",
+    )
 
 
 def read_signals_fetch(path: str) -> tuple[dict[str, datetime], datetime | None, int]:
