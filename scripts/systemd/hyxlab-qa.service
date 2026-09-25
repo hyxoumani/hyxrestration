@@ -12,7 +12,46 @@ Type=oneshot
 # both above live stream/shadow @200 = 803/802 (so batch still dies first, the
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
+#
+# AND IT ORDERS THE WRONG POPULATION. All of the above ranks hyxlab units
+# against each other, which is what 2026-07-20 asked for -- that incident was
+# a STRANGER exhausting the box and the question was which of ours died. On
+# 2026-09-25 the roles reversed: this unit WAS the exhaustion (48.1 GiB anon,
+# below) and the kernel's global OOM killed 21 processes across 10 unrelated
+# services -- prometheus, alertmanager, redis, argocd, node_exporter,
+# gpg-agent -- because the k8s besteffort pods sharing this box advertise
+# oom_score_adj=1000 and are chosen first regardless of size, at ~10-27 MB
+# each. The culprit was killed LAST, 71s after it invoked the OOM killer.
+# An OOMScoreAdjust cannot bound a blast radius: it only says who dies once
+# the box is already gone. MemoryMax is what keeps the box from getting
+# there, by making the kill a CGROUP kill of the offender.
 OOMScoreAdjust=220
+
+# The cap this unit ran 19 recorded runs without. `hyxlab.memcap` sizes
+# DuckDB's buffer manager from the cgroup precisely so a capped service does
+# not open an archive believing it owns host RAM (EXP-1374) -- but it is
+# documented as, and is, a NO-OP where no cap is declared. None was, so QA
+# opened the 26 GB stream archive with memory_limit = 80% of the box = 48.2
+# GiB, and on 2026-09-25 10:00Z the poly-replay check took 48.1 GiB of it and
+# global-OOMed the machine. The mechanism was green in 10 tests the whole
+# time; nothing asked whether production had turned it on.
+#
+# 12G, measured 2026-09-25 against that exact query (26h window, 2,428
+# intervals) on a read-only attach, DuckDB limit pinned by hand:
+#     1.8 GiB -> OutOfMemoryException (refused, cleanly)
+#     2.7 GiB -> 3.44G peak RSS, 31.8s, 0 spill
+#     3.7 GiB -> 4.36G peak RSS, 35.2s, 0 spill
+#     5.5 GiB -> 6.19G peak RSS, 35.6s, 0 spill
+#     ~48 GiB -> 48.1G anon, killed at 95s, box down
+# Identical answer at every limit that completed, and wall time is FLAT
+# across a 2x range of limits: the extra 42 GiB bought nothing. Peak RSS
+# tracks the limit (~limit + 0.7G), which is EXP-1374's point restated --
+# the limit is not a budget the work fits into, it IS the footprint.
+# DUCK_SHARE=0.5 makes 12G a 6G DuckDB limit, ~2.2x the measured floor, and
+# leaves the rest for Python and the page cache memory.max also charges.
+# If the window ever outgrows it the failure is an OutOfMemoryException --
+# one red QA check naming itself -- and no longer 21 dead processes.
+MemoryMax=12G
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # The one directory both worktrees must agree on. `reports/` is a REAL
 # directory in each tree (unlike data/.env/.secrets, which the stable tree
