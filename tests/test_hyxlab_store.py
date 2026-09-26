@@ -294,10 +294,12 @@ def test_backup_rotation_and_consistency(tmp_path):
     store.close()
     dest = tmp_path / "backups"
     dest.mkdir()
-    out = backup_one(src, dest)
-    assert out is not None and out.name.startswith("hyxtest.") and out.suffix == ".duckdb"
+    res = backup_one(src, dest)
+    assert res is not None
+    out = res.path
+    assert out.name.startswith("hyxtest.") and out.suffix == ".duckdb"
     # same weekday slot overwrites (rotation), and the copy opens clean
-    assert backup_one(src, dest) == out
+    assert backup_one(src, dest).path == out
     with duckdb.connect(str(out), read_only=True) as conn:
         assert conn.execute("SELECT count(*) FROM sweep_log").fetchone()[0] == 1
     assert backup_one(tmp_path / "missing.duckdb", dest) is None

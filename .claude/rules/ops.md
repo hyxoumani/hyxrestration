@@ -88,3 +88,26 @@
   and make the cleanup REFUSE work it cannot finish in the budget --
   preferring the fast lossless path (spill to disk, drain next boot) over
   the slow one that gets killed halfway.
+- A lock held ACROSS an operation is held only if the operation cannot
+  drop it, and on POSIX any `close()` does. DuckDB's file lock is an
+  `fcntl` record lock, and POSIX releases every record lock a process
+  holds on a file the instant that process closes ANY descriptor on it
+  -- not just the one the lock was taken through. `collector.backup`
+  held a read-only attach across `shutil.copyfile(src, ...)`, which
+  opens the source and closes it: measured 2026-09-26, an outside
+  process is refused before that close and takes the file READ-WRITE
+  after it, with the holder still attached (mistakes #90). So: inside a
+  hold, copy from a descriptor opened once and closed only after the
+  connection is gone (`os.copy_file_range`, which also reflinks), never
+  by path -- and prove the hold AND the release from outside the
+  process, both arms, because a test that only checks the release
+  passes equally against code that never locked.
+- A measured fact with an unmeasured CAUSE cannot tell you which changes
+  are safe. `collector.backup`'s 26 GB copy took 0.2s for months because
+  /home is btrfs and dest shared the filesystem, so `copyfile` reflinked
+  (measured: `--reflink=always` 0.199s vs `--reflink=never` 20.5s on the
+  same NVMe). Nothing recorded that, and the repo's own written next
+  step -- point `HYXLAB_BACKUP_DIR` at an off-box mount -- deletes the
+  reflink and turns a 0.2s writer exclusion into minutes. Before
+  trusting a cheap number in a journal, name the mechanism that makes it
+  cheap, then ask which planned change removes it.

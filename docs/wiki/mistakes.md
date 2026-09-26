@@ -1905,6 +1905,74 @@ Format: what happened → root cause → error type → prevention tier
     read-write at the moment the simulation starts, which can only
     succeed if this process let go). Suite 1700 -> **1704**.
 
+90. **2026-09-26 -- the nightly snapshot's lock was released by the copy
+    it existed to protect, and the hold looked free only because of a
+    filesystem property nobody had written down.** `collector.backup`
+    holds a read-only DuckDB attachment across the copy, because DuckDB
+    is one writer XOR many readers and the held reader is what makes the
+    file on disk transactionally consistent. Its docstring said "writers
+    tolerate the pause", and the journal agreed: 0.2 s for a 26 GB file,
+    six nights of seven. **0.2 s is not a copy.** /home is btrfs and
+    dest sits on the same filesystem, so `shutil.copyfile` reflinks.
+    Measured on the real `hyxstream.Fri.duckdb`, 26,313,502,720 bytes:
+    `cp --reflink=always` **0.199 s**, `cp --reflink=never` onto the same
+    NVMe **20.5 s** (~1.29 GB/s) -- and a local NVMe is the FASTEST
+    destination there is. The repo's own standing user item, "point
+    `HYXLAB_BACKUP_DIR` at an off-box mount to make it a real backup", is
+    precisely the change that deletes the reflink: 26 GB at a gigabit
+    link's ~110 MB/s is ~240 s, with `hyxlab.duckdb` behind it another
+    ~190 s, every night, `hyxlab-stream` excluded throughout. The cost of
+    that is measured too, from #88: a 3,057 s reader hold left 400,154
+    rows in streamd's buffer and pushed 387,856 to the spill sidecar. So
+    the assumption was TRUE, true for a reason that was never stated, and
+    the documented next step falsifies it.
+    **And fixing the length surfaced that the hold was fiction past its
+    own copy.** DuckDB takes a POSIX `fcntl` record lock, and POSIX drops
+    EVERY record lock a process holds on a file the moment that process
+    closes ANY descriptor on it -- not merely the descriptor the lock was
+    taken through. `shutil.copyfile` opens the source and closes it.
+    Measured 2026-09-26: holder attached read-only, an outside process is
+    refused; the holder opens and closes a plain read fd on the same
+    path; the outside process now takes the file read-write while the
+    holder is still attached. The main snapshot survived only because
+    that close is the LAST thing `copyfile` does -- the WAL copy that
+    followed it ran unprotected, and any line added inside the hold in
+    future would have too. This was not found by reading: the WAL test
+    below went red on its first run, reporting the archive writable
+    during the second copy, and the mechanism was then confirmed
+    directly.
+    Fix: two legs and a descriptor. Under the lock, `_copy_out` copies
+    the archive to a STAGE file beside the SOURCE, on the source's own
+    filesystem -- the cheapest copy available, and the floor on the hold
+    no matter where dest points. It copies from a descriptor the caller
+    opens once and closes only after the connection is gone, via
+    `os.copy_file_range` (measured 26.3 GB in **0.119 s** on the real
+    archive, reflink intact, fractionally faster than `copyfile`); it
+    takes an fd and never a path, because a path argument is an
+    invitation to open and close the file again. The lock is then
+    released and `_transfer` moves the stage to dest unlocked, at
+    whatever speed the destination has; where dest is on the same device
+    that transfer is a rename, so the current setup pays exactly what it
+    paid before. Each line now reports `hold` apart from `total`, with a
+    warning past 30 s -- #88's lesson, that nothing in this repo measured
+    a HOLD until one cost a capture day.
+    Rule: **a lock held across an operation is only held if the operation
+    cannot drop it, and on POSIX any `close()` on the file does. Prove a
+    hold from outside the process at the moment that matters, and prove
+    the release the same way -- both arms, because a test that only
+    checks the release passes equally against code that never locked.**
+    Corollary to #89's: the docstring's "writers tolerate the pause" was
+    a measured fact with an unmeasured CAUSE, and an assumption whose
+    cause is unknown cannot tell you which changes are safe.
+    9 tests (`tests/test_backup_hold.py`), each red-verified by reverting
+    its own target -- the release arm needed its mutation rewritten,
+    because deferring `conn.close()` alone left the test green: closing
+    the retained descriptor had already dropped the lock, #90 proving
+    itself inside its own red-verification. Suite 1704 -> **1713**.
+    Verified in production: 26,765 MB, **hold 0.101 s**, same-device
+    rename, no stage debris, and the copy opens clean at 890,793,988
+    `book_events` rows.
+
 
 ## Pattern analysis (Step 5)
 
