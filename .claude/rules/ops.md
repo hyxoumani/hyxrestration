@@ -134,3 +134,12 @@
   closure's first run -- evidence that holds only while the victim
   happens to be writing into the window. Measure at the holder, then the
   reading survives the victim being idle, restarted, or fixed.
+- A hold is charged to an attach ROW, so only a ledgered attach can carry
+  one. `store.held_attach`/`held_open` (and `charge_hold`, the seam a
+  wrapper like `shadow.stream_conn` borrows) credit the seconds to
+  `_LAST_ATTACH` -- the row the caller's own open recorded. `duck_connect`
+  and a bare `Store(...)` record no row, so wrapping one charges its hold
+  to whatever unrelated attach happened to be last: a WRONG reading,
+  which is worse than the missing one. Instrument at a helper that
+  ledgers, or leave the site enumerated as debt
+  (`tests/test_hold_discipline.py`) -- never split the difference.
