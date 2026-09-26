@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterable
+import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -507,7 +510,7 @@ def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
 # `budget_frac` is the tripwire instead.
 
 
-@dataclass(frozen=True)
+@dataclass
 class AttachWait:
     """One attach's cost, split into the two things it is made of.
 
@@ -516,6 +519,26 @@ class AttachWait:
     pays for. `budget_s` is the ladder's nominal sleep total, so `budget_frac`
     is `slept_s / budget_s` and not a share of a number that includes work
     the budget does not govern (mistakes #78).
+
+    EVERY FIELD ABOVE MEASURES WHAT THE ATTACH COST US; `held_s` IS THE
+    FIRST THAT MEASURES WHAT IT COST EVERYONE ELSE. The ladder's whole
+    argument is about getting IN -- a budget eroding toward its cliff --
+    and that is the harm a contended reader suffers, never the harm it
+    does. The 2026-09-25 incident was entirely the second kind:
+    `hyxlab-divergence` attached `hyxstream.duckdb` in ~10 ms, on the
+    first attempt, spending 0.0 s of a 30 s budget, and then HELD it for
+    45m45s across the replay, which cost `collector.streamd` 387,856 rows
+    to a torn-append sidecar. Every field this ledger had called that
+    attach perfect, and the number that would have called it out was the
+    one nothing recorded. So the copy-out that fixed it (6.2 s of hold in
+    place of 2,745 s) could only be confirmed a pass later, and only
+    INDIRECTLY -- by the victim's stall ledger falling silent, which
+    proves nothing on a day streamd happens not to flush into the window.
+
+    `None`, never 0.0, when the caller did not attach through
+    `held_attach`: an unmeasured hold and an instant release are opposite
+    findings and a zero would merge them. Every aggregate below counts the
+    unmeasured separately for the same reason.
     """
 
     db: str
@@ -524,6 +547,7 @@ class AttachWait:
     budget_s: float
     ok: bool
     slept_s: float = 0.0
+    held_s: float | None = None
 
     @property
     def open_s(self) -> float:
@@ -552,6 +576,7 @@ class AttachWait:
             "open_s": round(self.open_s, 3),
             "budget_s": round(self.budget_s, 1),
             "budget_frac": None if frac is None else round(frac, 4),
+            "held_s": None if self.held_s is None else round(self.held_s, 3),
             "ok": self.ok,
         }
 
@@ -588,6 +613,13 @@ class _AttachTotals:
     contended_n: int = 0
     budget_frac_max: float | None = None
     exhausted_n: int = 0
+    #: Holds are folded in SEPARATELY (`add_hold`) because they are known at
+    #: CLOSE, not at attach, and by then the row may already have been
+    #: trimmed out of `_ATTACH_WAITS` -- the same sample-vs-population trap
+    #: this class exists for (mistakes #72), one field later.
+    held_n: int = 0
+    held_s_total: float = 0.0
+    held_s_max: float = 0.0
 
     def add(self, w: AttachWait) -> None:
         self.observed_n += 1
@@ -605,9 +637,23 @@ class _AttachTotals:
                 frac if self.budget_frac_max is None else max(self.budget_frac_max, frac)
             )
         self.exhausted_n += int(not w.ok)
+        # Only for a row that ALREADY carries its hold -- i.e. an explicit
+        # population handed to `attach_wait_block`. On the live path the
+        # hold is still None here and arrives via `add_hold`.
+        if w.held_s is not None:
+            self.add_hold(w.held_s)
+
+    def add_hold(self, held_s: float) -> None:
+        self.held_n += 1
+        self.held_s_total += held_s
+        self.held_s_max = max(self.held_s_max, held_s)
 
 
 _ATTACH_TOTALS = _AttachTotals()
+
+#: The row the calling context most recently attached through, so
+#: `held_attach` can charge its hold to that attach and no other.
+_LAST_ATTACH: ContextVar[AttachWait | None] = ContextVar("hyxlab_last_attach", default=None)
 
 
 def attach_budget_s(
@@ -634,11 +680,19 @@ def _record_attach(
     budget_s: float,
     ok: bool,
     slept_s: float = 0.0,
-):
+) -> AttachWait:
     w = AttachWait(Path(path).name, attempts, waited_s, budget_s, ok, slept_s)
     _ATTACH_TOTALS.add(w)  # BEFORE the trim: the totals outlive the rows
     _ATTACH_WAITS.append(w)
     del _ATTACH_WAITS[:-_ATTACH_WAITS_MAX]
+    if ok:
+        # A ContextVar rather than "the last row in the list": `held_attach`
+        # has to find the row IT created, and the archive has concurrent
+        # attachers inside one process (streamd's flusher and its drain, the
+        # sweep's threads). A refused attach holds nothing, so only a
+        # successful one is published.
+        _LAST_ATTACH.set(w)
+    return w
 
 
 def attach_waits() -> list[AttachWait]:
@@ -703,6 +757,14 @@ def attach_wait_block(waits: list[AttachWait] | None = None, *, rows: bool = Tru
             None if totals.budget_frac_max is None else round(totals.budget_frac_max, 4)
         ),
         "exhausted_n": totals.exhausted_n,
+        # What the attaches cost EVERYONE ELSE. `held_unknown_n` is the
+        # honest half: an attach that did not go through `held_attach` has
+        # no hold, and folding it in as 0.0 would let an uninstrumented
+        # 45-minute reader publish a flawless maximum.
+        "held_n": totals.held_n,
+        "held_unknown_n": totals.observed_n - totals.held_n,
+        "held_s_max": round(totals.held_s_max, 3),
+        "held_s_total": round(totals.held_s_total, 3),
     }
     return block
 
@@ -761,6 +823,40 @@ def connect_retry(
             if max_delay is not None:
                 wait = min(wait, max_delay)
     raise AssertionError("unreachable")
+
+
+@contextmanager
+def held_attach(path: str | Path, **kw) -> Iterator:
+    """`connect_retry`, and the hold is measured and charged to the attach.
+
+    `with connect_retry(...) as conn` already closes on exit -- this adds
+    the only thing that block never produced: how long the file was held.
+    Use it wherever the hold is not obviously brief, because "obviously
+    brief" is what the divergence replay's attach looked like for the
+    45m45s it starved `collector.streamd` (see `AttachWait`).
+
+    The hold is timed from the moment the connection EXISTS, not from the
+    caller's first query: DuckDB's lock is taken by the open, so an idle
+    connection excludes the writer exactly as hard as a busy one. That is
+    not a detail -- the 2026-09-25 hold was measured afterwards to be 97%
+    idle connection, and a timer started at first query would have
+    reported the 3% and called the report innocent.
+    """
+    conn = connect_retry(path, **kw)
+    w = _LAST_ATTACH.get()
+    started = time.monotonic()
+    try:
+        yield conn
+    finally:
+        # Closed BEFORE the clock is read, and the hold recorded even when
+        # the body raised: an attach that died mid-replay held the file for
+        # every second up to the exception, and that is the reading a
+        # failed run most needs to leave behind.
+        conn.close()
+        held = time.monotonic() - started
+        if w is not None:
+            w.held_s = held
+            _ATTACH_TOTALS.add_hold(held)
 
 
 def open_retry(

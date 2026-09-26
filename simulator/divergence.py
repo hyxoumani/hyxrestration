@@ -36,7 +36,7 @@ from hyxlab.importclosure import closure_sha
 from hyxlab.reportdir import shared_reports
 from hyxlab.scratch import duck_scratch_dir
 from hyxlab.shadowruns import latest_complete_run
-from hyxlab.store import attach_wait_block, connect_retry, open_retry, reset_attach_waits
+from hyxlab.store import attach_wait_block, held_attach, open_retry, reset_attach_waits
 from simulator.bookreplay import (
     BOOK_GAPS,
     export_events,
@@ -83,7 +83,7 @@ def replay_run(
     # Measured cost of the copy that replaces it: 6.2 s and 0.89 GB.
     scratch = Path(duck_scratch_dir(stream_db) or ".") / f"divergence-{run_id}"
     try:
-        with connect_retry(stream_db, **STREAM_ATTACH) as conn:
+        with held_attach(stream_db, **STREAM_ATTACH) as conn:
             floor = conn.execute(
                 f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
                 [anchor],
@@ -614,7 +614,11 @@ def main() -> None:
     # (re-sizing off prose is how mistakes #70 happened); `attach_wait`
     # publishes its measured `budget_frac` per run, and a reading near 1.0 is
     # the evidence that would justify a change.
-    with connect_retry(args.shadow_db) as conn:
+    # `held_attach` for the other direction: this block is queries only and
+    # closes before the replay, so the hold is SUPPOSED to be seconds. That
+    # was also true of the stream attach below right up until it wasn't --
+    # the claim costs nothing to measure and everything to assume.
+    with held_attach(args.shadow_db) as conn:
         run_id = args.run or latest_complete_run(conn)
         if run_id is None:
             raise SystemExit(
