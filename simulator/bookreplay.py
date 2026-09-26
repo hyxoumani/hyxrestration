@@ -25,8 +25,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from hyxlab.models import Snapshot
+from hyxlab.store import duck_connect
 from hyxlab.streamstore import BookEvent
 
 _EMPTY: tuple = ()
@@ -255,6 +257,30 @@ def stream_events(
     sort's contribution flat at one slice regardless of window length, at
     no wall-clock cost (13.6s sliced vs 12.6s single over 18.5M rows).
     """
+    sql, bounds, tail = _plan_walk(conn, lo, hi, prefix, slice_hours, lo_inclusive)
+    for start, stop in bounds:
+        cur = conn.execute(sql, [start, stop, *tail])
+        while rows := cur.fetchmany(EVENT_CHUNK):
+            for r in rows:
+                yield BookEvent(*r)
+
+
+def _plan_walk(
+    conn,
+    lo: datetime,
+    hi: datetime | None,
+    prefix: str | None,
+    slice_hours: float,
+    lo_inclusive: bool,
+) -> tuple[str, list[tuple[datetime, datetime]], list]:
+    """The walk's slice SQL and its slice bounds, resolved once.
+
+    Split out of `stream_events` so `export_events` can walk the SAME
+    slices rather than re-deriving them. THE ONE walk is a claim about
+    the bounds as much as the SQL — a second copy of this arithmetic is
+    how the seed boundary drifted the first time — so the two entry
+    points share it and neither owns it.
+    """
     if lo_inclusive and lo != datetime.min:
         lo -= timedelta(microseconds=1)
     where = "venue='kalshi' AND recv_ts > ?" + (" AND recv_ts <= ?" if hi else "")
@@ -268,25 +294,110 @@ def stream_events(
     first, last = conn.execute(
         f"SELECT min(recv_ts), max(recv_ts) FROM book_events WHERE {where}", params
     ).fetchone()
-    if first is None:
-        return
-    step = timedelta(hours=slice_hours)
-    # Start strictly below `first` so the first slice's `> lo` keeps it.
-    start = first - timedelta(microseconds=1)
-    tail = [prefix + "%"] if prefix else []
     sql = (
         f"SELECT {_EVENT_COLS} FROM book_events"
         " WHERE venue='kalshi' AND recv_ts > ? AND recv_ts <= ?"
         + (" AND market_id LIKE ?" if prefix else "")
         + " ORDER BY recv_ts, seq"
     )
+    tail = [prefix + "%"] if prefix else []
+    if first is None:
+        return sql, [], tail
+    step = timedelta(hours=slice_hours)
+    # Start strictly below `first` so the first slice's `> lo` keeps it.
+    start = first - timedelta(microseconds=1)
+    bounds = []
     while start < last:
         stop = min(start + step, last)
-        cur = conn.execute(sql, [start, stop, *tail])
-        while rows := cur.fetchmany(EVENT_CHUNK):
-            for r in rows:
-                yield BookEvent(*r)
+        bounds.append((start, stop))
         start = stop
+    return sql, bounds, tail
+
+
+# ---------------------------------------------------------------------------
+# Copy-out: the walk, materialised, so the archive is not held while it runs.
+#
+# `stream_events` streams with a live cursor, and a streaming cursor cannot
+# release the file it is reading. `simulator.divergence` replays a shadow
+# run's whole window through one such cursor, so it holds `hyxstream.duckdb`
+# for as long as the SIMULATION takes -- measured 2026-09-25: 45m45s, during
+# which `collector.streamd` could not flush, held a peak 400,154 rows and
+# moved 387,856 of them to the torn-append sidecar. ~97% of that hold is
+# simulation with an IDLE connection; the DB work is a rounding error inside
+# it.
+#
+# So the window is copied out FIRST and replayed from the copy. Measured
+# 2026-09-26 against `data/backups/hyxstream.Fri.duckdb` over divergence's
+# real 12.3-day window (117.2M rows, floor 09-12 01:40Z -> 09-24 08:38Z):
+#
+#   sliced copy-out   50 slices, 6.2 s, 0.89 GB on disk, 2.60 GB peak RSS
+#   parquet read-back 117,208,791 rows, 58.7 s
+#
+# 6.2 s against 2,745 s is the whole point -- a 440x shorter hold -- and the
+# read-back is FASTER than the archive walk it replaces (the same rows out of
+# `book_events` measure ~86 s). The slices are the walk's own slices, so the
+# memory profile of the copy is the memory profile of the walk: flat in window
+# length, not linear (see the note in `stream_events`).
+#
+# Cost is 0.89 GB of scratch per replay, written into this process's private
+# `<db>.tmp/pid-<pid>` directory (`hyxlab.scratch`) -- owner-locked, dropped at
+# clean exit, and reaped by the next process to run if this one is SIGKILLed.
+# It is NOT a cache: a replay that reads a stale export would be reading a
+# window the archive no longer has.
+# ---------------------------------------------------------------------------
+
+#: One parquet file per walk slice, named in walk order. Zstd because the
+#: bill is disk on the archive's own volume and the rows compress 8x.
+_EXPORT_GLOB = "*.parquet"
+
+
+def export_events(
+    conn,
+    lo: datetime,
+    hi: datetime | None,
+    dest: str | Path,
+    *,
+    prefix: str | None = None,
+    slice_hours: float = EVENT_SLICE_HOURS,
+    lo_inclusive: bool = False,
+) -> Path:
+    """Write `stream_events(conn, lo, hi, ...)` to `dest` as parquet slices.
+
+    Same arguments, same slices, same order -- this is the walk written
+    down instead of yielded. Returns `dest`, which `stream_exported`
+    reads back as the identical `BookEvent` stream.
+    """
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    sql, bounds, tail = _plan_walk(conn, lo, hi, prefix, slice_hours, lo_inclusive)
+    for i, (start, stop) in enumerate(bounds):
+        out = str(dest / f"{i:04d}.parquet").replace("'", "''")
+        conn.execute(
+            f"COPY ({sql}) TO '{out}' (FORMAT parquet, COMPRESSION zstd)",
+            [start, stop, *tail],
+        )
+    return dest
+
+
+def stream_exported(dest: str | Path) -> Iterator[BookEvent]:
+    """Read an `export_events` directory back as the same event stream.
+
+    The slices are already sorted and named in walk order, so the
+    read-back is a concatenation -- no ORDER BY, and therefore no sort to
+    hold. Chunked on `EVENT_CHUNK` for the same reason the live walk is.
+    """
+    paths = sorted(Path(dest).glob(_EXPORT_GLOB))
+    if not paths:
+        return
+    conn = duck_connect(str(Path(dest) / "reader.duckdb"))
+    try:
+        for p in paths:
+            cur = conn.execute(f"SELECT {_EVENT_COLS} FROM read_parquet(?)", [str(p)])
+            while rows := cur.fetchmany(EVENT_CHUNK):
+                for r in rows:
+                    yield BookEvent(*r)
+    finally:
+        conn.close()
 
 
 def replay_snapshots(

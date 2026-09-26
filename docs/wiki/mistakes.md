@@ -1839,6 +1839,73 @@ Format: what happened → root cause → error type → prevention tier
     so shortening it means copying the window out first -- a design that
     needs its copy cost measured before it is built.
 
+89. **2026-09-26 -- the 45-minute hold was 97 % idle connection, and the
+    copy that replaces it costs 6.2 seconds.** #88 named
+    `hyxlab-divergence` as the holder that wedged `collector.streamd` for
+    3,057 s and pushed 387,856 rows into the torn-append sidecar, and
+    left the hold itself unfixed on purpose: `replay_run` streams the
+    whole window through one `fetchmany` cursor, a streaming cursor
+    cannot release the file it reads, so shortening the hold means
+    copying the window out -- and the copy's cost was unmeasured because
+    measuring it meant holding the live archive, which is the thing being
+    fixed. **That was a false blocker for eight days.** The repo writes a
+    consistent 7-slot rotation of every archive nightly
+    (`collector.backup`), so `data/backups/hyxstream.Fri.duckdb` is the
+    same 26 GB file with no daemon behind it. The measurement was one
+    script against a file that was already on disk.
+    Measured 2026-09-26 over divergence's real 12.3-day window (floor
+    09-12 01:40Z -> 09-24 08:38Z, **117,208,791 rows**): sliced copy-out
+    **50 slices, 6.2 s, 0.89 GB on disk, 2.60 GB peak RSS**; parquet
+    read-back of all 117.2 M rows **58.7 s**, against ~86 s for the same
+    rows out of `book_events`. So the archive hold goes **2,745 s ->
+    6.2 s, 440x**, and the replay gets FASTER, not slower. Verified at
+    production scale rather than on the fixture: a real 14 h window,
+    9,115,302 rows, `stream_events` and `export_events` +
+    `stream_exported` produce the byte-identical stream (sha
+    `6be489088a31b0fb` both ways) with the hold falling 20.0 s -> 0.5 s.
+    Fix: `export_events` writes the walk to parquet slices and
+    `stream_exported` reads them back; both share `_plan_walk` with
+    `stream_events`, because THE ONE walk is a claim about the slice
+    BOUNDS as much as the SQL and a second copy of that arithmetic is how
+    the seed boundary drifted the first time. `replay_run` now reads
+    floor, market ids, gap rows and the two exports inside the
+    `connect_retry` block, releases the stream archive, and simulates
+    outside it; the export lands in this process's own flock-owned
+    `<db>.tmp/pid-<pid>` directory (`hyxlab.scratch`) and is deleted
+    after -- it is not a cache, since a replay reading a stale export
+    reads a window the archive no longer has.
+    Rule, and it is the transferable half: **"measuring the fix requires
+    perturbing production" is a claim about the INSTRUMENT, not about the
+    question. Before deferring a measurement on that ground, name every
+    copy of the subject that already exists -- a nightly backup, a
+    sidecar, a journal, a replica -- because the reason the copy is there
+    is usually that someone already solved this.**
+    Second lesson, from the tests: the round-trip identity test PASSED
+    with the export's `ORDER BY` deleted. The fixture appended frames
+    chronologically, DuckDB scans in insertion order, so the rows came
+    back sorted whether or not anything sorted them -- **a test whose
+    subject is ORDER cannot be given data that is already in order**, the
+    reachability shape of #85/#86 one more time. The fixture is now
+    scrambled on purpose and the revert is red.
+    Two guards moved, and the rename guard behaved exactly as built:
+    `test_every_seed_site_asks_for_an_inclusive_floor` keys on the call
+    NAME `stream_events`, which divergence no longer calls, and its
+    `assert calls, "no longer calls the one walk"` line turned that into
+    a red instead of a guard that silently checked nothing. It now sweeps
+    both walk entry points, by the ROLE of `lo_inclusive` rather than by
+    which function carries it. `stream_exported` also takes the repo's
+    only read-WRITE attach that is not a daemon owning an archive -- it
+    creates its reader inside the export directory -- and it is recorded
+    LIBRARY, not OWNER, because the privacy of that path is chosen by the
+    CALLER; the claim is therefore tested at the caller
+    (`test_the_export_lives_in_this_process_private_scratch_and_is_dropped`)
+    rather than asserted in the allowlist. 4 tests, each red-verified by
+    reverting its own target (the release test proves the hold from
+    OUTSIDE the process -- a subprocess takes `hyxstream.duckdb`
+    read-write at the moment the simulation starts, which can only
+    succeed if this process let go). Suite 1700 -> **1704**.
+
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

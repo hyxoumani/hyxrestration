@@ -4,9 +4,11 @@ makes nonzero divergence on real runs attributable to infrastructure
 (late archive rows, gaps unknown live) rather than method noise."""
 
 import json
+import os
 import shutil
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import duckdb
 
@@ -438,17 +440,28 @@ def test_every_seed_site_asks_for_an_inclusive_floor(tmp_path):
     discipline" — seeded from the same gap floor, exclusively, and kept
     the hole for two rungs (EXP-1378). "Both" was a count of the sites
     the fix had touched, not of the sites that seed; mistake #37 again.
-    Sweep by ROLE."""
+    Sweep by ROLE.
+
+    TWO walk entry points, for the same reason there are three modules.
+    `simulator.divergence` now opens its window with `export_events`
+    (the walk written to parquet, so the archive is released before the
+    replay) and this guard, keyed on the NAME `stream_events`, went from
+    checking divergence's seed to checking nothing — silently, because
+    `assert calls` is the only thing between "seeds inclusively" and
+    "does not seed here at all". Both entry points take the same
+    `lo_inclusive`, so the guard is keyed on the argument's role, not on
+    which of the two carries it."""
     import ast
     from pathlib import Path
 
+    walks = {"stream_events", "export_events"}
     for module in ("simulator/shadow.py", "simulator/divergence.py", "simulator/run_l2.py"):
         tree = ast.parse(Path(module).read_text())
         calls = [
             c
             for c in ast.walk(tree)
             if isinstance(c, ast.Call)
-            and getattr(c.func, "id", getattr(c.func, "attr", None)) == "stream_events"
+            and getattr(c.func, "id", getattr(c.func, "attr", None)) in walks
         ]
         inclusive = [c for c in calls if any(k.arg == "lo_inclusive" for k in c.keywords)]
         assert calls, f"{module} no longer calls the one walk"
@@ -871,7 +884,9 @@ def test_if_new_re_derives_an_UNSTAMPED_report(tmp_path, monkeypatch):
     out = tmp_path / "reports"
     out.mkdir()
     (out / "done.json").write_text("{}")
-    assert len(_main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])) == 1
+    assert (
+        len(_main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])) == 1
+    )
 
 
 def test_the_stamp_covers_the_whole_closure_not_just_this_file(tmp_path):
@@ -1054,3 +1069,160 @@ def test_widening_the_nearest_window_past_the_exact_tolerance_lapses_the_invaria
     assert wide["matched_nearest"] == 1
     assert wide["nearest_qty_delta"]["equal_qty"] == 1
     assert wide["nearest_qty_delta"]["abs_mean"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# The copy-out: divergence must not hold the stream archive across its replay
+# ---------------------------------------------------------------------------
+
+
+def test_exported_window_replays_as_the_identical_event_stream(tmp_path):
+    """`export_events` + `stream_exported` is `stream_events` written to
+    disk, and "identical" has to mean the ROWS and the ORDER, not the
+    count: the whole reason the copy-out is safe is that the slices are
+    the walk's own slices, already sorted, so reading them back is a
+    concatenation. Swept over the three argument shapes that change the
+    walk's bounds — a prefix filter, an open `hi`, and an inclusive `lo`
+    (the seed's) — because each resolves a different extent."""
+    from simulator.bookreplay import export_events, stream_events, stream_exported
+
+    db = tmp_path / "s.duckdb"
+    sstore = StreamStore(db)
+    # Appended in a scrambled order ON PURPOSE. The daemon appends in
+    # arrival order and DuckDB scans in insertion order, so a fixture
+    # written chronologically comes back sorted whether or not anything
+    # sorted it -- and an export that dropped the walk's `ORDER BY`
+    # passed this test before the scramble went in.
+    for i in [(i * 17) % 40 for i in range(40)]:
+        mkt = f"KXAAA-{i % 2}"
+        sstore.append_events(
+            _snapshot_frame(mkt, i + 1, 40 + i % 5, 59 - i % 5, T0 + timedelta(hours=i))
+        )
+    sstore.flush()
+
+    lo = T0.replace(tzinfo=None) - timedelta(days=1)
+    hi = T0.replace(tzinfo=None) + timedelta(hours=30)
+    cases = [
+        ("bounded", {"hi": hi}),
+        ("open_hi", {"hi": None}),
+        ("prefixed", {"hi": hi, "prefix": "KXAAA-1"}),
+        ("seed", {"hi": hi, "lo_inclusive": True}),
+        # An empty window must export nothing and read back as nothing,
+        # not raise on a directory with no slices in it.
+        ("empty", {"hi": lo + timedelta(seconds=1)}),
+    ]
+    seen_nonempty = 0
+    for name, kw in cases:
+        with duckdb.connect(str(db), read_only=True) as conn:
+            live = list(stream_events(conn, lo, slice_hours=6.0, **kw))
+            export_events(conn, lo, dest=tmp_path / name, slice_hours=6.0, **kw)
+        assert list(stream_exported(tmp_path / name)) == live, name
+        seen_nonempty += bool(live)
+    assert seen_nonempty == 4, "the sweep must not be vacuous on four of five shapes"
+
+
+def test_replay_releases_the_stream_archive_before_it_simulates(tmp_path, monkeypatch):
+    """The 2026-09-25 incident, as a test. `replay_run` replayed through a
+    live `fetchmany` cursor, and a streaming cursor cannot release the file
+    it reads — so the report held `hyxstream.duckdb` for 45m45s while it
+    SIMULATED, `collector.streamd` could not flush for 3,057s, and 387,856
+    rows went to the torn-append sidecar.
+
+    Proved from OUTSIDE the process, because that is where the victim is:
+    a subprocess takes the archive read-write at the moment the simulation
+    starts. It can only succeed if this process has already let go."""
+    import subprocess
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    for seq, bid, ask_no, minutes in [(2, 44, 55, 11), (3, 45, 54, 22)]:
+        sstore.append_events(
+            _snapshot_frame("M1", seq, bid, ask_no, T0 + timedelta(minutes=minutes))
+        )
+    sstore.flush()
+
+    real_replay, probes = mod.replay_snapshots, []
+
+    def probing(*a, **kw):
+        # Fires on the seed replay AND the traded replay: both run after
+        # the release, and a fix that released only before the second
+        # would still hold the archive across the seed's walk.
+        probes.append(
+            subprocess.run(
+                [sys.executable, "-c", f"import duckdb; duckdb.connect({str(stream_db)!r})"],
+                capture_output=True,
+                timeout=60,
+            ).returncode
+        )
+        return real_replay(*a, **kw)
+
+    monkeypatch.setattr(mod, "replay_snapshots", probing)
+
+    fills = replay_run(
+        "R1",
+        T0.replace(tzinfo=None),
+        (T0 + timedelta(hours=2)).replace(tzinfo=None),
+        latency=0.0,
+        strategy_names=["probe"],
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+    )
+    assert len(fills) > 0, "a replay that trades nothing proves nothing about its hold"
+    assert len(probes) == 2, f"both replays must be probed, saw {len(probes)}"
+    assert probes == [0, 0], (
+        "a writer could not take hyxstream.duckdb while the replay ran:"
+        f" returncodes {probes} — the archive is still held across the simulation"
+    )
+
+
+def test_the_export_lives_in_this_process_private_scratch_and_is_dropped(tmp_path, monkeypatch):
+    """The claim `tests/test_owned_db_discipline.py` rests on, tested at
+    the caller that makes it true. `stream_exported` creates a read-write
+    DuckDB — allowed only because no second process can name the path —
+    and the path is chosen HERE, not there. So: the export sits under
+    `hyxlab.scratch`'s flock-owned `<db>.tmp/pid-<pid>` tree, and 0.89 GB
+    of parquet per replay is not left behind."""
+    from hyxlab.scratch import scratch_root
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.append_events(_snapshot_frame("M1", 2, 44, 55, T0 + timedelta(minutes=11)))
+    sstore.flush()
+
+    real_export, dirs = mod.export_events, []
+
+    def spying(conn, lo, hi, dest, **kw):
+        dirs.append(Path(dest))
+        return real_export(conn, lo, hi, dest, **kw)
+
+    monkeypatch.setattr(mod, "export_events", spying)
+
+    replay_run(
+        "R1",
+        T0.replace(tzinfo=None),
+        (T0 + timedelta(hours=2)).replace(tzinfo=None),
+        latency=0.0,
+        strategy_names=["probe"],
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+    )
+
+    private = Path(scratch_root(stream_db)) / f"pid-{os.getpid()}"
+    assert len(dirs) == 2, dirs
+    for d in dirs:
+        assert private in d.parents, f"{d} is not under this process's scratch {private}"
+        assert not d.exists(), f"{d} survived the run — the export is not a cache"

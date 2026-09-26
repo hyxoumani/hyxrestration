@@ -89,6 +89,16 @@ ALLOWED: dict[str, tuple[str, str]] = {
         "defines the ledger AND runs it; a second runner anchors its own"
         " run_id off the same stream head and doubles the read-attach rate",
     ),
+    "simulator/bookreplay.py": (
+        "LIBRARY",
+        "`stream_exported` creates its reader inside the export directory"
+        " its CALLER names, and the caller is what makes the path private:"
+        " `simulator.divergence` puts it under `hyxlab.scratch`'s"
+        " `<db>.tmp/pid-<pid>`, flock-owned for the process's whole life, so"
+        " no second process can construct the path. That claim is the one"
+        " thing this disposition rests on, so it is tested at the caller"
+        " (test_hyxlab_divergence.py) rather than asserted here",
+    ),
 }
 
 DISPOSITIONS = ("OWNER", "LIBRARY")

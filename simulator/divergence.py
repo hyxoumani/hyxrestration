@@ -27,15 +27,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
 
 from hyxlab.importclosure import closure_sha
 from hyxlab.reportdir import shared_reports
+from hyxlab.scratch import duck_scratch_dir
 from hyxlab.shadowruns import latest_complete_run
 from hyxlab.store import attach_wait_block, connect_retry, open_retry, reset_attach_waits
-from simulator.bookreplay import BOOK_GAPS, replay_snapshots, stream_events
+from simulator.bookreplay import (
+    BOOK_GAPS,
+    export_events,
+    replay_snapshots,
+    stream_exported,
+)
 from simulator.registry import STRATEGIES
 from simulator.shadow import SHADOW_DB, STREAM_DB
 from simulator.sim import Simulator
@@ -68,33 +75,60 @@ def replay_run(
     classify unmatched fills against the same coverage breaks the replay
     traded through.
     """
-    with connect_retry(stream_db, **STREAM_ATTACH) as conn:
-        # Seed books exactly as shadow does: replay history since the
-        # last coverage break WITHOUT stepping the sim.
-        floor = conn.execute(
-            f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
-            [anchor],
-        ).fetchone()[0]
-        # Metadata for the markets THIS REPLAY CAN TOUCH, and no others
-        # — derived exactly as `run_l2` derives it (EXP-1378, EXP-1379).
-        # `store.markets()` unfiltered is 1.87M MarketInfo objects, 1.32
-        # GiB resident, sized by the ARCHIVE rather than by the window
-        # the operator asked for, and this report is the one-shot that
-        # holds it LONGEST: a 10.5-day replay of a shadow run. The
-        # archive attach therefore moved INSIDE the stream connection,
-        # because the id set is a fact the stream archive owns.
-        # The floor is INCLUSIVE for the same reason the seed walk below
-        # is (`lo_inclusive`): the reconnect image at a gap end is a real
-        # market of this replay. `end`, not `anchor`, is the upper bound
-        # — the traded window runs past the seed.
-        ids = [
-            r[0]
-            for r in conn.execute(
-                "SELECT DISTINCT market_id FROM book_events"
-                " WHERE venue='kalshi' AND recv_ts >= ? AND recv_ts <= ?",
-                [floor or datetime.min, end],
+    # Every read of the stream archive happens inside this block, and the
+    # replay happens OUTSIDE it. See the copy-out note in
+    # `simulator.bookreplay`: a streaming cursor cannot release the file it
+    # reads, so replaying through one held `hyxstream.duckdb` for 45m45s on
+    # 2026-09-25 and cost `collector.streamd` 387,856 rows to the sidecar.
+    # Measured cost of the copy that replaces it: 6.2 s and 0.89 GB.
+    scratch = Path(duck_scratch_dir(stream_db) or ".") / f"divergence-{run_id}"
+    try:
+        with connect_retry(stream_db, **STREAM_ATTACH) as conn:
+            floor = conn.execute(
+                f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
+                [anchor],
+            ).fetchone()[0]
+            # Metadata for the markets THIS REPLAY CAN TOUCH, and no others
+            # — derived exactly as `run_l2` derives it (EXP-1378, EXP-1379).
+            # `store.markets()` unfiltered is 1.87M MarketInfo objects, 1.32
+            # GiB resident, sized by the ARCHIVE rather than by the window
+            # the operator asked for, and this report is the one-shot that
+            # holds it LONGEST: a 10.5-day replay of a shadow run. The id
+            # set is a fact the stream archive owns, so it is derived here;
+            # the `hyxlab.duckdb` attach that consumes it runs after this
+            # block, because the two archives no longer have to be held at
+            # the same time.
+            # The floor is INCLUSIVE for the same reason the seed walk below
+            # is (`lo_inclusive`): the reconnect image at a gap end is a real
+            # market of this replay. `end`, not `anchor`, is the upper bound
+            # — the traded window runs past the seed.
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT market_id FROM book_events"
+                    " WHERE venue='kalshi' AND recv_ts >= ? AND recv_ts <= ?",
+                    [floor or datetime.min, end],
+                ).fetchall()
+            ]
+            # Gap rows are read BEFORE the release, not after: they are the
+            # last thing this report needs from the stream archive, and
+            # reading them later would re-open it (including gap rows the
+            # live run never saw, e.g. flush_failure_backfill).
+            gaps = conn.execute(
+                f"SELECT started_at, ended_at FROM stream_gaps"
+                f" WHERE ended_at > ? AND started_at <= ? AND {BOOK_GAPS}"
+                f" ORDER BY started_at",
+                [anchor, end],
             ).fetchall()
-        ]
+            # `lo_inclusive`: the floor is a gap's `ended_at`, and a seq_reset
+            # gap ends AT the reconnect image that re-seeds books — excluding
+            # it made this report replay a hole the daemon never had.
+            seed_dir = export_events(
+                conn, floor or datetime.min, anchor, scratch / "seed", lo_inclusive=True
+            )
+            window_dir = export_events(conn, anchor, end, scratch / "window")
+        # --- the stream archive is released HERE, and streamd can flush ---
+
         # `open_retry`, not a bare `Store`: this attaches the LIVE
         # archive, whose write lock is taken by the 5-minute collector
         # and held for ~7h by the poly sweep. A bare read-only attach
@@ -115,21 +149,12 @@ def replay_run(
         from simulator.bookreplay import BookReplayer
 
         replayer = BookReplayer()
-        # `lo_inclusive`: the floor is a gap's `ended_at`, and a seq_reset
-        # gap ends AT the reconnect image that re-seeds books — excluding
-        # it made this report replay a hole the daemon never had.
-        seed = stream_events(conn, floor or datetime.min, anchor, lo_inclusive=True)
-        for _ in replay_snapshots(seed, replayer=replayer):
+        # Seed books exactly as shadow does: replay history since the
+        # last coverage break WITHOUT stepping the sim.
+        for _ in replay_snapshots(stream_exported(seed_dir), replayer=replayer):
             pass
-        # Trade the window with full gap honesty (including gap rows the
-        # live run never saw, e.g. flush_failure_backfill).
-        gaps = conn.execute(
-            f"SELECT started_at, ended_at FROM stream_gaps"
-            f" WHERE ended_at > ? AND started_at <= ? AND {BOOK_GAPS}"
-            f" ORDER BY started_at",
-            [anchor, end],
-        ).fetchall()
-        for snap in replay_snapshots(stream_events(conn, anchor, end), gaps=gaps, replayer=replayer):
+        # Trade the window with full gap honesty.
+        for snap in replay_snapshots(stream_exported(window_dir), gaps=gaps, replayer=replayer):
             sim.step(snap)
             # Same bound the shadow daemon applies (simulator/shadow.py),
             # for the same reason, at the site that never got it: the sim
@@ -140,6 +165,11 @@ def replay_run(
             # reads the curve at all; max_drawdown is a running stat, so
             # trimming cannot change any number this report prints.
             del sim.result.equity_curve[:-1]
+    finally:
+        # Not a cache: an export outlives nothing. `hyxlab.scratch`'s
+        # reaper is the backstop for the exits that run no `finally` at
+        # all (OOM kill, SIGKILL).
+        shutil.rmtree(scratch, ignore_errors=True)
     fills = [f for f in sim.result.fills if f.ts <= end]
     return (fills, gaps) if return_gaps else fills
 
@@ -457,9 +487,7 @@ def compare(
             "n": n_nearest,
             "equal_qty": sum(1 for d in nearest_qty_deltas if abs(d) <= _QTY_EPS),
             "abs_mean": _abs_mean(nearest_qty_deltas),
-            "mean": (
-                round(sum(nearest_qty_deltas) / n_nearest, 6) if nearest_qty_deltas else None
-            ),
+            "mean": (round(sum(nearest_qty_deltas) / n_nearest, 6) if nearest_qty_deltas else None),
             "min": round(nearest_qty_deltas[0], 6) if nearest_qty_deltas else None,
             "median": round(median(nearest_qty_deltas), 6) if nearest_qty_deltas else None,
             "max": round(nearest_qty_deltas[-1], 6) if nearest_qty_deltas else None,

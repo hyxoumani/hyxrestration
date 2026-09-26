@@ -120,6 +120,14 @@ WRITE_ALLOWED: dict[str, str] = {
     "simulator/shadow.py::ShadowLedger.persist": "the ledger's write path",
     "simulator/shadow.py::ShadowLedger.set_anchor": "ledger write",
     "simulator/shadow.py::ShadowLedger.start_run": "ledger write",
+    # The one entry that owns a file nobody else can name. `stream_exported`
+    # creates `reader.duckdb` inside this process's own
+    # `<db>.tmp/pid-<pid>/...` export directory (`hyxlab.scratch`, owner-
+    # locked for the process's whole life), reads its parquet slices through
+    # it, and deletes the directory. It cannot be read_only -- the file does
+    # not exist until this call makes it -- and it is not a shared database
+    # at any point: no second process can construct the path.
+    "simulator/bookreplay.py::stream_exported": "creates and owns its private export reader",
 }
 
 
