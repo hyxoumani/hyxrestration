@@ -1972,6 +1972,64 @@ Format: what happened → root cause → error type → prevention tier
     Verified in production: 26,765 MB, **hold 0.101 s**, same-device
     rename, no stage debris, and the copy opens clean at 890,793,988
     `book_events` rows.
+91. **2026-09-26 -- the attach ledger measured what getting IN cost us
+    and never what HOLDING cost everyone else, so it called the worst
+    lock event in this archive's history a perfect attach.**
+    `hyxlab/store.py`'s `AttachWait` exists because a retry ladder's
+    outcome is binary and a budget eroding toward its cliff is invisible
+    until the day it goes over (#70, #72, #78). It records `attempts`,
+    `waited_s`, `slept_s`, `open_s` and `budget_frac`. **Every one of
+    those measures the harm a contended reader SUFFERS.** The 2026-09-25
+    incident was entirely the other kind: `hyxlab-divergence` attached
+    the live `hyxstream.duckdb` on its FIRST attempt in ~10 ms, spending
+    **0.0 s of its 30 s budget**, and then held the file **45m45s**
+    across the replay -- 22 `streamd` stall episodes, peak 400,154 rows
+    in RAM, **387,856 rows** past `SPILL_CAP` into the torn-append JSONL
+    sidecar. Every field the ledger had reported that attach as flawless,
+    and was right to: the harm it DID had no field. An instrument built
+    to make lock contention legible was structurally blind to it in the
+    direction that actually damages the archive.
+    **The blindness also cost the fix its direct confirmation.** #89's
+    copy-out shortened the hold and was measured on a backup (2,745 s ->
+    6.2 s), but production could only be confirmed a pass later and only
+    INDIRECTLY: streamd's stall ledger stayed silent across the first run
+    of the new closure (09-26 02:34-03:20Z, ZERO episodes) against
+    3,002.8 s and 258,556 spilled rows for the OLD closure's 01:20Z run
+    the same morning. That inference is sound only while the victim
+    happens to be flushing into the window and only while the hold would
+    exceed its flush period. It is a reading of the victim, and the
+    holder is what changed. **When the only witness to a fix is the
+    silence of whatever it used to hurt, the fix is not instrumented.**
+    Fix: `AttachWait.held_s` plus `store.held_attach`, a context manager
+    over `connect_retry`, adopted at both of `divergence`'s attaches.
+    Three decisions carry the lesson. It times from when the connection
+    EXISTS, not from the first query -- the 09-25 hold was **97 % idle
+    connection**, and DuckDB's lock is taken by the open, so a
+    first-query timer would have reported the 3 % and acquitted the
+    report. It writes in `finally`, because a replay that dies at minute
+    40 held the file for forty minutes. And it folds into
+    `_AttachTotals` SEPARATELY from `add`, because the hold is known at
+    CLOSE, by which time a busy run may already have trimmed the row out
+    of the bounded sample -- #72's sample-vs-population trap arriving
+    again one field later, in a ledger that had already been fixed for
+    it once.
+    Rule: **an instrument for a shared resource has to measure both
+    directions -- what contention cost this caller, and what this caller
+    cost the contenders. Only the first is visible from inside the
+    caller, which is exactly why only the first ever gets built.** And
+    its corollary, which is where the honesty lives: `held_s` is `None`
+    and never 0.0 when unmeasured, and the report block publishes
+    `held_unknown_n` beside `held_n`, because averaging the uninstrumented
+    in as zero lets a 45-minute reader publish a flawless maximum -- the
+    same defect one layer up.
+    8 tests (`tests/test_attach_hold.py`), both mutations (drop the
+    charge; default `held_s` to 0.0) each turning four of them red.
+    Suite 1713 -> **1721**. First production `held_s` lands with the
+    09-27 01:20Z scheduled divergence firing; note that QA's standing
+    stall red clears that morning for an UNRELATED reason (the promote
+    restarted streamd, which moves the ledger's `armed` epoch and drops
+    the 01:20Z episode from the window by design) -- a green there is the
+    epoch moving, not the fix being verified.
 
 
 ## Pattern analysis (Step 5)

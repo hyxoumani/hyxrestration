@@ -111,3 +111,26 @@
   reflink and turns a 0.2s writer exclusion into minutes. Before
   trusting a cheap number in a journal, name the mechanism that makes it
   cheap, then ask which planned change removes it.
+- An instrument for a SHARED resource has to measure both directions:
+  what contention cost this caller, and what this caller cost the
+  contenders. Only the first is visible from inside the caller, which is
+  exactly why only the first ever gets built. `hyxlab.store.AttachWait`
+  recorded `attempts`/`waited_s`/`slept_s`/`open_s`/`budget_frac` -- all
+  five the harm a contended reader SUFFERS -- and so called the worst
+  lock event in this archive perfect: the 2026-09-25 divergence attach
+  got in on its first attempt in ~10ms spending 0.0s of a 30s budget,
+  then held `hyxstream.duckdb` 45m45s and cost streamd 387,856 rows to
+  the torn-append sidecar (mistakes #91). Hold the file through
+  `store.held_attach`, which times from when the CONNECTION EXISTS (the
+  lock is taken by the open, not by the first query -- that hold was 97%
+  idle connection) and records in `finally` (a replay that dies at minute
+  40 held it for forty minutes). An unmeasured hold is `None`, never
+  0.0, and the report block says `held_unknown_n`: average the
+  uninstrumented in as zero and a 45-minute reader publishes a flawless
+  maximum.
+- When the only witness to a fix is the SILENCE of whatever it used to
+  hurt, the fix is not instrumented. The #89 copy-out was confirmed in
+  production only by streamd's stall ledger staying quiet across the new
+  closure's first run -- evidence that holds only while the victim
+  happens to be writing into the window. Measure at the holder, then the
+  reading survives the victim being idle, restarted, or fixed.
