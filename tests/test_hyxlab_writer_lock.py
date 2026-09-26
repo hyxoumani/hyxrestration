@@ -27,6 +27,7 @@ import pytest
 import collector.collect as collect
 import collector.qa as qa
 import collector.sweep as sweep
+import hyxlab.store as store_mod
 from hyxlab.store import Store
 
 UNIT_DIR = Path(__file__).resolve().parent.parent / "scripts" / "systemd"
@@ -297,7 +298,12 @@ def test_burst_open_budget_outlasts_a_long_reader(tmp_path, monkeypatch):
 
         return Store(db)
 
-    monkeypatch.setattr(sweep, "open_retry", fake_open_retry)
+    # Patched on `hyxlab.store`, not on `sweep`: the burst now attaches
+    # through `store.held_open` (which measures what it cost the collector),
+    # so a stub bound to the sweep module's namespace would be bypassed and
+    # this assertion would pass on `seen` never being written -- the shape of
+    # green-for-the-wrong-reason this repo keeps catching.
+    monkeypatch.setattr(store_mod, "open_retry", fake_open_retry)
     with sweep.writer_burst(str(tmp_path / "t.duckdb"), lock_file=str(tmp_path / "w.lock")):
         pass
     assert seen["retries"] * seen["delay"] >= 300, (

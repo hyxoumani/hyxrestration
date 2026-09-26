@@ -258,6 +258,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import NormalDist, median
@@ -268,7 +269,7 @@ from hyxlab.store import (
     attach_budget_s,
     attach_wait_block,
     attach_waits,
-    connect_retry,
+    held_attach,
     lock_holder,
     reset_attach_waits,
 )
@@ -1355,8 +1356,22 @@ def main() -> None:
     args = ap.parse_args()
 
     reset_attach_waits()
+    # An ExitStack rather than a `with` around the whole body, and the
+    # distinction is the whole reason this shape is worth the two extra
+    # lines: the `except` below must cover the ATTACH only. Wrapped around
+    # `build_atlas`, a `duckdb.Error` from any query in the report would be
+    # re-published as "archive busy: a live writer holds it", which is a
+    # diagnosis, not a stack trace -- and the wrong one.
+    stack = ExitStack()
     try:
-        conn = connect_retry(args.db, read_only=True, **ARCHIVE_ATTACH)
+        # `held_attach`: `build_atlas` scans the whole settled corpus of the
+        # LIVE archive -- the file the 5-minute collector writes -- and until
+        # now this report published `attach_wait` measuring only what getting
+        # in cost IT. The hold is the half that can drop a capture cycle
+        # (mistakes #91); `held_s_max` in the block below is now that
+        # reading, from the holder, in `finally` so a run that dies mid-scan
+        # still says how long it held.
+        conn = stack.enter_context(held_attach(args.db, read_only=True, **ARCHIVE_ATTACH))
     except duckdb.Error as exc:
         holder = lock_holder(exc)
         # The MEASURED wait, not the nominal. This line printed
@@ -1380,11 +1395,14 @@ def main() -> None:
             f"[atlas] archive unreachable: {args.db} — and NO live process holds"
             f" its lock, so waiting will not help. {exc}"
         ) from exc
-    atlas = build_atlas(conn)
-    conn.close()
-    # After the attach, before the write: the cost of getting to the data is
+    with stack:
+        atlas = build_atlas(conn)
+    # After the RELEASE, before the write: the cost of getting to the data is
     # part of the reading, and on a run that SUCCEEDED it is the only place
-    # the budget's margin is readable at all.
+    # the budget's margin is readable at all. It has to follow the `with`
+    # rather than merely the last query -- `held_s` is charged by the close,
+    # so a block built one line earlier would publish `held_unknown_n 1`
+    # against the attach it is describing.
     atlas["attach_wait"] = attach_wait_block()
 
     out_dir = Path(args.out)

@@ -58,6 +58,34 @@ def _always_locked(monkeypatch, sleeps):
     )
 
 
+#: The shape `atlas.main` requires of `build_atlas` past the attach --
+#: hoisted so a second test can stub the build without a second copy of
+#: it drifting (tests/test_attach_hold.py imports it).
+EMPTY_ATLAS = {
+    "buckets": [],
+    "flagged": [],
+    "flagged_robust": [],
+    "flag_verdict": {
+        "tested": 0,
+        "buckets": 0,
+        "counts": {"silent": 0, "flagged": 0, "not_significant": 0},
+        "flagged_share_of_tested": None,
+    },
+    "quoted_verdict": {
+        "day_weighted_survivors": 0,
+        "tested_powered": 0,
+        "unpowered": 0,
+        "gap_retained_measurable": 0,
+        "counts": {
+            "confirmed": 0,
+            "not_significant": 0,
+            "refuted_sign": 0,
+            "silent": 0,
+        },
+    },
+}
+
+
 def test_budget_arithmetic_is_one_definition_not_a_retyped_literal():
     """`atlas.ATTACH_BUDGET_S` was the hand-computed sum of a ladder defined
     four lines above it. The two drift apart the moment any field changes."""
@@ -195,29 +223,7 @@ def test_atlas_publishes_the_block_and_prints_the_margin(monkeypatch, tmp_path, 
 
     from simulator import atlas
 
-    empty = {
-        "buckets": [],
-        "flagged": [],
-        "flagged_robust": [],
-        "flag_verdict": {
-            "tested": 0,
-            "buckets": 0,
-            "counts": {"silent": 0, "flagged": 0, "not_significant": 0},
-            "flagged_share_of_tested": None,
-        },
-        "quoted_verdict": {
-            "day_weighted_survivors": 0,
-            "tested_powered": 0,
-            "unpowered": 0,
-            "gap_retained_measurable": 0,
-            "counts": {
-                "confirmed": 0,
-                "not_significant": 0,
-                "refuted_sign": 0,
-                "silent": 0,
-            },
-        },
-    }
+    empty = EMPTY_ATLAS
     monkeypatch.setattr(atlas, "build_atlas", lambda conn: dict(empty))
     monkeypatch.setattr(atlas, "tier_stability", lambda *a: None)
     monkeypatch.setattr(

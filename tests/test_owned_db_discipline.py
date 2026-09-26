@@ -141,8 +141,14 @@ def _is_rw_open(call: ast.Call) -> bool:
         if not (isinstance(f, ast.Attribute) and getattr(f.value, "id", "") == "duckdb"):
             return False
         return not literal_true
-    if name == "connect_retry":
+    if name in ("connect_retry", "held_attach"):
+        # `held_attach` IS `connect_retry` plus a hold measurement, so it
+        # inherits the read-only default and the same rule. Listed by name
+        # because this walker cannot follow a wrapper.
         return isinstance(ro, ast.Constant) and ro.value is False
+    # `open_retry`/`held_open` are NOT here: they return a `Store`, which is
+    # the market archive, and this rule is about the daemon-owned files
+    # (hyxstream/hyxshadow) that no `Store` ever opens.
     return False
 
 

@@ -39,7 +39,7 @@ from hyxlab.store import (
     attach_budget_s,
     attach_wait_block,
     duck_connect,
-    open_retry,
+    held_open,
     reset_attach_waits,
 )
 
@@ -203,12 +203,26 @@ def writer_burst(db: str, lock_file: str | None = None):
         note_holder(lock_file)  # name the holder BEFORE open_retry can spin for 300s
         # readers (QA/doctor/backtest) don't take the flock, so the open
         # can still lose to one — hence the widened budget above.
-        store = open_retry(db, retries=BURST_OPEN_RETRIES, delay=BURST_OPEN_DELAY_S)
-        try:
-            yield store
-        finally:
-            store.close()
-            fcntl.flock(lock, fcntl.LOCK_UN)
+        #
+        # `held_open`, not `open_retry`: the whole POINT of this function is
+        # that the hold is short, and until 2026-09-26 nothing measured it.
+        # The ledger recorded what each burst's open COST this sweep and
+        # never what the burst cost the 5-minute collector — the exact
+        # blindness that let a 45-minute divergence attach publish a
+        # flawless `attach_wait` while starving `streamd` (mistakes #91).
+        # This is the widest ladder in the repo (150 x 2.0s) over ~2 bursts
+        # x ~3,709 series, so `held_s_total` in this run's `attach_wait`
+        # block is the sweep's total exclusion of the archive — the number
+        # the 08-02 fix claimed to shrink and never printed.
+        with held_open(db, retries=BURST_OPEN_RETRIES, delay=BURST_OPEN_DELAY_S) as store:
+            try:
+                yield store
+            finally:
+                # Inside `held_open`, so the flock is released only after the
+                # DuckDB handle is: unlocking first would let the next writer
+                # take the advisory lock and then block on the file lock this
+                # frame still holds.
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def refresh_series(

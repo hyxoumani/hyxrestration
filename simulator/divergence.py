@@ -36,7 +36,7 @@ from hyxlab.importclosure import closure_sha
 from hyxlab.reportdir import shared_reports
 from hyxlab.scratch import duck_scratch_dir
 from hyxlab.shadowruns import latest_complete_run
-from hyxlab.store import attach_wait_block, held_attach, open_retry, reset_attach_waits
+from hyxlab.store import attach_wait_block, held_attach, held_open, reset_attach_waits
 from simulator.bookreplay import (
     BOOK_GAPS,
     export_events,
@@ -139,11 +139,12 @@ def replay_run(
         # site never got it. The shadow daemon takes the third valid
         # option and DEGRADES (`except duckdb.Error: return None`),
         # which a one-shot report cannot do.
-        store = open_retry(archive_db, read_only=True)
-        try:
+        # `held_open` since 2026-09-26: this was the ONE attach in this
+        # report that published no hold, and `held_unknown_n` named it in
+        # every artifact. The metadata read is expected to be brief -- so was
+        # the stream attach above, for the eight days it held the file 45m45s.
+        with held_open(archive_db, read_only=True) as store:
             markets = store.markets(venue="kalshi", market_ids=ids)
-        finally:
-            store.close()
         sim = Simulator(markets, [STRATEGIES[n]() for n in strategy_names], latency=latency)
 
         from simulator.bookreplay import BookReplayer

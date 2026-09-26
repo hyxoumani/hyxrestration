@@ -25,19 +25,19 @@ import argparse
 import json
 from datetime import UTC, datetime
 
-from hyxlab.store import open_retry
+from hyxlab.store import attach_wait_block, held_open, reset_attach_waits
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots, stream_events
 from simulator.harness import write_manifest
 from simulator.registry import STRATEGIES, build
-from simulator.shadow import STREAM_DB, stream_conn
+from simulator.shadow import STREAM_DB, held_stream_conn
 from simulator.sim import Simulator
 
 EQUITY_MAX_POINTS = 10_000
 
+
 def _naive(ts: str | datetime) -> datetime:
     dt = datetime.fromisoformat(ts) if isinstance(ts, str) else ts
     return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo else dt
-
 
 
 def run_l2(
@@ -53,7 +53,14 @@ def run_l2(
     """Replay (start, end] through the named strategies; returns
     (manifest_path, SimResult, n_snapshots)."""
     n_snaps, ts_min, ts_max = 0, None, None
-    with stream_conn(stream_db) as conn:
+    # `held_stream_conn`, not `stream_conn`: this attach spans the SEED
+    # replay and the whole trading window -- the same shape, on the same
+    # 24/7-writer-owned file, as the divergence replay that held it 45m45s
+    # and cost `collector.streamd` 387,856 rows (mistakes #91). Nothing in
+    # this module measured that, and an ad-hoc replay run by hand is
+    # exactly the holder nobody is watching. The reading is published in
+    # the manifest's fingerprint below.
+    with held_stream_conn(stream_db) as conn:
         # Seed books exactly as shadow/divergence do: replay history since
         # the last coverage break WITHOUT stepping the sim.
         floor = conn.execute(
@@ -82,11 +89,12 @@ def run_l2(
                 [floor or datetime.min, end, *([prefix + "%"] if prefix else [])],
             ).fetchall()
         ]
-        store = open_retry(archive_db, read_only=True)
-        try:
+        # `held_open`: a metadata read, nested INSIDE the stream hold above
+        # and against the archive the 5-minute collector writes. Small by
+        # design (the `ids` filter overhead), which is a claim, and the
+        # claim is now a number rather than a comment.
+        with held_open(archive_db, read_only=True) as store:
             markets = store.markets(venue="kalshi", market_ids=ids)
-        finally:
-            store.close()
         strategies = build(strategy_names)
         # L2 replay is Kalshi-only (BookReplayer refuses other venues);
         # the feed provides no independent NO book (one mirrored book), so
@@ -122,6 +130,11 @@ def run_l2(
         "stream_db": stream_db,
         "markets_prefix": prefix,
         "latency_s": latency,
+        # What this replay cost the daemons it shares both files with. The
+        # fingerprint is where a run's own conditions belong, and a hold is
+        # a condition of the box, not of the strategy. `held_unknown_n > 0`
+        # here means a third attach appeared and was not instrumented.
+        "attach_wait": attach_wait_block(),
     }
     manifest = write_manifest(
         result,
@@ -155,6 +168,7 @@ def main() -> None:
     ap.add_argument("--out", default="data/runs", help="run-dir root")
     args = ap.parse_args()
 
+    reset_attach_waits()
     names = args.strategy.split(",")
     start, end = _naive(args.start), _naive(args.end)
     print(f"[run_l2] {names} over ({start}, {end}] prefix={args.markets} latency={args.latency}s")

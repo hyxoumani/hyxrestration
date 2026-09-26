@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -843,16 +843,58 @@ def held_attach(path: str | Path, **kw) -> Iterator:
     reported the 3% and called the report innocent.
     """
     conn = connect_retry(path, **kw)
+    with charge_hold(conn.close):
+        yield conn
+
+
+@contextmanager
+def held_open(path: str | Path = "data/hyxlab.duckdb", **kw) -> Iterator[Store]:
+    """`open_retry`, and the hold is measured and charged to the attach.
+
+    The Store-side twin of `held_attach`, and it exists because the debt
+    `held_unknown_n` counts is mostly THIS helper: `open_retry` is how
+    every writer and most readers of `data/hyxlab.duckdb` attach -- the
+    5-minute collector's file, so a hold here is a DROPPED capture cycle
+    rather than a delayed report (`collector.sweep.writer_burst`'s
+    docstring has the 421-of-3,706 measurement).
+
+    Same discipline as `held_attach`, for the same reasons: timed from the
+    moment the Store EXISTS (DuckDB's lock is taken by the open, not by
+    the first query), closed before the clock is read, and recorded in
+    `finally` so a body that raised still publishes the seconds it held.
+    """
+    store = open_retry(path, **kw)
+    with charge_hold(store.close):
+        yield store
+
+
+@contextmanager
+def charge_hold(close: Callable[[], None]) -> Iterator[None]:
+    """Time the body, release, and charge the hold to the attach this
+    context's own open produced (`_LAST_ATTACH`, a ContextVar -- one
+    process attaches the archive from several threads).
+
+    Shared by `held_attach` and `held_open` so the two cannot drift: a
+    second copy of this `finally` is a second place for the close-before-
+    the-clock ordering to be got wrong.
+
+    PUBLIC because a wrapper would otherwise re-introduce the debt this
+    instrument exists to pay off: `simulator.shadow.stream_conn` attaches
+    through `connect_retry` and then re-tunes the engine, so it cannot BE
+    `held_attach` -- it can only borrow this seam (`simulator.shadow.
+    held_stream_conn`). Every such wrapper that does not is another
+    `held_unknown_n`.
+    """
     w = _LAST_ATTACH.get()
     started = time.monotonic()
     try:
-        yield conn
+        yield
     finally:
         # Closed BEFORE the clock is read, and the hold recorded even when
         # the body raised: an attach that died mid-replay held the file for
         # every second up to the exception, and that is the reading a
         # failed run most needs to leave behind.
-        conn.close()
+        close()
         held = time.monotonic() - started
         if w is not None:
             w.held_s = held

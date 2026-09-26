@@ -27,13 +27,15 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 
 from hyxlab.lockid import db_owner_lock_or_reason
-from hyxlab.store import Store, connect_retry, duck_connect, spill_cap
+from hyxlab.store import Store, charge_hold, connect_retry, duck_connect, spill_cap
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots, stream_events
 from simulator.registry import build as build_strategies
@@ -92,6 +94,24 @@ def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
     # moves the limit after passing through it.
     spill_cap(conn, path)
     return conn
+
+
+@contextmanager
+def held_stream_conn(path: str) -> Iterator[duckdb.DuckDBPyConnection]:
+    """`stream_conn`, and the hold is measured and charged to the attach.
+
+    `hyxstream.duckdb` is owned by a 24/7 writer, and a reader attached to
+    it excludes that writer for every second it stays attached -- which is
+    how a 45m45s divergence replay cost `collector.streamd` 387,856 rows
+    to the torn-append sidecar while publishing a flawless `attach_wait`
+    (mistakes #91). `stream_conn` cannot simply BE `held_attach`: it lowers
+    `memory_limit` after the attach and re-derives the spill bound, so it
+    owns the connection between the open and the caller. It borrows the
+    hold seam instead.
+    """
+    conn = stream_conn(path)
+    with charge_hold(conn.close):
+        yield conn
 
 
 _SCHEMA = """

@@ -28,6 +28,7 @@ import time
 import duckdb
 import pytest
 
+import hyxlab.store as store_mod
 from hyxlab.store import connect_retry, lock_holder
 from simulator import atlas
 
@@ -105,7 +106,13 @@ def test_exhausted_budget_names_the_live_holder_and_does_not_traceback(monkeypat
     def refuse(*a, **kw):
         raise duckdb.IOException(_HELD.format(pid=1))
 
-    monkeypatch.setattr(atlas, "connect_retry", refuse)
+    # Patched on `hyxlab.store`: `main` attaches through `held_attach` now
+    # (so the report publishes what it cost the collector to be held, not
+    # only what it cost this run to get in), and `held_attach` resolves
+    # `connect_retry` in the store module's namespace -- a stub bound to
+    # `atlas.connect_retry` would never be reached and both of these tests
+    # would pass on the real helper happening to fail too.
+    monkeypatch.setattr(store_mod, "connect_retry", refuse)
     monkeypatch.setattr("sys.argv", ["atlas", "--db", str(tmp_path / "a.duckdb")])
     with pytest.raises(SystemExit) as e:
         atlas.main()
@@ -122,7 +129,13 @@ def test_no_holder_is_the_opposite_verdict_and_says_so(monkeypatch, tmp_path):
     def refuse(*a, **kw):
         raise duckdb.IOException("IO Error: Could not open database: permission denied")
 
-    monkeypatch.setattr(atlas, "connect_retry", refuse)
+    # Patched on `hyxlab.store`: `main` attaches through `held_attach` now
+    # (so the report publishes what it cost the collector to be held, not
+    # only what it cost this run to get in), and `held_attach` resolves
+    # `connect_retry` in the store module's namespace -- a stub bound to
+    # `atlas.connect_retry` would never be reached and both of these tests
+    # would pass on the real helper happening to fail too.
+    monkeypatch.setattr(store_mod, "connect_retry", refuse)
     monkeypatch.setattr("sys.argv", ["atlas", "--db", str(tmp_path / "a.duckdb")])
     with pytest.raises(SystemExit) as e:
         atlas.main()

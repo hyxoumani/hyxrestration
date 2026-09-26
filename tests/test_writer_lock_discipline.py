@@ -148,13 +148,18 @@ def _lock_ex(node: ast.AST) -> bool:
 
 def _opens_for_write(node: ast.AST) -> bool:
     """Does this function attach the archive read-write itself? `Store(p)`
-    or `open_retry(p)` with no literal `read_only=True`."""
+    or `open_retry(p)`/`held_open(p)` with no literal `read_only=True`.
+
+    `held_open` is on this list for the reason the list exists: it is
+    `open_retry` plus a hold measurement, and a walker that cannot follow a
+    wrapper would have quietly stopped seeing `collector.sweep`'s writer
+    the day that burst started measuring its own hold."""
     for n in ast.walk(node):
         if not isinstance(n, ast.Call):
             continue
         f = n.func
         name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
-        if name not in ("Store", "open_retry", "connect"):
+        if name not in ("Store", "open_retry", "held_open", "connect"):
             continue
         ro = any(
             k.arg == "read_only" and isinstance(k.value, ast.Constant) and k.value.value is True
