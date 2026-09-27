@@ -268,6 +268,7 @@ import duckdb
 from hyxlab.store import (
     attach_budget_s,
     attach_wait_block,
+    attach_wait_line,
     attach_waits,
     held_attach,
     lock_holder,
@@ -1425,14 +1426,7 @@ def main() -> None:
     # The margin beside the reading it paid for: a run that spent 0.9 of its
     # attach budget produced the same numbers as one that spent none, and
     # only this line separates them before the day the budget runs out.
-    aw = atlas["attach_wait"]
-    if aw:
-        print(
-            f"[atlas] attach: {aw['n']} waited {aw['waited_s_total']:.1f}s"
-            f" ({aw['slept_s_total']:.1f}s slept, {aw['contended_n']} contended),"
-            f" worst sleep {aw['slept_s_max']:.1f}s"
-            f" = {aw['budget_frac_max']} of its budget"
-        )
+    print(attach_wait_line(atlas["attach_wait"], prefix="[atlas]", budget_s=ATTACH_BUDGET_S))
     # the denominator, printed next to the count: "N of M buckets" reads as M
     # tests, and it never was. See mistakes #33.
     print(

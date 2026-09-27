@@ -38,6 +38,7 @@ from hyxlab.store import (
     Store,
     attach_budget_s,
     attach_wait_block,
+    attach_wait_line,
     duck_connect,
     held_open,
     reset_attach_waits,
@@ -732,7 +733,6 @@ def main() -> None:
         wait = attach_wait_block(rows=False)
         print(f"[sweep] done: {totals}")
         if wait is not None:
-            frac = wait["budget_frac_max"]
             # `attach_budget_s`, never `RETRIES * DELAY`: 150 attempts is
             # 149 sleeps, so the hand-multiplied 300 is 2s wider than the
             # ladder the fraction is a share of -- printing it beside
@@ -750,16 +750,12 @@ def main() -> None:
             # count a max and a total cannot give: one 96s block and 48 x 2s
             # are the same two numbers, and only one of them is a reason to
             # touch the budget.
-            print(
-                f"[sweep] attach_wait: {wait['n']} attaches,"
-                f" {wait['contended_n']} contended, worst sleep"
-                f" {wait['slept_s_max']:.1f}s of a {budget:.0f}s"
-                f" budget ({'n/a' if frac is None else f'{frac:.4f}'} of it),"
-                f" {wait['slept_s_total']:.1f}s slept in total"
-                f" + {wait['open_s_total']:.1f}s opening,"
-                f" {wait['exhausted_n']} exhausted",
-                flush=True,
-            )
+            # `attach_wait_line`, not a format string here: this line IS
+            # the sweep's artifact (no JSON is written), so a field the
+            # block gains and the line does not is a measurement taken and
+            # thrown away -- which is exactly what happened to the hold
+            # half on 09-27 06:10Z.
+            print(attach_wait_line(wait, prefix="[sweep]", budget_s=budget), flush=True)
         # WORST BUDGET, NOT THE MEAN, and a fraction beside every count: this
         # run holds thousands of per-request transport budgets, so
         # `retries / TRANSPORT_TRIES` -- breadth's `walk_budget_frac`, correct

@@ -146,7 +146,12 @@ def test_sweep_scopes_the_ledger_to_the_run_and_publishes_the_margin():
     src = (store_mod.Path(__file__).resolve().parents[1] / "collector/sweep.py").read_text()
     assert "reset_attach_waits()" in src, "a sweep's block must describe the sweep"
     assert "attach_wait_block(rows=False)" in src
-    assert "[sweep] attach_wait:" in src
+    # The line moved into `hyxlab.store.attach_wait_line` on 2026-09-27: the
+    # sweep writes no JSON, so a hand-written f-string here is a field list
+    # that has to be maintained by hand, and on 09-27 06:10Z it was not --
+    # the first `held_s_total` ever measured for the writer burst was
+    # computed and dropped at the format string. See tests/test_attach_line.
+    assert "attach_wait_line(" in src
 
 
 def test_the_printed_budget_is_the_ladders_own_arithmetic_not_retries_times_delay():
@@ -160,8 +165,16 @@ def test_the_printed_budget_is_the_ladders_own_arithmetic_not_retries_times_dela
     )
     assert budget < sweep_mod.BURST_OPEN_RETRIES * sweep_mod.BURST_OPEN_DELAY_S
     src = (store_mod.Path(__file__).resolve().parents[1] / "collector/sweep.py").read_text()
-    line = next(ln for ln in src.splitlines() if "of a {budget:.0f}s" in ln)
-    assert "BURST_OPEN_RETRIES * BURST_OPEN_DELAY_S" not in line
+    line = next(ln for ln in src.splitlines() if "attach_wait_line(" in ln)
+    assert "budget_s=budget" in line
+    assert "BURST_OPEN_RETRIES * BURST_OPEN_DELAY_S" not in src
+    # and the renderer prints that denominator beside the share it governs
+    reset_attach_waits()
+    store_mod._record_attach("hyxlab.duckdb", 146, 290.0, budget, True, 290.0)
+    rendered = store_mod.attach_wait_line(
+        attach_wait_block(rows=False), prefix="[sweep]", budget_s=budget
+    )
+    assert f"of a {budget:.0f}s budget" in rendered
 
 
 def test_sweep_prints_the_wait_line_on_a_run_with_zero_lock_skips(capsys):
@@ -236,18 +249,23 @@ def test_contended_n_separates_one_long_block_from_many_short_ones():
 
 def test_the_sweep_line_prints_the_sleep_and_the_open_cost_apart():
     """The operator reads this line and nothing else about the ladder, so it
-    is the line that has to separate the two costs. Matched against the
-    f-string LITERALS only -- a comment quoting the old wording, as the one
-    above the print does, is documentation and not an assertion about it."""
-    src = (store_mod.Path(__file__).resolve().parents[1] / "collector/sweep.py").read_text()
-    fstrings = [ln.strip() for ln in src.splitlines() if ln.strip().startswith('f"')]
-    printed = "".join(f for f in fstrings if "wait[" in f or "[sweep] attach_wait:" in f)
-    assert "[sweep] attach_wait:" in printed
-    for field in ("contended_n", "slept_s_max", "slept_s_total", "open_s_total"):
-        assert field in printed, field
-    # and the elapsed total is no longer the number headlined as waiting
-    assert "spent waiting in total" not in "".join(fstrings)
-    assert "waited_s_total" not in printed
+    is the line that has to separate the two costs. Asserted against the
+    RENDERED line rather than the source's f-string literals -- scraping the
+    source is how this file kept passing while the line lost four fields
+    (2026-09-27); the rendered string is the artifact."""
+    reset_attach_waits()
+    _fill(7_435, waited=0.0087, slept=0.0)
+    _fill(48, waited=2.0087, slept=2.0)
+    printed = store_mod.attach_wait_line(
+        attach_wait_block(rows=False), prefix="[sweep]", budget_s=298.0
+    )
+    assert printed.startswith("[sweep] attach_wait:")
+    assert "48 contended" in printed
+    assert "96.0s slept in total + 65.1s opening" in printed
+    # and the elapsed total is not the number headlined as waiting: it is
+    # named "elapsed", beside the two components it is the sum of.
+    assert "161.1s elapsed" in printed
+    assert "waiting" not in printed
 
 
 def test_the_ladders_measure_the_sleep_they_actually_perform(monkeypatch, tmp_path):

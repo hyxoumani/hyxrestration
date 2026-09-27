@@ -2227,6 +2227,59 @@ Format: what happened → root cause → error type → prevention tier
     because the measured seam releases through `conn.close`. Suite
     1744 -> 1751.
 
+95. **2026-09-27 -- the block gained four fields, and the ONE publisher
+    whose line is its whole artifact did not. The first `held_s_total`
+    ever measured for the widest ladder in this repo was computed and
+    dropped at a format string.**
+    #91 built `held_attach` and #94 corrected `held_unknown_n`; both
+    landed in `attach_wait_block`, and four of the five publishers
+    picked the new fields up for nothing, because they SERIALISE the
+    dict -- `atlas`, `divergence` and `run_l2` into JSON artifacts,
+    `shadow` through `json.dumps` and a ledger row. The fifth,
+    `collector.sweep`, writes no artifact at all: its one journal line
+    was a hand-written f-string naming seven keys, written before the
+    hold half existed and not touched when it arrived.
+    So the **2026-09-27 06:10Z sweep** -- the first run of the 150 x
+    2.0s burst ladder to measure its own hold on `hyxlab.duckdb`, the
+    file the 5-minute collector writes, over 7,549 attaches -- computed
+    `held_s_total`, `held_s_max`, `held_n` and `held_unknown_n`, and
+    printed *"7549 attaches, 13 contended, worst sleep 2.0s of a 298s
+    budget (0.0067 of it), 26.0s slept in total + 95.3s opening, 0
+    exhausted"*. The number the 08-02 burst fix claimed to shrink is
+    STILL unprinted, one pass after the instrument to print it shipped,
+    and that run's copy is not recoverable: nothing else wrote it down.
+    The ladder's own note had named this exact reading as the point of
+    the work ("`held_s_total` in this run's `attach_wait` block is the
+    sweep's total exclusion of the archive"), four lines above the
+    `held_open` call that measures it.
+    **Fix: one renderer, `hyxlab.store.attach_wait_line`**, used by both
+    printing sites (sweep, atlas), with the completeness asserted by
+    PERTURBATION rather than by reading the renderer's source -- bump
+    each field of a real block by 100 and the rendered line must change.
+    A source scan passes against a renderer that reads a field into a
+    local and drops the local, which is one edit away from the defect
+    itself. A second test walks every f-string in the repo and fails on
+    any module that subscripts a block key into one, so the second
+    renderer -- the one that misses the NEXT field -- cannot be written.
+    Two smaller things fixed in passing: the line now names
+    `waited_s_total` "elapsed" rather than letting it read as waiting
+    (#78, which had been fixed in the numbers and not in the wording),
+    and it prints the retained/dropped sample caveat (#72) when the rows
+    were actually trimmed -- at 7,549 attaches they always are.
+    Rule: **a field added to a shared structure reaches every publisher
+    that SERIALISES it and no publisher that LISTS it, and the one that
+    lists it is usually the one with no artifact to fall back on. Count
+    the publishers by how they render, not by how many there are -- then
+    give the hand-written ones a renderer that fails the suite when it
+    falls behind the structure.** Corollary: **the three source-scraping
+    tests that covered the sweep's line all stayed green through this,
+    because they asserted on f-string literals in the source rather than
+    on the rendered string. They were pinning the shape of the code that
+    lost the field.** All three now assert against the output.
+    3 tests red-verified by reverting their own target (the hold clause,
+    the sample clause, `held_unknown_n`), plus the second-renderer scan
+    red-verified by re-introducing a hand-written line in the sweep.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

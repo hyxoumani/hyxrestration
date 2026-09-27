@@ -783,6 +783,79 @@ def attach_wait_block(waits: list[AttachWait] | None = None, *, rows: bool = Tru
     return block
 
 
+def attach_wait_line(block: dict | None, *, prefix: str, budget_s: float | None = None) -> str:
+    """The block as ONE human line -- the only renderer, on purpose.
+
+    THE REGRESSION IT CLOSES. `attach_wait_block` gained the hold half
+    (`held_n`/`held_unknown_n`/`held_s_max`/`held_s_total`) on 2026-09-26,
+    and every publisher picked it up for free EXCEPT the one whose only
+    artifact is a hand-written print: `collector.sweep` writes no JSON, so
+    its line is the whole reading. The 2026-09-27 06:10Z sweep -- the first
+    run of the widest ladder in the repo (150 x 2.0s over 7,549 attaches)
+    to measure its own hold, the number the 08-02 burst fix claimed to
+    shrink and never printed -- computed `held_s_total` and dropped it at
+    the format string. It is not recoverable: nothing else wrote it down.
+
+    So a field added to the block has to reach the line, and
+    `tests/test_attach_line.py` asserts that mechanically -- every scalar
+    key of a real block must be named in this function's source, so the
+    next field fails the suite here rather than going missing in
+    production for a day.
+
+    ELAPSED IS NEVER CALLED WAITING (mistakes #78). `waited_s` is
+    slept + opening, and on a 7,483-attach sweep it is mostly the sweep
+    opening its own 20GB database; the line names it "elapsed" and prints
+    the two components apart, because the old headline "96.3s spent waiting
+    in total" read as contention that was at least 56% not contention.
+
+    `budget_s` is the ladder's nominal sleep budget (`attach_budget_s`),
+    which the block does NOT carry: `budget_frac_max` is a share, and a
+    share printed without its denominator is the #71 atlas literal waiting
+    to happen. Omit it and the fraction prints alone.
+    """
+    if not block:
+        # A publisher with nothing to say says so: an empty line would read
+        # as "attached instantly and held nothing", which is the claim
+        # `attach_wait_block`'s own `None` exists to refuse (mistakes #91).
+        return f"{prefix} attach_wait: nothing attached through the retry helpers"
+    frac = block["budget_frac_max"]
+    budget = "" if budget_s is None else f" of a {budget_s:.0f}s budget"
+    # THE HOLD HALF, and `held_unknown_n` is printed even when it is 0 --
+    # that zero is the reading. A line that mentioned unmeasured holds only
+    # when there were some would make "no clause" ambiguous between "all
+    # measured" and "an older build that never measured any".
+    if block["held_n"]:
+        hold = (
+            f"held {block['held_n']} for {block['held_s_total']:.1f}s in"
+            f" total, worst {block['held_s_max']:.1f}s"
+        )
+    else:
+        hold = "no hold measured"
+    hold += f", {block['held_unknown_n']} unmeasured"
+    # The sample-vs-population caveat (mistakes #72), printed only when the
+    # rows were actually trimmed: the statistics above come from the
+    # untrimmed totals, and saying so on every line would bury it.
+    sample = (
+        ""
+        if not block["dropped_n"]
+        else (
+            f" [statistics over all {block['n']}; sample rows"
+            f" {block['retained_n']} retained, {block['dropped_n']} dropped]"
+        )
+    )
+    return (
+        f"{prefix} attach_wait: {block['n']} attaches,"
+        f" {block['contended_n']} contended,"
+        f" worst attach {block['waited_s_max']:.1f}s of"
+        f" {block['waited_s_total']:.1f}s elapsed,"
+        f" worst sleep {block['slept_s_max']:.1f}s{budget}"
+        f" ({'n/a' if frac is None else f'{frac:.4f}'} of it),"
+        f" {block['slept_s_total']:.1f}s slept in total"
+        f" + {block['open_s_total']:.1f}s opening,"
+        f" {block['exhausted_n']} exhausted; {hold}{sample}"
+    )
+
+
 def connect_retry(
     path: str | Path,
     *,

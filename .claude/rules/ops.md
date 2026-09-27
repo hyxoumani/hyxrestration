@@ -209,3 +209,20 @@
   caught by the `try` that then sleeps and connects AGAIN with the first
   connection open and unreferenced. A wrapper that owns a connection
   between the open and its caller closes it on every escape path.
+- A field added to a shared structure reaches every publisher that
+  SERIALISES it and no publisher that LISTS it -- and the one that lists
+  it is usually the one with no artifact to fall back on. The hold half
+  of `attach_wait_block` (#91, #94) landed free in `atlas`, `divergence`,
+  `run_l2` and `shadow`, all of which `json.dumps` the dict, and never
+  reached `collector.sweep`, whose hand-written journal line IS its whole
+  reading. Measured: the 2026-09-27 06:10Z sweep computed the first
+  `held_s_total` for the 150 x 2.0s burst ladder over 7,549 attaches and
+  dropped it at the format string; the number is unrecoverable
+  (mistakes #95). Render a shared block in ONE place and assert
+  completeness by PERTURBATION -- bump each field of a real block and the
+  line must change -- because a scan of the renderer's source passes
+  against code that reads a field into a local and drops it. Then forbid
+  the second renderer: no module may subscript a block key into an
+  f-string. Note which tests this defeats: three source-scraping tests
+  covered that line and all stayed green, because they pinned f-string
+  literals in the source rather than the rendered string.

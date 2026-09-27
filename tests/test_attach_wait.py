@@ -239,8 +239,12 @@ def test_atlas_publishes_the_block_and_prints_the_margin(monkeypatch, tmp_path, 
     atlas.main()
 
     out = capsys.readouterr().out
-    assert "[atlas] attach: 1 waited" in out
-    assert "of its budget" in out
+    # Rendered by the ONE renderer (2026-09-27), so a field the block gains
+    # reaches this line too -- the hold half did not, at the only publisher
+    # whose line is its whole artifact. See tests/test_attach_line.py.
+    assert "[atlas] attach_wait: 1 attaches" in out
+    assert f"of a {atlas.ATTACH_BUDGET_S:.0f}s budget" in out
+    assert "unmeasured" in out
 
     (written,) = (tmp_path / "rep").glob("*.json")
     block = json.loads(written.read_text())["attach_wait"]
