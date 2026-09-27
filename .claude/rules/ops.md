@@ -174,3 +174,38 @@
   the next writer on a different timer must name its own -- and leave the
   VERDICT on the span, which is the conservative side of the bound and so
   alarms early rather than late.
+- A field whose definition UNIONS two populations is correct only while
+  one of them is empty, and the emptiness is usually a property of the
+  CALLERS, not of the field. `held_unknown_n` was `observed_n - held_n`,
+  documented "holds nobody measured" -- but `connect_retry` ledgers an
+  EXHAUSTED attach too, from the `except` on its last attempt, and that
+  attach never opened the file: a MEASURED zero, not an unknown. The field
+  was really "attaches with no hold", and it read correctly only because
+  every publisher was a batch report, which RAISES out of the run a
+  refusal happens in and never reaches a block. `simulator.shadow` is the
+  first publisher that SURVIVES one (`poll_once` swallows `duckdb.Error`
+  and polls again in 20s, forever), so it would have published a forever-
+  rising `held_unknown_n` reading as instrumentation debt and really being
+  contention -- the number already one field to the left, `exhausted_n`
+  (mistakes #94). So: before reusing an instrument in a new KIND of
+  caller, ask which of its terms the old callers made unreachable.
+- A limit written into a docstring is documentation, not a deadline.
+  `tests/test_hold_discipline.py` named its own blind spot exactly and
+  correctly -- `simulator.shadow._read_new` attaching a daemon-owned
+  archive every ~20s and across a 2,084,503-row seed replay, with no
+  artifact to publish a hold into -- and that note was carried forward
+  four passes while the thing it described ran in production for 77 hours.
+  Enumerate the debt in an ASSERTION that names each site (the way
+  `UNLEDGERED` and the `UNCAPPED` list do), so paying one off deletes a
+  line and the list cannot outlive the debt.
+- A lock is leaked by the code BETWEEN the open and the caller, and that
+  code is usually a tuning line nobody thinks of as a failure path.
+  `simulator.shadow.stream_conn` attaches through `connect_retry`, then
+  lowers `memory_limit` and re-derives the spill bound -- and an exception
+  from either left a read attach on `hyxstream.duckdb` with no reference
+  left to close it: held until the daemon exits, against the ~0.1s a poll
+  needs. The same shape is still live one level down, inside
+  `connect_retry`'s own retry loop, where a post-connect tuning failure is
+  caught by the `try` that then sleeps and connects AGAIN with the first
+  connection open and unreferenced. A wrapper that owns a connection
+  between the open and its caller closes it on every escape path.

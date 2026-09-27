@@ -2154,6 +2154,79 @@ Format: what happened → root cause → error type → prevention tier
     period of every span it reports is the period itself, and the two
     shortest spans it can ever print prove nothing at all.**
 
+94. **2026-09-27 -- #91 wrote down its own limit, and the thing outside
+    it had been holding the archive every 20 seconds for 77 hours. The
+    field that was supposed to name that debt then turned out to count
+    the wrong population, and only a DAEMON could ever have shown it.**
+    #91 shipped `held_attach` and, to its credit, wrote the limit into
+    `tests/test_hold_discipline.py` rather than leaving it to be
+    rediscovered: *"this rule reaches only publishers.
+    `simulator.shadow._read_new` attaches the same daemon-owned file
+    every ~20s and holds it across the boot-time seed replay (measured
+    2,084,503 rows at the 2026-07-31 promote), and it publishes no block
+    at all, so no assertion here can see it."* Written down is not
+    closed. The gap stayed open four passes while the deferral note was
+    carried forward each time, and the harm was live the whole while:
+    `hyxstream.duckdb` is the file `collector.streamd` OWNS, and shadow
+    is the highest-frequency reader of it in the repo.
+    **Fix: shadow gets somewhere to publish** -- `shadow_stream_holds`
+    in the ledger it owns, plus the block on its 300s journal line --
+    and `_read_new` takes `held_stream_conn`, the wrapper seam
+    `charge_hold` was made public for. Rows CUMULATIVE since process
+    start, because a max is the only home for the boot seed: that hold
+    happens once and every later poll holds the file for milliseconds,
+    so per-interval rows would bury it in one of ~4,300 a day.
+    **THE REAL FINDING IS WHAT ADOPTION EXPOSED IN THE INSTRUMENT.**
+    `held_unknown_n` was defined as `observed_n - held_n` and documented
+    as "holds nobody measured" -- the honest half, the field that stops
+    an uninstrumented 45-minute reader publishing a flawless maximum.
+    But `connect_retry` records a row for an EXHAUSTED attach too, from
+    the `except` on its last attempt, and that attach never opened the
+    file: its hold is a MEASURED zero, not an unknown one. So the field
+    was really counting "attaches with no hold", a union of two
+    populations, and it was correct only because one of them was always
+    empty -- every publisher was a batch report, and a batch report
+    RAISES out of the run a refusal happens in and never reaches a
+    block. Shadow is the first publisher that SURVIVES a refusal
+    (`poll_once` swallows `duckdb.Error` and polls again in 20s, for the
+    daemon's life), so its block would have accumulated a rising
+    `held_unknown_n` that reads as instrumentation debt and is really
+    contention -- the same number already reported one field to the
+    left as `exhausted_n`.
+    **Two smaller ones from the same seam.** `stream_conn` LEAKED the
+    attach when the engine tuning raised: `connect_retry` has already
+    opened the archive by then, so an escaping exception left a read
+    attach with no reference left to close it -- held until the daemon
+    exits, instead of the ~0.1s a poll needs. The harm this work exists
+    to measure, leaked by the measurement's own setup. And the same
+    leak is still present one level down, on `connect_retry`'s RETRY
+    path (recorded as next-pass work, not fixed here): a post-connect
+    tuning failure is caught by the same `try` that then sleeps and
+    connects again, with the first connection open and unreferenced.
+    **Deployed INERT, said plainly.** `promote.sh` deferred the shadow
+    restart -- bound 14b asks the run for its own `panel_days_needed`
+    and it had banked 2 of 10 at 77h up. This page's own status note had
+    said the restart was "cheap from here" because the run had crossed
+    72h; that is the wrong threshold, and the script's re-costing (twice
+    written up, 2026-08-23 and 2026-09-18) already said so. So
+    `shadow_stream_holds` is empty until shadow's next NATURAL restart
+    and there is no reading yet.
+    Rule: **a field whose definition unions two populations is correct
+    only while one of them is empty, and the emptiness is usually a
+    property of the CALLERS, not of the field. Before reusing an
+    instrument in a new kind of caller, ask which of its terms the old
+    callers made unreachable -- a batch report that dies on failure made
+    "refused" and "unmeasured" the same set, and the first daemon to
+    adopt it separates them.** Corollary, cheaper: **a limit written
+    into a docstring is documentation, not a deadline.** #91's note was
+    exact, correct, and carried for four passes while the thing it
+    described ran in production.
+    5 new tests (2 on the field's two arms, 3 on shadow's publication
+    and the leak), each red-verified by reverting its own target; three
+    test connection proxies now delegate what they do not override,
+    because the measured seam releases through `conn.close`. Suite
+    1744 -> 1751.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
