@@ -2096,6 +2096,64 @@ Format: what happened → root cause → error type → prevention tier
     `duration_s` and documented "exact" invites every downstream reader
     to difference it. Name the span a span.
 
+93. **2026-09-27 -- #92's sweep, first candidate, and it was the check
+    that watches the collector: "largest gap 5.2 min" is what a writer
+    that never missed a beat looks like, and the whole line was the
+    timer.**
+    #92 shipped a rule and left a sweep: which OTHER number in this repo
+    is a sampling period wearing a quantity's name? Every detector with a
+    poll interval is a candidate, and the strongest one is not a poll at
+    all -- it is a detector that learns of an ABSENCE by the absence of a
+    periodic event. `qa._check_continuity` (EXP-1359, the retrospective
+    half built after the 2026-08-20 box outage went invisible) reports
+    `_largest_gap`: the widest interval between consecutive cycles of a
+    5-minute writer over 24h, printed as **"largest gap N min"** and
+    compared against `COLLECTION_GAP_BUDGET_S`.
+    **A gap is a SPAN between samples, and one full cadence of it is
+    always the timer.** Cycles land every `c`; if the last good one is at
+    `t0` and the next at `t1 = t0 + G`, the cycles due at
+    `t0+c ... t1-c` are the ones that did not land, so the outage began
+    before `t0+c` and ended after `t1-c` -- downtime is in
+    `[max(0, G - 2c), G]`. **G = c (perfect health) and G = 2c (one
+    skipped cycle) therefore prove ZERO downtime**, and the check's own
+    calibration note said as much in its own numbers without anyone
+    reading it that way: "p50 300.0s (the 5-min timer, exactly) ...
+    p99.9 600.0s (one skipped cycle)". The 08-20 outage it was built for
+    measured 4h19m and this instrument reported a **264.8 min** span --
+    one cadence wide, and the wiki carried the 264.8 as the event's
+    length. Measured against the 09-26 nightly backup, all three writers'
+    worst 24h gap is **5.2 / 5.3 / 5.6 min**, i.e. one cadence: the old
+    line invited the reading "five minutes down" for a day in which
+    nothing was down at all.
+    **What it did NOT break.** The verdict is on the span against a
+    budget cut from spans (the p99.9, the 25.0 min benign worst case, the
+    264.8 min event), and a span is the conservative side of the bound --
+    it alarms early, never late. So no verdict was ever wrong. As in #92,
+    the damage was what the check PRINTS and what the repo then reasoned
+    from. The verdict deliberately stays on the span: moving it to the
+    bound would loosen a standing alarm by two cadences on no
+    measurement.
+    Fix: `_check_continuity` takes `cadence_s` -- injected at all three
+    call sites from `CYCLE_CADENCE_S`, required and not defaulted, for
+    #92's reason turned forward: a line's resolution is whatever the
+    writer's cadence actually is, so the FIFTH writer of this archive
+    must name its own rather than inherit the first four's silently. The
+    line now reads "largest gap N min **span** ... downtime >= M min" or
+    "downtime <= that and **unresolved below the 5-min cadence**", and
+    names the cadence the budget is read at. A proven-zero bound prints
+    as unresolved, never as `0`, so a reader cannot mistake the floor for
+    a measurement (#91's discipline, third instrument running). 5 tests
+    (healthy cadence claims no downtime; one skipped cycle likewise;
+    a real outage publishes `G - 2c`; the verdict stays on the span even
+    where the bound alone would pass; the phrase and the bound scale with
+    the ARGUMENT, not the module constant). Suite 1739 -> 1744.
+    Rule: **#92's, unchanged and now recurrent in a second instrument
+    within one pass -- so the rule is right and its reach was
+    underestimated. A detector that learns of an absence by the absence
+    of a periodic event has the same resolution as a poller: one full
+    period of every span it reports is the period itself, and the two
+    shortest spans it can ever print prove nothing at all.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

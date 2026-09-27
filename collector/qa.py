@@ -377,6 +377,33 @@ BATCH_RUN_LOOKBACK_DAYS = 7
 # would go quiet forever and still read green (mistakes #25-27).
 COLLECTION_GAP_BUDGET_S = 3600.0
 
+# THE CADENCE THE CHECK ABOVE SAMPLES AT -- and the reason its number is a
+# SPAN and not a downtime (mistakes #92, one instrument over).
+#
+# `_largest_gap` learns the writer stopped only by the absence of a cycle, and
+# cycles land every `cadence_s`. So the widest interval it can report for a
+# writer that never missed a beat is one cadence, not zero: the calibration
+# above says so in its own numbers -- p50 300.0s IS the timer, and the p99.9
+# "one skipped cycle" IS 600.0s. A gap of G means the cycles due at
+# t0+c ... t1-c did not land, so the outage began before t0+c and ended after
+# t1-c, i.e. downtime is in [max(0, G - 2c), G]. Both G = c (healthy) and
+# G = 2c (one skip) prove NOTHING about downtime, and the 2026-08-20 outage
+# this check was built for measured 4h19m of downtime and reported a 264.8 min
+# span -- one cadence wide of it.
+#
+# Printing a bare "largest gap 25.0 min" invites every reader to difference it
+# as downtime, which is exactly what #92's stall ledger did at the short end.
+# The verdict stays on the SPAN: the budget was cut against spans (p99.9, the
+# 25.0 min benign worst case, the 264.8 min event), and a span is the
+# conservative side of the bound -- it alarms early, never late. Only the
+# PRINTING changes.
+#
+# INJECTED at every call site rather than read here, for #92's other reason: a
+# record's -- or a line's -- resolution is whatever the writer's cadence
+# actually was, so the fifth writer of this archive must NAME its cadence to
+# use this helper instead of inheriting the first four's by default.
+CYCLE_CADENCE_S = 300.0
+
 # The instantaneous half of the pair: "is this writer running NOW". Shared by
 # every 5-min writer of the archive for the same reason _check_continuity is
 # (2026-09-04) — three writers now cycle on `*:0/5` (collect -> snapshots,
@@ -1288,10 +1315,33 @@ def _check_freshness(conn, name: str, table: str, col: str, now: datetime, noun:
     )
 
 
-def _check_continuity(conn, name: str, table: str, col: str, now: datetime, noun: str) -> None:
+def _downtime_phrase(gap_s: float, cadence_s: float) -> str:
+    """`downtime >= N min` for a gap of `gap_s`, or the reason there is no such
+    number.
+
+    The bound the samples prove, and nothing wider: see `CYCLE_CADENCE_S`. A
+    gap of one or two cadences is what a healthy writer and a single skipped
+    cycle look like, so it yields 0.0 and this says "unresolved" rather than
+    printing a zero a reader would take for a measurement.
+    """
+    lower = max(0.0, gap_s - 2.0 * cadence_s)
+    if lower <= 0:
+        return f"downtime <= that and unresolved below the {cadence_s / 60.0:.0f}-min cadence"
+    return f"downtime >= {lower / 60.0:.1f} min"
+
+
+def _check_continuity(
+    conn, name: str, table: str, col: str, now: datetime, noun: str, cadence_s: float
+) -> None:
     """Retrospective cadence check over the last 24h. Shared by every 5-min
     writer of the archive, so a second one cannot ship with a subtly
-    different window, anchor or budget than the first."""
+    different window, anchor or budget than the first.
+
+    `cadence_s` is the interval the writer is SUPPOSED to cycle at. It is the
+    resolution of the number this check reports, so it is a required argument
+    and not a default: a writer on a different timer prints a differently
+    bounded line, and must say which.
+    """
     gap = _largest_gap(conn, table, col, now - timedelta(hours=24))
     if gap is None:
         # One cycle cannot exhibit a gap. That is UNMEASURED, not healthy —
@@ -1302,8 +1352,10 @@ def _check_continuity(conn, name: str, table: str, col: str, now: datetime, noun
     check(
         name,
         gap_s <= COLLECTION_GAP_BUDGET_S,
-        f"largest gap {gap_s / 60.0:.1f} min (resumed {resumed:%Y-%m-%d %H:%M}Z),"
-        f" budget {COLLECTION_GAP_BUDGET_S / 60.0:.0f} min",
+        f"largest gap {gap_s / 60.0:.1f} min span (resumed {resumed:%Y-%m-%d %H:%M}Z),"
+        f" {_downtime_phrase(gap_s, cadence_s)};"
+        f" span budget {COLLECTION_GAP_BUDGET_S / 60.0:.0f} min"
+        f" at a {cadence_s / 60.0:.0f}-min cadence",
     )
 
 
@@ -1389,7 +1441,13 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     # can reach, because QA runs once and an outage that healed is over by the
     # time it looks. See COLLECTION_GAP_BUDGET_S.
     _check_continuity(
-        conn, "collection continuous over last 24h", "snapshots", "ts", now, "collector"
+        conn,
+        "collection continuous over last 24h",
+        "snapshots",
+        "ts",
+        now,
+        "collector",
+        CYCLE_CADENCE_S,
     )
 
     # EXP-928 breadth is the FOURTH writer of this archive (measured
@@ -1423,7 +1481,13 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
             "breadth snapshots",
         )
         _check_continuity(
-            conn, "breadth continuous over last 24h", "breadth_snapshots", "ts", now, "breadth"
+            conn,
+            "breadth continuous over last 24h",
+            "breadth_snapshots",
+            "ts",
+            now,
+            "breadth",
+            CYCLE_CADENCE_S,
         )
         _check_breadth_truncation(conn, now)
 
@@ -1471,6 +1535,7 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
             "fetched_at",
             now,
             "nws pull",
+            CYCLE_CADENCE_S,
         )
 
     ok_sweeps = conn.execute(

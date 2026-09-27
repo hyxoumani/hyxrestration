@@ -160,3 +160,17 @@
   holder's, ask how the victim found out. A field named `duration_s` and
   documented "exact" invites every reader to difference it -- name a span
   a span.
+- The same resolution rule reaches every detector that learns of an
+  ABSENCE by the absence of a periodic event -- not just pollers.
+  `qa._check_continuity` reports the widest interval between consecutive
+  cycles of a 5-min writer, and one full cadence of that span is always
+  the timer: measured 2026-09-27, all three writers' worst 24h gap is
+  5.2-5.6 min, i.e. one cadence, on a day nothing was down, and the
+  2026-08-20 outage's true 4h19m printed as a 264.8 min span (mistakes
+  #93). For cycles `c` apart and a gap `G`, downtime is in
+  `[max(0, G - 2c), G]`, so `G = c` and `G = 2c` prove ZERO. Publish the
+  span as a span plus that bound, print a proven-zero bound as
+  "unresolved below the cadence" rather than `0`, inject the cadence so
+  the next writer on a different timer must name its own -- and leave the
+  VERDICT on the span, which is the conservative side of the bound and so
+  alarms early rather than late.

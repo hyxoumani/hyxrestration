@@ -1217,6 +1217,88 @@ def test_one_cycle_is_unmeasured_not_healthy(tmp_path, capsys):
     assert f"WATCH {_CONT}" in capsys.readouterr().out
 
 
+# --- mistakes #92, the second instrument: the continuity check's number is a
+# SPAN between sampled cycles, and the sampling period is the collector's own
+# cadence. A healthy writer's widest gap is one cadence, so the line must not
+# invite the reader to difference it as downtime.
+
+
+def _cont_line(capsys):
+    for ln in capsys.readouterr().out.splitlines():
+        if _CONT in ln:
+            return ln
+    raise AssertionError(f"{_CONT} never printed")
+
+
+def test_healthy_cadence_claims_no_downtime(tmp_path, capsys):
+    """A writer that never missed a beat reports a 5.0 min gap. That is the
+    timer, not an outage, and the line must say so instead of printing a
+    number a reader can subtract."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12)])
+    assert _CONT not in _run(None, tmp_path, archive=db)
+    line = _cont_line(capsys)
+    assert "largest gap 5.0 min span" in line
+    assert "unresolved below the 5-min cadence" in line
+    assert "downtime >=" not in line
+
+
+def test_single_skipped_cycle_is_also_unresolved(tmp_path, capsys):
+    """G = 2c. One cycle missing bounds downtime only by (0, 10 min] — the
+    lower bound is genuinely 0.0, and 0.0 must not be PRINTED as a
+    measurement (mistakes #91: absent is unknown, never zero)."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12) if i != 40])
+    assert _CONT not in _run(None, tmp_path, archive=db)
+    line = _cont_line(capsys)
+    assert "largest gap 10.0 min span" in line
+    assert "unresolved below the 5-min cadence" in line
+    assert "downtime >= 0" not in line
+
+
+def test_real_outage_publishes_a_lower_bound_one_cadence_under_the_span(tmp_path, capsys):
+    """The 08-20 shape. A 185 min span proves 175 min of downtime and no
+    more: the outage may have begun a cadence after the last good cycle and
+    ended a cadence before the next."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24)] + [5 * i for i in range(60, 100)])
+    assert _CONT in _run(None, tmp_path, archive=db)
+    line = _cont_line(capsys)
+    assert "largest gap 185.0 min span" in line
+    assert "downtime >= 175.0 min" in line
+    assert "unresolved" not in line
+
+
+def test_verdict_is_on_the_span_not_the_bound(tmp_path):
+    """A gap whose SPAN is over budget but whose proven downtime is under it
+    still fails. The budget was cut against spans and the span is the
+    conservative side — the bound is for the reader, never the verdict."""
+    over = qa.COLLECTION_GAP_BUDGET_S + 60.0
+    assert qa._downtime_phrase(over, qa.CYCLE_CADENCE_S).startswith("downtime >= ")
+    lower = over - 2 * qa.CYCLE_CADENCE_S
+    assert lower < qa.COLLECTION_GAP_BUDGET_S  # the bound alone would pass
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [0, over / 60.0])
+    assert _CONT in _run(None, tmp_path, archive=db)
+
+
+def test_cadence_is_injected_not_read_from_the_module(tmp_path, capsys):
+    """The fifth writer of this archive must NAME its cadence: the bound and
+    the phrase scale with the argument, not with a module constant."""
+    db = tmp_path / "a.duckdb"
+    _cycles(db, [5 * i for i in range(0, 24 * 12) if i != 40])
+    conn = qa._connect_ro(str(db))
+    now = datetime.now(UTC).replace(tzinfo=None)
+    qa._failures.clear()
+    qa._check_continuity(conn, _CONT, "snapshots", "ts", now, "collector", 60.0)
+    qa._failures.clear()
+    line = _cont_line(capsys)
+    # Same 10.0 min span; a 1-min writer that went 10 min quiet WAS down.
+    assert "largest gap 10.0 min span" in line
+    assert "downtime >= 8.0 min" in line
+    assert "at a 1-min cadence" in line
+
+
 # --- EXP-1360: econ-vintage ingest, split into pull-liveness and per-series
 # coverage. The retired `econ vintages fresh (< 8 days)` added a signal to a
 # nuisance term and pooled seven cadences into one max, and on 2026-08-24 it
