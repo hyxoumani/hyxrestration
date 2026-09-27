@@ -35,7 +35,15 @@ from pathlib import Path
 import duckdb
 
 from hyxlab.lockid import db_owner_lock_or_reason
-from hyxlab.store import Store, charge_hold, connect_retry, duck_connect, spill_cap
+from hyxlab.store import (
+    Store,
+    attach_wait_block,
+    charge_hold,
+    connect_retry,
+    duck_connect,
+    reset_attach_waits,
+    spill_cap,
+)
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots, stream_events
 from simulator.registry import build as build_strategies
@@ -81,18 +89,28 @@ def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
     """Read-only stream-archive connection with the engine bounded
     below the unit's cgroup cap (see DUCK_MEM note above)."""
     conn = connect_retry(path)
-    conn.execute(f"SET memory_limit = '{DUCK_MEM}'")
-    conn.execute(f"SET threads = {DUCK_THREADS}")
-    # Re-derive the spill bound AFTER the override. `connect_retry` runs
-    # `spill_cap` at the chokepoint, but its input is
-    # `current_setting('memory_limit')` — read one statement before this
-    # one lowers it — so the cap this connection would otherwise carry is
-    # a multiple of a limit it no longer has. Measured 2026-08-27 outside
-    # a cgroup: `max_temp_directory_size` 344.1 GiB (the free-disk term,
-    # from the host-RAM default) against the 4.0 GiB this yields. The
-    # chokepoint's ORDER rule is the same rule; this is the one site that
-    # moves the limit after passing through it.
-    spill_cap(conn, path)
+    # Tuning failures CLOSE the connection before re-raising. `connect_retry`
+    # has already opened the file by this point, so an exception escaping
+    # here would leave a read attach on a daemon-owned archive with no
+    # reference left to close it -- the exact harm `held_stream_conn` below
+    # exists to measure, leaked by the measurement's own setup, and held
+    # until the daemon exits rather than for the ~0.1s a poll needs.
+    try:
+        conn.execute(f"SET memory_limit = '{DUCK_MEM}'")
+        conn.execute(f"SET threads = {DUCK_THREADS}")
+        # Re-derive the spill bound AFTER the override. `connect_retry` runs
+        # `spill_cap` at the chokepoint, but its input is
+        # `current_setting('memory_limit')` — read one statement before this
+        # one lowers it — so the cap this connection would otherwise carry is
+        # a multiple of a limit it no longer has. Measured 2026-08-27 outside
+        # a cgroup: `max_temp_directory_size` 344.1 GiB (the free-disk term,
+        # from the host-RAM default) against the 4.0 GiB this yields. The
+        # chokepoint's ORDER rule is the same rule; this is the one site that
+        # moves the limit after passing through it.
+        spill_cap(conn, path)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -150,6 +168,31 @@ CREATE TABLE IF NOT EXISTS shadow_equity (
     ts     TIMESTAMP NOT NULL,
     equity DOUBLE NOT NULL
 );
+-- What this daemon's reads COST the writer that owns hyxstream.duckdb.
+-- Shadow is not a report: it has no artifact to carry an `attach_wait`
+-- block, and that absence is why `tests/test_hold_discipline.py` could
+-- not see the largest unmeasured hold in the repo (mistakes #91's
+-- written limit). This table is the artifact.
+--
+-- EVERY COLUMN IS CUMULATIVE SINCE PROCESS START, not per-interval.
+-- Deliberate, and the reason `run_id` is on the row: a max is the only
+-- honest home for the BOOT SEED, which attaches once and holds the
+-- archive across a replay measured at 2,084,503 rows (2026-07-31
+-- promote) while every later poll holds it for milliseconds. Per-interval
+-- rows would put that hold in one row of ~4,300/day and every query that
+-- averaged or sampled them would miss it. Difference two rows for an
+-- interval; read the last row of a run_id for the run's whole bill.
+CREATE TABLE IF NOT EXISTS shadow_stream_holds (
+    run_id         VARCHAR NOT NULL,
+    ts             TIMESTAMP NOT NULL,
+    attaches       BIGINT NOT NULL,
+    held_n         BIGINT NOT NULL,
+    held_unknown_n BIGINT NOT NULL,
+    held_s_total   DOUBLE NOT NULL,
+    held_s_max     DOUBLE NOT NULL,
+    contended_n    BIGINT NOT NULL,
+    exhausted_n    BIGINT NOT NULL
+);
 """
 
 
@@ -178,6 +221,33 @@ class ShadowLedger:
         the divergence replay needs it to reproduce the exact window."""
         with duck_connect(str(self.path)) as conn:
             conn.execute("UPDATE shadow_runs SET anchor=? WHERE run_id=?", [_naive(anchor), run_id])
+
+    def record_holds(self, run_id: str, block: dict | None) -> None:
+        """Persist one cumulative `attach_wait` reading for `run_id`.
+
+        `None` when nothing attached through the retry helpers -- written as
+        no row rather than a row of zeros, for the reason the block itself
+        is `None` there: zeros read as "attached instantly and held
+        nothing", which is the claim an unmeasured holder must not get to
+        make (mistakes #91).
+        """
+        if block is None:
+            return
+        with duck_connect(str(self.path)) as conn:
+            conn.execute(
+                "INSERT INTO shadow_stream_holds VALUES (?,?,?,?,?,?,?,?,?)",
+                [
+                    run_id,
+                    datetime.now(UTC).replace(tzinfo=None),
+                    block["n"],
+                    block["held_n"],
+                    block["held_unknown_n"],
+                    block["held_s_total"],
+                    block["held_s_max"],
+                    block["contended_n"],
+                    block["exhausted_n"],
+                ],
+            )
 
     def persist(
         self,
@@ -286,7 +356,7 @@ class ShadowRunner:
             store.close()
 
     def _read_new(self) -> tuple[list[BookEvent], list[tuple]]:
-        with stream_conn(self.stream_db) as conn:
+        with held_stream_conn(self.stream_db) as conn:
             if self.cursor is None:
                 # First poll anchors at the newest archived event: shadow
                 # trades the FUTURE only. But book state must be SEEDED
@@ -461,6 +531,8 @@ def main() -> None:
         print(f"[shadow] {why}; not starting", flush=True)
         raise SystemExit(75)
 
+    # So the block describes THIS run's attaches and not an import's.
+    reset_attach_waits()
     strategies = build_strategies(args.strategy.split(","))
     runner = ShadowRunner(strategies, latency=args.latency)
     print(
@@ -474,14 +546,38 @@ def main() -> None:
     while args.duration is None or time.monotonic() - t0 < args.duration:
         runner.poll_once()
         if time.monotonic() - last_report >= 300:
+            # `rows=False`: a day of polling is ~4,300 attaches and the
+            # per-attach sample would be the whole journal. The margin is
+            # the message here, and the block's own totals are untrimmed.
+            holds = attach_wait_block(rows=False)
             print(
-                f"[shadow] {runner.stats} fills={len(runner.sim.result.fills)}",
+                f"[shadow] {runner.stats} fills={len(runner.sim.result.fills)}"
+                f" stream_holds={json.dumps(holds)}",
                 flush=True,
             )
+            # Journals rotate; a daemon's bill for the archive must outlive
+            # that. Declined exactly like `persist` -- an ad-hoc reader
+            # writer-locking the ledger must never kill the run (the
+            # 20260808T063109 lesson), and a dropped instrument reading is
+            # the cheapest thing in this loop to lose.
+            try:
+                runner.ledger.record_holds(runner.run_id, holds)
+            except duckdb.Error as e:
+                print(f"[shadow] hold record declined ({e!r})", flush=True)
             last_report = time.monotonic()
         time.sleep(args.poll)
     result = runner.sim.finalize()
-    print(f"[shadow] done: {runner.stats} fills={len(result.fills)}", flush=True)
+    # The run's whole bill for the archive, recorded once more at the end so
+    # a bounded run leaves it behind even if it never reached a 300s report.
+    holds = attach_wait_block(rows=False)
+    try:
+        runner.ledger.record_holds(runner.run_id, holds)
+    except duckdb.Error as e:
+        print(f"[shadow] hold record declined ({e!r})", flush=True)
+    print(
+        f"[shadow] done: {runner.stats} fills={len(result.fills)} stream_holds={json.dumps(holds)}",
+        flush=True,
+    )
     print(json.dumps(result.metrics, default=str), flush=True)
 
 

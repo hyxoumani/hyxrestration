@@ -26,13 +26,22 @@ are outside this rule's reach by construction, and
 rather than letting them vanish: giving `duck_connect` a ledger row is
 the open half of the question.
 
-THE LIMIT, WRITTEN DOWN RATHER THAN DISCOVERED LATER: this rule reaches
-only publishers. `simulator.shadow._read_new` attaches the same
-daemon-owned file every ~20s and holds it across the boot-time seed
-replay (measured 2,084,503 rows at the 2026-07-31 promote), and it
-publishes no block at all, so no assertion here can see it.
-`simulator.shadow.held_stream_conn` is the seam it would use; giving
-shadow somewhere to publish is the open half of this work.
+THE LIMIT, CLOSED 2026-09-27. This rule reaches only publishers, and
+`simulator.shadow._read_new` -- which attaches the same daemon-owned file
+every ~20s and holds it across the boot-time seed replay (measured
+2,084,503 rows at the 2026-07-31 promote) -- published no block at all,
+so no assertion here could see it. Shadow now has somewhere to publish
+(`shadow_stream_holds` in its own ledger, plus the 300s journal line) and
+takes `held_stream_conn`, which brings it under every test below.
+
+It arrives as the rule's FIRST WRAPPER CASE, and that needed one
+concession: `stream_conn` takes the bare `connect_retry` and cannot BE
+`held_attach`, because it lowers `memory_limit` after the attach and so
+owns the connection between the open and its caller. The function-scoped
+walker cannot tell that wrapper from a hold nobody measured, so it is in
+`ALLOWED` -- and `test_shadow_reads_the_stream_archive_only_through_the`
+`_measured_seam` is what keeps that concession from covering the callers,
+which are the sites that actually hold the file.
 """
 
 from __future__ import annotations
@@ -58,7 +67,16 @@ HELD = ("held_attach", "held_open", "charge_hold")
 #: `relpath::qualname`. EMPTY ON PURPOSE: the four publishers all measure
 #: every attach they take, and an exemption here has to argue that a hold
 #: on a shared file harms nobody -- which is the assumption #91 was.
-ALLOWED: dict[str, str] = {}
+ALLOWED: dict[str, str] = {
+    # NOT the "its hold harms nobody" argument -- this hold is the worst
+    # one in the repo. The argument is that this function does not HAVE a
+    # hold: it hands the connection straight to its caller, so the seconds
+    # belong to the caller's body, and `held_stream_conn` (right below it,
+    # same module) is where they get measured. `charge_hold` is public for
+    # exactly this shape. The exemption is narrow because the companion
+    # test forbids every caller from using this one directly.
+    "simulator/shadow.py::stream_conn": "connect_retry",
+}
 
 
 def _modules() -> list[Path]:
@@ -128,15 +146,52 @@ def test_a_publisher_measures_every_hold_it_takes():
 
 
 def test_the_unledgered_attaches_in_publishers_stay_named():
-    """The rule's blind spot, enumerated so it cannot quietly grow. Both
-    sites are `collector.sweep --doctor`, a branch that exits before the
-    sweep and publishes nothing -- and both hold a shared file across
-    full-table reads (the markets GROUP BY is 486k rows) with no row to
-    charge the seconds to."""
+    """The rule's blind spot, enumerated so it cannot quietly grow.
+
+    The `sweep` pair is `collector.sweep --doctor`, a branch that exits
+    before the sweep and publishes nothing -- and both hold a shared file
+    across full-table reads (the markets GROUP BY is 486k rows) with no row
+    to charge the seconds to.
+
+    The `shadow` pair is a weaker debt than it looks, and the reason is
+    worth keeping: `ShadowLedger`'s `duck_connect` opens
+    `hyxshadow.duckdb`, the file this daemon OWNS (`db_owner_lock_or_reason`
+    in `main`), so its hold excludes only ad-hoc readers -- and those
+    already degrade. `ShadowRunner._try_load_markets` is the one that
+    matters: a read-only `Store` over `hyxlab.duckdb`, the archive the
+    5-minute collector writes, held across a markets query every hour.
+    Giving `duck_connect`/`Store` a ledger row is still the open half."""
     assert _attaches_in_publishers(UNLEDGERED) == {
         "collector/sweep.py::main": "Store",
         "collector/sweep.py::doctor": "duck_connect",
+        "simulator/shadow.py::ShadowLedger": "duck_connect",
+        "simulator/shadow.py::ShadowRunner": "Store",
     }
+
+
+def test_shadow_reads_the_stream_archive_only_through_the_measured_seam():
+    """What `ALLOWED`'s one entry does NOT excuse.
+
+    `stream_conn` is exempt because it owns no hold -- it yields the
+    connection to a caller whose body is the hold. That argument collapses
+    the moment a caller takes `stream_conn` directly, which is exactly what
+    `_read_new` did for the daemon's whole life: every ~20s, plus the boot
+    seed replay, on a file a 24/7 writer owns. So the exemption is paired
+    with this: inside `simulator/shadow.py`, the only function allowed to
+    name `stream_conn` is `held_stream_conn`.
+    """
+    tree = ast.parse((ROOT / "simulator/shadow.py").read_text())
+    owners = _qualnames(tree)
+    callers = {
+        owners.get(node, "<module>")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "stream_conn"
+    }
+    assert callers == {"held_stream_conn"}, (
+        "simulator.shadow attaches the stream archive without measuring the"
+        f" hold, from: {sorted(callers - {'held_stream_conn'})} — use"
+        " held_stream_conn"
+    )
 
 
 def test_the_publisher_set_is_the_one_this_rule_was_written_for():
@@ -150,6 +205,10 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         "simulator/atlas.py",
         "simulator/divergence.py",
         "simulator/run_l2.py",
+        # Not a report -- a daemon. It publishes into its own ledger table
+        # and its 300s journal line, which is what brought the repo's
+        # largest unmeasured hold under this rule (2026-09-27).
+        "simulator/shadow.py",
     }
 
 

@@ -761,8 +761,22 @@ def attach_wait_block(waits: list[AttachWait] | None = None, *, rows: bool = Tru
         # honest half: an attach that did not go through `held_attach` has
         # no hold, and folding it in as 0.0 would let an uninstrumented
         # 45-minute reader publish a flawless maximum.
+        #
+        # EXHAUSTED ATTACHES ARE EXCLUDED, and that is not the 0.0-folding
+        # this field exists to refuse. A refused attach never opened the
+        # file (`connect_retry` records its row from the `except` on the
+        # last attempt), so it held nothing -- that is MEASURED zero, not
+        # unknown. Lumping the two made the field mean "attaches with no
+        # hold" instead of "holds nobody measured", and the difference was
+        # invisible while every publisher was a batch report that raises
+        # on a refusal. `simulator.shadow` is the first publisher that
+        # SURVIVES one (`poll_once` swallows `duckdb.Error` and polls
+        # again ~20s later, forever), so its block would accumulate a
+        # rising `held_unknown_n` that reads as instrumentation debt and
+        # is really just contention -- the one number already reported,
+        # one field to the left, as `exhausted_n`.
         "held_n": totals.held_n,
-        "held_unknown_n": totals.observed_n - totals.held_n,
+        "held_unknown_n": totals.observed_n - totals.held_n - totals.exhausted_n,
         "held_s_max": round(totals.held_s_max, 3),
         "held_s_total": round(totals.held_s_total, 3),
     }

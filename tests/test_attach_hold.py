@@ -224,9 +224,7 @@ def test_the_sweep_burst_publishes_what_it_cost_the_collector(tmp_path):
     assert block["held_s_total"] >= 0.04
 
 
-def test_the_atlas_hold_is_measured_and_the_block_is_built_after_the_release(
-    monkeypatch, tmp_path
-):
+def test_the_atlas_hold_is_measured_and_the_block_is_built_after_the_release(monkeypatch, tmp_path):
     """`build_atlas` scans the settled corpus of the file the collector
     writes every 5 minutes. THE ORDERING IS THE TEST: `held_s` is charged
     by the close, so a block assembled one line before the release
@@ -291,3 +289,49 @@ def test_an_l2_replay_publishes_the_hold_it_took_on_both_files(tmp_path):
     # the larger of the two by construction -- the shape the fix has to keep
     # visible, since it is the one that starves `collector.streamd`.
     assert block["held_s_max"] > 0.0
+
+
+def test_a_refused_attach_is_not_counted_as_an_unmeasured_hold(monkeypatch):
+    """`held_unknown_n` means "holds nobody measured", not "attaches with
+    no hold", and an exhausted attach is the second without being the
+    first: `connect_retry` records its row from the `except` on the last
+    attempt, so the file was never opened and the hold is a MEASURED zero.
+
+    Invisible while every publisher was a batch report, because those
+    raise out of the run a refusal happens in and never reach a block.
+    `simulator.shadow` is the first publisher that SURVIVES one --
+    `poll_once` swallows `duckdb.Error` and polls again ~20s later, for
+    the daemon's whole life -- so conflating the two would give it a
+    forever-rising `held_unknown_n` that reads as instrumentation debt
+    and is really contention, already reported one field to the left.
+    """
+    import duckdb
+
+    from hyxlab.store import attach_waits, connect_retry
+
+    reset_attach_waits()
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        store_mod.duckdb, "connect", lambda *a, **k: (_ for _ in ()).throw(duckdb.Error("locked"))
+    )
+    with pytest.raises(duckdb.Error):
+        connect_retry("nope.duckdb", retries=2, delay=0.0)
+    (w,) = attach_waits()
+    assert w.ok is False and w.held_s is None
+    block = attach_wait_block()
+    assert block["n"] == 1 and block["exhausted_n"] == 1
+    # The refusal is reported, once, as what it is.
+    assert block["held_n"] == 0 and block["held_unknown_n"] == 0
+
+
+def test_an_unmeasured_hold_is_still_counted_when_the_attach_succeeded(tmp_path):
+    """The other arm, so the exclusion above cannot be read as a licence:
+    an attach that GOT IN and took no `charge_hold` is exactly the debt the
+    field names, and it still prints."""
+    from hyxlab.store import connect_retry
+
+    reset_attach_waits()
+    connect_retry(tmp_path / "ok.duckdb", read_only=False).close()
+    block = attach_wait_block()
+    assert block["exhausted_n"] == 0
+    assert block["held_n"] == 0 and block["held_unknown_n"] == 1

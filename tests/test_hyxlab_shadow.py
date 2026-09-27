@@ -6,6 +6,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 import duckdb
+import pytest
 
 from collector.venues.kalshi_ws import parse_message
 from hyxlab.models import MarketInfo, Order, Snapshot
@@ -122,10 +123,14 @@ def test_stream_reads_bound_spill_by_the_limit_they_actually_run_at(tmp_path):
     db = tmp_path / "stream.duckdb"
     StreamStore(db)
     with stream_conn(str(db)) as conn:
-        cap = parse_size(conn.execute("SELECT current_setting('max_temp_directory_size')").fetchone()[0])
-        default_limit = duckdb.connect(":memory:").execute(
-            "SELECT current_setting('memory_limit')"
-        ).fetchone()[0]
+        cap = parse_size(
+            conn.execute("SELECT current_setting('max_temp_directory_size')").fetchone()[0]
+        )
+        default_limit = (
+            duckdb.connect(":memory:")
+            .execute("SELECT current_setting('memory_limit')")
+            .fetchone()[0]
+        )
     assert cap is not None
     assert cap <= SPILL_MULTIPLE * parse_size(DUCK_MEM)
     # Non-vacuous: the pre-fix cap was a multiple of the DEFAULT limit
@@ -363,9 +368,7 @@ def test_shadow_bounds_in_memory_equity_curve(tmp_path):
     )
     runner.poll_once()  # anchor
     for i in range(2, 8):  # 6 polls x 1 snapshot each (price moves, so none dedup)
-        sstore.append_events(
-            _snapshot_frame("M1", i, 40 + i, 55, T0 + timedelta(seconds=30 * i))
-        )
+        sstore.append_events(_snapshot_frame("M1", i, 40 + i, 55, T0 + timedelta(seconds=30 * i)))
         sstore.flush()
         runner.poll_once()
         assert len(runner.sim.result.equity_curve) <= 1
@@ -381,9 +384,7 @@ def test_max_drawdown_survives_equity_curve_trim():
     # mid-run price dip carves a genuine drawdown into the curve.
     markets = {("kalshi", "M1"): MarketInfo(venue="kalshi", market_id="M1")}
     prices = [(0.40, 0.41), (0.60, 0.61), (0.20, 0.21), (0.50, 0.51)]
-    snaps = [
-        snap("M1", T0 + timedelta(seconds=i), bid, ask) for i, (bid, ask) in enumerate(prices)
-    ]
+    snaps = [snap("M1", T0 + timedelta(seconds=i), bid, ask) for i, (bid, ask) in enumerate(prices)]
 
     ref = Simulator(markets, [BuyFirst()]).run(list(snaps))
 
@@ -394,9 +395,7 @@ def test_max_drawdown_survives_equity_curve_trim():
     got = trimmed.finalize()
 
     assert ref.metrics["_portfolio"]["max_drawdown"] > 0  # non-vacuous
-    assert (
-        got.metrics["_portfolio"]["max_drawdown"] == ref.metrics["_portfolio"]["max_drawdown"]
-    )
+    assert got.metrics["_portfolio"]["max_drawdown"] == ref.metrics["_portfolio"]["max_drawdown"]
 
 
 # -- the seed must stream, not materialize ---------------------------------
@@ -425,6 +424,12 @@ class _NoFetchAll:
     def execute(self, *a, **k):
         return self._Guard(self._inner.execute(*a, **k))
 
+    # `held_stream_conn` releases the attach through `conn.close` to charge
+    # the hold, so a proxy that swallowed it would hold the file for the
+    # whole test session.
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
     def __enter__(self):
         return self
 
@@ -447,6 +452,9 @@ class _SqlLog:
     def execute(self, sql, *a, **k):
         self.sql.append(sql)
         return self._inner.execute(sql, *a, **k)
+
+    def __getattr__(self, name):  # see _MemGuard.__getattr__
+        return getattr(self._inner, name)
 
     def __enter__(self):
         return self
@@ -653,6 +661,9 @@ class _ForcedAnchor:
         if sql.strip() == "SELECT max(recv_ts) FROM book_events":  # the anchor, exactly
             return self._Fixed(self._anchor)
         return self._inner.execute(sql, *a, **k)
+
+    def __getattr__(self, name):  # see _MemGuard.__getattr__
+        return getattr(self._inner, name)
 
     def __enter__(self):
         return self
@@ -865,3 +876,141 @@ def test_metadata_reload_is_filtered_but_pins_held_markets(tmp_path):
     assert ("kalshi", "M1") in runner.sim.markets  # pinned while held
     # and the pinned metadata actually settled the position
     assert runner.sim.ctx._positions[("buy_first", "kalshi", "M1", "yes")] == 0.0
+
+
+def test_shadow_measures_the_hold_it_takes_on_the_daemon_owned_archive(tmp_path):
+    """The limit `tests/test_hold_discipline.py` wrote down and could not
+    enforce (mistakes #91): shadow attaches `hyxstream.duckdb` -- a file a
+    24/7 writer owns -- every ~20s and across the boot seed replay, and it
+    published no block at all, so nothing charged those seconds to anyone.
+    `_read_new` goes through `held_stream_conn` now, so every poll's hold
+    lands on that poll's own attach row."""
+    from hyxlab.store import attach_wait_block, attach_waits, reset_attach_waits
+
+    stream_db = tmp_path / "stream.duckdb"
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.flush()
+
+    runner = ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(tmp_path / "archive.duckdb"),
+        ledger=ShadowLedger(tmp_path / "shadow.duckdb"),
+    )
+    reset_attach_waits()
+    runner.poll_once()
+    runner.poll_once()
+
+    # One attach per poll, and each carries its own hold -- `held_s` is
+    # per-row, so an instrument that charged them all to the last attach
+    # would leave the earlier rows at None.
+    waits = [w for w in attach_waits() if w.db == "stream.duckdb"]
+    assert len(waits) == 2
+    assert all(w.held_s is not None and w.held_s > 0.0 for w in waits)
+    block = attach_wait_block()
+    assert block["held_n"] == 2 and block["held_unknown_n"] == 0
+    assert block["held_s_total"] > 0.0
+
+
+def test_shadow_publishes_its_archive_bill_where_a_rotated_journal_cannot_lose_it(tmp_path):
+    """Shadow is a daemon, not a report: there is no manifest to carry the
+    attach block, and that absence is exactly why the largest hold in the
+    repo went unmeasured. Its own ledger is the artifact.
+
+    CUMULATIVE ROWS, on purpose. The boot seed attaches once and holds the
+    archive across a replay measured at 2,084,503 rows while every later
+    poll holds it for milliseconds, so a max is the only field that keeps
+    it; per-interval rows would bury it in one of ~4,300 a day."""
+    shadow_db = tmp_path / "shadow.duckdb"
+    ledger = ShadowLedger(shadow_db)
+    ledger.start_run("R1", 0.0, ["buy_first"])
+    ledger.record_holds(
+        "R1",
+        {
+            "n": 3,
+            "held_n": 3,
+            "held_unknown_n": 0,
+            "held_s_total": 12.5,
+            "held_s_max": 12.0,
+            "contended_n": 1,
+            "exhausted_n": 0,
+        },
+    )
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        rows = conn.execute(
+            "SELECT run_id, attaches, held_n, held_unknown_n, held_s_total,"
+            " held_s_max, contended_n, exhausted_n FROM shadow_stream_holds"
+        ).fetchall()
+    assert rows == [("R1", 3, 3, 0, 12.5, 12.0, 1, 0)]
+
+
+def test_shadow_writes_no_hold_row_when_nothing_attached(tmp_path):
+    """`attach_wait_block` returns None when nothing went through the retry
+    helpers, and a row of zeros there would read as "attached instantly and
+    held nothing" -- the flawless block a 45-minute holder published."""
+    shadow_db = tmp_path / "shadow.duckdb"
+    ledger = ShadowLedger(shadow_db)
+    ledger.record_holds("R1", None)
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        assert conn.execute("SELECT count(*) FROM shadow_stream_holds").fetchone()[0] == 0
+
+
+def test_a_failed_engine_tune_closes_the_attach_instead_of_leaking_the_lock(tmp_path):
+    """`connect_retry` has already OPENED the daemon-owned archive by the
+    time `stream_conn` lowers `memory_limit`. An exception escaping that
+    tuning used to leave a read attach with no reference left to close it:
+    the file held for the daemon's whole life instead of the ~0.1s a poll
+    needs -- the harm this module now measures, leaked by the
+    measurement's own setup."""
+    import hyxlab.store as store_mod
+    from simulator.shadow import DUCK_MEM, stream_conn
+
+    db = tmp_path / "stream.duckdb"
+    StreamStore(db)
+    closed: list[bool] = []
+    opened: list[bool] = []
+
+    class _RefusesTuning:
+        """Raises on the `SET memory_limit` `stream_conn` issues AFTER the
+        attach, and records the close. A proxy rather than monkeypatched
+        methods because a DuckDB connection's are read-only."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a, **k):
+            # Keyed on DUCK_MEM, not on "SET memory_limit": `connect_retry`
+            # calls `cgroup_memory_limit`, which sets the same setting from a
+            # PARAMETER on a cgroup-capped box. Matching the statement name
+            # would fail inside connect_retry's own try -- which retries --
+            # and the test would pass here while never reaching the escape
+            # path it exists to cover.
+            if DUCK_MEM in str(sql):
+                raise duckdb.Error("tuning refused")
+            return self._inner.execute(sql, *a, **k)
+
+        def close(self):
+            closed.append(True)
+            return self._inner.close()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def _connect(*a, **k):
+        opened.append(True)
+        return _RefusesTuning(real(*a, **k))
+
+    real = store_mod.duckdb.connect
+    store_mod.duckdb.connect = _connect
+    try:
+        with pytest.raises(duckdb.Error):
+            stream_conn(str(db))
+    finally:
+        store_mod.duckdb.connect = real
+    # Exactly one attach, and it was released: proves the raise escaped
+    # `connect_retry` (which would have retried, leaking each attempt) and
+    # was caught by `stream_conn`'s own handler.
+    assert opened == [True]
+    assert closed == [True], "the attach was not released before the raise"

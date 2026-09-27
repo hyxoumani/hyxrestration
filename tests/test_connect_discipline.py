@@ -118,6 +118,10 @@ WRITE_ALLOWED: dict[str, str] = {
     "hyxlab/streamstore.py::StreamStore.mark_startup_gap": "records the gap it just found",
     "simulator/shadow.py::ShadowLedger.__init__": "the daemon owns hyxshadow.duckdb",
     "simulator/shadow.py::ShadowLedger.persist": "the ledger's write path",
+    "simulator/shadow.py::ShadowLedger.record_holds": (
+        "ledger write — what this daemon's stream-archive reads cost the writer"
+        " that owns hyxstream.duckdb, published into the file shadow owns"
+    ),
     "simulator/shadow.py::ShadowLedger.set_anchor": "ledger write",
     "simulator/shadow.py::ShadowLedger.start_run": "ledger write",
     # The one entry that owns a file nobody else can name. `stream_exported`
