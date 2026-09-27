@@ -143,3 +143,20 @@
   which is worse than the missing one. Instrument at a helper that
   ledgers, or leave the site enumerated as debt
   (`tests/test_hold_discipline.py`) -- never split the difference.
+- An instrument that learns a quantity by SAMPLING has a RESOLUTION, and
+  below it the number it reports is the sampling period wearing the
+  quantity's name. `data/stream_stalls.jsonl` was named (in #91) as the
+  half that "measures the hold exactly and always did", because it sees
+  both ends of a stall. But streamd learns the archive is unwritable only
+  by ATTEMPTING a flush, every `FLUSH_SECS = 15`, so an episode's span is
+  the hold rounded up to the next attempt: measured 2026-09-27, 254 of
+  275 closed episodes (92%) span 18.56s +/- 1.63s -- a constant -- and
+  holds of ~0.1s, 7.141s (the holder's own `held_s`) and ~0.1s that night
+  all logged ~19.3s (mistakes #92). So: publish the period and the bound
+  the samples actually prove (`hold_lower_s = (fails-1) * period_s`, 0.0
+  for the 92%), never a bare span; inject the period rather than reading
+  the module constant at write time, or retuning it re-scales every
+  archived record; and before trusting a victim's duration over a
+  holder's, ask how the victim found out. A field named `duration_s` and
+  documented "exact" invites every reader to difference it -- name a span
+  a span.

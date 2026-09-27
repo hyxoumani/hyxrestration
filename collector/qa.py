@@ -2489,6 +2489,14 @@ def qa_stream_stalls(
     it (2026-09-04..11) measured the distribution this check now watches -- 101
     episodes, median 15s, tail 1756-1876s, and two episodes at the spill cap.
 
+    THAT MEDIAN IS THE INSTRUMENT, NOT THE ARCHIVE. 15s is `FLUSH_SECS`: the
+    ledger sees a hold only by attempting a flush, so a median episode is one
+    failed attempt and its span is the sampling period. Which is harmless for
+    the verdict below -- it is on the SPILL -- and is why every duration this
+    check PRINTS carries `_hold_phrase`. Do not compare short durations, here
+    or across passes; the holder's `attach_wait.held_s` is the only number
+    with resolution at that end (mistakes #91, #92).
+
     The verdict is on the SPILL, not the duration. A stall inside the buffer
     loses nothing and is a normal consequence of a legitimate long reader (the
     poly sweep runs ~7h; a duckdb READ-ONLY handle takes a shared lock the
@@ -2575,16 +2583,45 @@ def qa_stream_stalls(
                     seen.append(h)
         return f"{sep}held by {', '.join(seen)}" if seen else ""
 
+    def _hold_phrase(e: dict) -> str:
+        """`, hold >= Ns` / the reason there is no such number, for `e`.
+
+        An episode's `duration_s` is the SPAN between the failed flush that
+        opened it and the success that closed it, and streamd learns the
+        archive is unwritable only by attempting a flush every `period_s`. So
+        the span is the hold rounded up to the next sampling point, and for a
+        single-fail episode it is a constant that carries no hold at all:
+        measured 2026-09-27, 254 of this ledger's 275 closed episodes span
+        18.56s +/- 1.63s, and three holds of ~0.1s, 7.141s and ~0.1s that
+        morning were indistinguishable here. Printing that as "longest 19s"
+        invites the reading that the archive was unwritable for 19 seconds.
+
+        `hold_lower_s` absent means the record predates the field (2026-09-27)
+        -- said so explicitly rather than derived from `fails`, because the
+        period it would have to be multiplied by is exactly what those records
+        do not carry. Absent is unknown, never 0.0: mistakes #91, one ledger
+        over.
+        """
+        lower = e.get("hold_lower_s")
+        if lower is None:
+            return ", hold unresolved (record predates the bound)"
+        if float(lower) <= 0:
+            period = e.get("period_s")
+            res = f"{float(period):.0f}s flush period" if period else "flush period"
+            return f", hold <= that and unresolved below the {res}"
+        return f", hold >= {float(lower):.0f}s"
+
     spilled = [e for e in episodes if _cap_rows(e) > 0]
     handoff = [e for e in episodes if int(e.get("handoff") or 0) > 0]
     longest = max(episodes, key=lambda e: float(e["duration_s"]))
     peak = max(int(e.get("peak_pending") or 0) for e in episodes)
     open_n = sum(1 for e in episodes if e.get("state") == "open")
     shape = (
-        f"{len(episodes)} episode(s) in {hours:g}h; longest {float(longest['duration_s']):.0f}s "
+        f"{len(episodes)} episode(s) in {hours:g}h; longest {float(longest['duration_s']):.0f}s span "
         f"({longest['started'][:16]}Z"
         + (", still open when last written" if longest.get("state") == "open" else "")
         + _held_by([longest], ", ")
+        + _hold_phrase(longest)
         + f"), peak {peak} rows held"
         + (f", {open_n} never recorded an end" if open_n else "")
         + (

@@ -2032,6 +2032,70 @@ Format: what happened → root cause → error type → prevention tier
     epoch moving, not the fix being verified.
 
 
+92. **2026-09-27 -- and the instrument #91 pointed at as the one that
+    "measures the hold exactly and always did" cannot resolve the hold at
+    all for 92% of its own records, because it learns of a hold only by
+    sampling.**
+    #91 ended by naming the victim's ledger, `data/stream_stalls.jsonl`,
+    as the trustworthy half: `attach_wait` measured the wait, so the hold
+    had to be read off streamd. The 2026-09-27 01:20Z divergence run --
+    the first SCHEDULED firing of #89's copy-out, and the first with
+    #91's `held_s` at both attaches -- let the two halves be compared for
+    the first time, and they disagreed. **Holder: `held_s` 7.141 s on
+    `hyxstream.duckdb` (`held_unknown_n` 0, against the 2,745 s
+    baseline). Victim: `duration_s` 19.3 s.** Then the tell: `hyxlab-
+    shadow`'s two unrelated burst attaches the same night, which hold the
+    file for a fraction of a second, logged **19.2 s** and **19.8 s**.
+    Three holds spanning two orders of magnitude, one number.
+    **The mechanism is the sampling period, and it is the whole quantity
+    at the short end.** `flusher()` is `sleep(FLUSH_SECS); flush()` with
+    `FLUSH_SECS = 15.0`, and an episode runs from the failed attempt that
+    opened it to the success that closed it. So `duration_s` is the hold
+    ROUNDED UP to the next sampling point plus the closing flush's own
+    duration -- neither term the hold. Measured over all 275 closed
+    episodes in the live ledger: **254 (92%) have `fails == 1` and span
+    18.56 s +/- 1.63 s** (min 6.8, max 24.9) -- a CONSTANT, and the fit
+    across the whole ledger is `duration_s ~= 16.6 * fails + 2`
+    (1/2/3 fails -> 18.6/42.6/50.8 s mean). The 7-day baseline in both
+    docstrings, "101 episodes, **median 15 s**", was reporting
+    `FLUSH_SECS`. The ledger fixed the journal's missing end time and its
+    missing aggregate, which is what it was built for; nobody noticed it
+    had not given a short hold a DURATION, and the field was named
+    `duration_s` and documented "exact".
+    **What it did NOT break, and why that is luck rather than design.**
+    `qa_stream_stalls` votes on the SPILL, never the duration, so no
+    verdict was ever wrong; `STREAM_STALL_REPORT_S` is 600 s, 40 sampling
+    periods up, so the named-tail arm is safe too. The damage was
+    confined to what the check PRINTS ("longest 19s") and to the repo's
+    own reasoning about the fix -- #89/#91 both reasoned from episode
+    durations at exactly the end where they are constant.
+    Fix: `FlushStalls` takes its `period_s` (injected, never read off the
+    module at write time -- a record's resolution is whatever the flusher
+    ran at when the episode happened, so binding the constant would
+    silently re-scale every archived record the day `FLUSH_SECS` is
+    retuned) and writes `period_s` + `hold_lower_s` on every record.
+    `hold_lower_s = max(0, (fails - 1) * period_s)`: `fails` attempts are
+    spaced one period apart and the file was unwritable at the first and
+    the last, so that span is proven and nothing shorter is. **For the
+    92% it is 0.0, which is the finding and not a bug in the field.** QA
+    gains `_hold_phrase`, prints "Ns span" and then either "hold >= Ns"
+    or "hold <= that and unresolved below the 15s flush period", and
+    treats an ABSENT bound as unknown rather than 0.0 -- #91's own
+    discipline one ledger over, and here it cannot even be back-derived
+    from `fails`, because the period to multiply by is exactly what the
+    old records lack. 7 tests, five mutations each reddening only its own
+    claim (drop the fields; `fails * period` instead of `fails - 1`; bind
+    the module constant; silence on an unresolved hold; absent-as-0.0).
+    Suite 1732 -> 1739.
+    Rule: **an instrument that learns a quantity by SAMPLING has a
+    resolution, and below it the number it reports is the sampling period
+    wearing the quantity's name. Publish the period and the bound the
+    samples actually prove, never a bare span -- and before trusting the
+    victim's number over the holder's, ask how the victim found out.**
+    Corollary, the one that made this cost two passes: a field called
+    `duration_s` and documented "exact" invites every downstream reader
+    to difference it. Name the span a span.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

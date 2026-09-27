@@ -75,8 +75,12 @@ EMPTY_SET_RETRY_LADDER = (10, 30, 60, 120)
 # it records only the FAILURES, never the success that ends an episode, so a
 # duration read off it is an interpolation between the first and last failure
 # line; it rolls at the host's retention (7d here); and it is per-boot-session
-# text nothing downstream can aggregate. Measured over the 7 days to
-# 2026-09-11 -- 101 episodes, 76 of them a single 15s flush, three ~30 min,
+# text nothing downstream can aggregate. (The ledger fixes the aggregation and
+# the end time; it does NOT give a short hold a duration -- it samples every
+# FLUSH_SECS and cannot resolve below that, which is what `hold_lower_s`
+# publishes.) Measured over the 7 days to
+# 2026-09-11 -- 101 episodes, 76 of them a single failed flush whose ~15s span
+# is this ledger's floor rather than a stall length, three ~30 min,
 # and TWO of those three reached SPILL_CAP (34,691 and 286 rows moved to the
 # sidecar) -- so the tail this ledger exists to bound is real and recurring,
 # and the cause is a long-lived READ-ONLY reader: a duckdb read-only handle
@@ -214,7 +218,12 @@ class FlushStalls:
 
     Two record shapes, and the difference is load-bearing:
 
-      closed  the episode ENDED at `at`; `duration_s` is exact.
+      closed  the episode ENDED at `at`; `duration_s` is the exact SPAN
+              between the two ledger events. That is not the hold, and the
+              difference is the instrument's sampling period -- read
+              `hold_lower_s`/`period_s` in `_record` before comparing
+              durations, especially at the short end where the span is a
+              constant.
       open    the episode had lasted `duration_s` as of `at` and the daemon
               had not yet seen it end. It is a LOWER BOUND, never a claim
               that the stall is still running now -- the daemon may have been
@@ -235,11 +244,17 @@ class FlushStalls:
     #: record from growing with the stall's duration.
     HOLDERS_MAX = 8
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(self, path: str | Path | None = None, period_s: float = FLUSH_SECS) -> None:
         # Resolved at WRITE time, never bound here: STALL_LOG is relative to
         # the working directory and the suite patches it (the same default-arg
         # trap `collector.collect.acquire_writer_lock` documents).
         self._path = path
+        # The SAMPLING PERIOD this ledger observes holds through, recorded on
+        # every episode so a reader can tell a measurement from a bound (see
+        # `_record`). Injected rather than read off the module at write time
+        # because a record's resolution is whatever the flusher ran at when
+        # the episode happened, not whatever the constant says today.
+        self._period_s = period_s
         self.started: datetime | None = None
         self.fails = 0
         self.peak_pending = 0
@@ -271,6 +286,26 @@ class FlushStalls:
                 "started": self.started.isoformat(),
                 "duration_s": round((now - self.started).total_seconds(), 1),
                 "fails": self.fails,
+                # THE RESOLUTION OF THE INSTRUMENT, and why `duration_s` is not
+                # a hold. This ledger learns the archive is unwritable only by
+                # ATTEMPTING a flush, and it attempts one every `period_s`. So
+                # an episode's span is the hold ROUNDED UP to the next sampling
+                # point, and the rounding error is the whole quantity for a
+                # short hold: measured 2026-09-27 over this ledger's 275 closed
+                # episodes, 254 of them (92%) have `fails == 1` and a span of
+                # 18.56s +/- 1.63s -- a CONSTANT, `period_s` plus the ending
+                # flush's own duration. Three holds that morning of ~0.1s,
+                # 7.141s (the holder's own `held_s`, mistakes #91) and ~0.1s
+                # all logged ~19.3s. Nothing distinguished them here.
+                #
+                # `fails` failed attempts are spaced `period_s` apart and the
+                # file was unwritable at the first and the last, so the hold
+                # spanned at least `(fails - 1) * period_s`. For the 92% that
+                # is 0.0 -- the honest reading, and the reason this field is
+                # published instead of left to the reader: a single-fail
+                # episode bounds the hold ABOVE and says nothing else.
+                "period_s": self._period_s,
+                "hold_lower_s": round(max(0.0, (self.fails - 1) * self._period_s), 1),
                 "peak_pending": self.peak_pending,
                 "spilled": self.spilled,
                 "error": self.last_error,

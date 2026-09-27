@@ -458,6 +458,8 @@ def _ep(
         "spilled": spilled,
         "error": "OSError: IO Error",
         "holders": list(holders or []),
+        "period_s": 15.0,
+        "hold_lower_s": round(max(0.0, (max(1, int(duration // 15)) - 1) * 15.0), 1),
     }
     if handoff is not None:
         rec.update(interrupted=True, handoff=handoff)
@@ -850,3 +852,109 @@ def test_an_episode_with_no_holder_says_nothing_rather_than_unknown(tmp_path):
     failed, skipped, out = _run_check(path=path, journal_fails=140, now=NOW)
     assert not failed and not skipped, out
     assert "held by" not in out
+
+
+# -- the ledger's RESOLUTION (mistakes #92) --------------------------------
+#
+# `duration_s` is the span between the failed flush that opened an episode and
+# the success that closed it. streamd learns the archive is unwritable only by
+# ATTEMPTING a flush, every FLUSH_SECS, so that span is the hold rounded up to
+# the next sampling point -- and at the short end the rounding IS the number.
+# Measured 2026-09-27 over the live ledger: 254 of 275 closed episodes have
+# `fails == 1` and span 18.56s +/- 1.63s, a constant; three holds that morning
+# of ~0.1s, 7.141s and ~0.1s all logged ~19.3s. The wiki had recorded that this
+# ledger "measures the hold exactly and always did". It does not, for 92% of it.
+
+
+def test_a_single_failed_flush_proves_no_hold_at_all(tmp_path):
+    """The 92% case, and the whole finding: one failed attempt bounds the hold
+    ABOVE (one sampling period) and says NOTHING below. So the bound it
+    publishes is 0.0 -- not its own 15s span, which is the instrument."""
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    s.failed(3458, 0, _err(), T0)
+    s.ok(T0 + timedelta(seconds=19.3))
+
+    (rec,) = _records(log)
+    assert rec["fails"] == 1
+    assert rec["duration_s"] == 19.3
+    assert rec["hold_lower_s"] == 0.0
+    assert rec["period_s"] == streamd.FLUSH_SECS
+
+
+def test_the_hold_bound_grows_one_flush_period_per_extra_failed_flush(tmp_path):
+    """`fails` attempts are spaced `period_s` apart and the archive was
+    unwritable at the first and the last, so the hold spanned at least
+    `(fails - 1) * period_s`. That is the only hold this ledger can prove."""
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    for i in range(4):
+        s.failed(1000 * (i + 1), 0, _err(), T0 + timedelta(seconds=15 * i))
+    s.ok(T0 + timedelta(seconds=62.0))
+
+    (rec,) = _records(log)
+    assert rec["fails"] == 4
+    assert rec["hold_lower_s"] == 45.0  # 3 whole periods, not the 62s span
+    assert rec["duration_s"] == 62.0
+
+
+def test_the_recorded_period_is_the_flushers_own_not_todays_constant(tmp_path):
+    """A record's resolution is whatever the flusher ran at when the episode
+    happened. Bound to the module constant at write time instead, every
+    archived record would silently re-scale the day FLUSH_SECS is retuned --
+    and the old spans would not move with it."""
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log), period_s=2.0)
+    s.failed(10, 0, _err(), T0)
+    s.failed(20, 0, _err(), T0 + timedelta(seconds=2))
+    s.ok(T0 + timedelta(seconds=5))
+
+    (rec,) = _records(log)
+    assert rec["period_s"] == 2.0
+    assert rec["hold_lower_s"] == 2.0
+
+
+def test_an_interim_open_record_carries_the_bound_too(tmp_path):
+    """The long-stall record is the one an operator reads while it is still
+    running, so it is the one that most needs to say which part is measured."""
+    log = tmp_path / "stalls.jsonl"
+    s = streamd.FlushStalls(str(log))
+    for i in range(40):
+        s.failed(1000, 0, _err(), T0 + timedelta(seconds=15 * i))
+
+    opens = [r for r in _records(log) if r["state"] == "open"]
+    assert opens, _records(log)
+    assert opens[-1]["hold_lower_s"] > 0
+    assert opens[-1]["period_s"] == streamd.FLUSH_SECS
+
+
+def test_the_check_refuses_to_call_a_one_flush_span_a_hold(tmp_path):
+    """"longest 19s" reads as "the archive was unwritable for 19 seconds", and
+    for a single-fail episode that is the sampling period talking."""
+    path = _ledger(tmp_path, _ep(T0, 19.0))
+    failed, skipped, out = _run_check(path=path, journal_fails=3, now=NOW)
+    assert not failed, out
+    assert "19s span" in out
+    assert "unresolved below the 15s flush period" in out
+
+
+def test_the_check_publishes_the_hold_a_long_episode_does_prove(tmp_path):
+    """The tail is where the span and the hold nearly agree, and the check must
+    still say which it is printing."""
+    path = _ledger(tmp_path, _ep(T0, 3002.8, peak=400_057))
+    failed, skipped, out = _run_check(path=path, journal_fails=182, now=NOW)
+    assert not failed, out
+    assert "hold >= 2985s" in out
+
+
+def test_a_record_written_before_the_bound_says_so_instead_of_zero(tmp_path):
+    """Absent is unknown, never 0.0 -- mistakes #91 one ledger over. Deriving
+    the bound from `fails` for these would need the period they do not carry,
+    so the check declines instead of guessing 15s."""
+    legacy = _ep(T0, 3002.8, peak=400_057)
+    del legacy["hold_lower_s"], legacy["period_s"]
+    path = _ledger(tmp_path, legacy)
+    failed, skipped, out = _run_check(path=path, journal_fails=182, now=NOW)
+    assert not failed, out
+    assert "hold unresolved (record predates the bound)" in out
+    assert "hold >=" not in out
