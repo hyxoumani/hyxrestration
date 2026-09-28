@@ -268,3 +268,36 @@
   traceback drops, and without it the test is green against the leak.
   This is #90's rule ("prove both arms from outside") reaching the helper
   a pass after it was written about the caller.
+- A detector whose EXPECTED population is inferred from the events that
+  HAPPENED is blind in exactly the direction it exists to look.
+  `qa.read_fade_windows` counted holes as `max(0, starts - completions)`
+  over the 23:00-04:00Z window, both counted from the collector's
+  journal: a slot the timer never fired in is absent from BOTH terms,
+  cancels, and renders as a clean night. Measured 2026-09-28 -- the
+  2026-08-20 outage left one 265.0-minute gap in `snapshots`, 21:30Z ->
+  01:55Z, i.e. 35 of that night's 60 slots, and the 25 cycles that did
+  run all completed, so the check printed `0 lost cycle(s)` for the
+  largest capture hole in this archive (mistakes #98; the same outage is
+  #93's example, printed there as a 264.8-min span). Take the
+  denominator from the CADENCE -- what was owed -- inject it so a
+  retuned timer must restate it, and publish owed / started / finished
+  as three numbers, never one difference. Pair the two event kinds
+  across the window edges over a read one cadence wider than each,
+  or a straddling cycle adds a completion with no start and
+  `max(0, ...)` clamps a real hole to zero. And when a window has
+  rotated out of journald, non-activation is UNRESOLVED, not 60 losses.
+- A CLI's human output is not data. `journalctl -o short-iso` prints
+  `-- No entries --` to STDOUT on an empty read, so
+  `bool(text.strip())` reads an empty journal as content: the
+  fade-window check's sweep attribution was therefore True for every
+  window ever examined -- seven consecutive QA runs announced the poly
+  sweep inside 7 of 7 windows while `-o cat` over the same spans
+  returns zero lines (mistakes #99). An absence rendering as PRESENCE,
+  in a check whose docstring is about the opposite mirror. Before
+  testing a subprocess's stdout for truthiness, ask what the tool
+  prints when it found nothing; answer it in ONE predicate, since the
+  same sentinel defeats every yes/no question asked of that output; and
+  make the fixture emit what the real tool emits -- the test that
+  covered this flag fed it a line with no timestamp, which is nothing
+  journalctl can produce, so it was green by mimicking the defect's own
+  tolerance.

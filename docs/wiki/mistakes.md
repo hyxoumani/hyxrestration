@@ -2371,6 +2371,76 @@ Format: what happened → root cause → error type → prevention tier
     recurrence -- and a release test that never leaves the process is
     not a release test.**
 
+98. **2026-09-28 -- the fade-window check's denominator was the cycles that
+    RAN, so a slot the timer never fired in cancelled out of both terms
+    and the largest capture hole in this archive was a clean night.**
+    `qa_fade_window_capture` exists because `qa_collect_skips` is
+    day-wide and its budget of 3 passes cleanly on a night that loses
+    three consecutive 23:00-04:00Z cycles -- the window where the KXLOWT
+    candidates live. Its hole count was `max(0, starts - completions)`,
+    both counted from the collector's journal over the window. That term
+    can only see a cycle that STARTED: if the timer did not fire at all
+    -- box down, unit stopped or masked -- the slot is absent from both
+    counts and the difference is zero. **MEASURED, not hypothetical.**
+    One read-only query over `snapshots` for 08-19..08-21 returns
+    exactly one gap: **21:30Z -> 01:55Z, 265.0 minutes**, i.e.
+    23:00-01:55Z of the 08-20 fade window, **35 of its 60 slots**. The 25
+    cycles that did run all completed, so the check printed `0 lost
+    cycle(s)` for it. That same outage is #93's worked example, where the
+    continuity check printed its true 4h19m as a 264.8-minute *span*
+    against a 5-min cadence -- two instruments watching one event, and
+    neither said what it was. The smaller half, carried three passes as
+    the known defect, is the EDGE: a cycle straddling 23:00Z contributed
+    a completion with no start and `max(0, ...)` clamped one REAL hole to
+    zero, against a budget of one hole. Fixed by taking the expected
+    count from an INJECTED cadence (60 slots), separating `missed` (never
+    fired) from `holes` (ran, lost its data) because one number cannot be
+    read as either, PAIRING activations to payload lines over a journal
+    read one cadence wide of each edge, and reporting a window journald
+    has rotated away as unresolved rather than as 60 losses. Note what
+    was holding the edge arm up meanwhile: `collector.collect.LOCK_WAIT_S
+    = 240.0` keeps a cycle under the 291s it would take to straddle --
+    this check's correctness resting on a constant in another module,
+    written down nowhere.
+    Rule: **a detector whose EXPECTED population is inferred from the
+    events that happened cannot see the events that did not happen. Take
+    the denominator from the cadence, which is what was OWED, and say
+    separately how many were owed, how many started, and how many
+    finished -- a single difference of two observed counts is blind in
+    exactly the direction the detector exists to look.**
+
+99. **2026-09-28 -- `journalctl -o short-iso` prints `-- No entries --`
+    on STDOUT, so a truthiness test on its output read an empty journal
+    as content, and one QA attribution had been a constant for as long
+    as anyone had looked.**
+    Found while measuring #98. `read_fade_windows` set
+    `sweep_in_window = bool(sweep_text.strip())` to attribute a capture
+    hole to a poly sweep that overran into the window. The sentinel makes
+    that True always: seven consecutive QA runs, 09-21..09-27, each
+    printed `WATCH ... hyxlab-poly-sweep.service was still running inside
+    7 window(s)` naming all seven dates, while `journalctl -o cat` over
+    those same spans returns **zero lines**. **7 of 7 every single day is
+    the signature of a constant, not of a sweep** -- and nobody had read
+    the line, which is #91's lesson in a different costume. On a clean
+    night it cost only noise; on the next real hole it would have
+    appended `while the poly sweep was still running` to a hole the sweep
+    had nothing to do with, and a false ATTRIBUTION is worse than a
+    missing one. Note which way this one points: the check's own docstring
+    is about absence never rendering as a clean pass (EXP-943/947/951/954)
+    and here an ABSENCE rendered as PRESENCE, the same mistake mirrored.
+    The existing test for that flag fed the fake a bare `"[poly]
+    900/16371 | ..."` -- no timestamp, nothing journalctl ever emits --
+    so it was green by mimicking exactly what the defect accepted. Fixed
+    with one predicate, `_journal_records` (a line is a record only if it
+    starts with a journal timestamp), used for every yes/no question
+    asked of that output -- including the new retention probe added in
+    #98, which the same sentinel would have made vacuous. Callers that
+    COUNT markers were immune and were left alone.
+    Rule: **a CLI's human output is not data. Before testing a
+    subprocess's stdout for truthiness, ask what it prints when it found
+    nothing -- and make the fixture that stands in for it emit what the
+    real tool emits, or the test is pinned to the defect's own tolerance.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
