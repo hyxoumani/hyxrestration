@@ -2441,6 +2441,57 @@ Format: what happened → root cause → error type → prevention tier
     nothing -- and make the fixture that stands in for it emit what the
     real tool emits, or the test is pinned to the defect's own tolerance.**
 
+100. **2026-09-28 -- the capture-gap budget filtered the daemon's own
+    DEATH out of its population, so a 17-hour streamd outage was a clean
+    day.** `qa._capture_gap_minutes` is the only reader of how MUCH the
+    `stream_gaps` rows excuse: everywhere else in this repo a gap row is
+    an excuse (it suppresses a seq hole, skips a market, bounds a replay
+    window), so degrading capture made every downstream check quieter
+    rather than louder, and this check exists to put a budget on the
+    excuse channel. It read `venue='kalshi' AND channel IN
+    ('books','trades')` -- and every one of those rows (`reconnect`,
+    `seq_reset`, `dead_air`) is written by a LIVING daemon about one of
+    its own connections. The row that says the daemon was DEAD is
+    `StreamStore.mark_startup_gap`'s `daemon_start`, written at the next
+    boot under `venue='*', channel='*'`, and the channel predicate
+    dropped it. Replayed read-only over all 83 daily 10:00Z slots in the
+    stream retention: **2026-07-21 reported `books 9.5 / trades 16.1
+    min budgeted` and PASSED** across the 10:24Z 07-20 -> 03:23Z 07-21
+    outage, 1,019.7 minutes of nothing, truly 1,029.6 / 1,036.2 -- 34x
+    the budget. 2026-07-09 reported trades `0.0` against a true 409.5.
+    **What hid it is the same fact that makes it the class exactly**: the
+    outages the check DID catch -- 08-21 at 263.0, 09-22 at 37.9 -- were
+    a daemon killed and restarted in a loop by a host OOM storm, which
+    emits channel-scoped rows on the way down. So the detector saw
+    precisely the deaths noisy enough to log themselves and missed the
+    ones that died cleanly, which is #98's shape in a new domain: the
+    evidence population was the events the dying process managed to
+    emit. The rows were already known to mean all-channels -- the seq
+    check twenty lines above excuses on `OR venue = '*'` and has since
+    it was written; only this reader disagreed, in the same function,
+    against the same table. Error type: wrong-assumption (population
+    scoping), and a same-file inconsistency nothing compared.
+    Fix: coverage-wide rows are in the read and fan out to every channel
+    in `_GAP_CHANNELS`; `downtime` is reported as a third term beside
+    budgeted and maintenance, because a degraded connection and a dead
+    daemon are different repairs. Recalibrated rather than assumed: on
+    the corrected population 5 of 83 windows fail and all five are
+    incidents, the worst benign mature window is still 6.4 min (08-28,
+    unchanged -- a healthy restart is seconds), so `CAPTURE_GAP_BUDGET_MIN
+    = 30` is kept for the third time. 5 tests, each red-verified against
+    its own mutant -- and the renderer test's FIRST mutant was a no-op
+    (ruff had joined the f-strings, so the sed matched nothing and the
+    test passed green against an unchanged file): a perturbation test is
+    only evidence once you have watched the perturbation land.
+    Suite 1779 -> **1784**.
+    Rule: **when a check's subject is how much of something was LOST,
+    enumerate the kinds of row that can record a loss before filtering,
+    and ask which kind the failure itself prevents from being written.
+    A predicate that selects on who wrote the row selects on who was
+    alive to write it.** Corollary: when two readers of one table
+    disagree about its scoping in the same file, one of them is wrong --
+    that disagreement is a finding, not a style difference.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -301,3 +301,28 @@
   covered this flag fed it a line with no timestamp, which is nothing
   journalctl can produce, so it was green by mimicking the defect's own
   tolerance.
+- A detector whose subject is how much was LOST selects, in its WHERE
+  clause, on who was alive to write the row. `qa._capture_gap_minutes`
+  budgets the volume of `stream_gaps` -- the excuse channel every other
+  reader in this repo treats as a suppressor -- and read
+  `venue='kalshi' AND channel IN ('books','trades')`: `reconnect`,
+  `seq_reset` and `dead_air`, all written by a LIVING daemon about one of
+  its own connections. `mark_startup_gap`'s `daemon_start` row, the one
+  that says the daemon was DEAD, is `venue='*', channel='*'` and was
+  dropped. Measured 2026-09-28 over all 83 daily slots in the stream
+  retention: the 07-21 window reported `books 9.5 / trades 16.1 min` and
+  PASSED across a 17-hour outage (1,019.7 min, truly 1,029.6 / 1,036.2,
+  34x the budget), while the outages it DID catch (08-21, 09-22) were a
+  daemon killed and restarted in a loop by a host OOM storm, which emits
+  channel-scoped rows on the way down (mistakes #100). So: enumerate the
+  kinds of row that can record a loss BEFORE filtering, and ask which
+  kind the failure itself prevents from being written. And when two
+  readers of one table disagree about its scoping in the same file -- the
+  seq check twenty lines up had always excused on `OR venue = '*'` --
+  that disagreement is a finding, not a style difference.
+- A perturbation test is evidence only once you have watched the
+  perturbation LAND. The renderer test for the above was red-verified by
+  a `sed` that matched nothing, because ruff had joined the f-strings it
+  was written against; the test passed green against an unchanged file
+  and looked like a passing mutant. Assert the mutant changed the source
+  (diff it, or fail the edit) before reading the test's colour.

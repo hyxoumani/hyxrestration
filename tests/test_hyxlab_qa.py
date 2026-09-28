@@ -2044,9 +2044,10 @@ def test_maintenance_storm_does_not_trip_the_budget(tmp_path):
     conn = _gap_db(tmp_path / "s.duckdb", storm)
     load = qa._capture_gap_minutes(conn, THU + timedelta(hours=10), 26.0)
     conn.close()
-    budgeted, maint = load["books"]
+    budgeted, maint, downtime = load["books"]
     assert budgeted == 0.0
     assert maint == pytest.approx(60.0)
+    assert downtime == 0.0
 
 
 def test_a_long_non_maintenance_gap_is_budgeted(tmp_path):
@@ -2088,7 +2089,7 @@ def test_one_outage_written_as_several_rows_counts_once(tmp_path):
     load = qa._capture_gap_minutes(conn, mon + timedelta(hours=6), 26.0)
     conn.close()
     assert load["books"][0] == pytest.approx(14.5 + 18.0)
-    assert load["trades"] == (0.0, 0.0)
+    assert load["trades"] == (0.0, 0.0, 0.0)
 
 
 def test_overlapping_rows_inside_maintenance_are_reported_once(tmp_path):
@@ -2098,7 +2099,7 @@ def test_overlapping_rows_inside_maintenance_are_reported_once(tmp_path):
     conn = _gap_db(tmp_path / "s.duckdb", rows)
     load = qa._capture_gap_minutes(conn, THU + timedelta(hours=10), 26.0)
     conn.close()
-    assert load["books"] == (0.0, pytest.approx(20.0))
+    assert load["books"] == (0.0, pytest.approx(20.0), 0.0)
 
 
 def test_capture_gap_is_clipped_to_the_window(tmp_path):
@@ -2135,6 +2136,120 @@ def test_other_venues_do_not_consume_the_kalshi_budget(tmp_path):
     conn.close()
     assert load["books"][0] == 0.0
     assert load["trades"][0] == 0.0
+
+
+# --- EXP-1387: the daemon's own death was filtered out of the population ---
+#
+# `_capture_gap_minutes` read `venue='kalshi' AND channel IN ('books','trades')`
+# -- every one of those rows written by a LIVING daemon about one of its own
+# connections. `mark_startup_gap` writes the row that says the daemon was DEAD
+# under `venue='*', channel='*'`, so the check whose whole subject is the
+# VOLUME of capture loss could not see the largest kind. Replayed over 83
+# slots: 2026-07-21 reported books 9.5 / trades 16.1 and PASSED across a
+# 17-hour outage that is really 1,029.6 / 1,036.2.
+
+
+def test_daemon_downtime_consumes_the_budget_on_every_channel(tmp_path):
+    # THE MUTANT THIS KILLS: dropping `OR venue = '*'` from the row read.
+    # A dead daemon covers nothing, so the minutes land on BOTH channels --
+    # the seq check twenty lines up has always excused on `venue = '*'` for
+    # exactly this reason.
+    mon = THU - timedelta(days=3)
+    conn = _gap_db(
+        tmp_path / "s.duckdb",
+        [("*", "*", mon + timedelta(hours=3), mon + timedelta(hours=4), "daemon_start")],
+    )
+    load = qa._capture_gap_minutes(conn, mon + timedelta(hours=6), 26.0)
+    conn.close()
+    for channel in ("books", "trades"):
+        budgeted, maint, downtime = load[channel]
+        assert budgeted == pytest.approx(60.0), channel
+        assert maint == 0.0
+        assert downtime == pytest.approx(60.0)
+
+
+def test_the_17h_outage_that_used_to_read_as_a_clean_day(tmp_path):
+    # The real 2026-07-20 10:24Z -> 07-21 03:23Z shape, as the 07-21 10:00Z
+    # window saw it: a coverage-wide row plus the handful of channel-scoped
+    # minutes that WERE counted. Before this fix the window read 9.5 minutes
+    # and passed; the outage must now trip the budget.
+    now = THU - timedelta(days=2)  # Tuesday, nowhere near maintenance
+    conn = _gap_db(
+        tmp_path / "s.duckdb",
+        [
+            ("*", "*", now - timedelta(hours=24), now - timedelta(hours=7), "daemon_start"),
+            (
+                "kalshi",
+                "books",
+                now - timedelta(hours=2),
+                now - timedelta(hours=2) + timedelta(minutes=9.5),
+                "reconnect",
+            ),
+        ],
+    )
+    load = qa._capture_gap_minutes(conn, now, 26.0)
+    conn.close()
+    assert load["books"][0] == pytest.approx(17 * 60 + 9.5)
+    assert load["books"][0] > qa.CAPTURE_GAP_BUDGET_MIN
+    assert load["trades"][0] == pytest.approx(17 * 60)
+
+
+def test_downtime_overlapping_a_channel_row_is_counted_once_and_attributed(tmp_path):
+    # The 2026-08-21 shape, which is why this was invisible for so long: a
+    # daemon killed and restarted in a loop ALSO emits channel-scoped rows, so
+    # that outage tripped the budget while the cleanly-stopped ones did not.
+    # The overlap must not double-count, and `downtime` is the intersection --
+    # not the wide row's own length, which would exceed the budgeted total.
+    mon = THU - timedelta(days=3)
+    t0 = mon + timedelta(hours=2)
+    conn = _gap_db(
+        tmp_path / "s.duckdb",
+        [
+            ("*", "*", t0, t0 + timedelta(minutes=40), "daemon_start"),
+            (
+                "kalshi",
+                "books",
+                t0 + timedelta(minutes=30),
+                t0 + timedelta(minutes=50),
+                "reconnect",
+            ),
+        ],
+    )
+    load = qa._capture_gap_minutes(conn, mon + timedelta(hours=6), 26.0)
+    conn.close()
+    budgeted, maint, downtime = load["books"]
+    assert budgeted == pytest.approx(50.0)
+    assert maint == 0.0
+    assert downtime == pytest.approx(40.0)
+    assert downtime <= budgeted
+
+
+def test_downtime_inside_the_maintenance_window_is_excused_like_any_gap(tmp_path):
+    # The wide row is not a special class of evidence -- it is measured by the
+    # same rules. A restart inside Kalshi's Thursday storm costs nothing.
+    conn = _gap_db(
+        tmp_path / "s.duckdb",
+        [("*", "*", THU + timedelta(hours=7), THU + timedelta(hours=7.5), "daemon_start")],
+    )
+    load = qa._capture_gap_minutes(conn, THU + timedelta(hours=10), 26.0)
+    conn.close()
+    assert load["books"] == (0.0, pytest.approx(30.0), 0.0)
+
+
+def test_the_downtime_term_reaches_the_rendered_detail_line(tmp_path, capsys):
+    # #95's rule: a term added to a block is only measured if the renderer
+    # prints it. This one has a single hand-written renderer, so assert the
+    # STRING, and perturb -- the same archive with the wide row removed must
+    # print a different line.
+    store = _fresh_stream(tmp_path / "s.duckdb")
+    store.append_gap("*", "*", NOW - timedelta(hours=6), NOW, "daemon_start")
+    store.flush()
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    out = capsys.readouterr().out
+    assert qa.CAPTURE_GAP_CHECK in failed
+    line = next(ln for ln in out.splitlines() if qa.CAPTURE_GAP_CHECK in ln)
+    assert "daemon downtime" in line
+    assert "360.0 daemon downtime" in line, line
 
 
 def test_capture_gap_budget_trips_through_qa_stream(tmp_path):

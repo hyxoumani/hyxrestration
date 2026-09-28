@@ -108,6 +108,20 @@ KALSHI_MAINT_END_H = 10
 #: merged non-incident mean is flat, 2.6 / 2.2 / 2.3 min for Jul / Aug / Sep.
 #: 30 is kept unchanged -- it still separates every incident from every
 #: benign window; tightening it now would be tuning to the new reading.
+#:
+#: RE-REPLAYED 2026-09-28 after the same function learned that a coverage-wide
+#: `daemon_start` row is capture loss too (EXP-1387, 83 slots). Everything
+#: above was read off a population with the DAEMON'S OWN DEATH filtered out.
+#: Corrected, 5 of 83 windows fail and all five are incidents: 07-21
+#: (1,029.6 / 1,036.2 -- the 17h outage that used to read 9.5 / 16.1 and
+#: PASS), 07-09 (469.7 / 409.5, was 60.2 / 0.0), 08-21 (263.0 / 259.6),
+#: 07-20 (123.2 / 122.4) and 09-22 (34.9 / 37.9). The worst benign window in
+#: the mature record is still 6.4 (08-28) -- unchanged, because a healthy
+#: restart is seconds -- so 30 keeps its 4.7x margin above benign and 1.26x
+#: below the smallest incident. The two worst benign windows in the WHOLE
+#: record are now 22.4 (07-10) and 21.7 (07-15), both July bring-up restart
+#: storms, which is what a restart storm should cost: it is real blindness.
+#: 30 is kept unchanged for the third time.
 CAPTURE_GAP_BUDGET_MIN = 30.0
 
 #: Polymarket delta-replay floor. The void check catches a frame this parser
@@ -664,8 +678,37 @@ def maintenance_overlap_s(start: datetime, end: datetime) -> float:
 CAPTURE_GAP_CHECK = "kalshi capture gaps within budget outside venue maintenance"
 
 
-def _capture_gap_minutes(conn, now: datetime, hours: float) -> dict[str, tuple[float, float]]:
-    """Per channel, (budgeted minutes, maintenance minutes) inside the window.
+#: Channels the capture-gap budget is measured for. A row scoped to a single
+#: channel lands in that one; a COVERAGE-WIDE row (`venue='*'`) lands in every
+#: one of them, because it says the archive was blind, not that one connection
+#: was.
+_GAP_CHANNELS = ("books", "trades")
+
+
+def _merge(spans: list[list[datetime]]) -> list[list[datetime]]:
+    """Union of half-open intervals, sorted. Rows are NOT disjoint (see
+    `_capture_gap_minutes`), so every minutes figure here merges first."""
+    out: list[list[datetime]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def _outside_maint_min(spans: list[list[datetime]]) -> float:
+    """Minutes of `spans` (already merged) outside Kalshi's maintenance window."""
+    total = sum((b - a).total_seconds() for a, b in spans)
+    maint = sum(maintenance_overlap_s(a, b) for a, b in spans)
+    return max(0.0, total - maint) / 60
+
+
+def _capture_gap_minutes(
+    conn, now: datetime, hours: float
+) -> dict[str, tuple[float, float, float]]:
+    """Per channel, (budgeted minutes, maintenance minutes, downtime minutes)
+    inside the window.
 
     Gaps are CLIPPED to the window first: a gap that started before it
     otherwise contributes its whole length to a window it only partly
@@ -679,30 +722,62 @@ def _capture_gap_minutes(conn, now: datetime, hours: float) -> dict[str, tuple[f
     ask "is t inside a gap?". Summed, those rows counted every outage 2-3x.
     Measured 2026-09-22: the 04:11-04:53Z host OOM storm read 83.8 books /
     75.8 trades minutes against a true 34.9 / 37.9.
+
+    COVERAGE-WIDE ROWS (`venue='*'`) ARE IN THE POPULATION, and leaving them
+    out was this check's #98 defect (EXP-1387, measured 2026-09-28). The rows
+    it read -- `reconnect`, `seq_reset`, `dead_air` -- are all written by a
+    LIVING daemon about one of its own connections. The row that says the
+    daemon was DEAD is `mark_startup_gap`'s `daemon_start`, written at the
+    next boot under `venue='*', channel='*'`, and the `channel IN (...)`
+    filter dropped it -- so the check whose entire subject is the VOLUME of
+    capture loss could not see the largest kind. The seq check twenty lines
+    up already excuses on `OR venue = '*'`, so the rows were known to mean
+    all-channels here and only this reader disagreed.
+
+    Replayed over all 83 daily 10:00Z slots in the stream retention:
+    **2026-07-21 reported books 9.5 / trades 16.1 -- a clean PASS -- across a
+    17-hour streamd outage** (10:24Z 07-20 -> 03:23Z 07-21, 1,019.7 min),
+    truly 1,029.6 / 1,036.2, i.e. 34x the budget. 2026-07-09 reported trades
+    0.0 against a true 409.5. The 08-21 outage DID fail at 263.0, which is
+    what made this invisible: a daemon killed and restarted in a loop (the
+    host OOM storm) also emits channel-scoped rows, so the check caught the
+    outages whose daemon happened to log on the way down and missed the ones
+    that died cleanly. That is the class exactly -- the evidence population
+    was the events the dying process managed to emit.
+
+    `downtime` is the share of those budgeted minutes the coverage-wide rows
+    account for -- merged and maintenance-excluded on their own terms, which
+    is exact rather than an upper bound because a wide span is by
+    construction inside every channel's spans. It is reported because the two
+    are different repairs: a degraded connection is a venue or network
+    problem, a dead daemon is ours.
     """
     lo = now - timedelta(hours=hours)
     rows = conn.execute(
         "SELECT channel, started_at, ended_at FROM stream_gaps"
-        " WHERE venue = 'kalshi' AND channel IN ('books', 'trades')"
+        " WHERE ((venue = 'kalshi' AND channel IN ('books', 'trades')) OR venue = '*')"
         " AND ended_at > ? AND started_at < ?"
-        " ORDER BY channel, started_at",
+        " ORDER BY started_at",
         [lo, now],
     ).fetchall()
-    merged: dict[str, list[list[datetime]]] = {c: [] for c in ("books", "trades")}
+    per: dict[str, list[list[datetime]]] = {c: [] for c in _GAP_CHANNELS}
+    down: list[list[datetime]] = []
     for channel, g0, g1 in rows:
         a, b = max(g0, lo), min(g1, now)
         if b <= a:
             continue
-        spans = merged[channel]
-        if spans and a <= spans[-1][1]:
-            spans[-1][1] = max(spans[-1][1], b)
-        else:
-            spans.append([a, b])
-    out: dict[str, tuple[float, float]] = {}
-    for channel, spans in merged.items():
-        maint = sum(maintenance_overlap_s(a, b) for a, b in spans)
-        total = sum((b - a).total_seconds() for a, b in spans)
-        out[channel] = (max(0.0, total - maint) / 60, maint / 60)
+        wide = channel not in per
+        for c in _GAP_CHANNELS if wide else (channel,):
+            per[c].append([a, b])
+        if wide:
+            down.append([a, b])
+    downtime_min = _outside_maint_min(_merge(down))
+    out: dict[str, tuple[float, float, float]] = {}
+    for channel, spans in per.items():
+        merged = _merge(spans)
+        maint = sum(maintenance_overlap_s(a, b) for a, b in merged)
+        total = sum((b - a).total_seconds() for a, b in merged)
+        out[channel] = (max(0.0, total - maint) / 60, maint / 60, downtime_min)
     return out
 
 
@@ -854,13 +929,13 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     # both treat a gap row as an EXCUSE; this is the only reader of how much
     # is being excused. See CAPTURE_GAP_BUDGET_MIN.
     load = _capture_gap_minutes(conn, now, hours)
-    over = {c: m for c, (m, _) in load.items() if m > CAPTURE_GAP_BUDGET_MIN}
+    over = {c: m for c, (m, _, _) in load.items() if m > CAPTURE_GAP_BUDGET_MIN}
     check(
         CAPTURE_GAP_CHECK,
         not over,
         "; ".join(
-            f"{c} {m:.1f} min budgeted (+{mt:.1f} maintenance)"
-            for c, (m, mt) in sorted(load.items())
+            f"{c} {m:.1f} min budgeted (+{mt:.1f} maintenance, {dn:.1f} daemon downtime)"
+            for c, (m, mt, dn) in sorted(load.items())
         )
         + f"; budget {CAPTURE_GAP_BUDGET_MIN:.0f} min/{hours:.0f}h"
         + ("; OVER " + ", ".join(sorted(over)) if over else ""),
