@@ -312,6 +312,43 @@ FADE_WINDOW_MAX_HOLES = 1
 FADE_WINDOW_NIGHTS = 7
 SWEEP_UNIT = "hyxlab-poly-sweep.service"
 
+#: The collector timer's cadence, and so the number of cycles a fade window is
+#: OWED: 60 in five hours. The expected count has to come from the cadence
+#: rather than from the activations the journal happens to hold, because
+#: `starts - completions` can only see a cycle that STARTED -- a slot where the
+#: timer never fired at all cancels out of both terms and renders as a clean
+#: night.
+#:
+#: MEASURED CONSEQUENCE, EXP-1385 (queried 2026-09-28, read-only, against
+#: `snapshots`): the 2026-08-20 outage left ONE 265.0-minute hole in the
+#: archive, 21:30Z -> 01:55Z. That covers 23:00-01:55Z of the 08-20 fade
+#: window -- 35 of its 60 slots -- and the check called that night clean,
+#: because the 25 cycles that did run all completed. It is the largest capture
+#: hole this archive has recorded, it is the exact event this check exists to
+#: name, and the check's own denominator hid it.
+#:
+#: Injected as a constant rather than read off the timer so a retuned cadence
+#: must be restated here, which is mistakes #93's discipline one detector over:
+#: a detector that learns an absence from a periodic event names the period.
+FADE_WINDOW_CADENCE_MIN = 5
+#: How far past both window edges the journal is read, so a cycle STRADDLING an
+#: edge is PAIRED with its own completion instead of differenced against
+#: somebody else's. One cadence.
+#:
+#: The far edge overcounts: a cycle starting 03:55Z and finishing after 04:00Z
+#: is a hole that never was. The near edge UNDERCOUNTS, which is worse -- a
+#: 22:5xZ cycle finishing after 23:00Z contributes a completion with no start,
+#: and `max(0, starts - completions)` then clamps one REAL hole to zero. Against
+#: a budget of one hole per window, either arm is the whole verdict.
+#:
+#: Both arms need a cycle longer than 291s (the timer fires at :09 past each
+#: 5-min mark -- measured 2026-09-28) and are today bounded away by
+#: `collector.collect.LOCK_WAIT_S = 240.0`, which since EXP-957 is a
+#: WHOLE-cycle budget. That is this check's correctness resting on a constant in
+#: another module, which is exactly the coupling nobody writes down; pairing
+#: makes it not matter.
+FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
+
 #: Worst COMPLETED wall clock measured from the systemd journal, per Kalshi-
 #: facing batch unit. Keyed by TIMER because its first consumer is
 #: `tests/test_systemd_units.py`, which reads the timer's OnCalendar and
@@ -2731,6 +2768,12 @@ class NightCapture:
     starts: int | None
     completions: int | None
     sweep_in_window: bool | None = None  # was the poly sweep still running?
+    #: Cycles the CADENCE owes this window (60), or None when journald no
+    #: longer retains the window's opening minutes -- in which case a slot with
+    #: no activation cannot be told from a slot nobody kept the record of, and
+    #: this record makes no claim about non-activation at all. None is again NOT
+    #: zero, for the same reason as above.
+    slots: int | None = None
 
     @property
     def measured(self) -> bool:
@@ -2738,20 +2781,45 @@ class NightCapture:
 
     @property
     def holes(self) -> int:
+        """Cycles that STARTED and never emitted their payload line."""
         if not self.measured:
             return 0
         return max(0, int(self.starts) - int(self.completions))
 
+    @property
+    def missed(self) -> int:
+        """Slots the timer never fired in at all -- the term `starts -
+        completions` cannot carry, because such a slot is absent from both."""
+        if not self.measured or self.slots is None:
+            return 0
+        return max(0, self.slots - int(self.starts))
 
-def _journal(unit: str, since: datetime, until: datetime) -> str | None:
-    """Raw journal text for `unit` in [since, until), or None if unreadable."""
+    @property
+    def lost(self) -> int:
+        """Every cycle this window was owed and did not archive."""
+        return self.holes + self.missed
+
+    @property
+    def expected(self) -> int:
+        """The denominator to publish: the cadence's count when it is known,
+        and otherwise the activations -- never a silent mix of the two."""
+        return self.slots if self.slots is not None else int(self.starts or 0)
+
+
+def _journal(unit: str | None, since: datetime, until: datetime) -> str | None:
+    """Raw journal text for `unit` in [since, until), or None if unreadable.
+
+    `unit=None` asks the whole user journal, which is a different question and
+    has one caller: RETENTION. Unit-scoped silence cannot separate a unit that
+    did not run from an interval journald has rotated away, and those two must
+    never read the same.
+    """
     try:
         p = subprocess.run(
             [
                 "journalctl",
                 "--user",
-                "-u",
-                unit,
+                *(() if unit is None else ("-u", unit)),
                 "--since",
                 since.strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "--until",
@@ -2771,6 +2839,89 @@ def _journal(unit: str, since: datetime, until: datetime) -> str | None:
     return p.stdout
 
 
+#: `-o short-iso` puts the record's own timestamp first, with an offset. Kept
+#: separate from the two content patterns below so a line that is not a journal
+#: record at all (a `-- No entries --`, a boot marker) is skipped rather than
+#: mis-timed.
+_JOURNAL_TS_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:[.,]\d+)?(?:Z|[+-]\d\d:?\d\d))\s")
+_COLLECT_START_RE = re.compile(r"Starting hyxlab 5-min collector")
+#: A cycle counts as CAPTURED only when its python emitted this payload line.
+#: The marker predates and survives the `flock -n` wrapper removal, so a window
+#: is comparable across both eras; counting exit codes instead would silently
+#: stop working when the failure mode changes.
+_COLLECT_DONE_RE = re.compile(r"\[collect\] \d{4}-\d\d-\d\dT")
+
+
+def _journal_records(text: str) -> list[str]:
+    """The lines of `text` that are actually journal RECORDS.
+
+    Because `journalctl -o short-iso` writes the human sentinel
+    `-- No entries --` to STDOUT when it matched nothing, so a truthiness test
+    on its output reads an empty journal as content. MEASURED, EXP-1386: the
+    fade-window check's sweep attribution (`bool(sweep.strip())`) was therefore
+    True for every window ever examined -- seven QA runs 09-21..09-27 each
+    printed `hyxlab-poly-sweep.service was still running inside 7 window(s)`
+    while `journalctl -o cat` over those same windows returns ZERO lines. 7 of 7
+    every single day is the signature of a constant, and on a breach night it
+    would have appended `while the poly sweep was still running` to a hole the
+    sweep had nothing to do with: a false ATTRIBUTION, which is worse than a
+    missing one.
+
+    One predicate, because the same sentinel defeats every yes/no question asked
+    of this output. Counting callers are immune and stay as they are.
+    """
+    return [ln for ln in text.splitlines() if _JOURNAL_TS_RE.match(ln)]
+
+
+def _pair_collect_cycles(text: str, start: datetime, end: datetime) -> tuple[int, int]:
+    """(started, completed) for the cycles BELONGING to [start, end).
+
+    Paired in journal order rather than counted separately, because the two
+    counts have different edges the moment a cycle straddles one. A cycle
+    belongs to the window that its ACTIVATION falls in -- one owner, so no
+    cycle is counted twice and none is dropped -- and its payload line is
+    accepted wherever it lands, which is what `FADE_WINDOW_PAIR_GRACE_S` buys.
+
+    A `Starting` line arriving while a cycle is still open closes the previous
+    one unpaired: that is a cycle which ran and emitted no payload, i.e. exactly
+    the hole this function is here to count.
+    """
+    started = completed = 0
+    open_inside: bool | None = None  # None = no cycle open
+    for line in text.splitlines():
+        m = _JOURNAL_TS_RE.match(line)
+        if m is None:
+            continue
+        if _COLLECT_START_RE.search(line):
+            open_inside = start <= _parse_journal_ts(m.group(1)) < end
+            started += open_inside
+        elif _COLLECT_DONE_RE.search(line) and open_inside is not None:
+            completed += open_inside
+            open_inside = None
+    return started, completed
+
+
+def _parse_journal_ts(text: str) -> datetime:
+    """A `short-iso` stamp as UTC. journald renders local time with an offset."""
+    return datetime.fromisoformat(text.replace(",", ".")).astimezone(UTC)
+
+
+def _journal_retains(since: datetime, until: datetime) -> bool | None:
+    """Does journald still hold ANY record in [since, until)?
+
+    The discriminator that makes a missing activation reportable. A fade window
+    whose opening minutes have rotated out of the journal cannot distinguish a
+    timer that did not fire from a record nobody kept, so such a window claims
+    nothing about non-activation (`slots=None`) instead of inventing 60 losses.
+    Asked of the whole user journal because retention is journald's property,
+    not a unit's, and this box's daemons log continuously; and asked at the
+    window's FRONT because rotation trims the oldest end, so coverage there
+    implies coverage throughout.
+    """
+    text = _journal(None, since, until)
+    return None if text is None else bool(_journal_records(text))
+
+
 def read_fade_windows(nights: int = FADE_WINDOW_NIGHTS, now: datetime | None = None) -> list:
     """Measure the last `nights` fade windows from systemd's journal.
 
@@ -2778,12 +2929,23 @@ def read_fade_windows(nights: int = FADE_WINDOW_NIGHTS, now: datetime | None = N
     loses the writer lock writes NOTHING, so the archive cannot report its own
     holes, and the archive is exactly what the sweep has locked.
 
-    A cycle counts as CAPTURED only when its python emitted the `[collect]
-    <iso> {...}` payload line. That marker predates and survives the `flock -n`
-    wrapper removal, so a window is comparable across both eras; counting exit
-    codes instead would silently stop working when the failure mode changes.
+    Three numbers per window, and they answer three different questions --
+    which is the point, because the original two collapsed two of them:
+
+      `slots`       what the CADENCE owed the window (60), or None where
+                    journald no longer retains it. A slot with no activation
+                    at all is invisible to `starts - completions`.
+      `starts`      activations whose cycle BELONGS to this window, paired
+                    across both edges (`_pair_collect_cycles`).
+      `completions` those that emitted their `[collect] <iso> {...}` payload.
+
+    The journal is read one cadence wide of each edge so the pairing can see a
+    straddling cycle's other end; window membership is still decided by the
+    activation, so no cycle belongs to two windows.
     """
     now = now or datetime.now(UTC)
+    cadence = timedelta(minutes=FADE_WINDOW_CADENCE_MIN)
+    grace = timedelta(seconds=FADE_WINDOW_PAIR_GRACE_S)
     out = []
     for i in range(nights, 0, -1):
         start = (now - timedelta(days=i)).replace(
@@ -2792,19 +2954,20 @@ def read_fade_windows(nights: int = FADE_WINDOW_NIGHTS, now: datetime | None = N
         end = (start + timedelta(days=1)).replace(hour=FADE_WINDOW_END_H)
         if end > now:
             continue
-        text = _journal(COLLECT_UNIT, start, end)
+        text = _journal(COLLECT_UNIT, start - grace, end + grace)
         if text is None:
             out.append(NightCapture(f"{start:%Y-%m-%d}", None, None, None))
             continue
-        starts = len(re.findall(r"Starting hyxlab 5-min collector", text))
-        done = len(re.findall(r"\[collect\] \d{4}-\d\d-\d\dT", text))
+        starts, done = _pair_collect_cycles(text, start, end)
         sweep = _journal(SWEEP_UNIT, start, end)
+        retained = _journal_retains(start, start + cadence)
         out.append(
             NightCapture(
                 f"{start:%Y-%m-%d}",
                 starts,
                 done,
-                None if sweep is None else bool(sweep.strip()),
+                None if sweep is None else bool(_journal_records(sweep)),
+                int((end - start) / cadence) if retained else None,
             )
         )
     return out
@@ -2837,8 +3000,28 @@ def qa_fade_window_capture(
     over — it fires on runs that cost nothing, and it cannot fire on a hole
     caused by anything other than the sweep.
 
-    So: alarm on the HOLES, over a multi-night window, and report the overrun
-    only as attribution. Three renderings, kept distinct:
+    EXP-1385, 2026-09-28 -- WHAT "HOLES" HAS TO MEAN. A hole was
+    `starts - completions`, which can only see a cycle that STARTED: a slot the
+    timer never fired in is absent from both terms, cancels, and reads as a
+    clean night. That is not hypothetical. The 2026-08-20 outage left ONE
+    265.0-minute gap in `snapshots` (21:30Z -> 01:55Z, queried read-only
+    2026-09-28), i.e. 35 of that night's 60 slots, and the 25 cycles that did
+    run all completed -- so this check, the one instrument with a verdict on
+    this window, called the largest capture hole in the archive clean. The
+    expected count now comes from `FADE_WINDOW_CADENCE_MIN`, the losses are
+    reported in their two distinct kinds, and a window journald no longer
+    retains says so instead of fabricating 60.
+
+    EXP-1386, same day -- AND THE ATTRIBUTION WAS A CONSTANT. `journalctl
+    -o short-iso` prints `-- No entries --` to stdout on an empty read, so
+    `bool(sweep_text.strip())` was True for every window ever examined: seven
+    consecutive QA runs announced the sweep inside 7 of 7 windows while the same
+    spans hold zero records. It cost nothing on a clean night (a WATCH line) and
+    would have appended `while the poly sweep was still running` to the next
+    real hole. See `_journal_records`.
+
+    So: alarm on the LOST cycles, over a multi-night window, and report the
+    overrun only as attribution. Three renderings, kept distinct:
 
       no night measurable                -> UNVERIFIED (a SKIP, never a pass)
       holes > budget on a NEW night      -> FAIL
@@ -2864,7 +3047,7 @@ def qa_fade_window_capture(
         )
         return
 
-    holed = [r for r in measured if r.holes > FADE_WINDOW_MAX_HOLES]
+    holed = [r for r in measured if r.lost > FADE_WINDOW_MAX_HOLES]
     state = _load_state()
     entry = state.setdefault("fade-window", {})
     reported = set(entry.get("reported") or [])
@@ -2874,17 +3057,35 @@ def qa_fade_window_capture(
     _save_state(state)
 
     detail = (
-        f"{sum(r.holes for r in measured)} lost cycle(s) over {len(measured)} measured "
+        f"{sum(r.lost for r in measured)} lost cycle(s) over {len(measured)} measured "
         f"window(s) of {len(recs)} (budget {FADE_WINDOW_MAX_HOLES}/window)"
     )
     if holed:
         detail += "; " + ", ".join(
-            f"{r.date} lost {r.holes}/{r.starts}"
+            f"{r.date} lost {r.lost}/{r.expected}"
+            # Split only when BOTH terms are non-zero: the two are different
+            # failures -- a cycle that ran and lost its data, versus a slot the
+            # timer never fired in -- and one number cannot be read as either.
+            + (
+                f" ({r.holes} after starting, {r.missed} never started)"
+                if r.holes and r.missed
+                else ""
+            )
+            + (" — none of them started" if r.missed and not r.holes else "")
             + (" while the poly sweep was still running" if r.sweep_in_window else "")
             for r in holed
         )
     if len(measured) < len(recs):
         detail += f"; {len(recs) - len(measured)} window(s) UNMEASURED"
+    # A window whose cadence count is None is measured for holes and blind to
+    # non-activation. Saying so is the whole discipline: it is the state the old
+    # code was in permanently and never printed.
+    uncounted = [r for r in measured if r.slots is None]
+    if uncounted:
+        detail += (
+            f"; {len(uncounted)} window(s) rotated out of journald at the 23:00Z edge, so "
+            "non-activation is unresolved there (holes still counted)"
+        )
 
     if fresh:
         check(name, False, detail)

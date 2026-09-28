@@ -173,9 +173,12 @@ def test_reader_reports_an_unreadable_journal_as_none_not_zero(monkeypatch):
     assert not any(r.measured for r in recs)
 
 
+_SWEEP_INSIDE = "2026-08-02T18:30:11-05:00 hyz python[1234]: [poly] 900/16371 | 5.5% | ...\n"
+
+
 def test_reader_marks_the_sweep_when_it_logged_inside_the_window(monkeypatch):
     def fake(unit, since, until):
-        return "[poly] 900/16371 | ..." if unit == qa.SWEEP_UNIT else _CURRENT_ERA
+        return _SWEEP_INSIDE if unit == qa.SWEEP_UNIT else _CURRENT_ERA
 
     monkeypatch.setattr(qa, "_journal", fake)
     recs = qa.read_fade_windows(1, now=datetime(2026, 8, 3, 7, tzinfo=UTC))
@@ -204,3 +207,143 @@ def test_the_journal_reader_is_read_only(monkeypatch):
     assert qa._journal("u.service", NOW, NOW) is None
     assert seen["cmd"][0] == "journalctl"
     assert not any(a.startswith("--") and "vacuum" in a for a in seen["cmd"])
+
+
+# --- EXP-1385: the expected count comes from the CADENCE ------------------
+#
+# `starts - completions` can only see a cycle that started. A slot the timer
+# never fired in is absent from BOTH terms, so it cancels and the night reads
+# clean -- which is what happened to the largest capture hole in this archive.
+
+
+def test_the_2026_08_20_shape_read_as_a_clean_night(capsys):
+    """MEASURED (read-only query, 2026-09-28): the 08-20 outage left one
+    265.0-minute hole in `snapshots`, 21:30Z -> 01:55Z, covering 35 of that
+    night's 60 fade-window slots. The 25 cycles that did run all completed, so
+    the old term is 0 -- and that is the whole defect."""
+    r = NightCapture("2026-08-20", 25, 25, False, 60)
+    assert r.measured and r.holes == 0  # the old verdict, preserved as evidence
+    assert (r.missed, r.lost, r.expected) == (35, 35, 60)
+    failed, _ = _run([r])
+    assert failed
+    out = capsys.readouterr().out
+    assert "2026-08-20 lost 35/60" in out and "none of them started" in out
+
+
+def test_holes_and_missed_slots_are_reported_as_different_failures(capsys):
+    """A cycle that ran and lost its data is not a cycle that never ran; one
+    number cannot be read as either, so both are named."""
+    _run([NightCapture("2026-08-20", 58, 56, False, 60)])
+    out = capsys.readouterr().out
+    assert "lost 4/60" in out and "(2 after starting, 2 never started)" in out
+
+
+def test_a_window_without_a_cadence_count_claims_nothing_about_activation(capsys):
+    """`slots is None` means journald no longer retains the window's opening,
+    where a timer that did not fire and a record nobody kept look identical."""
+    r = NightCapture("2026-08-20", 25, 25, False, None)
+    assert (r.missed, r.lost, r.expected) == (0, 0, 25)
+    failed, _ = _run([r])
+    assert not failed
+    assert "non-activation is unresolved there" in capsys.readouterr().out
+
+
+# --- EXP-1385: cycles are PAIRED across the window edges ------------------
+
+_FAR_STRADDLE = """\
+2026-08-02T23:00:09+00:00 hyz systemd[749]: Starting hyxlab 5-min collector (x)...
+2026-08-02T23:00:29+00:00 hyz python[1]: [collect] 2026-08-02T23:00:29.1+00:00 {'x': 1}
+2026-08-03T03:55:09+00:00 hyz systemd[749]: Starting hyxlab 5-min collector (x)...
+2026-08-03T04:00:20+00:00 hyz python[2]: [collect] 2026-08-03T04:00:20.1+00:00 {'x': 1}
+"""
+
+# A oneshot cannot run twice, so the 23:00 activation is QUEUED behind the
+# 22:55 cycle and the journal stays strictly S C S C -- which is why pairing in
+# order is sound.
+_NEAR_STRADDLE = """\
+2026-08-02T22:55:09+00:00 hyz systemd[749]: Starting hyxlab 5-min collector (x)...
+2026-08-02T23:00:20+00:00 hyz python[1]: [collect] 2026-08-02T23:00:20.1+00:00 {'x': 1}
+2026-08-02T23:00:25+00:00 hyz systemd[749]: Starting hyxlab 5-min collector (x)...
+2026-08-02T23:05:09+00:00 hyz systemd[749]: Starting hyxlab 5-min collector (x)...
+2026-08-02T23:05:30+00:00 hyz python[3]: [collect] 2026-08-02T23:05:30.1+00:00 {'x': 1}
+"""
+
+_ONE_NIGHT = datetime(2026, 8, 3, 5, tzinfo=UTC)
+
+
+def _read_one(monkeypatch, text):
+    """Stand in for journalctl, HONOURING `--since`/`--until`.
+
+    A fake that returns its whole fixture whatever interval was asked for is
+    blind to the interval, so it cannot witness the read widening past the
+    window edges -- reverting the grace leaves such a test green (checked).
+    """
+
+    def fake(unit, since, until):
+        if unit == qa.SWEEP_UNIT:
+            return ""
+        lines = [
+            ln
+            for ln in text.splitlines(keepends=True)
+            if since <= datetime.fromisoformat(ln.split(" ", 1)[0]) < until
+        ]
+        return "".join(lines) or "-- No entries --\n"
+
+    monkeypatch.setattr(qa, "_journal", fake)
+    recs = qa.read_fade_windows(1, now=_ONE_NIGHT)
+    assert len(recs) == 1 and recs[0].date == "2026-08-02"
+    return recs[0]
+
+
+def test_a_cycle_finishing_past_the_far_edge_is_captured_not_holed(monkeypatch):
+    """Its payload lands after 04:00Z. Counted inside the window only, that is
+    a hole that never happened -- and the budget is one hole."""
+    r = _read_one(monkeypatch, _FAR_STRADDLE)
+    assert (r.starts, r.completions, r.holes) == (2, 2, 0)
+
+
+def test_a_cycle_finishing_past_the_near_edge_cannot_cancel_a_real_hole(monkeypatch):
+    """The worse arm. The 22:55 cycle's payload lands after 23:00Z, so counting
+    the two terms separately credits this window a completion it did not earn,
+    and `max(0, starts - completions)` clamps the 23:00:25 hole to zero."""
+    r = _read_one(monkeypatch, _NEAR_STRADDLE)
+    assert (r.starts, r.completions, r.holes) == (2, 1, 1)
+
+
+def test_the_cadence_sets_the_slot_count(monkeypatch):
+    r = _read_one(monkeypatch, _FAR_STRADDLE)
+    assert r.slots == 5 * 60 // qa.FADE_WINDOW_CADENCE_MIN == 60
+
+
+# --- EXP-1386: journalctl's empty-read sentinel is not content ------------
+
+
+def test_journalctl_s_no_entries_sentinel_is_not_a_record():
+    assert qa._journal_records("-- No entries --\n") == []
+    assert qa._journal_records(_CURRENT_ERA)
+
+
+def test_an_empty_sweep_journal_does_not_attribute_the_hole_to_the_sweep(monkeypatch):
+    """LIVE DEFECT, measured 2026-09-28: `journalctl -o short-iso` prints
+    `-- No entries --` on stdout, so `bool(text.strip())` was True for every
+    window ever examined. Seven QA runs 09-21..09-27 each announced the sweep
+    inside 7 of 7 windows while `-o cat` over the same spans returns nothing."""
+    monkeypatch.setattr(
+        qa,
+        "_journal",
+        lambda unit, a, b: "-- No entries --\n" if unit == qa.SWEEP_UNIT else _CURRENT_ERA,
+    )
+    recs = qa.read_fade_windows(1, now=_ONE_NIGHT)
+    assert recs[0].sweep_in_window is False
+
+
+def test_an_unretained_window_front_does_not_invent_missed_slots(monkeypatch):
+    """The sentinel again, one question over: reading it as content would make
+    the retention probe always True and turn a rotated-away window into 60
+    fabricated losses."""
+
+    def fake(unit, a, b):
+        return "-- No entries --\n" if unit is None else _FAR_STRADDLE
+
+    monkeypatch.setattr(qa, "_journal", fake)
+    assert qa.read_fade_windows(1, now=_ONE_NIGHT)[0].slots is None
