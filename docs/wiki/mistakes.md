@@ -2492,6 +2492,61 @@ Format: what happened → root cause → error type → prevention tier
     disagree about its scoping in the same file, one of them is wrong --
     that disagreement is a finding, not a style difference.
 
+101. **2026-09-28 -- `held_s_max` and `held_s_total` were a max and a sum
+    over DIFFERENT locks, so the report that starved streamd published
+    the stream archive's hold under its own name.** A hold is an
+    exclusion of ONE file, so a max and a sum over holds are quantities
+    only while every hold is on the same file -- and nothing said so.
+    The `db` scope that narrows a block shipped the pass before (#96)
+    and reached exactly one of five publishers: `simulator.shadow`,
+    whose artifact is named after a file. The other four called
+    `attach_wait_block()` with no scope, which is not "no claim about a
+    file" but a claim about all of them at once. **Measured, from the
+    production artifact `reports/shadow_divergence/20260912T023431.json`:
+    `held_s_max: 7.213, held_s_total: 7.398` over three attaches --
+    `hyxshadow.duckdb` 0.083s, `hyxstream.duckdb` 7.213s,
+    `hyxlab.duckdb` 0.102s.** The headline max IS the stream archive's
+    hold wearing the report's top-level name, and the total adds seconds
+    spent excluding three different writers, two of them 24/7 daemons.
+    The module publishing it is `simulator.divergence` -- the module
+    mistakes #91 is ABOUT, whose 45m45s hold on `hyxstream.duckdb` cost
+    streamd 387,856 rows -- so the instrument built in answer to that
+    incident reported that incident's own file unioned with two others.
+    `simulator.run_l2` is the worse arm and said so in its own comment
+    ("a metadata read, nested INSIDE the stream hold above ... both
+    files"): the inner seconds are inside the outer ones, so its
+    `held_s_total` double-counts and is longer than the wall clock it
+    describes -- not a union but a number that is not a duration.
+    **What hid it is that the top-level block is what an operator reads
+    and the attribution lived only in the per-attach rows** -- which
+    `collector.sweep` drops (`rows=False`, 7,294 of 7,550 trimmed), so
+    there the unioned scalars are the ONLY numbers. Error type:
+    wrong-assumption (aggregation over a non-additive population); the
+    #94 shape again, a definition correct only while one population --
+    publishers touching more than one file -- was assumed empty.
+    Fix: the scalars are published when the quantity EXISTS (holds on a
+    single file) and `None` when the holds span several, never a number
+    summing different locks -- the same refusal `budget_frac` makes for
+    a ladder with no budget, since 0.0 or a sum reads as "measured, and
+    it was fine". `held_by_db` always carries the per-file reading, so
+    all four publishers are fixed WITHOUT a call-site change and a new
+    publisher cannot acquire the bug. The line names the file even with
+    one (the sweep's line is its whole artifact, and "held 7550 for
+    2959.0s" does not say what was excluded). 10 new tests plus a
+    reworked perturbation that DESCENDS into the per-file mapping;
+    red-verified against a mutant restoring the union, watched landing
+    in the diff first (#100's lesson). The test that pinned the defect
+    was `test_an_l2_replay_publishes_the_hold_it_took_on_both_files`:
+    its name says two files and it asserted a single max.
+    Suite 1784 -> **1794**.
+    Rule: **before publishing a max or a sum, name the thing all its
+    terms are about. A hold, a lock wait, a queue depth are per-RESOURCE;
+    aggregating them across resources yields a number with a plausible
+    unit and no referent.** Corollary: a scope parameter added for one
+    publisher is not a fix until every publisher that could need it
+    either passes it or cannot be hurt by omitting it -- default to the
+    safe shape rather than to the shape that reads cleanly.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -33,6 +33,7 @@ the block counts the unmeasured separately: an uninstrumented
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -285,10 +286,20 @@ def test_an_l2_replay_publishes_the_hold_it_took_on_both_files(tmp_path):
     block = json.loads(manifest.read_text())["data"]["attach_wait"]
     assert block["n"] == 2
     assert block["held_n"] == 2 and block["held_unknown_n"] == 0
-    # The stream hold spans the seed replay AND the trading window, so it is
-    # the larger of the two by construction -- the shape the fix has to keep
-    # visible, since it is the one that starves `collector.streamd`.
-    assert block["held_s_max"] > 0.0
+    # BOTH FILES, AND THEREFORE NO SCALAR. This test asserted
+    # `held_s_max > 0.0` until 2026-09-28 -- a max over two different
+    # locks, in a test whose own name says there are two. Worse here than
+    # a union: the archive read happens INSIDE the stream hold (see
+    # `run_l2`'s call site), so the old `held_s_total` counted the inner
+    # seconds twice and was longer than the wall clock it described.
+    assert block["held_s_total"] is None and block["held_s_max"] is None
+    by_db = block["held_by_db"]
+    assert set(by_db) == {Path(stream_db).name, Path(archive_db).name}
+    # The claim this test's comment has always made, now checkable BY NAME
+    # instead of by being the max: the stream hold spans the seed replay
+    # AND the trading window, and it is the one that starves
+    # `collector.streamd`.
+    assert by_db[Path(stream_db).name]["held_s_max"] > by_db[Path(archive_db).name]["held_s_max"]
 
 
 def test_a_refused_attach_is_not_counted_as_an_unmeasured_hold(monkeypatch):

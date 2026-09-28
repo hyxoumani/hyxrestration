@@ -80,8 +80,62 @@ def _rich_block(db: str | None = None) -> dict:
             continue
         if isinstance(v, str):
             continue  # a label, not a magnitude; it is already distinctive
+        if isinstance(v, dict):
+            # `held_by_db`: a per-file mapping, so the magnitudes are one
+            # level down. Flattening it to a number here would hide every
+            # sub-field from the perturbation below -- which is how a
+            # renderer that prints the file names and drops their seconds
+            # would pass.
+            block[k] = {
+                name: {
+                    kk: 11 + j if isinstance(vv, int) else 11.5 + j
+                    for j, (kk, vv) in enumerate(sub.items())
+                }
+                for name, sub in (
+                    v or {"a.duckdb": {"held_n": 0, "held_s_max": 0.0, "held_s_total": 0.0}}
+                ).items()
+            }
+            continue
         block[k] = 11 + i if isinstance(v, int) else 11.5 + i
     return block
+
+
+def _perturbations(block: dict):
+    """Every renderable scalar a block carries, as (label, mutated block) --
+    descending into the per-file hold mapping, whose sub-fields are the
+    only place the hold numbers live once the holds span more than one
+    lock (2026-09-28)."""
+    for k, v in block.items():
+        if k in NOT_RENDERABLE:
+            continue
+        if v is None:
+            # Not a magnitude. `held_s_max`/`held_s_total` are None exactly
+            # when the holds span several locks, and that None is what
+            # SELECTS the per-file clause -- its role is covered by the
+            # multi-file test below, not by bumping it into a string the
+            # renderer would then try to format.
+            continue
+        if isinstance(v, dict):
+            if block.get("held_s_total") is not None:
+                # One file held, so `held_by_db[f]` is the scalars again
+                # under another name; the scalars are perturbed directly
+                # above. Bumping a sub-field alone here builds a block that
+                # cannot occur, and the line is right to ignore it.
+                continue
+            for name, sub in v.items():
+                for kk, vv in sub.items():
+                    bumped = {
+                        **sub,
+                        kk: vv + 100 if isinstance(vv, int | float) else f"{vv}-bumped",
+                    }
+                    yield f"{k}[{name}].{kk}", {**block, k: {**v, name: bumped}}
+            continue
+        # Strings get perturbed too. `v if not a number` would compare a
+        # block against ITSELF and report every non-numeric field as deaf
+        # -- or, with the field skipped instead, wave `db` through: a
+        # scope label is exactly the kind of field a line can omit while
+        # every number in it stays right.
+        yield k, {**block, k: v + 100 if isinstance(v, int | float) else f"{v}-bumped"}
 
 
 def test_every_field_a_db_scoped_block_carries_changes_the_line():
@@ -95,15 +149,9 @@ def test_every_field_a_db_scoped_block_carries_changes_the_line():
     assert base["db"] == "a.duckdb"
     line = attach_wait_line(base, prefix="[t]", budget_s=30.0)
     deaf = [
-        k
-        for k, v in base.items()
-        if k not in NOT_RENDERABLE
-        and attach_wait_line(
-            {**base, k: v + 100 if isinstance(v, int | float) else f"{v}-bumped"},
-            prefix="[t]",
-            budget_s=30.0,
-        )
-        == line
+        label
+        for label, bumped in _perturbations(base)
+        if attach_wait_line(bumped, prefix="[t]", budget_s=30.0) == line
     ]
     assert not deaf, f"a db-scoped block publishes {deaf} and the line drops it"
 
@@ -116,19 +164,11 @@ def test_every_field_the_block_carries_changes_the_line():
     whether the number can reach the operator."""
     base = _rich_block()
     line = attach_wait_line(base, prefix="[t]", budget_s=30.0)
-    deaf = []
-    for k, v in base.items():
-        if k in NOT_RENDERABLE:
-            continue
-        bumped = dict(base)
-        # Strings get perturbed too. `v if not a number` would compare a
-        # block against ITSELF and report every non-numeric field as deaf
-        # -- or, with the field skipped instead, wave `db` through: a
-        # scope label is exactly the kind of field a line can omit while
-        # every number in it stays right.
-        bumped[k] = v + 100 if isinstance(v, int | float) else f"{v}-bumped"
-        if attach_wait_line(bumped, prefix="[t]", budget_s=30.0) == line:
-            deaf.append(k)
+    deaf = [
+        label
+        for label, bumped in _perturbations(base)
+        if attach_wait_line(bumped, prefix="[t]", budget_s=30.0) == line
+    ]
     assert not deaf, (
         f"attach_wait_block publishes {deaf} and attach_wait_line does not"
         " print it — a measurement taken and thrown away at the format"
@@ -139,7 +179,10 @@ def test_every_field_the_block_carries_changes_the_line():
 
 def test_the_hold_half_reaches_the_line():
     line = attach_wait_line(_block(), prefix="[t]", budget_s=30.0)
-    assert "held 2 for 2745.4s in total, worst 2745.0s" in line
+    # The file is NAMED even on a single-file block: this line is the
+    # sweep's whole artifact, and "held 2 for 2745.4s" does not say what
+    # was excluded for that time (2026-09-28).
+    assert "held 2 on a.duckdb for 2745.4s in total, worst 2745.0s" in line
     # The uninstrumented attach is NAMED, never folded in as 0.0. Here it is
     # zero because the third row was REFUSED (it opened nothing, so it held
     # nothing -- measured, not unknown; mistakes #94).
@@ -152,7 +195,7 @@ def test_an_unmeasured_hold_is_named_rather_than_averaged_in():
     rows = [AttachWait("a.duckdb", 1, 0.01, 30.0, True, 0.0) for _ in range(3)]
     rows[0].held_s = 1.0
     line = attach_wait_line(attach_wait_block(rows), prefix="[t]")
-    assert "held 1 for 1.0s in total" in line
+    assert "held 1 on a.duckdb for 1.0s in total" in line
     assert "2 unmeasured" in line
     # no budget passed -> the share prints without a denominator it would
     # otherwise have to invent (#71's atlas literal).
@@ -221,3 +264,50 @@ def test_nobody_hand_formats_the_block_any_more():
         " — use hyxlab.store.attach_wait_line so a new field cannot be"
         " dropped by one publisher"
     )
+
+
+def _rich_multi_db_block() -> dict:
+    """A block whose holds span THREE files -- the shape
+    `simulator.divergence` publishes, and the only shape in which the
+    per-file numbers are the sole carrier of the hold reading."""
+    reset_attach_waits()
+    # Through the LIVE ledger, not an explicit population: an explicit list
+    # IS the population, so `dropped_n` is 0 by definition and the #72
+    # sample caveat -- which is where `retained_n` reaches the line -- never
+    # prints. A fixture that switches a clause off hides every field in it.
+    names = ("x.duckdb", "y.duckdb", "z.duckdb")
+    for i in range(store._ATTACH_WAITS_MAX + 5):
+        w = store._record_attach(names[i % 3], 1, 0.01, 30.0, True, 0.5)
+        store._ATTACH_TOTALS.add_hold(1.5 + i % 3)
+        store._ATTACH_TOTALS_BY_DB[w.db].add_hold(1.5 + i % 3)
+    block = attach_wait_block(rows=False)
+    assert block["held_s_total"] is None, "fixture must span several locks"
+    assert block["dropped_n"], "fixture must trim, or retained_n has no clause"
+    return block
+
+
+def test_every_per_file_hold_reaches_the_line():
+    """The hold half, once it is per file, by the same PERTURBATION the
+    scalars get.
+
+    `simulator.divergence` published `held_s_max: 7.213` over three
+    archives, and that max was `hyxstream.duckdb` -- the file mistakes #91
+    is about -- wearing the report's own name. Splitting by file only
+    helps if every file's seconds actually reach the operator, so bump
+    each one and require the line to move.
+    """
+    base = _rich_multi_db_block()
+    line = attach_wait_line(base, prefix="[t]", budget_s=30.0)
+    deaf = [
+        label
+        for label, bumped in _perturbations(base)
+        if attach_wait_line(bumped, prefix="[t]", budget_s=30.0) == line
+    ]
+    assert not deaf, f"a multi-file block publishes {deaf} and the line drops it"
+
+
+def test_a_file_that_held_is_named_in_the_line():
+    """A per-file total nobody can attribute is the union again."""
+    line = attach_wait_line(_rich_multi_db_block(), prefix="[t]")
+    for name in ("x.duckdb", "y.duckdb", "z.duckdb"):
+        assert name in line

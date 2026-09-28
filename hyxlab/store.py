@@ -796,19 +796,23 @@ def attach_wait_block(
         if not obs:
             return None
         totals = _AttachTotals()
+        per_db: dict[str, _AttachTotals] = {}
         for w in obs:
             totals.add(w)
+            per_db.setdefault(w.db, _AttachTotals()).add(w)
     elif db is not None:
         by_db = _ATTACH_TOTALS_BY_DB.get(db)
         if by_db is None or not by_db.observed_n:
             return None
         totals = by_db
         obs = [w for w in attach_waits() if w.db == db]
+        per_db = {db: totals}
     else:
         obs = attach_waits()
         totals = _ATTACH_TOTALS
         if not totals.observed_n:
             return None
+        per_db = _ATTACH_TOTALS_BY_DB
     block = {
         "n": totals.observed_n,
         **({"db": db} if db is not None else {}),
@@ -852,10 +856,76 @@ def attach_wait_block(
         # one field to the left, as `exhausted_n`.
         "held_n": totals.held_n,
         "held_unknown_n": totals.observed_n - totals.held_n - totals.exhausted_n,
-        "held_s_max": round(totals.held_s_max, 3),
-        "held_s_total": round(totals.held_s_total, 3),
+        # A HOLD IS AN EXCLUSION OF ONE FILE, so a max and a sum over holds
+        # are quantities only while every hold is on the SAME file -- and
+        # nothing said so until 2026-09-28. `db` scoping shipped the pass
+        # before for `simulator.shadow` (#96) and reached exactly the one
+        # publisher whose bug motivated it; the other four still called
+        # `attach_wait_block()` with no scope, which is not "no claim about
+        # a file" but a claim about all of them at once.
+        #
+        # MEASURED, from `reports/shadow_divergence/20260912T023431.json`:
+        # `held_s_max: 7.213, held_s_total: 7.398` over three attaches --
+        # `hyxshadow.duckdb` 0.083s, `hyxstream.duckdb` 7.213s,
+        # `hyxlab.duckdb` 0.102s. The max is the STREAM archive's hold
+        # wearing the report's top-level name, and the total adds seconds
+        # spent excluding three different writers, two of them 24/7 daemons.
+        # `simulator.divergence` is the module mistakes #91 is ABOUT -- its
+        # 45m45s hold on `hyxstream.duckdb` cost streamd 387,856 rows -- so
+        # the instrument built in answer to that incident was reporting that
+        # incident's own file unioned with two others.
+        #
+        # `simulator.run_l2` is worse than a union: its archive read is
+        # nested INSIDE the stream hold (its own comment says so), so the
+        # inner seconds are counted twice and `held_s_total` is not a
+        # duration of anything. Splitting by file fixes that for free --
+        # every nesting in this repo is cross-file, because a hold is taken
+        # per attach and nobody attaches one file twice at once.
+        #
+        # So the scalars are published when the quantity EXISTS (holds on
+        # one file) and `None` when it does not -- never a number summing
+        # different locks. `None`, not 0.0, is the same refusal
+        # `budget_frac` makes for a ladder with no budget: a zero reads as
+        # "measured, and it was nothing". `held_by_db` always carries the
+        # per-file reading, so scoping loses nothing.
+        **_hold_fields(db, totals, per_db),
     }
     return block
+
+
+def _hold_fields(db: str | None, totals: _AttachTotals, per_db: dict[str, _AttachTotals]) -> dict:
+    """The hold half, scoped to the lock each number is about.
+
+    A db-scoped block is already one file, so it keeps the scalars and
+    nothing else. An unscoped block gets `held_by_db`, plus the scalars
+    only when a single file held -- see the call site for why.
+    """
+    if db is not None:
+        return {
+            "held_s_max": round(totals.held_s_max, 3),
+            "held_s_total": round(totals.held_s_total, 3),
+        }
+    held_by_db = {
+        name: {
+            "held_n": t.held_n,
+            "held_s_max": round(t.held_s_max, 3),
+            "held_s_total": round(t.held_s_total, 3),
+        }
+        # Sorted so the artifact diffs, and only files that actually held:
+        # a file this process merely attached contributes no exclusion and
+        # would pad the count the line prints.
+        for name, t in sorted(per_db.items())
+        if t.held_n
+    }
+    # Zero holds is not ambiguous -- there is no lock to disagree about --
+    # so 0.0 stays 0.0 and the line's "no hold measured" branch is reached
+    # by `held_n`, exactly as before.
+    single = len(held_by_db) <= 1
+    return {
+        "held_s_max": round(totals.held_s_max, 3) if single else None,
+        "held_s_total": round(totals.held_s_total, 3) if single else None,
+        "held_by_db": held_by_db,
+    }
 
 
 def attach_wait_line(block: dict | None, *, prefix: str, budget_s: float | None = None) -> str:
@@ -899,13 +969,29 @@ def attach_wait_line(block: dict | None, *, prefix: str, budget_s: float | None 
     # that zero is the reading. A line that mentioned unmeasured holds only
     # when there were some would make "no clause" ambiguous between "all
     # measured" and "an older build that never measured any".
-    if block["held_n"]:
+    #
+    # AND A HOLD NAMES ITS FILE. An unscoped block whose holds span several
+    # files has no `held_s_total` (see `_hold_fields`), so the line lists
+    # them per file rather than printing a sum over different locks -- which
+    # is what `simulator.divergence` published for three archives at once.
+    # With one file it still says WHICH, because the sweep's line is its
+    # whole artifact and "held 7550 for 2959.0s" does not say what was
+    # excluded for that time.
+    by_db = block.get("held_by_db") or {}
+    if not block["held_n"]:
+        hold = "no hold measured"
+    elif block["held_s_total"] is None:
+        per = "; ".join(
+            f"{name} {v['held_n']} for {v['held_s_total']:.1f}s (worst {v['held_s_max']:.1f}s)"
+            for name, v in by_db.items()
+        )
+        hold = f"held {block['held_n']} across {len(by_db)} files -- {per}"
+    else:
+        on = f" on {next(iter(by_db))}" if by_db and block.get("db") is None else ""
         hold = (
-            f"held {block['held_n']} for {block['held_s_total']:.1f}s in"
+            f"held {block['held_n']}{on} for {block['held_s_total']:.1f}s in"
             f" total, worst {block['held_s_max']:.1f}s"
         )
-    else:
-        hold = "no hold measured"
     hold += f", {block['held_unknown_n']} unmeasured"
     # The sample-vs-population caveat (mistakes #72), printed only when the
     # rows were actually trimmed: the statistics above come from the
