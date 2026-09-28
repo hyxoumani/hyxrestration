@@ -39,7 +39,7 @@ from hyxlab.store import (
     attach_budget_s,
     attach_wait_block,
     attach_wait_line,
-    duck_connect,
+    held_duck,
     held_open,
     reset_attach_waits,
 )
@@ -610,7 +610,7 @@ def doctor(store: Store) -> None:
     if stream_db.exists():
         size_mb = stream_db.stat().st_size / 1e6
         try:
-            with duck_connect(str(stream_db), read_only=True) as sconn:
+            with held_duck(str(stream_db), read_only=True) as sconn:
                 counts = {
                     t: sconn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
                     for t in ("book_events", "stream_trades", "stream_gaps")
@@ -666,24 +666,29 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.doctor:
-        store = None
-        for attempt in range(5):
-            try:
-                store = Store(args.db, read_only=True)
-                break
-            except duckdb.Error:
-                # A writer (collector/tradepass flush) holds the file;
-                # those bursts last ~seconds.
-                if attempt == 4:
-                    # Nonzero so systemd records a failed run instead of a
-                    # silent no-op success only QA would notice 36h later.
-                    print("archive busy (writer active); try again in a few seconds")
-                    sys.exit(75)  # EX_TEMPFAIL
-                time.sleep(2)
+        # `held_open` in place of the hand-rolled 5 x 2s loop this branch
+        # carried: same ladder (a writer's flush burst lasts ~seconds), but
+        # it is now a LEDGERED attach whose hold is measured. --doctor
+        # reads the whole archive -- the markets GROUP BY alone is 486k
+        # rows -- while the 5-minute collector wants to write it, and that
+        # hold was charged to nobody.
+        opened = False
         try:
-            doctor(store)
-        finally:
-            store.close()
+            with held_open(args.db, read_only=True, retries=5) as store:
+                # Set INSIDE, so the handler below can tell "could not get
+                # in" from "got in and the read failed". Wrapping the whole
+                # body in one `except duckdb.Error` would report a
+                # corrupt-archive read error as a busy writer and retry
+                # forever on a timer.
+                opened = True
+                doctor(store)
+        except duckdb.Error:
+            if opened:
+                raise
+            # Nonzero so systemd records a failed run instead of a silent
+            # no-op success only QA would notice 36h later.
+            print("archive busy (writer active); try again in a few seconds")
+            sys.exit(75)  # EX_TEMPFAIL
         return
 
     # The sweep itself never holds a connection between bursts, so there

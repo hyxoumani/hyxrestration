@@ -16,15 +16,30 @@ LEDGERED attach goes through the hold-measuring helpers. A bare
 artifact that claims to report holds, and `held_unknown_n` would be its
 only trace -- a number nothing currently reads.
 
-WHY "LEDGERED" AND NOT "EVERY": a hold is charged to the attach row the
-open produced (`_LAST_ATTACH`), and `hyxlab.store.duck_connect` and a
-bare `Store(...)` produce no row. Wrapping one in `charge_hold` would
-charge its seconds to whatever unrelated attach happened to be last --
-a WRONG reading, which is worse than a missing one. So those two sites
-are outside this rule's reach by construction, and
-`test_the_unledgered_attaches_in_publishers_stay_named` enumerates them
-rather than letting them vanish: giving `duck_connect` a ledger row is
-the open half of the question.
+THE "LEDGERED" CARVE-OUT IS GONE, 2026-09-28. It used to read: a hold is
+charged to the attach row the open produced (`_LAST_ATTACH`), and
+`duck_connect` and a bare `Store(...)` produce no row, so wrapping one in
+`charge_hold` would charge its seconds to whatever unrelated attach
+happened to be last -- a WRONG reading, worse than a missing one. True,
+and an argument about the INSTRUMENT rather than about the hold: the
+four sites it excused took the same file locks as everything this rule
+covers, including an hourly read of `data/hyxlab.duckdb` (the file the
+5-minute collector writes) from a 24/7 daemon. So the premise was fixed
+instead of the enumeration extended -- both now record a one-attempt,
+no-budget row, `held_duck`/`held_store` are their hold seams, and the
+enumeration of the debt was DELETED rather than emptied, because a list
+that can hold zero entries outlives the debt it was written for.
+
+WHAT PAYING IT OFF COST, named because it is the reusable half: a
+process-wide block used to mean "this process's retry ladders", and the
+only ledgered attaches a daemon took were the ones it took against one
+file. Ledgering the direct attach silently widened every such block to
+every file the process touches -- `simulator.shadow` publishes
+`shadow_stream_holds`, named after `hyxstream.duckdb`, and would have
+started folding in its own ledger and the shared archive. So the block
+gained a `db` scope (`_ATTACH_TOTALS_BY_DB`, untrimmed, because
+filtering the 256-deep sample rows would report the tail of a run under
+the run's name -- mistakes #72), and the line prints it.
 
 THE LIMIT, CLOSED 2026-09-27. This rule reaches only publishers, and
 `simulator.shadow._read_new` -- which attaches the same daemon-owned file
@@ -54,14 +69,14 @@ PACKAGES = ("collector", "simulator", "strategies", "hyxlab")
 
 #: Ledgered attaches -- they record an `AttachWait`, so a hold has a row
 #: to be charged to -- taken WITHOUT measuring the hold.
-BARE = ("connect_retry", "open_retry")
-#: Attaches that take the same file locks and record no row at all. Named
-#: here so the debt is visible; see the module docstring.
-UNLEDGERED = ("Store", "duck_connect")
-#: The three ways a hold gets charged. `charge_hold` is the seam for a
+#: EVERY attach helper that records a row -- which since 2026-09-28 is
+#: every attach helper there is. `Store`/`duck_connect` joined the list by
+#: being fixed, not by being noticed.
+BARE = ("connect_retry", "open_retry", "Store", "duck_connect")
+#: The five ways a hold gets charged. `charge_hold` is the seam for a
 #: wrapper that owns its connection between the open and its caller
 #: (`simulator.shadow.stream_conn` re-tunes the engine first).
-HELD = ("held_attach", "held_open", "charge_hold")
+HELD = ("held_attach", "held_open", "held_duck", "held_store", "charge_hold")
 
 #: site -> why a publisher may attach without measuring the hold. Keys are
 #: `relpath::qualname`. EMPTY ON PURPOSE: the four publishers all measure
@@ -143,30 +158,6 @@ def test_a_publisher_measures_every_hold_it_takes():
         " charge_hold, if a wrapper owns the connection), or add the site to"
         " ALLOWED with the argument that its hold harms nobody"
     )
-
-
-def test_the_unledgered_attaches_in_publishers_stay_named():
-    """The rule's blind spot, enumerated so it cannot quietly grow.
-
-    The `sweep` pair is `collector.sweep --doctor`, a branch that exits
-    before the sweep and publishes nothing -- and both hold a shared file
-    across full-table reads (the markets GROUP BY is 486k rows) with no row
-    to charge the seconds to.
-
-    The `shadow` pair is a weaker debt than it looks, and the reason is
-    worth keeping: `ShadowLedger`'s `duck_connect` opens
-    `hyxshadow.duckdb`, the file this daemon OWNS (`db_owner_lock_or_reason`
-    in `main`), so its hold excludes only ad-hoc readers -- and those
-    already degrade. `ShadowRunner._try_load_markets` is the one that
-    matters: a read-only `Store` over `hyxlab.duckdb`, the archive the
-    5-minute collector writes, held across a markets query every hour.
-    Giving `duck_connect`/`Store` a ledger row is still the open half."""
-    assert _attaches_in_publishers(UNLEDGERED) == {
-        "collector/sweep.py::main": "Store",
-        "collector/sweep.py::doctor": "duck_connect",
-        "simulator/shadow.py::ShadowLedger": "duck_connect",
-        "simulator/shadow.py::ShadowRunner": "Store",
-    }
 
 
 def test_shadow_reads_the_stream_archive_only_through_the_measured_seam():

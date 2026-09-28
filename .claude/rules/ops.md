@@ -226,3 +226,45 @@
   f-string. Note which tests this defeats: three source-scraping tests
   covered that line and all stayed green, because they pinned f-string
   literals in the source rather than the rendered string.
+- A carve-out from a discipline is only as good as WHAT its argument is
+  about. `tests/test_hold_discipline.py` excused four attaches because
+  `duck_connect`/`Store` record no ledger row, so a hold charged there
+  would land on an unrelated attach -- every word of that about the
+  INSTRUMENT, none of it about the file lock, which is identical. The
+  site the note itself called "the one that matters" was a 24/7 daemon
+  holding `data/hyxlab.duckdb` -- the 5-minute collector's file -- across
+  an hourly 101k-row query, charged to nobody (mistakes #96). Fix the
+  premise: both now record a one-attempt, no-budget row (`budget_frac`
+  `None`, never 0.0 -- a ladder of one has no budget to spend a share
+  of), `held_duck`/`held_store` are the seams, and the enumeration was
+  DELETED rather than emptied. Then ask the second question, which is
+  the one that bites: which existing readings were correct only because
+  the debt kept a population empty? A process-wide `attach_wait` block
+  meant "this file" for any daemon whose only ladder ran against one
+  file, and `simulator.shadow` publishes exactly that under exactly that
+  name -- so the block needed a `db` scope, from untrimmed per-db totals
+  (filtering the 256-deep sample rows reports a run's tail under the
+  run's name, #72), rendered through ONE function per publisher (#95).
+- "The same shape exists one level down" is part of the fix, not a note
+  for next pass. `simulator.shadow.stream_conn`'s tuning-failure leak was
+  fixed on 2026-09-27 and the identical shape inside `connect_retry` --
+  where the `except duckdb.Error` cannot tell a tuning failure from a
+  refused open, so it sleeps and reconnects with the first connection
+  open and unreferenced -- was named in the same pass and deferred. There
+  were four copies of `connect` + three tuning calls, three of them
+  inside `hyxlab/store.py`, the module that exists to be the one place
+  this is right (mistakes #97). Sequence it once, and close on
+  `BaseException`: a cancellation between the open and the return leaks
+  the lock as thoroughly as an error does.
+- A DuckDB release test that never leaves the process is not a release
+  test. DuckDB serves a second SAME-PROCESS attach from the instance it
+  already has open, so an in-process re-attach succeeds against a leaked
+  connection: measured 2026-09-28, every leak arm stayed green with the
+  fix reverted until the probe became a subprocess. Probe from outside,
+  carry a vacuity guard proving a held attach IS refused, and probe where
+  the leak has a DURATION (inside the retry ladder's sleep). For a
+  standalone raise, hold the traceback (`pytest.raises(...) as excinfo`)
+  -- CPython's refcount closes the connection the moment the temporary
+  traceback drops, and without it the test is green against the leak.
+  This is #90's rule ("prove both arms from outside") reaching the helper
+  a pass after it was written about the caller.

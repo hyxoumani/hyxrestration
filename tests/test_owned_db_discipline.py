@@ -130,11 +130,12 @@ def _is_rw_open(call: ast.Call) -> bool:
     name = _called_name(call)
     ro = _kw(call, "read_only")
     literal_true = isinstance(ro, ast.Constant) and ro.value is True
-    if name == "duck_connect":
+    if name in ("duck_connect", "held_duck"):
         # The kernel's raw attach (EXP-1373). It defaults read_only=False
         # exactly as `duckdb.connect` does, so it opens a writer under the
         # same rule — routing spill privately changed where temp blocks
-        # go, not who is allowed to write the file.
+        # go, not who is allowed to write the file. `held_duck` is the
+        # same attach with its hold measured, so it is the same writer.
         return not literal_true
     if name == "connect":
         f = call.func
@@ -146,9 +147,9 @@ def _is_rw_open(call: ast.Call) -> bool:
         # inherits the read-only default and the same rule. Listed by name
         # because this walker cannot follow a wrapper.
         return isinstance(ro, ast.Constant) and ro.value is False
-    # `open_retry`/`held_open` are NOT here: they return a `Store`, which is
-    # the market archive, and this rule is about the daemon-owned files
-    # (hyxstream/hyxshadow) that no `Store` ever opens.
+    # `open_retry`/`held_open`/`held_store` are NOT here: they return a
+    # `Store`, which is the market archive, and this rule is about the
+    # daemon-owned files (hyxstream/hyxshadow) that no `Store` ever opens.
     return False
 
 

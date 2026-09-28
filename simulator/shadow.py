@@ -36,11 +36,11 @@ import duckdb
 
 from hyxlab.lockid import db_owner_lock_or_reason
 from hyxlab.store import (
-    Store,
     attach_wait_block,
     charge_hold,
     connect_retry,
-    duck_connect,
+    held_duck,
+    held_store,
     reset_attach_waits,
     spill_cap,
 )
@@ -50,6 +50,9 @@ from simulator.registry import build as build_strategies
 from simulator.sim import Simulator
 
 STREAM_DB = "data/hyxstream.duckdb"
+#: The FILENAME, which is how an attach row names its database -- the scope
+#: `shadow_stream_holds` is published under.
+STREAM_DB_NAME = Path(STREAM_DB).name
 SHADOW_DB = "data/hyxshadow.duckdb"
 # The daemon runs under MemoryMax=1G, but DuckDB's default memory_limit
 # scales with SYSTEM RAM — the seed-time ORDER BY over book_events blew
@@ -112,6 +115,31 @@ def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
         conn.close()
         raise
     return conn
+
+
+def stream_holds_block() -> dict | None:
+    """The reading `shadow_stream_holds` is named after, in ONE place.
+
+    `rows=False`: a day of polling is ~4,300 attaches and the per-attach
+    sample would be the whole journal. The margin is the message, and the
+    block's own totals are untrimmed regardless.
+
+    `db=` IS LOAD-BEARING, and was not needed until 2026-09-28. This
+    reading is named after one file -- what this daemon costs the archive
+    a 24/7 writer owns -- and while `stream_conn` was the only ledgered
+    attach in the process, an unscoped block WAS that file. It no longer
+    is: `duck_connect` and `Store` record too, so unscoped this would
+    fold in the daemon's own ledger (several writes per 20s poll, on a
+    file nothing else wants) and the hourly markets read on the shared
+    archive -- three files under a name that promises one, with the
+    stream's own hold diluted into them.
+
+    A FUNCTION, not two call sites, for the #95 reason: this daemon
+    publishes the same reading twice (the 300s journal line and the
+    end-of-run row) and a scope added to one of them is a wrong number
+    in the other.
+    """
+    return attach_wait_block(rows=False, db=STREAM_DB_NAME)
 
 
 @contextmanager
@@ -204,13 +232,13 @@ class ShadowLedger:
     def __init__(self, path: str | Path = SHADOW_DB) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with duck_connect(str(self.path)) as conn:
+        with held_duck(str(self.path)) as conn:
             conn.execute(_SCHEMA)
             # pre-anchor DBs: add the column in place
             conn.execute("ALTER TABLE shadow_runs ADD COLUMN IF NOT EXISTS anchor TIMESTAMP")
 
     def start_run(self, run_id: str, latency: float, strategies: list[str]) -> None:
-        with duck_connect(str(self.path)) as conn:
+        with held_duck(str(self.path)) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO shadow_runs VALUES (?,?,?,?,NULL)",
                 [run_id, datetime.now(UTC).replace(tzinfo=None), latency, ",".join(strategies)],
@@ -219,7 +247,7 @@ class ShadowLedger:
     def set_anchor(self, run_id: str, anchor: datetime) -> None:
         """Record where trading actually starts (cursor at first poll) —
         the divergence replay needs it to reproduce the exact window."""
-        with duck_connect(str(self.path)) as conn:
+        with held_duck(str(self.path)) as conn:
             conn.execute("UPDATE shadow_runs SET anchor=? WHERE run_id=?", [_naive(anchor), run_id])
 
     def record_holds(self, run_id: str, block: dict | None) -> None:
@@ -233,7 +261,7 @@ class ShadowLedger:
         """
         if block is None:
             return
-        with duck_connect(str(self.path)) as conn:
+        with held_duck(str(self.path)) as conn:
             conn.execute(
                 "INSERT INTO shadow_stream_holds VALUES (?,?,?,?,?,?,?,?,?)",
                 [
@@ -258,7 +286,7 @@ class ShadowLedger:
     ) -> None:
         if not fills and equity is None and not settlements:
             return
-        with duck_connect(str(self.path)) as conn:
+        with held_duck(str(self.path)) as conn:
             if fills:
                 conn.executemany(
                     "INSERT INTO shadow_fills VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -346,14 +374,18 @@ class ShadowRunner:
         if sim is not None:
             held.update((v, m) for (_, v, m, _), q in sim.ctx._positions.items() if q)
             held.update(sim._resting.keys())
+        # `held_store`, not a bare `Store`: this is a read attach on
+        # `data/hyxlab.duckdb` -- the file the 5-minute collector writes --
+        # held across a ~101k-row markets query every hour, for the
+        # daemon's whole life, and charged to nobody until `Store` became a
+        # ledgered attach. A hold here is a dropped capture cycle.
         try:
-            store = Store(self.archive_db, read_only=True)
+            with held_store(self.archive_db, read_only=True) as store:
+                return store.markets(
+                    venue="kalshi", alive_days=MARKETS_ALIVE_DAYS, include=held
+                )
         except duckdb.Error:
             return None
-        try:
-            return store.markets(venue="kalshi", alive_days=MARKETS_ALIVE_DAYS, include=held)
-        finally:
-            store.close()
 
     def _read_new(self) -> tuple[list[BookEvent], list[tuple]]:
         with held_stream_conn(self.stream_db) as conn:
@@ -546,10 +578,7 @@ def main() -> None:
     while args.duration is None or time.monotonic() - t0 < args.duration:
         runner.poll_once()
         if time.monotonic() - last_report >= 300:
-            # `rows=False`: a day of polling is ~4,300 attaches and the
-            # per-attach sample would be the whole journal. The margin is
-            # the message here, and the block's own totals are untrimmed.
-            holds = attach_wait_block(rows=False)
+            holds = stream_holds_block()
             print(
                 f"[shadow] {runner.stats} fills={len(runner.sim.result.fills)}"
                 f" stream_holds={json.dumps(holds)}",
@@ -569,7 +598,7 @@ def main() -> None:
     result = runner.sim.finalize()
     # The run's whole bill for the archive, recorded once more at the end so
     # a bounded run leaves it behind even if it never reached a 300s report.
-    holds = attach_wait_block(rows=False)
+    holds = stream_holds_block()
     try:
         runner.ledger.record_holds(runner.run_id, holds)
     except duckdb.Error as e:

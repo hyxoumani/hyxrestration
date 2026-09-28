@@ -2280,6 +2280,97 @@ Format: what happened → root cause → error type → prevention tier
     the sample clause, `held_unknown_n`), plus the second-renderer scan
     red-verified by re-introducing a hand-written line in the sweep.
 
+96. **2026-09-28 -- the four attaches this rule excused were excused by a
+    property of the INSTRUMENT, not of the hold; and paying the debt off
+    silently changed what every process-wide block MEANT.**
+    `tests/test_hold_discipline.py` carried an enumeration named
+    `test_the_unledgered_attaches_in_publishers_stay_named`: four sites
+    taking `duck_connect` or a bare `Store(...)`, outside the
+    measure-your-hold rule "by construction". The argument was true and
+    was about the wrong thing -- a hold is charged to the attach ROW the
+    open produced (`_LAST_ATTACH`), those two helpers produced no row, so
+    `charge_hold` there would have credited the seconds to whatever
+    unrelated attach happened to be last, and a WRONG reading is worse
+    than a missing one. Every word of that describes the ledger. None of
+    it describes the file locks, which are identical: the site the note
+    itself called "the one that matters" is `ShadowRunner.
+    _try_load_markets`, a read attach on `data/hyxlab.duckdb` -- the file
+    the 5-minute collector writes -- held across a ~101k-row markets
+    query every hour, for the daemon's whole life, charged to nobody.
+    **Fix: the premise, not the enumeration.** `duck_connect` and `Store`
+    record a one-attempt, no-budget row (`budget_frac` stays `None`, not
+    0.0 -- a ladder of one has no budget to spend a share of),
+    `held_duck`/`held_store` are their hold seams, all four sites take
+    them, and the enumeration was DELETED rather than emptied: a list
+    that can hold zero entries outlives the debt it was written for
+    (#94's own closing note). `collector.sweep --doctor`'s hand-rolled
+    5 x 2s loop became `held_open` while it was open.
+    **AND THE COST, which is the reusable half.** A process-wide attach
+    block used to mean "this process's retry ladders", and for a daemon
+    whose only ladder ran against one file it silently meant "that
+    file". `simulator.shadow` publishes exactly that reading under
+    exactly that name -- `shadow_stream_holds`, what this daemon costs
+    the archive a 24/7 writer owns. Ledgering the direct attach widened
+    it to three files (shadow's own ledger, several writes per 20s poll;
+    the hourly markets read) with the stream's hold diluted into them,
+    and nothing about the table, the field names or the tests would have
+    said so. The #94 shape one instrument over: a definition correct
+    only while one population was empty, kept empty by the CALLERS.
+    So the block gained a `db` scope backed by `_ATTACH_TOTALS_BY_DB`,
+    untrimmed -- filtering the 256-deep sample rows instead would report
+    the tail of a run under the run's name (#72) -- the line prints the
+    scope, and shadow's two publishers (journal line, ledger row) both
+    go through one `stream_holds_block`, because a scope added to one of
+    two hand-written call sites is #95 again.
+    Rule: **before deleting a carve-out, ask whether its argument is
+    about the measurement or about the thing measured -- "we cannot
+    attribute this" is a reason to fix attribution, never a reason to
+    call the hold acceptable. And when you do pay it off, ask which
+    existing readings were only correct because the debt kept a
+    population empty.**
+    11 tests; 7 mutations each reddening only its own claim.
+
+97. **2026-09-28 -- the leak was fixed at the site where it was FOUND and
+    left live in the helper that site calls, one level down; and the test
+    that would have caught it passes in-process against code that
+    releases nothing.**
+    #94's pass fixed `simulator.shadow.stream_conn`: it attaches through
+    `connect_retry` and then lowers `memory_limit`, so an exception from
+    the tuning escaped with a read attach on a daemon-owned archive and
+    no reference left to close it. The same pass NAMED the identical
+    shape inside `connect_retry` itself -- `duckdb.connect` succeeds,
+    `private_spill`/`cgroup_memory_limit`/`spill_cap` raise inside the
+    same `try`, and the `except duckdb.Error` cannot tell that from a
+    refused open, so it SLEEPS and connects again with the first
+    connection open and unreferenced -- and deferred it as out of scope,
+    for a pass. In fact there were four copies of the sequence
+    (`duck_connect`, `connect_retry`, `Store.__init__`, and shadow's
+    wrapper), three of them inside `hyxlab/store.py`, the module whose
+    whole job is to be the one place this is got right. Sequenced once
+    now, in `_open_tuned`, closing on `BaseException` (a cancellation
+    between the open and the return leaks the lock just as thoroughly).
+    **THE MEASUREMENT LESSON, and it cost two green mutations to find.**
+    The first version of the leak test re-attached the file in-process
+    and asserted it succeeded. It passed -- and it passed just as well
+    with the fix reverted, because DuckDB serves a second same-process
+    attach from the database instance it already has open, so an
+    in-process probe cannot see a leaked connection at all. #90 already
+    wrote this rule ("prove the hold AND the release from outside the
+    process, both arms") about `collector.backup`; it had not been read
+    across to the helper. The arms now: a subprocess writer probe, a
+    vacuity guard proving a held attach IS refused from outside, and --
+    for the ladder, where the leak has a DURATION -- a probe fired from
+    inside the sleep, which is the only place the seconds actually are.
+    The standalone case needs the traceback held (`pytest.raises(...) as
+    excinfo`), because CPython's refcount closes the connection the
+    instant the temporary traceback is dropped: without that the test is
+    green against the leak, and with it the test is the production
+    shape, where the caller up the stack holds the exception.
+    Rule: **when a fix's finding says "the same shape exists one level
+    down", the level down is part of the fix or it is a scheduled
+    recurrence -- and a release test that never leaves the process is
+    not a release test.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

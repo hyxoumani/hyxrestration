@@ -73,10 +73,13 @@ ALLOWED: dict[str, tuple[str, str]] = {
         "RETRY",
         "8x0.75s — a UI must fail fast, not hang for the helper's 30s",
     ),
-    "collector/sweep.py::main": (
-        "RETRY",
-        "5 attempts then exit nonzero, so systemd records a failed doctor run",
-    ),
+    # `collector/sweep.py::main` was here with "5 attempts then exit
+    # nonzero, so systemd records a failed doctor run". Its hand-rolled
+    # loop is gone (2026-09-28): the same ladder is `held_open(...,
+    # retries=5)`, which is a helper attach and so not a site this rule
+    # enumerates -- and, unlike the loop, its hold on the archive is
+    # measured. The disposition survives as the `opened` flag that keeps
+    # the exit-75 arm meaning "could not get in".
     # -- degrade: continues without the data ------------------------------
     "simulator/simui/session.py::_try_load_markets": (
         "DEGRADE",
@@ -150,9 +153,13 @@ def _attach_mode(node: ast.Call) -> str | None:
     if name == "connect":
         if not (isinstance(f, ast.Attribute) and getattr(f.value, "id", "") == "duckdb"):
             return None
-    elif name == "duck_connect":
-        pass  # the kernel's raw attach: private spill, but no retry/degrade
-    elif name in ("Store", "StreamStore"):
+    elif name in ("duck_connect", "held_duck"):
+        # The kernel's raw attach: private spill, but no retry/degrade.
+        # `held_duck` IS `duck_connect` plus a hold measurement and takes
+        # the file identically, so it is classified identically -- listed
+        # by name because this walker cannot follow a wrapper.
+        pass
+    elif name in ("Store", "StreamStore", "held_store"):
         if len(node.args) > 1:
             return "ro" if _is_true(node.args[1]) else "rw"
     else:
@@ -162,6 +169,14 @@ def _attach_mode(node: ast.Call) -> str | None:
             if not isinstance(k.value, ast.Constant):
                 return "forward"
             return "ro" if k.value.value is True else "rw"
+    # `**kw` hides the disposition exactly as a forwarded variable does, and
+    # a splat with no literal `read_only` beside it is a helper handing its
+    # caller's arguments down -- `held_duck`/`held_store`. Calling that "rw"
+    # would enumerate the helper as a writer of every file in the repo;
+    # "forward" puts it under `test_only_the_helpers_forward_read_only`,
+    # which is the test that pins forwarding to hyxlab/store.py.
+    if any(k.arg is None for k in node.keywords):
+        return "forward"
     return "rw"
 
 
@@ -277,10 +292,14 @@ def test_only_the_helpers_forward_read_only():
                     continue
                 f = node.func
                 name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
-                if name not in ("connect", "Store", "StreamStore"):
+                if name not in ("connect", "Store", "StreamStore", "duck_connect", "held_duck"):
                     continue
                 for k in node.keywords:
-                    if k.arg == "read_only" and not isinstance(k.value, ast.Constant):
+                    literal = k.arg == "read_only" and not isinstance(k.value, ast.Constant)
+                    # `**kw` too: `held_duck(path, **kw)` names no
+                    # disposition at all and the scanner would read the
+                    # default. Same blindness, so the same pin.
+                    if literal or k.arg is None:
                         forwarding.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
     assert all(s.startswith("hyxlab/store.py:") for s in forwarding), (
         "a non-helper forwards read_only as a variable, which the enumeration"

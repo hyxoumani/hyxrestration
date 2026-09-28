@@ -443,7 +443,36 @@ def lock_holder(exc: BaseException) -> str | None:
     return f"{name} pid {pid}"
 
 
-def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
+def _open_tuned(path: str | Path, *, read_only: bool = False, **kw):
+    """`duckdb.connect` + the three engine settings, closing on any escape.
+
+    THE LEAK THIS CLOSES. The open takes DuckDB's file lock; the tuning
+    runs after it. Every copy of this sequence in the module used to let
+    an exception from the tuning escape with the connection open and no
+    reference left to close it -- so the file stayed locked until the
+    process exited, against the ~0.1s the caller wanted. `simulator.
+    shadow.stream_conn` was fixed for exactly this shape on 2026-09-27
+    and the same bug was still live one level down, inside
+    `connect_retry`'s retry loop, where the `except duckdb.Error` that
+    catches a tuning failure then SLEEPS and connects again -- leaking one
+    attach per attempt, up to fifteen on the default ladder.
+
+    Sequenced here once so there is one copy to get right. `BaseException`,
+    not `Exception`: a KeyboardInterrupt or a cancellation between the open
+    and the return leaks the lock just as thoroughly.
+    """
+    conn = duckdb.connect(str(path), read_only=read_only, **kw)
+    try:
+        private_spill(conn, path)
+        cgroup_memory_limit(conn)
+        spill_cap(conn, path)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def duck_connect(path: str | Path, *, read_only: bool = False, ledger: bool = True, **kw):
     """`duckdb.connect` plus private spill — the ONLY attach in the repo.
 
     A bare `duckdb.connect` gets DuckDB's default `temp_directory`,
@@ -458,11 +487,21 @@ def duck_connect(path: str | Path, *, read_only: bool = False, **kw):
     `duckdb.connect`, enforced by `tests/test_sidecar_discipline.py`.
     Read-only discipline is unchanged and still enumerated by
     `tests/test_connect_discipline.py`, which counts this as an attach.
+
+    LEDGERED SINCE 2026-09-28, which is what lets a hold be charged to it.
+    This attach used to record nothing, so `charge_hold` had no row of its
+    own to credit and would have charged the seconds to whatever unrelated
+    attach happened to be last -- a wrong reading, so the sites taking it
+    were left enumerated as debt instead (`tests/test_hold_discipline.py`).
+    A direct attach is simply a ladder of one: `attempts 1`, no budget, so
+    `budget_frac` stays `None` rather than reading as a budget never
+    entered. `ledger=False` is for `connect_retry`/`open_retry`, which
+    record the whole ladder themselves and must not be counted twice.
     """
-    conn = duckdb.connect(str(path), read_only=read_only, **kw)
-    private_spill(conn, path)
-    cgroup_memory_limit(conn)
-    spill_cap(conn, path)
+    started = time.monotonic()
+    conn = _open_tuned(path, read_only=read_only, **kw)
+    if ledger:
+        _record_attach(path, 1, time.monotonic() - started, 0.0, True)
     return conn
 
 
@@ -651,6 +690,22 @@ class _AttachTotals:
 
 _ATTACH_TOTALS = _AttachTotals()
 
+#: The same running aggregates, split by database FILE -- and this exists
+#: because ledgering `duck_connect`/`Store` (2026-09-28) changed what a
+#: process-wide block MEANS. Until then the only ledgered attaches were the
+#: retry helpers, so a daemon that took its ladder against exactly one file
+#: got a single-file block for free and could name it after that file.
+#: `simulator.shadow` did: `shadow_stream_holds`, "what this daemon costs
+#: `hyxstream.duckdb`". It also attaches its OWN ledger several times per
+#: 20s poll and the shared archive hourly, and both of those now record --
+#: so the process-wide block silently became three files under a name that
+#: promises one. That is the #94 shape exactly: a field correct only while
+#: one of its populations was empty, emptied by the callers rather than by
+#: the definition. Filtering the retained ROWS instead is not the fix; they
+#: are a 256-deep sample and a total computed from them describes the tail
+#: of the run while carrying the run's name (mistakes #72).
+_ATTACH_TOTALS_BY_DB: dict[str, _AttachTotals] = {}
+
 #: The row the calling context most recently attached through, so
 #: `held_attach` can charge its hold to that attach and no other.
 _LAST_ATTACH: ContextVar[AttachWait | None] = ContextVar("hyxlab_last_attach", default=None)
@@ -683,6 +738,7 @@ def _record_attach(
 ) -> AttachWait:
     w = AttachWait(Path(path).name, attempts, waited_s, budget_s, ok, slept_s)
     _ATTACH_TOTALS.add(w)  # BEFORE the trim: the totals outlive the rows
+    _ATTACH_TOTALS_BY_DB.setdefault(w.db, _AttachTotals()).add(w)
     _ATTACH_WAITS.append(w)
     del _ATTACH_WAITS[:-_ATTACH_WAITS_MAX]
     if ok:
@@ -705,9 +761,12 @@ def reset_attach_waits() -> None:
     global _ATTACH_TOTALS
     _ATTACH_WAITS.clear()
     _ATTACH_TOTALS = _AttachTotals()
+    _ATTACH_TOTALS_BY_DB.clear()
 
 
-def attach_wait_block(waits: list[AttachWait] | None = None, *, rows: bool = True) -> dict | None:
+def attach_wait_block(
+    waits: list[AttachWait] | None = None, *, rows: bool = True, db: str | None = None
+) -> dict | None:
     """The report block. `None` when nothing attached through the retry
     helpers -- an empty block would read as "attached instantly".
 
@@ -722,14 +781,29 @@ def attach_wait_block(waits: list[AttachWait] | None = None, *, rows: bool = Tru
     `rows=False` omits the per-attach sample for callers that attach
     thousands of times, where the rows are journal noise and the margin is
     the whole message.
+
+    `db` is a database FILENAME and narrows the block to the attaches on
+    that file -- statistics from `_ATTACH_TOTALS_BY_DB` (untrimmed, so `n`
+    is still a population and not the retained window) and the sample rows
+    filtered to match. A publisher that names one file in its artifact must
+    pass it: since `duck_connect`/`Store` became ledgered attaches, a
+    process-wide block is every file the process touched. `None` when this
+    process never attached THAT file, which is the same statement the
+    unfiltered `None` makes.
     """
     if waits is not None:
-        obs = list(waits)
+        obs = [w for w in waits if db is None or w.db == db]
         if not obs:
             return None
         totals = _AttachTotals()
         for w in obs:
             totals.add(w)
+    elif db is not None:
+        by_db = _ATTACH_TOTALS_BY_DB.get(db)
+        if by_db is None or not by_db.observed_n:
+            return None
+        totals = by_db
+        obs = [w for w in attach_waits() if w.db == db]
     else:
         obs = attach_waits()
         totals = _ATTACH_TOTALS
@@ -737,6 +811,7 @@ def attach_wait_block(waits: list[AttachWait] | None = None, *, rows: bool = Tru
             return None
     block = {
         "n": totals.observed_n,
+        **({"db": db} if db is not None else {}),
         **({"attaches": [w.as_dict() for w in obs]} if rows else {}),
         "retained_n": len(obs),
         "dropped_n": totals.observed_n - len(obs),
@@ -843,8 +918,14 @@ def attach_wait_line(block: dict | None, *, prefix: str, budget_s: float | None 
             f" {block['retained_n']} retained, {block['dropped_n']} dropped]"
         )
     )
+    # The file, when the block is scoped to one. A per-db block and a
+    # process-wide one are different readings and the line must not look
+    # identical: `shadow_stream_holds` is named after a file and the
+    # journal line beside it was, until this key existed, every file the
+    # daemon touched.
+    scope = "" if block.get("db") is None else f" on {block['db']}"
     return (
-        f"{prefix} attach_wait: {block['n']} attaches,"
+        f"{prefix} attach_wait:{scope} {block['n']} attaches,"
         f" {block['contended_n']} contended,"
         f" worst attach {block['waited_s_max']:.1f}s of"
         f" {block['waited_s_total']:.1f}s elapsed,"
@@ -890,10 +971,7 @@ def connect_retry(
     wait = delay
     for attempt in range(retries):
         try:
-            conn = duckdb.connect(str(path), read_only=read_only)
-            private_spill(conn, path)
-            cgroup_memory_limit(conn)
-            spill_cap(conn, path)
+            conn = _open_tuned(path, read_only=read_only)
             _record_attach(path, attempt + 1, time.monotonic() - started, budget, True, slept)
             return conn
         except duckdb.Error:
@@ -956,6 +1034,37 @@ def held_open(path: str | Path = "data/hyxlab.duckdb", **kw) -> Iterator[Store]:
 
 
 @contextmanager
+def held_duck(path: str | Path, **kw) -> Iterator:
+    """`duck_connect`, and the hold is measured and charged to the attach.
+
+    The no-ladder twin of `held_attach`: for the sites that attach directly
+    because they hand-roll their own retry, degrade on error, or own the
+    file. Those sites were unreachable by the hold rule until
+    `duck_connect` gained a ledger row, and were enumerated as debt in
+    `tests/test_hold_discipline.py` for two days instead.
+    """
+    conn = duck_connect(path, **kw)
+    with charge_hold(conn.close):
+        yield conn
+
+
+@contextmanager
+def held_store(path: str | Path = "data/hyxlab.duckdb", **kw) -> Iterator[Store]:
+    """`Store`, and the hold is measured and charged to the attach.
+
+    `held_open` without the ladder -- and the hold it measures is the one
+    that matters most in this repo, because `data/hyxlab.duckdb` is the
+    file the 5-minute collector writes: a hold here is a dropped capture
+    cycle. `simulator.shadow.ShadowRunner._try_load_markets` held it
+    across an hourly markets query, charged to nobody, for the daemon's
+    whole life.
+    """
+    store = Store(path, **kw)
+    with charge_hold(store.close):
+        yield store
+
+
+@contextmanager
 def charge_hold(close: Callable[[], None]) -> Iterator[None]:
     """Time the body, release, and charge the hold to the attach this
     context's own open produced (`_LAST_ATTACH`, a ContextVar -- one
@@ -986,6 +1095,10 @@ def charge_hold(close: Callable[[], None]) -> Iterator[None]:
         if w is not None:
             w.held_s = held
             _ATTACH_TOTALS.add_hold(held)
+            # Charged to the file this attach was on, not just to the
+            # process: a per-db block that counted every hold would report
+            # the archive's seconds against the stream's name.
+            _ATTACH_TOTALS_BY_DB.setdefault(w.db, _AttachTotals()).add_hold(held)
 
 
 def open_retry(
@@ -1009,7 +1122,10 @@ def open_retry(
     slept = 0.0
     for attempt in range(retries):
         try:
-            store = Store(path, read_only=read_only)
+            # `ledger=False`: the row below describes the whole LADDER
+            # (attempts, sleep, budget); Store's own would be a second row
+            # for the same attach, reading as two openings of one file.
+            store = Store(path, read_only=read_only, ledger=False)
             _record_attach(path, attempt + 1, time.monotonic() - started, budget, True, slept)
             return store
         except duckdb.Error:
@@ -1023,20 +1139,41 @@ def open_retry(
 
 
 class Store:
-    def __init__(self, path: str | Path = "data/hyxlab.duckdb", read_only: bool = False) -> None:
+    def __init__(
+        self,
+        path: str | Path = "data/hyxlab.duckdb",
+        read_only: bool = False,
+        *,
+        ledger: bool = True,
+    ) -> None:
+        """`ledger=False` only for `open_retry`, which records the ladder.
+
+        A bare `Store(...)` records an attach row for the same reason
+        `duck_connect` does: it takes the same file lock, and without a row
+        no hold can be charged to it (see `duck_connect`). The row is
+        written once the file is OPEN -- before the schema statements, which
+        are part of the hold rather than part of the attach.
+        """
         p = Path(path)
         fresh = not p.exists()
         if p.parent != Path(".") and not read_only:
             p.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = duckdb.connect(str(p), read_only=read_only)
-        private_spill(self.conn, p)
-        cgroup_memory_limit(self.conn)
-        spill_cap(self.conn, p)
-        if not read_only:
-            self.conn.execute(_SCHEMA)
-            if fresh:
-                # Fresh DBs are born current; only pre-existing data migrates.
-                self.conn.execute("INSERT INTO schema_meta VALUES (?)", [SCHEMA_VERSION])
+        started = time.monotonic()
+        self.conn = _open_tuned(p, read_only=read_only)
+        if ledger:
+            _record_attach(p, 1, time.monotonic() - started, 0.0, True)
+        try:
+            if not read_only:
+                self.conn.execute(_SCHEMA)
+                if fresh:
+                    # Fresh DBs are born current; only pre-existing data migrates.
+                    self.conn.execute("INSERT INTO schema_meta VALUES (?)", [SCHEMA_VERSION])
+        except BaseException:
+            # The lock is already taken; a half-built Store is nobody's to
+            # close (`open_retry` never returns it), so it would hold the
+            # file until the interpreter collected it.
+            self.conn.close()
+            raise
 
     def schema_version(self) -> int:
         row = self.conn.execute("SELECT max(version) FROM schema_meta").fetchone()

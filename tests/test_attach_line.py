@@ -65,7 +65,7 @@ def _block() -> dict:
     return attach_wait_block(rows)
 
 
-def _rich_block() -> dict:
+def _rich_block(db: str | None = None) -> dict:
     """A block whose every scalar field is non-zero, so no clause of the
     line is switched off while the test is looking. Values are OVERWRITTEN
     on a real block rather than written out as a literal: the keys have to
@@ -74,12 +74,38 @@ def _rich_block() -> dict:
     reset_attach_waits()
     for _ in range(store._ATTACH_WAITS_MAX + 5):
         store._record_attach("a.duckdb", 1, 0.01, 30.0, True)
-    block = attach_wait_block(rows=False)
+    block = attach_wait_block(rows=False, db=db)
     for i, (k, v) in enumerate(block.items()):
         if k in NOT_RENDERABLE:
             continue
+        if isinstance(v, str):
+            continue  # a label, not a magnitude; it is already distinctive
         block[k] = 11 + i if isinstance(v, int) else 11.5 + i
     return block
+
+
+def test_every_field_a_db_scoped_block_carries_changes_the_line():
+    """The same perturbation over the block shape that names ONE file.
+
+    `db` is only present when the publisher asked for a scope, so the
+    unscoped run below cannot see it -- and a scope label dropped at the
+    format string is a line that reports the stream archive's holds under
+    the shared archive's name."""
+    base = _rich_block(db="a.duckdb")
+    assert base["db"] == "a.duckdb"
+    line = attach_wait_line(base, prefix="[t]", budget_s=30.0)
+    deaf = [
+        k
+        for k, v in base.items()
+        if k not in NOT_RENDERABLE
+        and attach_wait_line(
+            {**base, k: v + 100 if isinstance(v, int | float) else f"{v}-bumped"},
+            prefix="[t]",
+            budget_s=30.0,
+        )
+        == line
+    ]
+    assert not deaf, f"a db-scoped block publishes {deaf} and the line drops it"
 
 
 def test_every_field_the_block_carries_changes_the_line():
@@ -95,7 +121,12 @@ def test_every_field_the_block_carries_changes_the_line():
         if k in NOT_RENDERABLE:
             continue
         bumped = dict(base)
-        bumped[k] = v + 100 if isinstance(v, int | float) else v
+        # Strings get perturbed too. `v if not a number` would compare a
+        # block against ITSELF and report every non-numeric field as deaf
+        # -- or, with the field skipped instead, wave `db` through: a
+        # scope label is exactly the kind of field a line can omit while
+        # every number in it stays right.
+        bumped[k] = v + 100 if isinstance(v, int | float) else f"{v}-bumped"
         if attach_wait_line(bumped, prefix="[t]", budget_s=30.0) == line:
             deaf.append(k)
     assert not deaf, (

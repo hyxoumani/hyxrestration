@@ -884,7 +884,15 @@ def test_shadow_measures_the_hold_it_takes_on_the_daemon_owned_archive(tmp_path)
     24/7 writer owns -- every ~20s and across the boot seed replay, and it
     published no block at all, so nothing charged those seconds to anyone.
     `_read_new` goes through `held_stream_conn` now, so every poll's hold
-    lands on that poll's own attach row."""
+    lands on that poll's own attach row.
+
+    SCOPED TO THE FILE (2026-09-28). This used to read the process-wide
+    block, which WAS the stream archive's block because `stream_conn` was
+    the only ledgered attach shadow took. `duck_connect`/`Store` record
+    too now -- the ledger's own writes, the hourly markets read -- so the
+    unscoped block is three files, and reading it here would let a hold
+    on shadow's private ledger pass for a hold on the file a 24/7 writer
+    owns."""
     from hyxlab.store import attach_wait_block, attach_waits, reset_attach_waits
 
     stream_db = tmp_path / "stream.duckdb"
@@ -909,9 +917,50 @@ def test_shadow_measures_the_hold_it_takes_on_the_daemon_owned_archive(tmp_path)
     waits = [w for w in attach_waits() if w.db == "stream.duckdb"]
     assert len(waits) == 2
     assert all(w.held_s is not None and w.held_s > 0.0 for w in waits)
-    block = attach_wait_block()
+    block = attach_wait_block(db="stream.duckdb")
+    assert block["n"] == 2
     assert block["held_n"] == 2 and block["held_unknown_n"] == 0
     assert block["held_s_total"] > 0.0
+    # The vacuity check on the scope: the process really did attach other
+    # files, so `db=` is doing work rather than naming the only file there
+    # was.
+    assert attach_wait_block()["n"] > 2
+
+
+def test_the_published_reading_is_the_stream_archive_and_not_every_file_touched(tmp_path):
+    """`shadow_stream_holds` is named after ONE file, and since
+    `duck_connect`/`Store` became ledgered attaches (2026-09-28) the
+    process-wide block is every file the daemon opens: its own ledger,
+    several writes per poll, plus the hourly markets read on the shared
+    archive. Both publishers -- the 300s journal line and the end-of-run
+    row -- go through `stream_holds_block`, so the scope cannot reach one
+    and miss the other (mistakes #95).
+    """
+    from hyxlab.store import attach_wait_block, reset_attach_waits
+    from simulator.shadow import stream_holds_block
+
+    stream_db = tmp_path / "hyxstream.duckdb"
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.flush()
+
+    runner = ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(tmp_path / "archive.duckdb"),
+        ledger=ShadowLedger(tmp_path / "shadow.duckdb"),
+    )
+    reset_attach_waits()
+    runner.poll_once()
+    runner.ledger.start_run("R1", 0.0, ["buy_first"])  # an attach on ANOTHER file
+
+    block = stream_holds_block()
+    assert block["db"] == "hyxstream.duckdb"
+    assert block["n"] == 1, "the ledger's own attaches leaked into the stream reading"
+    assert attach_wait_block()["n"] > 1, "vacuity: no other file was attached"
+    # `rows=False` -- ~4,300 attaches a day and the sample is the journal.
+    assert "attaches" not in block
 
 
 def test_shadow_publishes_its_archive_bill_where_a_rotated_journal_cannot_lose_it(tmp_path):
