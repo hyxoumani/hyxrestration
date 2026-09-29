@@ -161,6 +161,19 @@ class StreamTrade:
     seq: int | None
 
 
+@dataclass(frozen=True)
+class FlushOutcome:
+    """What one `StreamStore.flush_outcome` did.
+
+    `rows` is what it wrote. `touched` is whether it OPENED THE ARCHIVE,
+    which is the only thing that makes a non-raising flush evidence that
+    the file was writable -- see `flush_outcome`.
+    """
+
+    rows: int
+    touched: bool
+
+
 class StreamStore:
     """Buffered writer. append_*() only buffers; flush() opens a
     connection, writes everything, and closes it again."""
@@ -346,7 +359,12 @@ class StreamStore:
     # -- persistence ------------------------------------------------------
 
     def flush(self) -> int:
-        """Write all buffered rows in one transaction; returns rows written.
+        """Rows written by `flush_outcome`; see there. Kept because most
+        callers want the count and nothing else."""
+        return self.flush_outcome().rows
+
+    def flush_outcome(self) -> FlushOutcome:
+        """Write all buffered rows in one transaction; returns the outcome.
 
         On any failure (e.g. a reader briefly holds the file lock) the
         batch is restored to the buffer front — recv order preserved —
@@ -355,11 +373,23 @@ class StreamStore:
         pending rows, the oldest rows spill to the sidecar; it is
         written FIRST here (older than anything in memory), then
         removed only after the transaction commits — a crash between
-        commit and unlink re-drains it (duplicates over holes)."""
+        commit and unlink re-drains it (duplicates over holes).
+
+        `touched` IS THE POINT OF THIS RETURN TYPE, AND `rows` CANNOT
+        STAND IN FOR IT. There is nothing to write far more often than
+        one would guess, and this method then returns WITHOUT OPENING
+        THE FILE — so a caller reading "did not raise" as "the archive
+        is writable" is reading a claim about the buffer. `streamd`'s
+        stall ledger did exactly that and closed an open stall episode
+        on an empty tick, mid-hold, with the lock still held by someone
+        else (EXP-1390, mistakes #103). A flush that touched nothing is
+        evidence about nothing. `rows == 0` does NOT imply it: a drain
+        of an empty sidecar opens the file and writes no rows.
+        """
         with self._flush_lock:
             n = self.pending
             if n == 0 and not self._spill_path.exists():
-                return 0
+                return FlushOutcome(rows=0, touched=False)
             events, self._events = self._events, []
             trades, self._trades = self._trades, []
             gaps, self._gaps = self._gaps, []
@@ -379,7 +409,7 @@ class StreamStore:
                 raise
             self._spill_path.unlink(missing_ok=True)
             self.spilled = 0
-            return n
+            return FlushOutcome(rows=n, touched=True)
 
     def spill_all(self) -> int:
         """Move EVERY pending row to the sidecar; returns rows moved.

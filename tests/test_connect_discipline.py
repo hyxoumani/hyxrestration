@@ -116,7 +116,7 @@ ALLOWED: dict[str, tuple[str, str]] = {
 WRITE_ALLOWED: dict[str, str] = {
     "collector/streamd.py::main": "the stream daemon owns hyxstream.duckdb",
     "hyxlab/streamstore.py::StreamStore.__init__": "creates its own schema",
-    "hyxlab/streamstore.py::StreamStore.flush": "the daemon's write path",
+    "hyxlab/streamstore.py::StreamStore.flush_outcome": "the daemon's write path",
     "hyxlab/streamstore.py::StreamStore.last_recv_ts": "same connection discipline as flush",
     "hyxlab/streamstore.py::StreamStore.mark_startup_gap": "records the gap it just found",
     "simulator/shadow.py::ShadowLedger.__init__": "the daemon owns hyxshadow.duckdb",

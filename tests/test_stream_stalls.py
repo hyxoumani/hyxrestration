@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 from collector import qa, streamd
+from hyxlab import streamstore
 
 T0 = datetime(2026, 9, 10, 20, 20, 22, tzinfo=UTC)
 
@@ -197,12 +198,20 @@ class _Store:
         self.flushes = 0
         self.spill_alls = 0
         self.sidecar_broken = False
+        #: Nothing buffered -- the real `flush_outcome` then returns WITHOUT
+        #: opening the file, so the tick is evidence about nothing.
+        self.empty = False
 
-    def flush(self) -> int:
+    def flush_outcome(self):
+        if self.empty:
+            return streamstore.FlushOutcome(rows=0, touched=False)
         if self.wedged:
             raise OSError("IO Error: Could not set lock on file")
         self.flushes += 1
-        return 7
+        return streamstore.FlushOutcome(rows=7, touched=True)
+
+    def flush(self) -> int:
+        return self.flush_outcome().rows
 
     def spill_all(self) -> int:
         if self.sidecar_broken:
@@ -447,6 +456,7 @@ def _ep(
     peak=1000,
     handoff=None,
     holders=None,
+    sample_gap=None,
 ) -> dict:
     rec = {
         "at": (started + timedelta(seconds=duration)).isoformat(),
@@ -461,6 +471,11 @@ def _ep(
         "period_s": 15.0,
         "hold_lower_s": round(max(0.0, (max(1, int(duration // 15)) - 1) * 15.0), 1),
     }
+    # Left out by default so the default fixture is a PRE-2026-09-29 record:
+    # the reader has to keep saying "nominal" for the ~300 episodes already
+    # in the live ledger that carry only the constant.
+    if sample_gap is not None:
+        rec["sample_gap_max_s"] = sample_gap
     if handoff is not None:
         rec.update(interrupted=True, handoff=handoff)
     return rec
@@ -935,7 +950,7 @@ def test_the_check_refuses_to_call_a_one_flush_span_a_hold(tmp_path):
     failed, skipped, out = _run_check(path=path, journal_fails=3, now=NOW)
     assert not failed, out
     assert "19s span" in out
-    assert "unresolved below the 15s flush period" in out
+    assert "unresolved below the 15s nominal flush period" in out
 
 
 def test_the_check_publishes_the_hold_a_long_episode_does_prove(tmp_path):
@@ -958,3 +973,167 @@ def test_a_record_written_before_the_bound_says_so_instead_of_zero(tmp_path):
     assert not failed, out
     assert "hold unresolved (record predates the bound)" in out
     assert "hold >=" not in out
+
+
+# ---------------------------------------------------------------------------
+# EXP-1390 -- a flush that never opened the file is evidence about nothing.
+#
+# The 2026-09-29 02:29Z QA run held `hyxstream.duckdb` for 819.0s by its own
+# clock (`charge_hold`, mistakes #102) and this ledger recorded a 592.5s
+# span that began about five minutes late. #92 had written down that an
+# episode's span is the hold ROUNDED UP, so the two arms disagreed in the
+# direction that was supposed to be impossible, and several instruments rest
+# on which one is right.
+#
+# The holder is right, and it was proven from outside the process, both arms
+# (`test_a_read_only_attach_excludes_the_writer_from_the_open` below): a
+# read-only attach refuses a writer 21ms after the OPEN with no query yet,
+# and admits it 59ms after the CLOSE.
+#
+# So the victim under-reports, and here is the mechanism: `flush_outcome`
+# returns without attaching when the buffer is empty, and the flusher used
+# to call `stalls.ok()` on that return -- closing an open episode, and
+# refusing to open one, while somebody else still held the lock.
+# ---------------------------------------------------------------------------
+
+
+def test_an_empty_flush_does_not_close_an_episode_the_lock_still_holds(monkeypatch, tmp_path):
+    """The defect, at the flusher. A tick with nothing to write never opens
+    the archive, so it cannot witness a recovery -- and an episode closed on
+    it reports one that never happened, mid-hold."""
+    import asyncio
+
+    store = _Store()
+    d = streamd.Daemon.__new__(streamd.Daemon)
+    d.store = store
+    d.stats = {}
+    d._spill_corrupt_seen = 0
+    d.stalls = streamd.FlushStalls(str(tmp_path / "stalls.jsonl"))
+
+    rounds = {"n": 0}
+
+    async def fake_sleep(_secs):
+        rounds["n"] += 1
+        # fail, fail, then a tick with an empty buffer WHILE STILL WEDGED,
+        # then fail again: one episode, four rounds, no recovery anywhere.
+        store.empty = rounds["n"] == 3
+        if rounds["n"] > 4:
+            raise asyncio.CancelledError
+        return None
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(d.flusher())
+
+    assert store.flushes == 0  # nothing ever wrote; the lock never let go
+    assert not (tmp_path / "stalls.jsonl").exists()  # and nothing closed
+    assert d.stalls.started is not None  # the episode is still open
+    assert d.stalls.fails == 3  # the empty tick is not a failure either
+
+
+def test_a_flush_that_opened_the_file_still_closes_the_episode(monkeypatch, tmp_path):
+    """The other arm, or the fix above is just "never close". A real flush
+    -- one that attached -- ends the episode exactly as before."""
+    import asyncio
+
+    store = _Store()
+    d = streamd.Daemon.__new__(streamd.Daemon)
+    d.store = store
+    d.stats = {}
+    d._spill_corrupt_seen = 0
+    d.stalls = streamd.FlushStalls(str(tmp_path / "stalls.jsonl"))
+
+    rounds = {"n": 0}
+
+    async def fake_sleep(_secs):
+        rounds["n"] += 1
+        if rounds["n"] == 3:
+            store.wedged = False
+        if rounds["n"] > 4:
+            raise asyncio.CancelledError
+        return None
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(d.flusher())
+
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["state"] == "closed"
+    assert store.flushes >= 1
+
+
+def test_an_empty_buffer_returns_without_opening_the_archive(tmp_path):
+    """The premise the flusher now relies on, at the store: `touched` is
+    False exactly when the file was not attached, and `rows == 0` cannot
+    stand in for it -- a drain of an empty sidecar opens the file and
+    writes nothing."""
+    store = streamstore.StreamStore(tmp_path / "s.duckdb")
+    assert store.flush_outcome() == streamstore.FlushOutcome(rows=0, touched=False)
+
+    store._spill_path.write_text("")  # an empty sidecar: 0 rows, but a real open
+    out = store.flush_outcome()
+    assert out.rows == 0 and out.touched is True
+    assert not store._spill_path.exists()  # and it was drained
+
+
+def test_the_hold_bound_is_the_measured_span_between_the_first_and_last_failure(tmp_path):
+    """`hold_lower_s` used to be `(fails - 1) * period_s`, and the flusher
+    does not run at `period_s`: it sleeps that and THEN attempts. Measured
+    2026-09-29 over the 21 failures of the 02:34:45Z episode, the spacings
+    ran 15.2s to 93.0s. The constant read 300.0s against a measured 483.1s.
+    So the bound is now the span between two timestamps this ledger holds.
+    """
+    log = streamd.FlushStalls(str(tmp_path / "stalls.jsonl"), period_s=15.0)
+    t0 = datetime(2026, 9, 29, 2, 34, 45, tzinfo=UTC)
+    # Three failures 15s, then 93s apart -- (fails - 1) * 15.0 would say 30.0.
+    for offset in (0, 15, 108):
+        log.failed(10, 0, _err(), t0 + timedelta(seconds=offset))
+    log.ok(t0 + timedelta(seconds=120))
+
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["hold_lower_s"] == 108.0  # measured, not 30.0
+    assert rec["sample_gap_max_s"] == 93.0  # the resolution, measured
+    assert rec["period_s"] == 15.0  # still published, still nominal
+    assert rec["duration_s"] == 120.0  # the span is unchanged and still a span
+
+
+def test_a_single_failure_proves_no_hold_at_all(tmp_path):
+    """The 92% case. One failed attempt bounds nothing from below, and the
+    measured bound must not invent a number where the derived one said 0.0.
+    """
+    log = streamd.FlushStalls(str(tmp_path / "stalls.jsonl"), period_s=15.0)
+    t0 = datetime(2026, 9, 29, 2, 34, 45, tzinfo=UTC)
+    log.failed(10, 0, _err(), t0)
+    log.ok(t0 + timedelta(seconds=18.6))
+
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["hold_lower_s"] == 0.0
+    assert rec["sample_gap_max_s"] == 0.0
+
+
+def test_a_second_episode_does_not_inherit_the_first_ones_spacing(tmp_path):
+    """Both new fields are per-episode state and `ok()` ends an episode, so
+    they have to be re-armed with it -- a stale `last_fail_at` would make the
+    next episode's bound span the gap BETWEEN episodes."""
+    log = streamd.FlushStalls(str(tmp_path / "stalls.jsonl"), period_s=15.0)
+    t0 = datetime(2026, 9, 29, 2, 0, 0, tzinfo=UTC)
+    log.failed(10, 0, _err(), t0)
+    log.failed(10, 0, _err(), t0 + timedelta(seconds=40))
+    log.ok(t0 + timedelta(seconds=60))
+    log.failed(10, 0, _err(), t0 + timedelta(hours=3))
+    log.ok(t0 + timedelta(hours=3, seconds=18))
+
+    first, second = _records(tmp_path / "stalls.jsonl")
+    assert first["hold_lower_s"] == 40.0 and first["sample_gap_max_s"] == 40.0
+    assert second["hold_lower_s"] == 0.0 and second["sample_gap_max_s"] == 0.0
+
+
+def test_the_check_prefers_the_measured_sampling_gap_over_the_constant(tmp_path):
+    """A record written after EXP-1390 carries what the spacing ACTUALLY was,
+    and that -- not `FLUSH_SECS` -- is the resolution a reader may difference
+    against. Measured 2026-09-29: 15.2s to 93.0s against a 15.0s constant."""
+    path = _ledger(tmp_path, _ep(T0, 19.0, sample_gap=93.0))
+    failed, skipped, out = _run_check(path=path, journal_fails=3, now=NOW)
+    assert not failed, out
+    assert "unresolved below the 93s measured sampling gap" in out
+    assert "nominal" not in out

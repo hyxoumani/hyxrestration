@@ -76,9 +76,15 @@ EMPTY_SET_RETRY_LADDER = (10, 30, 60, 120)
 # duration read off it is an interpolation between the first and last failure
 # line; it rolls at the host's retention (7d here); and it is per-boot-session
 # text nothing downstream can aggregate. (The ledger fixes the aggregation and
-# the end time; it does NOT give a short hold a duration -- it samples every
-# FLUSH_SECS and cannot resolve below that, which is what `hold_lower_s`
-# publishes.) Measured over the 7 days to
+# the end time; it does NOT give a short hold a duration -- it samples only
+# when it has rows to write, and cannot resolve below that spacing, which is
+# what `hold_lower_s` and `sample_gap_max_s` publish. A SAMPLE IS A FLUSH THAT
+# OPENED THE FILE: a tick with an empty buffer never attaches and so is
+# evidence about nothing, which is why the flusher gates `ok()` on
+# `FlushOutcome.touched` (EXP-1390, mistakes #103). Nothing here bounds the
+# gap between the lock being taken and the first sample that noticed, so an
+# episode's span is NOT an upper bound on a hold -- only the holder measures
+# that.) Measured over the 7 days to
 # 2026-09-11 -- 101 episodes, 76 of them a single failed flush whose ~15s span
 # is this ledger's floor rather than a stall length, three ~30 min,
 # and TWO of those three reached SPILL_CAP (34,691 and 286 rows moved to the
@@ -257,6 +263,15 @@ class FlushStalls:
         self._period_s = period_s
         self.started: datetime | None = None
         self.fails = 0
+        # The LAST failed attempt of the open episode, and the widest spacing
+        # between two consecutive ones. Both are measured; `period_s` above is
+        # only what the flusher SLEEPS, and the loop is `sleep(period_s)` THEN
+        # the attempt, so the observed spacing is that plus the attempt's own
+        # cost plus event-loop lag. Measured 2026-09-29 over the 21 failures of
+        # the 02:34:45Z episode: 15.2 s to 93.0 s apart, mean 24.2 s -- so a
+        # bound derived from the constant is off by up to 6x (EXP-1390).
+        self.last_fail_at: datetime | None = None
+        self.sample_gap_max_s = 0.0
         self.peak_pending = 0
         self.spilled = 0
         # The last failure's message, carried onto the CLOSED record too: an
@@ -298,14 +313,28 @@ class FlushStalls:
                 # 7.141s (the holder's own `held_s`, mistakes #91) and ~0.1s
                 # all logged ~19.3s. Nothing distinguished them here.
                 #
-                # `fails` failed attempts are spaced `period_s` apart and the
-                # file was unwritable at the first and the last, so the hold
-                # spanned at least `(fails - 1) * period_s`. For the 92% that
-                # is 0.0 -- the honest reading, and the reason this field is
-                # published instead of left to the reader: a single-fail
-                # episode bounds the hold ABOVE and says nothing else.
+                # `period_s` IS THE NOMINAL CADENCE AND NOT THE OBSERVED ONE.
+                # The flusher sleeps `period_s` and THEN attempts, so a real
+                # spacing is that plus the attempt's own cost plus event-loop
+                # lag: measured 2026-09-29 over the 21 failures of the
+                # 02:34:45Z episode, 15.2 s to 93.0 s apart, mean 24.2 s
+                # (EXP-1390). `sample_gap_max_s` is the widest spacing this
+                # episode actually saw -- the resolution of the instrument,
+                # measured, which is what a reader must difference against.
                 "period_s": self._period_s,
-                "hold_lower_s": round(max(0.0, (self.fails - 1) * self._period_s), 1),
+                "sample_gap_max_s": round(self.sample_gap_max_s, 1),
+                # THE HOLD BOUND IS NOW MEASURED, NOT DERIVED. The file was
+                # unwritable at the first failed attempt and at the last, so
+                # the hold spanned at least the interval BETWEEN THEM -- two
+                # timestamps this ledger holds, and no constant. It used to be
+                # `(fails - 1) * period_s`, which read 300.0 s for that same
+                # 02:34:45Z episode against a measured 483.1 s: safe, being a
+                # lower bound, and wrong by 183 s of a 13-minute exclusion.
+                # For the 92% single-fail case both give 0.0 -- the honest
+                # reading, and the reason this field is published instead of
+                # left to the reader: a single-fail episode bounds the hold
+                # ABOVE and says nothing else.
+                "hold_lower_s": round(self._hold_lower_s(), 1),
                 "peak_pending": self.peak_pending,
                 "spilled": self.spilled,
                 "error": self.last_error,
@@ -319,6 +348,14 @@ class FlushStalls:
             }
         )
         self._last_written = now
+
+    def _hold_lower_s(self) -> float:
+        """Seconds the archive is PROVEN to have been unwritable: the span
+        from the first failed attempt to the last. 0.0 for a single-fail
+        episode, which proves nothing below the sampling gap."""
+        if self.started is None or self.last_fail_at is None:
+            return 0.0
+        return max(0.0, (self.last_fail_at - self.started).total_seconds())
 
     def arm(self, now: datetime) -> None:
         """Announce that the producer is alive, from now.
@@ -364,6 +401,12 @@ class FlushStalls:
             self.started = now
             self.fails = 0
             self._last_written = None
+            self.last_fail_at = None
+            self.sample_gap_max_s = 0.0
+        if self.last_fail_at is not None:
+            gap = (now - self.last_fail_at).total_seconds()
+            self.sample_gap_max_s = max(self.sample_gap_max_s, gap)
+        self.last_fail_at = now
         self.fails += 1
         self.last_error = _short_err(exc)
         # DISTINCT and first-seen order, because a holder CHANGES mid-episode:
@@ -680,7 +723,7 @@ class Daemon:
         while True:
             await asyncio.sleep(FLUSH_SECS)
             try:
-                n = await asyncio.to_thread(self.store.flush)
+                out = await asyncio.to_thread(self.store.flush_outcome)
             except Exception as exc:
                 # pending size makes a wedged-reader buildup visible in
                 # the journal long before it could OOM the daemon. Past
@@ -698,7 +741,17 @@ class Daemon:
                 # here because this is the only scope that sees BOTH ends.
                 self.stalls.failed(n_pending, n_spilled, exc, datetime.now(UTC))
                 continue
-            self.stalls.ok(datetime.now(UTC))
+            # ONLY A FLUSH THAT OPENED THE FILE ENDS A STALL. `flush_outcome`
+            # returns without attaching when there is nothing to write, and
+            # that tick says nothing about whether the archive was writable:
+            # closing an episode on it reports a recovery the daemon never
+            # observed, mid-hold, while the reader still holds the lock
+            # (EXP-1390, mistakes #103). An episode therefore ends at the
+            # next flush with rows -- so its span understates a hold at the
+            # FRONT too, by however long the buffer stayed empty, which is
+            # not `period_s` and is not bounded by it.
+            if out.touched:
+                self.stalls.ok(datetime.now(UTC))
             # A drain that skipped sidecar records is a real archive hole
             # (torn append from a host crash). The store no longer stalls on
             # it, so the journal is the only place it can surface (EXP-936).
@@ -711,7 +764,7 @@ class Daemon:
                 )
             now = asyncio.get_event_loop().time()
             if now - last_stats >= STATS_SECS:
-                _log(f"stats {self.stats} (flushed {n} this round)")
+                _log(f"stats {self.stats} (flushed {out.rows} this round)")
                 last_stats = now
 
     def _install_stop(self) -> asyncio.Task | None:

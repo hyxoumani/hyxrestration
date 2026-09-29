@@ -345,3 +345,33 @@
   buying that exclusion now rather than at its timer: this one also made
   a 1804-test suite take 15.5 minutes and fail a freshness assertion on
   its own clock.
+- An instrument learns about a resource only from operations that REACH
+  it, and the operation that does not is the cheap early-out nobody
+  counts as a code path. `StreamStore.flush()` returns without attaching
+  when the buffer is empty, and `streamd.flusher` called `stalls.ok()`
+  on that return -- so a tick that never opened `hyxstream.duckdb` was
+  read as proof the archive was writable, closing an open stall episode
+  mid-hold and refusing to open one while a reader still held the lock
+  (mistakes #103). Measured first, from a SECOND process, both arms: a
+  read-only attach refuses a writer 21ms after the OPEN with no query
+  ever issued and admits it 59ms after the CLOSE, so the premise under
+  #91/#96/#102 is sound and it is the VICTIM that under-reports. So:
+  before reading "the operation succeeded" as "the resource was
+  healthy", enumerate the return paths that never touched it, and make
+  the return value say which happened (`FlushOutcome.touched`) -- a row
+  count cannot, since a drain of an empty sidecar opens the file and
+  writes nothing. Corollary that CORRECTS #92 rather than extending it:
+  a victim's episode span is not an upper bound on the hold either, because
+  the episode begins at the first sample that had work to do. Only the
+  holder measures a hold.
+- A sampling period published as an instrument's RESOLUTION must be
+  measured, never read off the constant the loop sleeps: the loop sleeps
+  it and then does the work, so the observed spacing is always longer and
+  here was 6x longer. `hold_lower_s = (fails - 1) * FLUSH_SECS` said
+  300.0s where the ledger's own two timestamps said 483.1s; measured over
+  the 21 failures of the 2026-09-29 02:34:45Z episode, the spacings ran
+  15.2s to 93.0s against a 15.0s constant, one 93s hole inside one
+  continuous stall. Derive a bound from timestamps you HOLD, and publish
+  the widest spacing actually observed (`sample_gap_max_s`) beside the
+  nominal cadence rather than instead of it -- records written before the
+  measurement exists must still be legible as nominal.

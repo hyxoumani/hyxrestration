@@ -2823,13 +2823,27 @@ def qa_stream_stalls(
 
         An episode's `duration_s` is the SPAN between the failed flush that
         opened it and the success that closed it, and streamd learns the
-        archive is unwritable only by attempting a flush every `period_s`. So
-        the span is the hold rounded up to the next sampling point, and for a
-        single-fail episode it is a constant that carries no hold at all:
-        measured 2026-09-27, 254 of this ledger's 275 closed episodes span
-        18.56s +/- 1.63s, and three holds of ~0.1s, 7.141s and ~0.1s that
-        morning were indistinguishable here. Printing that as "longest 19s"
-        invites the reading that the archive was unwritable for 19 seconds.
+        archive is unwritable only by attempting a flush. So the span is the
+        hold rounded up to the next sampling point, and for a single-fail
+        episode it is a constant that carries no hold at all: measured
+        2026-09-27, 254 of this ledger's 275 closed episodes span 18.56s
+        +/- 1.63s, and three holds of ~0.1s, 7.141s and ~0.1s that morning
+        were indistinguishable here. Printing that as "longest 19s" invites
+        the reading that the archive was unwritable for 19 seconds.
+
+        AND THE SPAN IS NOT AN UPPER BOUND ON THE HOLD EITHER -- #92 said it
+        was. A flush with an empty buffer does not open the file at all, so
+        it neither opens an episode nor (since EXP-1390) closes one: an
+        episode BEGINS at the first flush that had rows to write, however
+        long after the lock was taken that is. The 2026-09-29 02:29Z QA run
+        held `hyxstream.duckdb` 819.0s by its own clock and this ledger
+        recorded a 592.5s span. Only the holder measures a hold.
+
+        The resolution to difference against is `sample_gap_max_s`, MEASURED
+        per episode, not `period_s`, which is only what the flusher sleeps
+        (measured 2026-09-29: 15.2s to 93.0s observed against a 15.0s
+        constant). Records before 2026-09-29 carry only the constant and are
+        said to be nominal.
 
         `hold_lower_s` absent means the record predates the field (2026-09-27)
         -- said so explicitly rather than derived from `fails`, because the
@@ -2841,9 +2855,15 @@ def qa_stream_stalls(
         if lower is None:
             return ", hold unresolved (record predates the bound)"
         if float(lower) <= 0:
+            gap = e.get("sample_gap_max_s")
             period = e.get("period_s")
-            res = f"{float(period):.0f}s flush period" if period else "flush period"
-            return f", hold <= that and unresolved below the {res}"
+            if gap:
+                res = f"{float(gap):.0f}s measured sampling gap"
+            elif period:
+                res = f"{float(period):.0f}s nominal flush period"
+            else:
+                res = "flush period"
+            return f", hold unresolved below the {res}"
         return f", hold >= {float(lower):.0f}s"
 
     spilled = [e for e in episodes if _cap_rows(e) > 0]

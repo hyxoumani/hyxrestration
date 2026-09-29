@@ -2598,6 +2598,68 @@ Format: what happened → root cause → error type → prevention tier
     holder measured as continuous. One of the two readings is wrong about
     when the lock was taken, and that is the next experiment, not a footnote.
 
+103. **2026-09-29 -- a flush that never opened the archive reported the
+    archive as writable, so the victim's stall ledger closed an episode
+    mid-hold.** #102's open corollary, answered. The two arms disagreed in
+    the direction #92 said was impossible: `collector.qa` measured an 819.0s
+    hold on `hyxstream.duckdb` and `data/stream_stalls.jsonl` recorded a
+    592.5s episode that began about five minutes into it, where #92 had
+    written down that the victim's span is the hold ROUNDED UP.
+    MEASURED FIRST, both arms, from a second process (EXP-1390): a read-only
+    attach refuses a read-write opener **21ms after the OPEN with no query
+    ever issued**, and admits it **59ms after the CLOSE**, with the writer
+    succeeding immediately before and immediately after as the vacuity
+    guard. The premise under #91, #96 and #102 is sound and the HOLDER is
+    right; the victim under-reports. (The probe had to be a subprocess:
+    DuckDB serves a second same-process attach from the instance it already
+    has open, #97.)
+    THE MECHANISM, and it is a defect: `StreamStore.flush()` returns
+    without attaching when the buffer is empty -- there is nothing to write
+    far more often than one would guess -- and `streamd.flusher` called
+    `stalls.ok()` on that return. A tick that never touched the file was
+    read as a successful write, so it CLOSED an open episode, and refused to
+    open one, while somebody else still held the lock. The instrument's
+    "success" was a claim about the buffer, not about the resource.
+    AND THE PUBLISHED RESOLUTION WAS A CONSTANT THE DAEMON DOES NOT OBEY.
+    `hold_lower_s` was `(fails - 1) * period_s` with `period_s = FLUSH_SECS
+    = 15.0`, but the loop sleeps 15s and THEN attempts, so a real spacing is
+    that plus the attempt's own cost plus event-loop lag: measured over the
+    21 failures of the 02:34:45Z episode, **15.2s to 93.0s apart, mean
+    24.2s**, with one 93s hole between two consecutive failures inside one
+    continuous stall. The derived bound read 300.0s against a measured
+    483.1s -- safe, being a lower bound, and wrong by 183s of a 13-minute
+    exclusion.
+    Error type: an instrument inferred a resource's state from an operation
+    that never reached the resource.
+    Fix: `StreamStore.flush_outcome() -> FlushOutcome(rows, touched)`;
+    `flush()` keeps returning the count for every other caller. `touched`
+    means THE FILE WAS OPENED, and `rows == 0` cannot stand in for it -- a
+    drain of an empty sidecar opens the file and writes nothing. The flusher
+    closes an episode only on `touched`. `hold_lower_s` is now the MEASURED
+    span from the first failed attempt to the last (two timestamps the
+    ledger already holds, no constant), and `sample_gap_max_s` publishes the
+    widest spacing the episode actually saw -- the resolution a reader may
+    difference against. `period_s` stays, renamed in prose to NOMINAL, and
+    `collector.qa._hold_phrase` prefers the measured gap, saying "nominal"
+    only for the ~300 pre-2026-09-29 records that carry no measured one.
+    8 new tests, each red-verified against a mutant watched landing in the
+    diff before its colour was read (#100), including the probe against a
+    never-attach mutant and against a same-process re-attach that must stay
+    GREEN. Suite 1804 -> **1812**.
+    Rule: **an instrument learns about a resource only from operations that
+    REACH it. Before reading "the operation succeeded" as "the resource was
+    healthy", enumerate the paths that return success without touching the
+    resource -- they are usually the cheap early-out nobody thinks of as a
+    code path. And a sampling period that is published as the instrument's
+    resolution must be MEASURED, not read off the constant the loop sleeps:
+    the loop sleeps it and then does work, so the observed period is always
+    longer and sometimes 6x longer.**
+    Corollary, and it corrects #92 rather than extending it: an episode's
+    span is **not** an upper bound on the hold either. An episode begins at
+    the first flush that HAD ROWS, however long after the lock was taken
+    that is, and no field in the ledger bounds that gap. Only the holder
+    measures a hold; the victim measures the part of it that cost something.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
