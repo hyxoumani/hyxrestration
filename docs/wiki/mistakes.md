@@ -2547,6 +2547,57 @@ Format: what happened → root cause → error type → prevention tier
     either passes it or cannot be hurt by omitting it -- default to the
     safe shape rather than to the shape that reads cleanly.
 
+102. **2026-09-29 -- the daily QA run held the stream daemon's archive
+    for 13m39s and had nowhere to say so.** Ladder item (6). The hold rule
+    (#91) reaches PUBLISHERS, and `collector.qa` published no block, so the
+    one reader that attaches all three live DuckDB files every day was
+    outside it -- the same limit that hid `simulator.shadow._read_new` for 77
+    hours (#94), one module later. Each section attached read-only and kept
+    the connection for the whole section, and DuckDB's lock is taken by the
+    OPEN: `hyxstream.duckdb` is `collector.streamd`'s file and
+    `hyxlab.duckdb` is the 5-minute collector's, where a hold is a DROPPED
+    capture cycle rather than a late report. The seconds were bounded only by
+    the section's own length and nothing published them; they had been
+    LEDGERED since `duck_connect` gained a row (#96) and counted as
+    `held_unknown_n`, the field nothing reads.
+    **Measured on the first instrumented run (dev tree, 2026-09-29 02:29Z):
+    `held 3 across 3 files -- hyxlab.duckdb 1 for 1.1s (worst 1.1s);
+    hyxshadow.duckdb 1 for 0.0s; hyxstream.duckdb 1 for 819.0s (worst
+    819.0s), 0 unmeasured`.** 13m39s on a 24/7 writer's file, from a unit on
+    a daily timer -- the second-longest hold in this record after #91's
+    45m45s, and the only one that repeats on a schedule. The victim's side
+    agrees independently: `data/stream_stalls.jsonl` opened an episode
+    naming this process (`hyxlab-autoloop.service pid 3429971`), 12 failed
+    flushes, `peak_pending` 158,408 rows buffered, `spilled` 0. Error type:
+    missing instrument at a reader nobody classified as a report.
+    Fix: `collector.qa._held_ro` -- `_connect_ro` plus `charge_hold` -- with
+    all three sections through it, the checks moved into `_stream_checks` /
+    `_archive_checks` so the `with` IS the hold's scope, `_record_ok` moved
+    back outside the release (a sidecar write needs no lock), and ONE line
+    from `main`'s `finally` so a section that raised still publishes what it
+    held. `tests/test_hold_discipline.py` gains QA as a publisher plus the
+    `_connect_ro`-only-from-`_held_ro` companion test, which is the same
+    pairing `simulator.shadow.stream_conn` has. 7 new tests, red-verified
+    against a mutant restoring the hand-written attach/close, watched
+    landing before its colour was read (#100).
+    Collateral, and the reusable half: `tests/test_qa_early_returns.py` read
+    the new `return _archive_checks(...)` as a SILENT exit -- the emitter is
+    inside the call, and `EMITTERS` was a literal. A section that must hold
+    a file across its checks has to put them in a helper, so that shape will
+    recur; the set is now DERIVED transitively by the same every-path rule
+    (`_delegating_emitters`), with non-vacuity at both ends. Declaring the
+    exit instead would have been a lie about forty printed lines.
+    Suite 1794 -> **1804**.
+    Rule: **a reader's hold is as long as the SECTION, not the query, and
+    the rule that makes holds legible must reach every reader of a shared
+    file -- not just the ones whose output happens to be called a report.**
+    Corollary, open: the two arms DISAGREE in the direction #92 says is
+    impossible. The victim samples every `FLUSH_SECS = 15` and so should
+    over-report a hold, but its episode began 02:34:45 against a hold that
+    started ~02:29:40 -- five minutes of successful flushes inside a hold the
+    holder measured as continuous. One of the two readings is wrong about
+    when the lock was taken, and that is the next experiment, not a footnote.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

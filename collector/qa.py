@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,7 +31,15 @@ from collector.backup import DBS
 from collector.venues import alfred
 from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run, run_completed_at
-from hyxlab.store import SCHEMA_VERSION, duck_connect, lock_holder
+from hyxlab.store import (
+    SCHEMA_VERSION,
+    attach_wait_block,
+    attach_wait_line,
+    charge_hold,
+    duck_connect,
+    lock_holder,
+    reset_attach_waits,
+)
 
 ARCHIVE = "data/hyxlab.duckdb"
 STREAM = "data/hyxstream.duckdb"
@@ -628,6 +637,34 @@ def _connect_ro(path: str, wait_s: float = LOCK_WAIT_S) -> duckdb.DuckDBPyConnec
     return None
 
 
+@contextmanager
+def _held_ro(path: str, wait_s: float = LOCK_WAIT_S):
+    """`_connect_ro`, with the hold measured and charged to the attach.
+
+    QA IS A READER OF TWO FILES A 24/7 DAEMON WRITES, AND IT MEASURED
+    NOTHING. Every section here attaches read-only and keeps the connection
+    for the whole section -- and DuckDB's lock is taken by the OPEN, so an
+    idle connection excludes the writer exactly as hard as a busy one
+    (mistakes #91). `hyxstream.duckdb` is `collector.streamd`'s file and
+    `hyxlab.duckdb` is the 5-minute collector's, where a hold is a DROPPED
+    capture cycle rather than a delayed report. The seconds were bounded
+    only by the section's own length, which nothing published: QA's attaches
+    have recorded ledger rows since `duck_connect` became ledgered
+    (2026-09-28) and were exactly the `held_unknown_n` debt that field
+    exists to count.
+
+    `None` yields `None` and charges nothing: a refused ladder never opened
+    the file, so there is no hold -- the same distinction `held_unknown_n`
+    draws for `exhausted_n` (mistakes #94). The section reports the skip.
+    """
+    conn = _connect_ro(path, wait_s)
+    if conn is None:
+        yield None
+        return
+    with charge_hold(conn.close):
+        yield conn
+
+
 def _reachable(conn, name: str, section: str, now: datetime) -> bool:
     """Emit the reachability line. A lock held by a live writer SKIPS the
     section — it is not a data defect and must not alarm — but a skip is
@@ -782,11 +819,22 @@ def _capture_gap_minutes(
 
 
 def qa_stream(hours: float, path: str = STREAM) -> None:
-    conn = _connect_ro(path)
-    now = datetime.now(UTC).replace(tzinfo=None)
-    if not _reachable(conn, "stream archive reachable", "stream", now):
-        return
+    """The stream-archive section. The checks live in `_stream_checks` so the
+    hold has a scope: `_held_ro` releases `hyxstream.duckdb` when this
+    function returns, and the seconds are charged to the attach whatever the
+    body did (`charge_hold` records in `finally`)."""
+    with _held_ro(path) as conn:
+        now = datetime.now(UTC).replace(tzinfo=None)
+        if not _reachable(conn, "stream archive reachable", "stream", now):
+            return
+        _stream_checks(conn, hours, now)
+    # AFTER the release, exactly as the hand-written `conn.close()` /
+    # `_record_ok` order had it: the section-completion sidecar is a file
+    # write and does not need the archive locked while it happens.
+    _record_ok("stream", now)
 
+
+def _stream_checks(conn, hours: float, now: datetime) -> None:
     age = conn.execute("SELECT epoch(? - max(recv_ts)) FROM stream_trades", [now]).fetchone()[0]
     check(
         "stream fresh (trades < 5 min old)",
@@ -1133,9 +1181,6 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
         " (box clock vs venue; NTP pending)",
     )
 
-    conn.close()
-    _record_ok("stream", now)
-
 
 # ---------------------------------------------------------------------------
 # The shadow-vs-replay calibration haircut, given a consumer.
@@ -1205,24 +1250,27 @@ def _divergence_report(run_id: str, reports: Path) -> dict | None:
 def qa_divergence(
     now: datetime | None = None, path: str = SHADOW, reports: Path = DIVERGENCE_REPORTS
 ) -> None:
-    conn = _connect_ro(path)
     now = now or datetime.now(UTC).replace(tzinfo=None)
-    if not _reachable(conn, "shadow ledger reachable", "divergence", now):
-        return
+    # The `with` is exactly the two queries this section asks of the shadow
+    # daemon's own ledger -- the close was already hand-written here, and
+    # `_held_ro` makes the seconds it bounds readable rather than implicit.
+    with _held_ro(path) as conn:
+        if not _reachable(conn, "shadow ledger reachable", "divergence", now):
+            return
 
-    run_id = latest_complete_run(conn)
-    if run_id is None:
-        # One live run, or none. Nothing is measurable yet, and a free pass
-        # here is how the section would read green on an empty ledger
-        # forever (mistakes #28) -- say so instead of banking it.
-        print(
-            "WATCH " + DIVERGENCE_FRESH_CHECK + " — no finished shadow run with fills to measure",
-            flush=True,
-        )
-        conn.close()
-        return
-    completed = run_completed_at(conn, run_id)
-    conn.close()
+        run_id = latest_complete_run(conn)
+        if run_id is None:
+            # One live run, or none. Nothing is measurable yet, and a free
+            # pass here is how the section would read green on an empty
+            # ledger forever (mistakes #28) -- say so instead of banking it.
+            print(
+                "WATCH "
+                + DIVERGENCE_FRESH_CHECK
+                + " — no finished shadow run with fills to measure",
+                flush=True,
+            )
+            return
+        completed = run_completed_at(conn, run_id)
 
     report = _divergence_report(run_id, reports)
     if report is None:
@@ -1539,11 +1587,23 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     """Returns the econ pull's age in days (see `qa_econ_pull_live`), or
     None when the archive was unreachable or has never been pulled — the
     witness `qa_signals_fetch` needs, and None means "cannot decide"."""
-    conn = _connect_ro(path)
-    now = datetime.now(UTC).replace(tzinfo=None)
-    if not _reachable(conn, "main archive reachable", "archive", now):
-        return None
+    with _held_ro(path) as conn:
+        now = datetime.now(UTC).replace(tzinfo=None)
+        if not _reachable(conn, "main archive reachable", "archive", now):
+            return None
+        # The checks are a separate function for the hold's sake -- see
+        # `qa_stream`. This is the collector's own file: the hold here is
+        # measured in dropped capture cycles.
+        pull_age_d = _archive_checks(conn, hours, now)
+    _record_ok("archive", now)  # after the release, as above
+    # Outside the `with`, so the file is released before the caller resumes --
+    # and so the emitter stands on this return's path where
+    # `tests/test_qa_early_returns.py` can see it, rather than inside the
+    # returned call where an exit printing forty lines reads as silent.
+    return pull_age_d
 
+
+def _archive_checks(conn, hours: float, now: datetime) -> int | None:
     _check_freshness(
         conn, "collector fresh (snapshots < 20 min old)", "snapshots", "ts", now, "snapshots"
     )
@@ -1844,8 +1904,6 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
 
     qa_tape_coverage(conn, now)
     qa_poly_tail_absorbed(conn, now)
-    conn.close()
-    _record_ok("archive", now)
     return pull_age_d
 
 
@@ -3761,24 +3819,39 @@ def main() -> None:
 
     now = datetime.now(UTC)
     print(f"[qa] {now:%Y-%m-%d %H:%M} window={args.hours}h", flush=True)
-    qa_disk_headroom()  # filesystem-only; must not be gated by an archive lock
-    qa_stream(args.hours)
-    qa_divergence()  # sidecar ledger + report dir; never gated by the archive lock
-    pull_age_d = qa_archive(args.hours)
-    qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
-    qa_collect_skips()  # sidecar journal; never gated by the archive lock
-    qa_collect_spool()  # the recovery half of the same hole; also sidecar-only
-    qa_stream_stalls()  # ledger + journal witness; a stall IS the archive unwritable
-    qa_fade_window_capture()  # journal-only, for the same reason
-    qa_batch_run_budget()  # journal-only, for the same reason
-    # `_ran` and `_watched` are read here for the same reason the findings are:
-    # they must be the LIVE sets at the moment of the comparison, not ones
-    # captured earlier.
-    # the only reader of the last run
-    unread = qa_prior_run(now, _own_findings(), _skipped, _ran, _watched)
-    # Re-read AFTER the check rather than reusing the list above: the
-    # exclusion is then a live filter, not an artifact of statement order.
-    _record_run(_own_findings(), _skipped, now, unread)  # BEFORE either exit path below
+    # So the block below describes THIS run's attaches and not an import's.
+    reset_attach_waits()
+    try:
+        qa_disk_headroom()  # filesystem-only; must not be gated by an archive lock
+        qa_stream(args.hours)
+        qa_divergence()  # sidecar ledger + report dir; never gated by the archive lock
+        pull_age_d = qa_archive(args.hours)
+        qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
+        qa_collect_skips()  # sidecar journal; never gated by the archive lock
+        qa_collect_spool()  # the recovery half of the same hole; also sidecar-only
+        qa_stream_stalls()  # ledger + journal witness; a stall IS the archive unwritable
+        qa_fade_window_capture()  # journal-only, for the same reason
+        qa_batch_run_budget()  # journal-only, for the same reason
+        # `_ran` and `_watched` are read here for the same reason the findings
+        # are: they must be the LIVE sets at the moment of the comparison, not
+        # ones captured earlier.
+        # the only reader of the last run
+        unread = qa_prior_run(now, _own_findings(), _skipped, _ran, _watched)
+        # Re-read AFTER the check rather than reusing the list above: the
+        # exclusion is then a live filter, not an artifact of statement order.
+        _record_run(_own_findings(), _skipped, now, unread)  # BEFORE either exit path
+    finally:
+        # WHAT QA COST THE WRITERS IT READS, and in `finally` for the same
+        # reason `charge_hold` records there: a section that raised still held
+        # the file for every second up to the exception, and a run that died
+        # is the one whose holds most need a witness (mistakes #91). QA writes
+        # no JSON, so this line is the whole artifact -- it must name the file
+        # per hold, which `attach_wait_line` does since the scalars stopped
+        # being a sum over different locks (mistakes #101). No budget is
+        # printed: `_connect_ro` hand-rolls its own ladder in
+        # `RETRY_SLEEP_S` steps rather than using a `store` budget, so a
+        # `budget_s` here would be a denominator from another ladder.
+        print(attach_wait_line(attach_wait_block(rows=False), prefix="[qa]"), flush=True)
     if _failures:
         print(f"[qa] {len(_failures)} FAILURES: {_failures}", flush=True)
         sys.exit(1)

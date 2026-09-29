@@ -86,7 +86,7 @@ def _tree(source: str | None = None) -> ast.AST:
     return ast.parse(QA.read_text() if source is None else source)
 
 
-def _emits(node: ast.AST) -> bool:
+def _emits(node: ast.AST, emitters: set[str] = EMITTERS) -> bool:
     """Does this statement (or expression) emit on EVERY path through it?
 
     An emitter buried in a nested `if` is not an emitter for the code after
@@ -96,34 +96,70 @@ def _emits(node: ast.AST) -> bool:
     fixed by the fix that only covers half of it.
     """
     if isinstance(node, ast.If):
-        return bool(node.orelse) and _emits_block(node.body) and _emits_block(node.orelse)
+        return (
+            bool(node.orelse)
+            and _emits_block(node.body, emitters)
+            and _emits_block(node.orelse, emitters)
+        )
     if isinstance(node, ast.Try):
-        return _emits_block(node.body + node.orelse) and all(
-            _emits_block(h.body) for h in node.handlers
+        return _emits_block(node.body + node.orelse, emitters) and all(
+            _emits_block(h.body, emitters) for h in node.handlers
         )
     if isinstance(node, ast.For | ast.While):
         return False  # a loop that runs zero times emits nothing
     if isinstance(node, ast.With):
-        return _emits_block(node.body)
+        return _emits_block(node.body, emitters)
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
         return False  # defining a helper does not call it
     for n in ast.walk(node):
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in EMITTERS:
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in emitters:
             return True
     return False
 
 
-def _emits_block(body: list[ast.stmt]) -> bool:
-    return any(_emits(st) for st in body)
+def _emits_block(body: list[ast.stmt], emitters: set[str] = EMITTERS) -> bool:
+    return any(_emits(st, emitters) for st in body)
 
 
-def _emits_somewhere(node: ast.AST) -> bool:
+def _emits_somewhere(node: ast.AST, emitters: set[str] = EMITTERS) -> bool:
     """Does an emitter appear anywhere inside, on any path? Not enough to bound
     a return — it is what a DECLARED exit's witness branch looks like."""
     return any(
-        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in EMITTERS
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in emitters
         for n in ast.walk(node)
     )
+
+
+def _delegating_emitters(tree: ast.AST) -> set[str]:
+    """Functions in this module that emit on every path, so CALLING one emits.
+
+    WHY THE BASE SET IS NOT ENOUGH (2026-09-28). A section that has to hold a
+    DuckDB file for the length of its checks needs the checks in a function of
+    their own -- the `with` is the hold's scope, and the body cannot be the
+    same function without re-indenting it under the lock. `qa_archive` became
+    `with _held_ro(path) as conn: ... return _archive_checks(conn, hours, now)`
+    and the derivation read that exit as SILENT: the only emitter on its path
+    is inside the call it returns, and a name it had never been told about.
+    Declaring it would have been a lie (that return prints ~40 lines) and
+    EMITTERS is a literal, so the next such split would have needed one too.
+
+    So the set is DERIVED, transitively, by the same every-path rule the rest
+    of this file uses: a function qualifies only if `_emits_block` already
+    holds for its body -- an UNCONDITIONAL emitter statement at its own top
+    level. A helper that prints on one branch does not qualify, which is what
+    keeps `test_a_conditionally_emitted_line_does_not_bound_a_return` honest
+    one level down.
+    """
+    out: set[str] = set()
+    fns = [f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef | ast.AsyncFunctionDef)]
+    changed = True
+    while changed:
+        changed = False
+        for fn in fns:
+            if fn.name not in out and _emits_block(fn.body, EMITTERS | out):
+                out.add(fn.name)
+                changed = True
+    return out
 
 
 def _sql_of_guard(
@@ -176,6 +212,10 @@ def section_returns(source: str | None = None) -> list[dict]:
     stands on its path, and the innermost guard it sits under."""
     out: list[dict] = []
     tree = _tree(source)
+    # Derived from the tree UNDER TEST, so the synthetic sources below carry
+    # only the emitters they define -- a set read from qa.py would let a
+    # mutation test credit a name its own source never mentions.
+    emitters = EMITTERS | _delegating_emitters(tree)
     for fn in ast.walk(tree):
         if not (isinstance(fn, ast.FunctionDef) and fn.name.startswith("qa_")):
             continue
@@ -189,8 +229,8 @@ def section_returns(source: str | None = None) -> list[dict]:
                         {
                             "fn": fn.name,  # noqa: B023 — consumed inside this iteration
                             "line": st.lineno,
-                            "bounded": any(_emits(p) for p in path),
-                            "witness": any(_emits_somewhere(p) for p in path),
+                            "bounded": any(_emits(p, emitters) for p in path),  # noqa: B023
+                            "witness": any(_emits_somewhere(p, emitters) for p in path),  # noqa: B023
                             "guard": None if guard is None else ast.unparse(guard),
                             "sql": None if guard is None else _sql_of_guard(guard, assigns),  # noqa: B023
                         }
@@ -369,6 +409,43 @@ def test_a_conditionally_emitted_line_does_not_bound_a_return():
     assert half and not half[0]["bounded"], (
         "an emitter reachable on only one path was read as bounding the return — every silent "
         "exit could then be papered over with a conditional line that fires on the other case"
+    )
+
+
+def test_a_delegated_section_body_bounds_the_return():
+    """Non-vacuity for `_delegating_emitters`, the crediting end. A section
+    that must hold its DuckDB file across the checks puts them in a helper of
+    their own (`qa_archive` -> `_archive_checks`, 2026-09-28), and a call to a
+    helper that prints on every path IS a printed line. Without this the
+    derivation demands a declaration for an exit that emits forty of them."""
+    got = section_returns(
+        source="def _body(conn):\n"
+        '    check("something", True)\n'
+        "def qa_x(conn):\n"
+        "    n = _body(conn)\n"
+        "    return n\n"
+    )
+    assert got and got[0]["bounded"], (
+        "a return preceded by a call into a section body that prints"
+        " unconditionally was read as silent"
+    )
+
+
+def test_a_delegate_that_only_sometimes_prints_does_not_bound_a_return():
+    """And the refusing end, which is the rule above one level down: the
+    every-path test is what `_delegating_emitters` inherits by reusing
+    `_emits_block`. A helper that prints on one branch would otherwise
+    launder exactly the papering-over this file was written to catch."""
+    got = section_returns(
+        source="def _body(conn):\n"
+        "    if witness():\n"
+        '        check("something", False)\n'
+        "def qa_x(conn):\n"
+        "    n = _body(conn)\n"
+        "    return n\n"
+    )
+    assert got and not got[0]["bounded"], (
+        "a helper that emits on only one of its own paths was credited as an emitter for its caller"
     )
 
 

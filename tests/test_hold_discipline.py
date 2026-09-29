@@ -91,6 +91,14 @@ ALLOWED: dict[str, str] = {
     # exactly this shape. The exemption is narrow because the companion
     # test forbids every caller from using this one directly.
     "simulator/shadow.py::stream_conn": "connect_retry",
+    # The SAME shape, one publisher later (2026-09-28): `_connect_ro` runs
+    # QA's own retry ladder -- `RETRY_SLEEP_S` steps, degrading to `None` so
+    # a live writer is a SKIP and not a failure -- and hands the connection
+    # to its caller, so the hold belongs to the section's body.
+    # `collector.qa._held_ro`, right below it, is where those seconds get
+    # measured, and the companion test forbids every section from taking this
+    # one directly.
+    "collector/qa.py::_connect_ro": "duck_connect",
 }
 
 
@@ -185,12 +193,43 @@ def test_shadow_reads_the_stream_archive_only_through_the_measured_seam():
     )
 
 
+def test_qa_reads_the_live_archives_only_through_the_measured_seam():
+    """The pairing `ALLOWED`'s second entry buys, and the reason it is worth
+    having twice.
+
+    QA is a DAILY reader of two files a 24/7 writer owns -- `hyxstream.duckdb`
+    (streamd) and `hyxlab.duckdb` (the 5-minute collector, where a hold is a
+    dropped capture cycle, not a late report) -- and it held each one for the
+    length of a whole section while publishing no block at all. The
+    exemption for `_connect_ro` is that it owns no hold; that argument dies
+    the moment a section calls it directly, which is what all three sections
+    did until 2026-09-28. So: inside `collector/qa.py`, the only function
+    allowed to name `_connect_ro` is `_held_ro`.
+    """
+    tree = ast.parse((ROOT / "collector/qa.py").read_text())
+    owners = _qualnames(tree)
+    callers = {
+        owners.get(node, "<module>")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_connect_ro"
+    }
+    assert callers == {"_held_ro"}, (
+        "collector.qa attaches a live archive without measuring the hold,"
+        f" from: {sorted(callers - {'_held_ro'})} — use _held_ro"
+    )
+
+
 def test_the_publisher_set_is_the_one_this_rule_was_written_for():
     """Set equality, both directions (mistakes #34): a renamed report drops
     out of the rule silently, and a new one must be brought under it
     deliberately. `hyxlab/store.py` defines the block and is not a
     publisher of it."""
     assert set(publishers()) == {
+        # Not a report about data either -- the daily QA run, which reads
+        # both live archives and, until 2026-09-28, was the largest hold in
+        # this repo with nowhere to say so (the `simui`/`backup`/`bookreplay`/
+        # `streamstore` attaches are the same debt, still unpaid).
+        "collector/qa.py",
         "collector/sweep.py",
         "hyxlab/store.py",
         "simulator/atlas.py",

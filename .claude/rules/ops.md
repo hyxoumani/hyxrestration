@@ -326,3 +326,22 @@
   was written against; the test passed green against an unchanged file
   and looked like a passing mutant. Assert the mutant changed the source
   (diff it, or fail the edit) before reading the test's colour.
+- A rule that makes a shared resource's cost legible has to reach every
+  CALLER of that resource, not every caller that calls itself a report.
+  `tests/test_hold_discipline.py` binds "measure your holds" to modules
+  that publish an attach block, and `collector.qa` published none -- so
+  the one unit that attaches all three live DuckDB files, daily, was the
+  last reader outside the rule. Measured on its first instrumented run
+  (2026-09-29 02:29Z): `hyxlab.duckdb 1.1s, hyxshadow.duckdb 0.0s,
+  hyxstream.duckdb 819.0s` -- 13m39s of exclusion of `collector.streamd`,
+  with the victim's ledger independently naming the process, 12 failed
+  flushes and 158,408 rows buffered (mistakes #102). A reader's hold is
+  the length of its SECTION, not of its query: `_connect_ro` handed the
+  connection to a body that ran for minutes. So scope the hold with a
+  `with` (`collector.qa._held_ro`, `charge_hold`), publish it from a
+  `finally` so a run that died still says what it held, and keep the
+  section-completion write OUTSIDE the release. And before running any
+  standing report ad hoc against the live archives, know that you are
+  buying that exclusion now rather than at its timer: this one also made
+  a 1804-test suite take 15.5 minutes and fail a freshness assertion on
+  its own clock.
