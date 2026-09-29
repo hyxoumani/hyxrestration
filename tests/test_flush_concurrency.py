@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from collector import streamd
+from hyxlab import streamstore
 from hyxlab.store import connect_retry
 from hyxlab.streamstore import BookEvent, StreamStore, StreamTrade
 
@@ -168,10 +169,19 @@ class _Store:
     def drain_rows_estimate(self) -> int:
         return self.pending + self.sidecar_rows
 
-    def flush(self) -> int:
+    def flush_outcome(self):
+        # Mirrors the real store: nothing buffered and no sidecar means the
+        # file is never opened, and `rows == 0` cannot stand in for that
+        # (mistakes #103). The drain reads `touched`, so the fake has to
+        # model it or it is green against the defect.
+        if not self.pending and not self.sidecar_rows:
+            return streamstore.FlushOutcome(rows=0, touched=False)
         self.flushes += 1
         n, self.pending = self.pending, 0
-        return n
+        return streamstore.FlushOutcome(rows=n, touched=True)
+
+    def flush(self) -> int:
+        return self.flush_outcome().rows
 
     def spill_all(self) -> int:
         self.spill_alls += 1

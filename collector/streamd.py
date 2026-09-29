@@ -917,7 +917,7 @@ class Daemon:
             self.stalls.interrupted(now, handoff=moved)
             return
         try:
-            self.store.flush()
+            out = self.store.flush_outcome()
         except Exception as exc:
             held = self.store.pending
             try:
@@ -936,7 +936,30 @@ class Daemon:
             self.stalls.observe(held, self.store.spilled, exc, now)
             self.stalls.interrupted(now, handoff=moved)
         else:
-            self.stalls.ok(now)
+            # THE SAME RULE AS THE FLUSHER, ONE LEVEL DOWN (mistakes #103,
+            # #97). `flush_outcome` returns without opening the archive when
+            # there is nothing to write, and this branch used the count-only
+            # `flush()` and reported `ok` unconditionally -- closing an open
+            # episode on the strength of a call that never touched the file,
+            # in the one path that runs while the daemon is dying and so is
+            # the last thing the ledger ever says about that episode.
+            #
+            # Latent today, and only by an invariant nothing enforced: an
+            # episode opens from a flush that RAISED, which cannot happen
+            # unless there were rows or a sidecar, so `drain_rows_estimate`
+            # is non-zero and the drain's own flush opens the file. That
+            # invariant is asserted in `tests/test_stream_stalls.py` rather
+            # than trusted -- `drain_rows_estimate` already reads an
+            # unstattable sidecar as zero, so the arithmetic that protects
+            # this line is one suppressed OSError wide.
+            #
+            # An untouched drain is not a recovery and is not a loss: the
+            # episode simply outlives this process, which is what
+            # `interrupted` says (and is a no-op when none is open).
+            if out.touched:
+                self.stalls.ok(now)
+            else:
+                self.stalls.interrupted(now, handoff=0)
 
     async def run(self, duration: float | None = None) -> None:
         self.store.mark_startup_gap()

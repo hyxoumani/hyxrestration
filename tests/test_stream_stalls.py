@@ -944,7 +944,7 @@ def test_an_interim_open_record_carries_the_bound_too(tmp_path):
 
 
 def test_the_check_refuses_to_call_a_one_flush_span_a_hold(tmp_path):
-    """"longest 19s" reads as "the archive was unwritable for 19 seconds", and
+    """ "longest 19s" reads as "the archive was unwritable for 19 seconds", and
     for a single-fail episode that is the sampling period talking."""
     path = _ledger(tmp_path, _ep(T0, 19.0))
     failed, skipped, out = _run_check(path=path, journal_fails=3, now=NOW)
@@ -1137,3 +1137,65 @@ def test_the_check_prefers_the_measured_sampling_gap_over_the_constant(tmp_path)
     assert not failed, out
     assert "unresolved below the 93s measured sampling gap" in out
     assert "nominal" not in out
+
+
+def test_a_shutdown_drain_that_never_opened_the_archive_does_not_close_an_episode(tmp_path):
+    """mistakes #103, one level down (#97: the same shape is part of the fix,
+    not a note for next pass).
+
+    The flusher was taught that only a flush which OPENED the archive may end
+    a stall; `_drain_locked` kept calling the count-only `flush()` and
+    reported `ok` unconditionally. That is the same false recovery in the
+    worse place: the drain runs while the daemon is dying, so its record is
+    the LAST thing the ledger ever says about that episode, and a `closed`
+    written there is the number a reader differences forever.
+    """
+    store = _Store()
+    store.empty = True  # nothing buffered: the real flush returns untouched
+    d = _daemon(tmp_path, store)
+    d.stalls.failed(1234, 0, _err(), T0)
+
+    d._final_drain()
+
+    assert store.flushes == 0, "nothing was written, so nothing was proven"
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["state"] == "open", "an untouched drain reported a recovery"
+
+
+def test_an_untouched_drain_with_no_open_episode_writes_nothing(tmp_path):
+    """The overwhelmingly common shutdown: an idle daemon, an empty buffer,
+    no stall. `interrupted` must stay a no-op there -- manufacturing an
+    episode per restart is the mirror failure of closing a real one."""
+    store = _Store()
+    store.empty = True
+    d = _daemon(tmp_path, store)
+
+    d._final_drain()
+
+    assert not (tmp_path / "stalls.jsonl").exists()
+
+
+def test_only_a_flush_with_something_to_write_can_open_an_episode(tmp_path):
+    """The invariant that makes the branch above LATENT rather than live, at
+    the real store rather than in prose.
+
+    An episode opens only from a flush that RAISED, and `flush_outcome`
+    raises only past its early return -- so there were rows or a sidecar, and
+    both survive the failure (the `except` restores the batch). The drain's
+    own flush therefore opens the file. Asserted rather than trusted:
+    `drain_rows_estimate` reads an unstattable sidecar as zero, so the
+    arithmetic guarding that line is one suppressed OSError wide.
+    """
+    store = streamstore.StreamStore(tmp_path / "s.duckdb")
+    store.path = tmp_path / "nope" / "s.duckdb"  # unopenable: every flush raises
+
+    store.append_gap("kalshi", "books", T0, T0, "probe")
+    assert store.pending > 0
+    with pytest.raises(Exception):
+        store.flush_outcome()
+
+    # What the ledger saw as a failure leaves work behind, so the next
+    # attempt cannot take the early return.
+    assert store.pending > 0 or store._spill_path.exists()
+    store.path = tmp_path / "s.duckdb"
+    assert store.flush_outcome().touched is True
