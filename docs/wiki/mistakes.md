@@ -2660,6 +2660,52 @@ Format: what happened → root cause → error type → prevention tier
     that is, and no field in the ledger bounds that gap. Only the holder
     measures a hold; the victim measures the part of it that cost something.
 
+104. **2026-09-29 -- the number that went into the execution queue was
+    bought by the ad-hoc run that measured it, and the rule it motivated
+    was applied to one of the two places it belonged.** Two halves of one
+    pass, and the second is the one with a fix in it.
+    THE MEASUREMENT. #102 published "the daily QA run held
+    `hyxstream.duckdb` 819.0s" and the queue carried it forward as
+    "13m39s daily". It was the AD-HOC run's number -- the one whose own
+    write-up records that it made a 1,804-test suite take 15.5 minutes --
+    and the first TIMER measurement of the same, scoped, instrumented code
+    is **47.1s** in a unit whose entire run was 49s wall. ~17x, load-bound,
+    not query-bound. #102's closing sentence ("before running any standing
+    report ad hoc against the live archives, know that you are buying that
+    exclusion NOW rather than at its timer") is the complete explanation of
+    #102's own headline figure, and nobody applied it to the figure.
+    **A number produced by a run you provoked describes that run. Before
+    it becomes a property of the system -- and especially before it becomes
+    a work item -- wait for the scheduled one, and say which kind of run
+    each published number came from.** An optimisation item was open for a
+    day against a cost that does not exist; the cure was reading a journal
+    line, not writing code.
+    THE FIX. EXP-1390's rule is that only a flush which OPENED the file may
+    end a stall episode. `streamd.flusher` was taught it in the same commit
+    that discovered it; `Daemon._drain_locked` was not, and kept calling the
+    count-only `flush()` and reporting `stalls.ok(now)` unconditionally --
+    the worse of the two sites, because the drain runs while the daemon is
+    dying, so its record is the LAST thing the ledger ever says about that
+    episode and a `closed` written there is what every later reader
+    differences forever. Latent, and only by an invariant nothing enforced:
+    an episode opens only from a flush that RAISED, which cannot happen past
+    the early return, so there were rows or a sidecar and the drain's own
+    flush opens the file. That invariant is now an assertion at the real
+    store, because `drain_rows_estimate` reads an unstattable sidecar as
+    zero by design -- the arithmetic keeping the line unreachable is one
+    suppressed `OSError` wide. **#97 again, and it is cheaper every time it
+    is obeyed: when a rule is discovered at one call site, enumerate the
+    other callers of the same primitive IN THAT PASS.** Three `_Store` test
+    doubles modelled `flush()` as always-succeeds-always-touches and were
+    green against the defect by construction: a fake that cannot express the
+    early return cannot fail on it, so **a fix to a return type is not
+    shipped until every double models the new return's cheap path.**
+    THE ONE GOOD READING. The same 10:00Z QA run is the named holder of a
+    stall episode, giving the first two-sided check in this archive:
+    `hold_lower_s` 30.0 <= the holder's own 47.1 <= the span 48.9. The
+    #92/#103 instruments agree with a holder that was independently
+    measuring itself, in both directions.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
