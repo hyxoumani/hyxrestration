@@ -2706,6 +2706,26 @@ Format: what happened → root cause → error type → prevention tier
     #92/#103 instruments agree with a holder that was independently
     measuring itself, in both directions.
 
+105. **2026-10-05 -- the spool covered the lock this repo's writers take,
+    not the lock that actually refused the cycle.** `collector.collect`
+    skips and spools a fetched cycle when the `data/writer.lock` flock is
+    held (exit 75, rows recovered next firing). But the flock excludes only
+    this repo's WRITERS; a read-only DuckDB attach that never takes it (an
+    ad-hoc session's probe -- here two `run-p<pid>` scopes, one 10m21s at
+    4.3G) let the collector win the flock, exhaust `open_retry`'s 5-attempt
+    ladder against DuckDB's own lock, and exit 1 holding the cycle in
+    memory. Measured: 4 cycles dropped 2026-10-05 13:29-13:52Z, the only
+    such failures in 30 days of journal; QA's skip check read "0 exit-75
+    cycles" throughout, because a refusal at this layer was never a skip.
+    Fixed in 4da862e: an exhausted attach takes the same `_skip_cycle`
+    path (record, spool, exit 75), and re-raises after spooling when
+    `store.lock_holder` names no LIVE holder -- a lock left behind is an
+    incident, not contention. **A recovery path is keyed to the mechanism
+    that failed, so ask which OTHER mechanism can refuse the same
+    operation.** `collector.breadth` has the identical shape
+    (`writer_burst` raising -> "cycle failed", exit 1) but no spool to
+    route to, so its loss is unchanged; named, not fixed.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
