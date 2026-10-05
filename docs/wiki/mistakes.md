@@ -2726,6 +2726,31 @@ Format: what happened → root cause → error type → prevention tier
     (`writer_burst` raising -> "cycle failed", exit 1) but no spool to
     route to, so its loss is unchanged; named, not fixed.
 
+106. **2026-10-05 -- a boot catch-up spent the day's sweep on DNS, a second
+    reboot erased the failure, and the digest called it CLEARED.** Both
+    daily sweeps are `Persistent=true`; at the 09:01Z boot their catch-up
+    fired before the resolver was up and died on `NameResolutionError` at
+    the first request (neither retries -- `signals` and `tradepass`,
+    started in the same second, survived only because they do). The timer
+    stamp recorded the slot as TAKEN. An unclean crash-reboot at 09:17Z
+    (`journalctl --list-boots`: three boots, the middle one 16 min long --
+    the previous pass read `last -x` as one outage and missed it) then
+    reset the user manager, which answers `Result=success` with EMPTY
+    `ExecMain*` timestamps for a unit that has not run this boot. So the
+    digest printed both sweeps OK and the failure section CLEARED for 11h,
+    and the previous pass's status line called the sweep "RUNNING, 8.1h
+    in" -- on a day it never ran. Cost: Kalshi resumes from its watermark
+    (a day late, nothing lost); poly's 10-05 open-market snapshot is gone.
+    Fixed in 7f62bf1: `collector.netwait` (bounded resolver gate,
+    ExecStartPre on both sweeps, hosts pinned to the clients' base URLs by
+    test) and `health.outlived_by_failure` -- a journal failure newer than
+    every run the manager remembers (start, exit, last trigger) reads
+    FAILED. **The manager's memory ends at its own restart and the
+    journal's does not; a digest that reads only the manager reports
+    "nothing happened" for exactly the window in which the box was least
+    healthy.** This is #2 of the digest's own docstring (a default is
+    not a measurement) reached across a boot.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
