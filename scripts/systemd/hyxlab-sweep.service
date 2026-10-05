@@ -17,4 +17,8 @@ WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # No flock wrapper: a unit-level lock is held for the whole multi-hour run,
 # which starved hyxlab-collect of 421/3706 cycles in the 14d to 2026-08-02.
 # collector.sweep takes data/writer.lock itself, per series, in short bursts.
+# A Persistent= catch-up fires seconds after boot, before the resolver is up;
+# this run's first request does not retry, so without the gate the day's
+# slot is spent on a NameResolutionError (2026-10-05 09:01Z, both sweeps).
+ExecStartPre=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.netwait api.elections.kalshi.com
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.sweep --days 2

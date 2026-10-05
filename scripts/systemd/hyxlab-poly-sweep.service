@@ -14,4 +14,8 @@ Type=oneshot
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+# A Persistent= catch-up fires seconds after boot, before the resolver is up;
+# this run's first request does not retry, so without the gate the day's
+# slot is spent on a NameResolutionError (2026-10-05 09:01Z, both sweeps).
+ExecStartPre=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.netwait gamma-api.polymarket.com clob.polymarket.com data-api.polymarket.com
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.poly_sweep

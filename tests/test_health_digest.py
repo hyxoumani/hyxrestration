@@ -906,3 +906,47 @@ def test_a_non_string_unread_does_not_crash_the_digest() -> None:
     """Same posture as the rest of the parser: a hand-edited or older-format
     record reads as absent rather than taking the only reader down with it."""
     assert _prior_run({"run": {"last_run": "2026-09-10T10:00:00+00:00", "unread": 7}}).unread == ""
+
+
+# --------------------------------------------------------------------------
+# A failure the manager FORGOT (2026-10-05): the 09:01Z boot's catch-up sweeps
+# failed on DNS, the box rebooted at 09:17Z, and the fresh manager answered
+# `Result=success` with no ExecMain timestamps. The persisted timer stamp said
+# the slot was taken, so both read OK and the failure section said CLEARED.
+# --------------------------------------------------------------------------
+
+BOOT_FAIL = datetime.fromtimestamp(1_788_704_100.4, UTC)
+
+
+def _forgotten() -> dict[str, str]:
+    return svc(ExecMainStartTimestamp="", ExecMainExitTimestamp="")
+
+
+def test_a_failure_the_manager_forgot_is_not_ok() -> None:
+    raw = health.judge("hyxlab-sweep.service", _forgotten(), timer(), NOW)
+    assert raw.state == "OK"  # the defect: judge alone cannot see it
+    fails = [health.UnitFailure("hyxlab-sweep.service", BOOT_FAIL, "exit-code")]
+    row = health.outlived_by_failure(raw, _forgotten(), timer(), fails)
+    assert row.state == "FAILED" and "journal" in row.detail
+    (line, _) = health.failure_history_lines(fails, [row], FAIL_NOW)
+    assert "still failed" in line
+
+
+def test_a_run_started_after_the_failure_clears_it() -> None:
+    fails = [health.UnitFailure("hyxlab-sweep.service", BOOT_FAIL, "exit-code")]
+    later = timer(LastTriggerUSec="@1788704300", NextElapseUSecRealtime="@1788790800")
+    raw = health.judge("hyxlab-sweep.service", _forgotten(), later, NOW)
+    assert health.outlived_by_failure(raw, _forgotten(), later, fails).state == "OK"
+
+
+def test_another_units_failure_is_not_this_ones() -> None:
+    fails = [health.UnitFailure("hyxlab-qa.service", BOOT_FAIL, "exit-code")]
+    raw = health.judge("hyxlab-sweep.service", _forgotten(), timer(), NOW)
+    assert health.outlived_by_failure(raw, _forgotten(), timer(), fails) is raw
+
+
+def test_a_restarted_daemon_clears_its_own_failure() -> None:
+    up = svc(ActiveState="active", SubState="running", ExecMainStartTimestamp="@1788704200")
+    fails = [health.UnitFailure("hyxlab-stream.service", BOOT_FAIL, "signal")]
+    raw = health.judge("hyxlab-stream.service", up, None, NOW)
+    assert health.outlived_by_failure(raw, up, None, fails).state == "OK"

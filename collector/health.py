@@ -1116,7 +1116,51 @@ def judge_qa(state: dict, qa_svc: dict[str, str], now: datetime) -> str:
     return line
 
 
-def report(now: float | None = None) -> list[UnitHealth]:
+def outlived_by_failure(
+    row: UnitHealth,
+    svc: dict[str, str],
+    timer: dict[str, str] | None,
+    failures: list[UnitFailure],
+) -> UnitHealth:
+    """An OK row the journal contradicts: the unit's LAST failure is newer than
+    any run the manager still remembers.
+
+    `judge` reads the manager's memory, and the manager forgets on restart.
+    Measured 2026-10-05: the 09:01Z boot's catch-up runs of `hyxlab-sweep` and
+    `hyxlab-poly-sweep` failed on DNS, the box crashed and rebooted at 09:17Z,
+    and the fresh manager answered `Result=success` with NO `ExecMain*`
+    timestamps -- the default for a unit that has not run this boot, which is
+    #2's shape exactly. The timer's `LastTriggerUSec` survives (`Persistent=`
+    keeps it on disk), so the slot read as taken and the unit as OK, and the
+    failure section below called both CLEARED -- for eleven hours, on two units
+    that had not succeeded that day. A failure is cleared only by a run that
+    STARTED after it; the journal is read across boots, the manager is not.
+    """
+    if row.state != "OK":
+        return row
+    mine = [f for f in failures if f.unit == row.unit]
+    if not mine:
+        return row
+    last = max(mine, key=lambda f: f.at)
+    seen = [
+        _epoch(svc.get("ExecMainStartTimestamp", "")),
+        _epoch(svc.get("ExecMainExitTimestamp", "")),
+        _epoch((timer or {}).get("LastTriggerUSec", "")),
+    ]
+    latest_run = max((t for t in seen if t is not None), default=None)
+    if latest_run is not None and latest_run > last.at.timestamp():
+        return row
+    return UnitHealth(
+        row.unit,
+        "FAILED",
+        f"last run failed ({last.result}) {last.at:%m-%d %H:%M}Z per the journal; "
+        "the manager remembers no run since (state reset by a restart)",
+    )
+
+
+def report(
+    now: float | None = None, failures: list[UnitFailure] | None = None
+) -> list[UnitHealth]:
     now = now if now is not None else datetime.now(UTC).timestamp()
     seen = [
         (svc_name, show(f"{Path(svc_name).stem}.timer") if has_timer else None, show(svc_name))
@@ -1126,12 +1170,17 @@ def report(now: float | None = None) -> list[UnitHealth]:
     # manager already says something was oom-killed. No fault, no cost.
     victims = read_kernel_oom() if any(s.get("Result") == "oom-kill" for _, _, s in seen) else []
     return [
-        judge(
-            svc_name,
+        outlived_by_failure(
+            judge(
+                svc_name,
+                svc_props,
+                timer,
+                now,
+                oom_attribution(victims, svc_name) if svc_props.get("Result") == "oom-kill" else "",
+            ),
             svc_props,
             timer,
-            now,
-            oom_attribution(victims, svc_name) if svc_props.get("Result") == "oom-kill" else "",
+            failures or [],
         )
         for svc_name, timer, svc_props in seen
     ]
@@ -1185,14 +1234,13 @@ def cli(argv: list[str]) -> int:
 def main() -> None:
     now = datetime.now(UTC)
     print(f"[health] {now:%Y-%m-%d %H:%M}Z — persisted state only; no checks re-run", flush=True)
-    rows = report(now.timestamp())
+    units = {u for u, _ in discover_units()}
+    failures = read_unit_failures(units)
+    rows = report(now.timestamp(), failures)
     width = max((len(r.unit) for r in rows), default=0)
     for r in sorted(rows, key=lambda r: (r.ok, r.unit)):
         print(f"{r.state:<10} {r.unit:<{width}}  {r.detail}", flush=True)
-    units = {u for u, _ in discover_units()}
-    for line in failure_history_lines(
-        read_unit_failures(units), rows, now, journal_floor(), width=width
-    ):
+    for line in failure_history_lines(failures, rows, now, journal_floor(), width=width):
         print(line, flush=True)
     qa_svc = show(QA_UNIT)
     print(judge_qa(_load_state(qa_record_path(qa_svc)), qa_svc, now), flush=True)
