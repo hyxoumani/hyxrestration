@@ -249,7 +249,9 @@ class _Store:
         return None
 
 
-def _run_main(monkeypatch, tmp_path, *, lock_ok: bool, store: _Store, cyc_ts: datetime):
+def _run_main(
+    monkeypatch, tmp_path, *, lock_ok: bool, store: _Store, cyc_ts: datetime, open_archive=None
+):
     """One `--once` cycle with the network, the lock and the archive faked."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(collect, "load_watchlist", lambda p: {})
@@ -263,7 +265,7 @@ def _run_main(monkeypatch, tmp_path, *, lock_ok: bool, store: _Store, cyc_ts: da
     monkeypatch.setattr(
         collect, "acquire_writer_lock", lambda **kw: _FakeLock() if lock_ok else None
     )
-    monkeypatch.setattr(collect, "open_retry", lambda *a, **k: store)
+    monkeypatch.setattr(collect, "_open_archive", open_archive or (lambda *a, **k: store))
     monkeypatch.setattr(collect, "read_holder", lambda p: None)
     monkeypatch.setattr(
         collect,
@@ -300,6 +302,63 @@ def test_a_cycle_that_loses_the_lock_is_spooled_not_discarded(monkeypatch, tmp_p
     got = spool.decode_cycle(json.loads(files[0].read_text()))
     assert [s.market_id for s in got["kalshi_snaps"]] == ["LIVE"]
     assert Path(tmp_path / "data/collect_skips.jsonl").exists()
+
+
+def _refused(pid: int):
+    """`open_retry` exhausting its ladder against a reader holding the file."""
+
+    def _open(*a, **k):
+        raise collect.duckdb.IOException(
+            'IO Error: Could not set lock on file "/x/hyxlab.duckdb": Conflicting lock '
+            f"is held in /usr/bin/python3.14 (PID {pid}) by user devs."
+        )
+
+    return _open
+
+
+def test_a_cycle_refused_by_a_reader_outside_the_flock_is_spooled(monkeypatch, tmp_path):
+    """The four cycles of 2026-10-05 13:29-13:52Z, with the rows kept this time.
+
+    The flock excludes this repo's WRITERS only. An ad-hoc read-only attach
+    never takes it, so the collector got the flock, exhausted `open_retry`
+    against the reader's DuckDB lock, and exited 1 holding a fetched cycle.
+    """
+    import os
+
+    flocks: list[int] = []
+    monkeypatch.setattr(collect.fcntl, "flock", lambda fd, op: flocks.append(op))
+    code = _run_main(
+        monkeypatch,
+        tmp_path,
+        lock_ok=True,
+        store=_Store(),
+        cyc_ts=TS,
+        open_archive=_refused(os.getpid()),
+    )
+    assert code == 75, "contention, not an incident: the same exit as a flock skip"
+    files = spool.spooled(str(tmp_path / "data/collect_spool"))
+    assert len(files) == 1
+    got = spool.decode_cycle(json.loads(files[0].read_text()))
+    assert [s.market_id for s in got["kalshi_snaps"]] == ["LIVE"]
+    rec = json.loads(Path(tmp_path / "data/collect_skips.jsonl").read_text())
+    assert rec["reason"] == "archive attach refused"
+    assert f"pid {os.getpid()}" in rec["holder"]["attach_holder"]
+    assert flocks[-1] == collect.fcntl.LOCK_UN, "the writer flock is released on the skip"
+
+
+def test_a_refusal_naming_no_live_holder_is_spooled_and_still_raises(monkeypatch, tmp_path):
+    """A dead PID is a lock left behind: an incident, so stay loud -- but keep the rows."""
+    monkeypatch.setattr(collect.fcntl, "flock", lambda *a: None)
+    with pytest.raises(collect.duckdb.IOException):
+        _run_main(
+            monkeypatch,
+            tmp_path,
+            lock_ok=True,
+            store=_Store(),
+            cyc_ts=TS,
+            open_archive=_refused(2**22 + 7),
+        )
+    assert len(spool.spooled(str(tmp_path / "data/collect_spool"))) == 1
 
 
 def test_the_next_successful_cycle_writes_the_spool_before_its_own_rows(monkeypatch, tmp_path):

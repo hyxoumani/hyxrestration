@@ -28,13 +28,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+import duckdb
 import requests
 
 from collector import spool
 from collector.venues import kalshi, nws, polymarket
 from hyxlab.lockid import note_holder, read_holder
 from hyxlab.models import Forecast, MarketInfo, Snapshot
-from hyxlab.store import Store, open_retry
+from hyxlab.store import Store, lock_holder, open_retry
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
 __all__ = [
@@ -271,6 +272,45 @@ def collect_once(store: Store, watchlist: dict, session: requests.Session | None
     return write_cycle(store, fetch_cycle(watchlist, session=session))
 
 
+def _open_archive(db: str) -> Store:
+    """The archive attach, after the flock. A seam for the tests."""
+    return open_retry(db, retries=5)
+
+
+def _skip_cycle(cyc: Cycle, reason: str, waited: float, holder: dict | None) -> None:
+    """Record a skipped cycle and spool its rows for the next firing.
+
+    The rows are already IN HAND and stamped at fetch time, so this hole is
+    recoverable -- unlike the pre-python cycle the `flock -n` wrapper used
+    to drop. See collector/spool.py; a spool failure must never mask the
+    skip, which is why it is caught rather than allowed to replace the exit.
+    """
+    record_skip(reason, waited, holder=holder)
+    try:
+        spool.spool_cycle(
+            cyc.ts,
+            cyc.errors,
+            infos=cyc.infos,
+            kalshi_snaps=cyc.kalshi_snaps,
+            poly_snaps=cyc.poly_snaps,
+            forecasts=cyc.forecasts,
+        )
+    except (OSError, ValueError) as e:
+        print(f"[collect] spool failed, cycle LOST: {type(e).__name__}: {e}")
+    # Nonzero exit (the caller's) so systemd records it, AND a durable
+    # record so an instrument that never sees systemd can count the hole.
+    if holder and "attach_holder" in holder:
+        who = holder["attach_holder"] or "no live holder named"
+    elif holder:
+        who = (
+            f"{holder.get('unit') or 'no unit'} pid={holder['pid']}"
+            f" since {holder.get('at')}{'' if holder.get('alive') else ' (DEAD/stale record)'}"
+        )
+    else:
+        who = "holder unrecorded"
+    print(f"[collect] skipped: {reason} for {waited:.0f}s by {who}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab market-data collector")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
@@ -304,32 +344,7 @@ def main() -> None:
             # the operator diagnosing lock contention.
             waited = time.monotonic() - t_lock
             holder = read_holder(LOCK_FILE)
-            record_skip("writer lock held", waited, holder=holder)
-            # The rows are already IN HAND and stamped at fetch time, so
-            # this hole is recoverable -- unlike the pre-python cycle the
-            # `flock -n` wrapper used to drop. See collector/spool.py; a
-            # spool failure must never mask the skip, which is why it is
-            # caught rather than allowed to replace the exit below.
-            try:
-                spool.spool_cycle(
-                    cyc.ts,
-                    cyc.errors,
-                    infos=cyc.infos,
-                    kalshi_snaps=cyc.kalshi_snaps,
-                    poly_snaps=cyc.poly_snaps,
-                    forecasts=cyc.forecasts,
-                )
-            except (OSError, ValueError) as e:
-                print(f"[collect] spool failed, cycle LOST: {type(e).__name__}: {e}")
-            # Nonzero so systemd records it, AND a durable record so an
-            # instrument that never sees systemd can still count the hole.
-            who = (
-                f"{holder.get('unit') or 'no unit'} pid={holder['pid']}"
-                f" since {holder.get('at')}{'' if holder.get('alive') else ' (DEAD/stale record)'}"
-                if holder
-                else "holder unrecorded"
-            )
-            print(f"[collect] skipped: writer lock held for {waited:.0f}s by {who}")
+            _skip_cycle(cyc, "writer lock held", waited, holder)
             if args.once:
                 sys.exit(75)  # EX_TEMPFAIL
             time.sleep(args.interval)
@@ -343,7 +358,31 @@ def main() -> None:
         # journald keeps the series.
         lock_wait_s = time.monotonic() - t_lock
         t_open = time.monotonic()
-        store = open_retry(args.db, retries=5)
+        try:
+            store = _open_archive(args.db)
+        except duckdb.Error as e:
+            # The flock above excludes this repo's WRITERS; a reader that
+            # attaches without it (an ad-hoc probe, a sibling project) holds
+            # DuckDB's own lock, and the ladder runs out with the cycle in
+            # hand. Same remedy as a flock skip -- 4 cycles on 2026-10-05
+            # 13:29-13:52Z were dropped with exit 1 before this.
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+            named = lock_holder(e)
+            _skip_cycle(
+                cyc,
+                "archive attach refused",
+                time.monotonic() - t_open,
+                {"attach_holder": named},
+            )
+            if named is None:
+                # No LIVE holder: a lock left behind or an unreachable file.
+                # That is an incident, not contention -- stay loud.
+                raise
+            if args.once:
+                sys.exit(75)  # EX_TEMPFAIL
+            time.sleep(args.interval)
+            continue
         open_s = time.monotonic() - t_open
         try:
             # Oldest first, and BEFORE the live cycle: the spool holds
