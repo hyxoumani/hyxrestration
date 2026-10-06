@@ -2773,6 +2773,36 @@ Format: what happened → root cause → error type → prevention tier
     (any `close()` drops a POSIX lock) one level up -- here the close was
     the garbage collector's.
 
+108. **2026-10-06 -- QA's clock-offset ceiling sat ABOVE the offset at
+    which kalshi stops authenticating, and a test pinned the near-miss as
+    healthy.** The 08-23 split gave `box clock offset within tolerance` a
+    60s ceiling, justified only by the SIM's cost of a fast clock (near-
+    close discard, ~300s before it matters). It never asked what else the
+    box clock signs. Kalshi WS auth is a signed timestamp, and an open
+    connection never re-authenticates, so the cost appears only at the
+    next RECONNECT. Measured: the offset was +29.9s through 10-04, with
+    every reconnect authenticating. After the 10-05 reboot it was +41.3s
+    (the step timesyncd applied), and both kalshi channels drew HTTP 401
+    on every attempt from 09:01Z to 09:58Z while unsigned polymarket
+    flowed. They connected within seconds of the user's
+    `sudo timedatectl set-ntp true` at 09:58:13Z. That is 56 min of real
+    kalshi loss, read correctly by the 10-06 capture-gap FAIL (121 min
+    budgeted, 64.5 of it daemon downtime). Tolerance is bracketed in
+    (29.9, 41.3]s, so the stream sat 0.1s or less from losing every
+    kalshi reconnect, and `test_large_constant_offset_no_longer_trips_
+    latency` asserted that +30s was FINE. Also: timesyncd had NEVER run
+    on this box (no entries in the 09-04 -> 10-04 boot). The "NTP"
+    user-gated item was closed by the user and recorded by nobody. Fixed
+    in 5b02e97: ceiling 10s as a named constant, the +29.9s test
+    inverted, and a test that the ceiling plus the measured 11.4s boot
+    step stays under 29.9. Red-verified with the 60s mutant diffed in.
+    (Restoring it read red once more: the restored file had the same
+    size and the same mtime second, so the stale .pyc was reused. Delete
+    the bytecode before reading a post-revert colour.) **A tolerance
+    derived from ONE consumer's cost of a quantity is not a tolerance for
+    the quantity. Enumerate everything that consumes it, here everything
+    the clock SIGNS, and take the tightest.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
