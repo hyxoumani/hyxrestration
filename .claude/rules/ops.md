@@ -12,7 +12,7 @@
   silently at launch this way (mistakes #19). Verify liveness by
   querying the job's persisted state (DB rows, journal), never by
   trusting that it was started.
-- Multi-hour DuckDB writers exist (poly sweep ~7h). Sim-side readers
+- Multi-hour DuckDB writers exist (poly sweep ~16h wall, measured 09-28..10-04). Sim-side readers
   degrade + retry lazily; never wait on the archive lock in a loop.
 - Ad-hoc queries on ANY live DuckDB (hyxlab.duckdb, hyxstream.duckdb,
   hyxshadow.duckdb) MUST connect read-only (`hyxlab.store.connect_retry`
