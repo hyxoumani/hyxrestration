@@ -100,15 +100,15 @@ def _archive_writers(tree: ast.AST, mutators: set[str]) -> set[str]:
     calling one that does. Fixpoint, so an extra layer of helper does not
     hide the write."""
     funcs = {
-        n.name: n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+        n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
     }
     writers = {
         name
         for name, fn in funcs.items()
         if any(
-            isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr in mutators
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Attribute)
+            and c.func.attr in mutators
             for c in ast.walk(fn)
         )
     }
@@ -156,9 +156,7 @@ def multiburst_modules() -> dict[str, set[str]]:
 
 def _main_of(rel: str) -> ast.FunctionDef:
     tree = ast.parse((ROOT / rel).read_text())
-    fn = next(
-        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"), None
-    )
+    fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
     assert fn is not None, f"{rel} is a multi-burst archive job with no main()"
     return fn
 
@@ -209,8 +207,7 @@ def test_a_self_job_takes_an_instance_lock_and_refuses_to_run_without_it(rel):
     runs anyway is unguarded WITH a reassuring line in the journal."""
     jobs = instance_lock_jobs(rel)
     assert jobs, (
-        f"{rel} is labelled SELF but main() never calls {LOCK_HELPERS} with a"
-        " literal job name"
+        f"{rel} is labelled SELF but main() never calls {LOCK_HELPERS} with a literal job name"
     )
     refusals = [
         n
@@ -228,8 +225,7 @@ def test_a_self_job_takes_an_instance_lock_and_refuses_to_run_without_it(rel):
         c
         for n in refusals
         for c in ast.walk(n)
-        if (isinstance(c, ast.Call) and _called_name(c) == "exit")
-        or isinstance(c, ast.Return)
+        if (isinstance(c, ast.Call) and _called_name(c) == "exit") or isinstance(c, ast.Return)
     ]
     codes = [
         a.value
@@ -269,9 +265,9 @@ def test_a_poller_really_is_a_cycle_loop(rel):
         isinstance(n, ast.While) and isinstance(n.test, ast.Constant) and n.test.value is True
         for n in ast.walk(main)
     ), f"{rel} is labelled POLLER but main() has no `while True` cycle loop"
-    assert any(
-        isinstance(n, ast.Constant) and n.value == "--once" for n in ast.walk(tree)
-    ), f"{rel} is labelled POLLER but offers no --once, so it is not a cycle job"
+    assert any(isinstance(n, ast.Constant) and n.value == "--once" for n in ast.walk(tree)), (
+        f"{rel} is labelled POLLER but offers no --once, so it is not a cycle job"
+    )
 
 
 @pytest.mark.parametrize("rel", [k for k, (d, _) in ALLOWED.items() if d == "SHORT"])
@@ -280,12 +276,8 @@ def test_a_short_job_does_no_fetching(rel):
     it is checked against the imports rather than believed."""
     tree = ast.parse((ROOT / rel).read_text())
     imported = {
-        (n.module or "").split(".")[0]
-        for n in ast.walk(tree)
-        if isinstance(n, ast.ImportFrom)
-    } | {
-        a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
-    }
+        (n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+    } | {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     hits = imported & set(FETCH_CLIENTS)
     assert not hits, (
         f"{rel} is labelled SHORT but imports {sorted(hits)} — a job that"
@@ -307,3 +299,48 @@ def test_the_derived_set_still_sees_the_five_worklist_jobs():
         "collector/reconcile.py",
     ):
         assert found.get(rel), f"{rel} no longer reads as a multi-burst archive job"
+
+
+def _bound_names(node: ast.AST) -> list[str]:
+    """Every plain name `node` binds: assignment, `with ... as`, loop
+    target, walrus, `except ... as`."""
+    targets: list[ast.AST] = []
+    if isinstance(node, ast.Assign):
+        targets = list(node.targets)
+    elif isinstance(node, ast.AnnAssign | ast.AugAssign | ast.NamedExpr | ast.For | ast.AsyncFor):
+        targets = [node.target]
+    elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+        targets = [node.optional_vars]
+    elif isinstance(node, ast.ExceptHandler) and node.name:
+        return [node.name]
+    return [n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)]
+
+
+@pytest.mark.parametrize("rel", [k for k, (d, _) in ALLOWED.items() if d == "SELF"])
+def test_a_self_job_never_rebinds_the_name_holding_its_lock(rel):
+    """The third half the two above cannot see: a lock taken and checked
+    is still dropped if its handle loses its last reference. tradepass did
+    `with open(LOCK_FILE, "a") as lock:` right after taking the instance
+    lock into `lock`; CPython closed the old handle and the flock was gone
+    before the first fetch, with both checks above green (mistakes #107)."""
+    main = _main_of(rel)
+    acquiring = [
+        n
+        for n in ast.walk(main)
+        if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Call)
+        and _called_name(n.value) in LOCK_HELPERS
+    ]
+    assert acquiring, f"{rel} does not assign its instance lock to a name"
+    held = {name for n in acquiring for name in _bound_names(n)} - {"why", "_"}
+    rebinds = [
+        (name, getattr(n, "lineno", getattr(n.optional_vars, "lineno", "?")))
+        for n in ast.walk(main)
+        if n not in acquiring
+        for name in _bound_names(n)
+        if name in held
+    ]
+    assert not rebinds, (
+        f"{rel} rebinds the name holding its instance lock {rebinds} — the"
+        " old handle is closed by refcount and the lock released mid-run"
+    )

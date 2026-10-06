@@ -104,11 +104,14 @@ def main() -> None:
         sys.exit(75)  # EX_TEMPFAIL — the next timer firing resumes
     # Brief write-open under flock so the new trades tables exist before
     # the read-only pending query (read-only connects skip schema DDL).
-    with open(LOCK_FILE, "a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    # `wlock`, never `lock`: rebinding the instance lock's name dropped its
+    # last reference, CPython closed it, and the flock was gone before the
+    # first fetch (mistakes #107).
+    with open(LOCK_FILE, "a") as wlock:
+        fcntl.flock(wlock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
         open_retry(args.db).close()
-        fcntl.flock(lock, fcntl.LOCK_UN)
+        fcntl.flock(wlock, fcntl.LOCK_UN)
     targets = pending_markets(args.db)
     if args.limit:
         targets = targets[: args.limit]
