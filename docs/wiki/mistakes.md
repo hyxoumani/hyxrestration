@@ -2751,6 +2751,28 @@ Format: what happened → root cause → error type → prevention tier
     healthy.** This is #2 of the digest's own docstring (a default is
     not a measurement) reached across a boot.
 
+107. **2026-10-06 -- tradepass's instance lock was released before its
+    first fetch, and the discipline test that verifies it was green.**
+    `collector.trades_backfill.main` took `instance_lock_or_reason(
+    "trades_backfill")` into `lock`, then opened `data/writer.lock` for the
+    schema burst as `with open(LOCK_FILE, "a") as lock:`. Rebinding the
+    name dropped the instance lock's file object's last reference; CPython
+    closed it and the flock went with it, milliseconds into a run whose
+    worklist is unbounded (08-03: 15h06m). Probed from a subprocess
+    mid-fetch: `ACQUIRED` x3 before the fix, `REFUSED` x3 after.
+    `test_instance_lock_discipline` checked that a SELF job TAKES a lock
+    and EXITS 75 when refused -- both true -- and nothing about whether it
+    KEEPS it. Found by reading the module while costing today's
+    2,739 sweep tape 429s (the 10-05 catch-up; normal is ~45/day), which
+    tomorrow's tradepass will retry at ~2s/market under its 210-min
+    deadline. Fixed in 74281fb (`wlock`), plus a SELF-wide AST check that
+    no name bound by the lock helper is rebound in `main`; both red with
+    the fix reverted. **A lock is a handle with a lifetime, and in Python
+    the lifetime is the NAME's: a check that the acquire happened and the
+    refusal exits says nothing about the hold.** Same family as #90
+    (any `close()` drops a POSIX lock) one level up -- here the close was
+    the garbage collector's.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
