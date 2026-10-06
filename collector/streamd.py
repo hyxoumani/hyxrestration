@@ -38,6 +38,7 @@ import signal
 import time as _time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import websockets
@@ -174,6 +175,35 @@ def load_env(path: str | Path = ".env") -> None:
 
 def _log(msg: str) -> None:
     print(f"[streamd] {datetime.now(UTC):%H:%M:%S} {msg}", flush=True)
+
+
+def _venue_clock_note(exc: BaseException, now: datetime) -> str:
+    """For a REJECTED handshake, the box clock against the venue's `Date`.
+
+    The 2026-10-05 kalshi outage (mistakes #108) was 56 minutes of
+    `HTTP 401` on every handshake from a box clock +41.3s fast, and the
+    journal said only "401" -- the cause was found from the timesyncd step
+    that ended it. A rejection still carries the venue's `Date` header
+    (CloudFront sets it on the 401), so the next skew outage names itself.
+
+    `Date` is WHOLE seconds, floored at the server, and `now` is read after
+    the response crossed the network, so `now - Date` is an UPPER bound on
+    the box's lead and the lead is at least that minus 1s minus the RTT.
+    Published as that interval, never as a bare offset. "" when there is
+    no response or no parseable `Date` -- absence is not a zero."""
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    raw = headers.get("Date") if headers is not None else None
+    if not raw:
+        return ""
+    try:
+        venue = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return ""
+    if venue.tzinfo is None:
+        return ""
+    off = (now - venue).total_seconds()
+    return f" [box - venue Date {off:+.1f}s; box lead in [{off - 1:+.1f}s - rtt, {off:+.1f}s]]"
 
 
 async def _fetch_until_nonempty(fetch, channel: str, what: str):
@@ -633,7 +663,10 @@ class Daemon:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                _log(f"kalshi-{channel}: {type(exc).__name__}: {exc}; retry in {backoff:.0f}s")
+                note = _venue_clock_note(exc, datetime.now(UTC))
+                _log(
+                    f"kalshi-{channel}: {type(exc).__name__}: {exc}{note}; retry in {backoff:.0f}s"
+                )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
 

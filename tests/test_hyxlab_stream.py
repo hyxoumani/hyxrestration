@@ -1307,3 +1307,74 @@ def test_no_sizing_comment_still_claims_the_trade_channel_rate():
     reasoning sites. Keep it out of the two that size the buffer."""
     for name in ("PENDING_ALARM", "SPILL_CAP"):
         assert "105" not in _sizing_comment(name)
+
+
+# -- a rejected handshake names the box clock (mistakes #108) ---------------
+# 2026-10-05: 56 min of kalshi `HTTP 401` from a +41.3s box clock, and the
+# journal said only "401". The rejection carries CloudFront's `Date`, so the
+# reconnect line must publish the box's lead against it, as an interval.
+
+
+def _rejection(date: str | None, status: int = 401):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    headers = Headers({"content-type": "application/json"})
+    if date is not None:
+        headers["date"] = date  # lower-case, as CloudFront sends it
+    return InvalidStatus(Response(status, "Unauthorized", headers, b""))
+
+
+def test_rejected_handshake_note_brackets_the_box_lead():
+    from collector import streamd
+
+    now = datetime(2026, 10, 5, 9, 5, 22, 300000, tzinfo=UTC)
+    note = streamd._venue_clock_note(_rejection("Mon, 05 Oct 2026 09:04:41 GMT"), now)
+    assert note == " [box - venue Date +41.3s; box lead in [+40.3s - rtt, +41.3s]]"
+
+
+@pytest.mark.parametrize("date", [None, "", "not a date"])
+def test_rejection_without_a_usable_date_publishes_nothing(date):
+    """An absent or unparseable Date is UNKNOWN, never a 0.0s offset."""
+    from collector import streamd
+
+    assert streamd._venue_clock_note(_rejection(date), RECV) == ""
+    assert streamd._venue_clock_note(ConnectionError("dead air"), RECV) == ""
+
+
+def test_kalshi_loop_logs_the_clock_note_on_a_401(tmp_path, monkeypatch, capsys):
+    """Wired, not just written: the reconnect line itself carries the note."""
+    import asyncio
+
+    from collector import streamd
+
+    venue = datetime.now(UTC).replace(microsecond=0)
+    date = venue.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    calls = []
+
+    class Rejecting:
+        def __init__(self, *a, **kw):
+            calls.append(1)
+
+        async def __aenter__(self):
+            if len(calls) > 1:
+                raise asyncio.CancelledError
+            raise _rejection(date)
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def no_sleep(secs):
+        pass
+
+    monkeypatch.setattr(streamd.websockets, "connect", Rejecting)
+    monkeypatch.setattr(streamd.kalshi_ws, "auth_headers", lambda kid, pem: {})
+    monkeypatch.setattr(streamd.asyncio, "sleep", no_sleep)
+    d = streamd.Daemon(StreamStore(tmp_path / "s.duckdb"), watchlist={})
+    d.key_id, d.pem = "k", b"p"
+    with contextlib.suppress(asyncio.CancelledError):
+        asyncio.run(d._kalshi_loop("trades", lambda: "{}", None))
+    out = capsys.readouterr().out
+    assert "kalshi-trades: InvalidStatus: server rejected WebSocket connection: HTTP 401" in out
+    assert "[box - venue Date +" in out and "; retry in 1s" in out
