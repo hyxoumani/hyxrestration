@@ -165,6 +165,27 @@ CAPTURE_GAP_BUDGET_MIN = 30.0
 #: is why the venue with no seq is the one that gets the replay oracle.
 POLY_REPLAY_MIN_AGREE = 0.99
 
+#: Band on the median `recv_ts - src_ts` of kalshi trades (box clock vs venue).
+#: The CEILING used to be 60s, chosen because a fast clock only costs the sim
+#: near-close data. That missed the fast clock's other cost: Kalshi rejects a
+#: WS handshake whose signed timestamp is too far off, so past some offset
+#: every RECONNECT fails. An existing connection never re-authenticates, so
+#: nothing shows until the next one. Measured 2026-10-05: the offset sat at
+#: +29.9s through 10-04 with every reconnect authenticating. The box came back
+#: from its 6h21m shutdown at +41.3s (the size of the step timesyncd applied),
+#: and both kalshi channels got HTTP 401 on every attempt for 56 minutes
+#: (09:01Z -> 09:58Z, both boots). They connected within seconds of the step,
+#: while polymarket (unsigned) flowed the whole time. So the venue's tolerance
+#: is somewhere in (29.9, 41.3]s. The old ceiling sat above the failure point
+#: and called the box healthy 0.1s from a total kalshi outage. 10s leaves
+#: room for an 11.4s boot step (the one measured) under the lower bracket.
+#: NTP has been active since the user enabled it at 2026-10-05 09:58Z (median
+#: offset 0.02s since), so this now watches for NTP dying, not for
+#: drift NTP was never there to stop. The floor is unchanged: a SLOW clock
+#: stamps post-close data as pre-close, which is lookahead for the sim.
+CLOCK_OFFSET_FLOOR_S = -2.0
+CLOCK_OFFSET_CEIL_S = 10.0
+
 # Lock-wait budget. Measured 2026-08-02: `hyxlab-collect` is OnCalendar
 # `*:0/5` and `hyxlab-qa` is `07:00:00 UTC` — a 5-minute boundary — so the
 # two start in the SAME SECOND every day, by construction. The collector
@@ -1171,14 +1192,15 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
     # final 26s, and only 1,061 in the final 5 min. That is the cost of the
     # present +25.7s offset to the sim: zero. A SLOW clock is the dangerous
     # side — it stamps post-close snapshots as pre-close and feeds the sim
-    # genuine lookahead — hence the tight floor. The 60s ceiling is a drift
-    # alarm well above today's offset and far below the ~300s where the
-    # discard cost first becomes measurable. NTP is the real fix (user-gated).
+    # genuine lookahead — hence the tight floor. The ceiling is NOT set by the
+    # sim's discard cost: the fast side also breaks kalshi WS auth, measured
+    # between 29.9s and 41.3s (see CLOCK_OFFSET_CEIL_S).
     check(
         "box clock offset within tolerance",
-        p50 is not None and -2.0 < p50 < 60.0,
+        p50 is not None and CLOCK_OFFSET_FLOOR_S < p50 < CLOCK_OFFSET_CEIL_S,
         f"median recv-src {p50 if p50 is None else round(p50, 2)}s"
-        " (box clock vs venue; NTP pending)",
+        f" (box clock vs venue; band {CLOCK_OFFSET_FLOOR_S:g}..{CLOCK_OFFSET_CEIL_S:g}s,"
+        " kalshi auth fails somewhere in 29.9..41.3s)",
     )
 
 

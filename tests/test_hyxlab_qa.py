@@ -1106,13 +1106,27 @@ def _trades_with_offsets(path, offsets):
     return store
 
 
-def test_large_constant_offset_no_longer_trips_latency(tmp_path):
-    """The production condition: a uniform +30s offset, past the retired
-    check's 25s ceiling. Nothing about the STREAM is wrong, so neither
-    replacement check may fire."""
-    _trades_with_offsets(tmp_path / "s.duckdb", [30.0] * 50)
+def test_large_constant_offset_trips_only_the_offset_check(tmp_path):
+    """The 10-04 production condition: a uniform +29.9s offset. The stream is
+    fine, so dispersion stays quiet. But the box was 0.1s or less from
+    kalshi rejecting every reconnect (it 401'd at +41.3s on 10-05), so the
+    offset check must fire. Until 2026-10-06 this test pinned that it did
+    NOT."""
+    _trades_with_offsets(tmp_path / "s.duckdb", [29.9] * 50)
     failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
     assert _LAT_DISP not in failed
+    assert _LAT_OFF in failed
+
+
+def test_ntp_synced_offset_passes_and_ceiling_is_under_the_auth_bracket(tmp_path):
+    """The post-NTP reading (median 0.02s) passes. The ceiling, plus the 11.4s
+    boot step measured on 10-05, must stay under 29.9s, the largest offset
+    seen to authenticate."""
+    from collector.qa import CLOCK_OFFSET_CEIL_S
+
+    assert CLOCK_OFFSET_CEIL_S + 11.4 < 29.9
+    _trades_with_offsets(tmp_path / "s.duckdb", [0.02] * 50)
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
     assert _LAT_OFF not in failed
 
 
