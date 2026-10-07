@@ -1,6 +1,8 @@
 # Status & next steps (living page)
 
-Updated: **2026-10-06 20:25Z (#108'S CANDIDATE SHIPPED: A REJECTED KALSHI HANDSHAKE NOW LOGS THE BOX CLOCK AGAINST THE VENUE'S `Date`.)**
+Updated: **2026-10-07 02:30Z (ATLAS RE-RUN: THE QUOTED TIER'S 'CONFIRMED' SET CHURNED 1-OF-4 IN 10 DAYS, HOLM STILL CONFIRMS ZERO -- THE FAV-LONG PRE-REG ITEM IS STRUCK.)**
+
+**2026-10-07 02:30Z PASS -- LADDER (1), READ-ONLY, NO CODE.** Digest: 12/13 ok, 23/23 match. The only red is 10-06's QA run (#108), which clears at today's 10:00Z run. **Atlas re-run, the first since 09-26: `reports/atlas/20261007T021524.json`** (1.6s; settled 3.58M -> 4.19M, population 408 -> 411 as three Companies d0 buckets joined). Base flagged 186 -> 195. Quoted tier: day-weighted survivors 48 -> 57, confirmed 4 -> 6, refuted-on-sign 6 -> 8, not-significant 17 -> 23, tests 27 -> 37 (2 unpowered: Financials 6h/72h d7). **The reading that matters: the CONFIRMED SET IS NOT A STABLE SUBJECT.** Three of 09-26's four held (Crypto 1h d1, Economics 1h d2, Financials 72h d6). **Economics 6h d7 fell to not_significant** (nominal alpha 0.052, gap retained 0.85). Three joined: Crypto 24h d8, Economics 6h d1 (was not_significant), Financials 7d d8 (was silent, alpha 0.006, the tier's strongest). The Holm family correction confirms **zero** for the second reading running (alpha_family 0.00135 at 37 tests, `expected_false_confirmations` 1.85 against 6 nominal). Tails-confirm / middle-refutes still holds: all 8 refuted-on-sign buckets are deciles 2-6. **DECISION: the carried NEXT item "write the favorite-longshot pre-registration over the four quoted-tier confirmed buckets" is STRUCK.** It failed both of its own preconditions. (a) The fav-long family was closed 08-23, and four buckets drawn from the same signature are a third band, not a new subject. (b) A subject chosen from one reading's nominal confirmations would already have lost a member ten days later, which is exactly the selection a pre-registration exists to prevent. If the atlas ever family-confirms a bucket (`quoted_confirmed_family` true), that is a new event worth re-asking about; nominal confirmations are not.
 
 **2026-10-06 20:25Z PASS -- SHIPPED 2be88c3 (promoted; `hyxlab-stream` restarted 20:20:55Z, shutdown drain printed its lines (#54), kalshi-trades reconnected in 2s; suite 1835 -> 1840).** Digest: only red is the 10:00Z QA failure, already diagnosed above. Both sweeps RUNNING (poly 16.0h, kalshi 14.1h), and that is NORMAL: the poly sweep's wall time has been 15h44m-16h10m on every run since 09-28, not the ~7h `.claude/rules/ops.md` still quotes. Breadth's 12:13Z red is a kalshi 429 during the sweep's 10-05 catch-up; the next 5-min slot ran clean. That makes 8 lost 5-min slots in 14 days, 7 of them 429s, low value. **The ship:** #108's open candidate. Kalshi's 401 handshake reply carries CloudFront's `Date` header (probed unauthenticated), so `streamd._venue_clock_note` appends `[box - venue Date +X.Xs; box lead in [X-1s - rtt, X]]` to the reconnect line. `Date` is whole seconds and read after the network trip, so the value is an interval. When the header is absent or unparseable the line gets nothing, never a 0. Live reading against the real endpoint: `+0.5s` (NTP on). The wiring mutant (note dropped from the f-string, diff-verified) reddens the loop test. A future skew outage now names itself in the journal: `journalctl --user -u hyxlab-stream | grep 'venue Date'`.
 
@@ -11984,6 +11986,10 @@ a proven chunked≡one-shot replay equivalence (see
    Tails confirm, middle refutes. Still a calibration report and NOT a
    verdict — the pre-registration over those four buckets is the next
    execution item.
+   **Re-run 2026-10-07 02:15Z** (`reports/atlas/20261007T021524.json`):
+   confirmed 4 -> 6 but Economics 6h d7 dropped out and Holm confirms
+   zero; the four-bucket pre-reg is STRUCK (closed family + unstable
+   subject; see the 10-07 02:30Z pass).
 6. ~~Debug frontend~~ **simui SHIPPED 2026-07-08** (v1 + Kalshi-style
    restyle + resilience): interactive market-replay terminal
    (`python -m hyxlab.simui`, localhost:8877) — archived events replay
