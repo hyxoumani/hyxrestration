@@ -305,6 +305,17 @@ class StreamStore:
     #: the parse the drain is deciding whether it can afford.
     SPILL_BYTES_PER_ROW = 160
 
+    #: Most sidecar rows one drain transaction parses and inserts. The drain
+    #: costs ~750 B/row resident (MEASURED 2026-10-07 on the box, parse +
+    #: `executemany`: 279 MB peak at 200k rows, 730 MB at 800k, 116 MB
+    #: base), so a drain that took the whole sidecar at once needed ~1.6 GB
+    #: for the 1.69M rows one 3750s QA hold spilled, under a 2G cap -- and
+    #: since the sidecar survives a restart by design, every boot re-ran the
+    #: same OOM: 189 kills in 1h53m (mistakes #112). At this size a chunk is
+    #: ~75 MB whatever the wedge was, and the checkpoint below lets a killed
+    #: drain resume instead of starting over.
+    DRAIN_CHUNK_ROWS = 100_000
+
     @property
     def pending(self) -> int:
         return len(self._events) + len(self._trades) + len(self._gaps)
@@ -349,12 +360,52 @@ class StreamStore:
         with self._flush_lock:
             n = self.pending
             with contextlib.suppress(OSError):
-                n += self._spill_path.stat().st_size // self.SPILL_BYTES_PER_ROW
+                left = self._spill_path.stat().st_size - self._spill_done()
+                n += max(0, left) // self.SPILL_BYTES_PER_ROW
             return n
 
     @property
     def _spill_path(self) -> Path:
         return self.path.parent / (self.path.name + ".spill.jsonl")
+
+    @property
+    def _spill_done_path(self) -> Path:
+        """Byte offset of the sidecar's last COMMITTED drain chunk.
+
+        Meaningful only beside the sidecar it was written for: it is removed
+        BEFORE the sidecar (a crash between the two re-drains the whole file
+        -- duplicates, never holes), and a spill that starts a fresh sidecar
+        removes any orphan first, so an old offset can never skip new rows.
+        """
+        return self.path.parent / (self._spill_path.name + ".done")
+
+    def _spill_done(self) -> int:
+        try:
+            return int(self._spill_done_path.read_text())
+        except (OSError, ValueError):
+            return 0
+
+    def _mark_spill_done(self, offset: int) -> None:
+        tmp = self._spill_done_path.with_name(self._spill_done_path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(str(offset))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self._spill_done_path)
+
+    def _drain_spill(self, conn: duckdb.DuckDBPyConnection) -> int:
+        """Insert the sidecar oldest-first, one committed chunk at a time,
+        checkpointing after each; returns rows drained. A failure part-way
+        leaves the committed chunks committed and the rest for next time."""
+        offset, drained = self._spill_done(), 0
+        while True:
+            events, trades, gaps, end = self._read_spill(offset, self.DRAIN_CHUNK_ROWS)
+            if end == offset:
+                return drained
+            self._insert(conn, events, trades, gaps)
+            drained += len(events) + len(trades) + len(gaps)
+            offset = end
+            self._mark_spill_done(offset)
 
     # -- persistence ------------------------------------------------------
 
@@ -397,16 +448,18 @@ class StreamStore:
                 with duck_connect(str(self.path)) as conn:
                     # Parse the sidecar only once the write lock is held: in
                     # a wedge it can hold hours of rows, and a flush that is
-                    # about to fail on connect must not pay to load it.
-                    s_events, s_trades, s_gaps = self._read_spill()
-                    self._insert(conn, s_events + events, s_trades + trades, s_gaps + gaps)
-                    n += len(s_events) + len(s_trades) + len(s_gaps)
+                    # about to fail on connect must not pay to load it. It
+                    # drains in its own chunked transactions, ahead of the
+                    # buffer -- recv order kept, memory bounded by a chunk.
+                    n += self._drain_spill(conn)
+                    self._insert(conn, events, trades, gaps)
             except BaseException:
                 self._events[:0] = events
                 self._trades[:0] = trades
                 self._gaps[:0] = gaps
                 self._spill_overflow()
                 raise
+            self._spill_done_path.unlink(missing_ok=True)
             self._spill_path.unlink(missing_ok=True)
             self.spilled = 0
             return FlushOutcome(rows=n, touched=True)
@@ -460,6 +513,9 @@ class StreamStore:
         # to the last record boundary keeps that loss at zero, since the
         # buffers below are trimmed only once the bytes are down (EXP-936).
         before = self._spill_path.stat().st_size if self._spill_path.exists() else 0
+        if before == 0:
+            # A fresh sidecar: an orphaned checkpoint would skip its rows.
+            self._spill_done_path.unlink(missing_ok=True)
         try:
             with self._spill_path.open("a", encoding="utf-8") as f:
                 f.writelines(lines)
@@ -477,8 +533,11 @@ class StreamStore:
         self.spilled += len(lines)
         return len(lines)
 
-    def _read_spill(self) -> tuple[list[BookEvent], list[StreamTrade], list[tuple]]:
-        """Decode the sidecar, skipping records it cannot parse.
+    def _read_spill(
+        self, start: int = 0, limit: int | None = None
+    ) -> tuple[list[BookEvent], list[StreamTrade], list[tuple], int]:
+        """Decode up to `limit` sidecar records from byte `start`, skipping
+        records it cannot parse; returns them and the byte offset reached.
 
         Skipping loses that row — the one thing this module otherwise refuses
         to do — but the alternative measured in EXP-936 is far worse: raising
@@ -491,9 +550,16 @@ class StreamStore:
         trades: list[StreamTrade] = []
         gaps: list[tuple] = []
         if not self._spill_path.exists():
-            return events, trades, gaps
-        with self._spill_path.open(encoding="utf-8", errors="replace") as f:
-            for line in f:
+            return events, trades, gaps, start
+        offset, taken = start, 0
+        with self._spill_path.open("rb") as f:
+            f.seek(start)
+            for raw in f:
+                if limit is not None and taken >= limit:
+                    break
+                offset += len(raw)
+                taken += 1
+                line = raw.decode("utf-8", errors="replace")
                 if not line.strip():
                     continue
                 try:
@@ -525,7 +591,7 @@ class StreamStore:
                 except (ValueError, KeyError, TypeError, IndexError):
                     self.spill_corrupt += 1
                     continue
-        return events, trades, gaps
+        return events, trades, gaps, offset
 
     def _insert(
         self,

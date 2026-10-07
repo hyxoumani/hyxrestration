@@ -855,6 +855,129 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     _record_ok("stream", now)
 
 
+def _poly_replay(conn, now: datetime, hours: float) -> tuple[int, int, int, int, int, int]:
+    """Polymarket delta replay against the venue's next snapshot; returns
+    (levels, agreeing levels, gap-free intervals tested, inexact intervals,
+    deltas in window, snapshot pairs carrying a delta).
+
+    EVERY DELTA FINDS ITS INTERVAL BY ASOF JOIN, NEVER BY A RANGE PREDICATE.
+    The first version joined `book_events` to the intervals on `market_id`
+    and filtered `recv_ts > a AND recv_ts < b`, which DuckDB runs as a hash
+    join on the market and a filter -- cost sum(intervals_m x rows_m),
+    quadratic in any one market's snapshot rate. It ran ~30s a day until a
+    single token pair started pushing a full-book snapshot every ~1s (from
+    streamd's 2026-10-06 20:20Z restart: 35,453 frames in 10h against <=112
+    for every other market). The 2026-10-07 run then took 62 minutes, 22h
+    of CPU and 12G, holding streamd's archive throughout: 1.69M rows went to
+    the sidecar, and draining them OOM-looped the daemon for 1h53m (mistakes
+    #112). The ASOF form maps each delta to the latest CLEAN interval opening
+    strictly before it, then keeps it only if it also lands strictly before
+    that interval's close -- if the containing interval was gap-excused, the
+    match is an earlier one whose close has passed, so the delta drops,
+    exactly as the range predicate dropped it. `tests/test_poly_replay_asof.py`
+    holds the range form as an oracle and asserts the six numbers agree.
+
+    The level comparison joins on the price ROUNDED TO 6 DP, not on the
+    old `abs(r.price - u.price) < 1e-9`. A FULL OUTER JOIN with a non-equi
+    residual tested every price of a frame's side against every other one:
+    24.7s for one hour of the 1 Hz market (288k levels), and still 24.5s with
+    the rounded key added BESIDE the residual -- the residual itself is the
+    slow path. Pure equality: 0.04s. The two forms differ only for prices
+    1e-9..5e-7 apart, below the venue's 0.001 tick by three orders of
+    magnitude, and both sides parse the same decimal strings.
+
+    A window carrying deltas but not one snapshot PAIR to replay them into
+    is NOT a pass: that is what a stream which stopped re-seeding looks
+    like, and the oracle is gone without a single check going red -- the
+    vacuous-green this check exists to refuse. Pairs are counted BEFORE the
+    gap exclusion on purpose. Losing every interval to reconnects is a
+    window this check cannot speak about (say so on the line), while losing
+    every PAIR is the seeding itself failing.
+    """
+    hrs = int(hours)
+    levels, agree, ivals, bad_ivals = conn.execute(
+        """
+        WITH frame AS (
+          SELECT DISTINCT market_id, recv_ts FROM book_events
+          WHERE venue='polymarket' AND kind='snap'
+            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
+        ), iv AS (
+          SELECT market_id, recv_ts AS a,
+                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
+          FROM frame QUALIFY b IS NOT NULL
+        ), clean AS (
+          SELECT * FROM iv WHERE NOT EXISTS (
+            SELECT 1 FROM stream_gaps g
+            WHERE g.venue IN ('polymarket', '*') AND g.channel IN ('market', '*')
+              AND g.started_at <= iv.b AND coalesce(g.ended_at, iv.b) >= iv.a)
+        ), delta AS (
+          SELECT market_id, side, price, qty, recv_ts FROM book_events
+          WHERE venue='polymarket' AND kind='delta'
+            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
+        ), src AS (
+          SELECT c.market_id, c.a, c.b, e.side, e.price, e.qty, e.recv_ts, e.kind
+          FROM clean c JOIN book_events e
+            ON e.venue='polymarket' AND e.market_id = c.market_id
+           AND e.kind='snap' AND e.recv_ts = c.a
+          UNION ALL
+          SELECT c.market_id, c.a, c.b, d.side, d.price, d.qty, d.recv_ts, 'delta'
+          FROM delta d ASOF JOIN clean c
+            ON d.market_id = c.market_id AND d.recv_ts > c.a
+          WHERE d.recv_ts < c.b
+        ), tested AS (
+          SELECT market_id, a, b FROM src WHERE kind='delta' GROUP BY 1, 2, 3
+        ), recon AS (
+          SELECT s.market_id, s.a, s.side, s.price, arg_max(s.qty, s.recv_ts) AS qty
+          FROM src s JOIN tested t USING (market_id, a, b)
+          GROUP BY 1, 2, 3, 4
+        ), truth AS (
+          SELECT t.market_id, t.a, e.side, e.price, e.qty
+          FROM tested t JOIN book_events e
+            ON e.venue='polymarket' AND e.market_id = t.market_id
+           AND e.kind='snap' AND e.recv_ts = t.b
+        ), cmp AS (
+          SELECT coalesce(r.market_id, u.market_id) AS market_id,
+                 coalesce(r.a, u.a) AS a,
+                 CASE WHEN abs(coalesce(r.qty, 0) - coalesce(u.qty, 0)) < 1e-6
+                      THEN 1 ELSE 0 END AS ok
+          FROM (SELECT * FROM recon WHERE qty > 0) r
+          FULL OUTER JOIN (SELECT * FROM truth WHERE qty > 0) u
+            ON r.market_id = u.market_id AND r.a = u.a AND r.side = u.side
+           AND round(r.price, 6) = round(u.price, 6)
+        )
+        SELECT count(*), coalesce(sum(ok), 0), count(DISTINCT (market_id, a)),
+               count(DISTINCT CASE WHEN ok = 0 THEN (market_id, a) END)
+        FROM cmp
+        """,
+        [now, hrs, now, hrs],
+    ).fetchone()
+    poly_deltas, pairs = conn.execute(
+        """
+        WITH delta AS (
+          SELECT market_id, recv_ts FROM book_events
+          WHERE venue='polymarket' AND kind='delta'
+            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
+        ), frame AS (
+          SELECT DISTINCT market_id, recv_ts FROM book_events
+          WHERE venue='polymarket' AND kind='snap'
+            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
+        ), iv AS (
+          SELECT market_id, recv_ts AS a,
+                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
+          FROM frame QUALIFY b IS NOT NULL
+        ), hit AS (
+          SELECT DISTINCT iv.market_id, iv.a
+          FROM delta d ASOF JOIN iv
+            ON d.market_id = iv.market_id AND d.recv_ts > iv.a
+          WHERE d.recv_ts < iv.b
+        )
+        SELECT (SELECT count(*) FROM delta), (SELECT count(*) FROM hit)
+        """,
+        [now, hrs, now, hrs],
+    ).fetchone()
+    return levels, agree, ivals, bad_ivals, poly_deltas, pairs
+
+
 def _stream_checks(conn, hours: float, now: datetime) -> None:
     age = conn.execute("SELECT epoch(? - max(recv_ts)) FROM stream_trades", [now]).fetchone()[0]
     check(
@@ -1061,84 +1184,7 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
     # carrying no delta are skipped too: they assert only that a snapshot
     # equals itself, and counting them would let a dead delta feed hold the
     # agreement ratio at 1.0. See POLY_REPLAY_MIN_AGREE.
-    levels, agree, ivals, bad_ivals = conn.execute(
-        """
-        WITH frame AS (
-          SELECT DISTINCT market_id, recv_ts FROM book_events
-          WHERE venue='polymarket' AND kind='snap'
-            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
-        ), iv AS (
-          SELECT market_id, recv_ts AS a,
-                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
-          FROM frame QUALIFY b IS NOT NULL
-        ), clean AS (
-          SELECT * FROM iv WHERE NOT EXISTS (
-            SELECT 1 FROM stream_gaps g
-            WHERE g.venue IN ('polymarket', '*') AND g.channel IN ('market', '*')
-              AND g.started_at <= iv.b AND coalesce(g.ended_at, iv.b) >= iv.a)
-        ), src AS (
-          SELECT c.market_id, c.a, c.b, e.side, e.price, e.qty, e.recv_ts, e.kind
-          FROM clean c JOIN book_events e
-            ON e.venue='polymarket' AND e.market_id = c.market_id
-           AND ((e.kind='snap' AND e.recv_ts = c.a)
-             OR (e.kind='delta' AND e.recv_ts > c.a AND e.recv_ts < c.b))
-        ), tested AS (
-          SELECT market_id, a, b FROM src WHERE kind='delta' GROUP BY 1, 2, 3
-        ), recon AS (
-          SELECT s.market_id, s.a, s.side, s.price, arg_max(s.qty, s.recv_ts) AS qty
-          FROM src s JOIN tested t USING (market_id, a, b)
-          GROUP BY 1, 2, 3, 4
-        ), truth AS (
-          SELECT t.market_id, t.a, e.side, e.price, e.qty
-          FROM tested t JOIN book_events e
-            ON e.venue='polymarket' AND e.market_id = t.market_id
-           AND e.kind='snap' AND e.recv_ts = t.b
-        ), cmp AS (
-          SELECT coalesce(r.market_id, u.market_id) AS market_id,
-                 coalesce(r.a, u.a) AS a,
-                 CASE WHEN abs(coalesce(r.qty, 0) - coalesce(u.qty, 0)) < 1e-6
-                      THEN 1 ELSE 0 END AS ok
-          FROM (SELECT * FROM recon WHERE qty > 0) r
-          FULL OUTER JOIN (SELECT * FROM truth WHERE qty > 0) u
-            ON r.market_id = u.market_id AND r.a = u.a AND r.side = u.side
-           AND abs(r.price - u.price) < 1e-9
-        )
-        SELECT count(*), coalesce(sum(ok), 0), count(DISTINCT (market_id, a)),
-               count(DISTINCT CASE WHEN ok = 0 THEN (market_id, a) END)
-        FROM cmp
-        """,
-        [now, int(hours)],
-    ).fetchone()
-    # A window carrying deltas but not one snapshot PAIR to replay them into
-    # is NOT a pass: that is what a stream which stopped re-seeding looks
-    # like, and the oracle is gone without a single check going red — the
-    # vacuous-green this check exists to refuse. Pairs are counted BEFORE the
-    # gap exclusion on purpose. Losing every interval to reconnects is a
-    # window this check cannot speak about (say so on the line), while losing
-    # every PAIR is the seeding itself failing.
-    poly_deltas, pairs = conn.execute(
-        """
-        WITH d AS (
-          SELECT count(*) AS n FROM book_events
-          WHERE venue='polymarket' AND kind='delta'
-            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
-        ), frame AS (
-          SELECT DISTINCT market_id, recv_ts FROM book_events
-          WHERE venue='polymarket' AND kind='snap'
-            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
-        ), iv AS (
-          SELECT market_id, recv_ts AS a,
-                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
-          FROM frame QUALIFY b IS NOT NULL
-        )
-        SELECT d.n, (SELECT count(*) FROM iv WHERE EXISTS (
-                 SELECT 1 FROM book_events e
-                 WHERE e.venue='polymarket' AND e.kind='delta'
-                   AND e.market_id = iv.market_id
-                   AND e.recv_ts > iv.a AND e.recv_ts < iv.b)) FROM d
-        """,
-        [now, int(hours), now, int(hours)],
-    ).fetchone()
+    levels, agree, ivals, bad_ivals, poly_deltas, pairs = _poly_replay(conn, now, hours)
     frac = agree / levels if levels else 0.0
     check(
         "poly deltas replay to the next snapshot",
