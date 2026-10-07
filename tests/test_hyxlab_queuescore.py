@@ -466,6 +466,24 @@ def test_independence_compares_within_series_and_handles_first_run(tmp_path):
     assert res["new_share"] == 1.0
 
 
+def test_a_mixed_weather_run_is_not_an_econ_runs_prior_but_its_orders_are_not_new(tmp_path):
+    """2026-10-07: a default run whose top-N held one econ series became the
+    econ bracket's `prior_report`. The immediate prior is same-FAMILY; the
+    `*_vs_all` union is not, because an order the weather run already scored
+    is not new evidence when the econ run scores it again."""
+    out = tmp_path / "maker_bracket"
+    cpi = [("KXCPIYOY-26SEP-T3.0", T0 + timedelta(minutes=i), 0.4) for i in range(4)]
+    _write_report(out, "20260916T000000.json", {"KXCPIYOY": 1}, [("KXCPIYOY-26AUG", T0, 0.4)])
+    weather = [("KXHIGHNY-26OCT01", T0 + timedelta(minutes=i), 0.4) for i in range(6)]
+    _write_report(out, "20261007T000000.json", {"KXHIGHNY": 6, "KXCPIYOY": 4}, weather + cpi)
+
+    orders = [_order(m, p, pr) for m, p, pr in cpi]
+    res = independence_vs_prior(out, orders, {"KXCPIYOY": 4}, _conc())
+
+    assert res["prior_report"] == "20260916T000000.json"
+    assert res["orders_new_vs_all"] == 0
+
+
 def test_independence_vs_all_catches_top_n_churn(tmp_path):
     """The scored market set is only the top-N by print count, and it churns.
     A strike absent from the immediate prior run but scored by an OLDER one is
@@ -958,3 +976,33 @@ def test_unit_novelty_vs_all_unions_every_comparable_prior(tmp_path):
     assert u["new_vs_prior"] == 1
     # ...but the 08-01 run already sampled it, so it is not new evidence at all
     assert u["new_vs_all"] == 0
+
+
+def test_main_publishes_the_hold_it_takes_on_the_stream_archive(tmp_path, monkeypatch):
+    """The bracket scores every market through a cursor on the file
+    `collector.streamd` owns, so its hold is the whole scoring loop. Until
+    2026-10-07 it published no attach block: a report holding a daemon's
+    archive with nowhere to say for how long (mistakes #91, #102). The
+    block must come from the RELEASE -- built inside the `with`, it would
+    read `held_unknown_n 1` against the very attach it describes."""
+    import sys
+
+    from simulator import queuescore
+
+    db = tmp_path / "hyxstream.duckdb"
+    store = StreamStore(db)
+    store.append_events(_image("A", 10, T0))
+    store.append_trades(_trade("A", 12, T0 + timedelta(seconds=60), "0.4000", "35.00", "no"))
+    store.append_events(_delta("A", 13, T0 + timedelta(seconds=60), "yes", "0.4000", "-30.00"))
+    store.flush()
+    out = tmp_path / "maker_bracket"
+    argv = ["queuescore", "--hours", "1", "--stream-db", str(db), "--out", str(out)]
+    monkeypatch.setattr(sys, "argv", argv)
+    queuescore.main()
+
+    (report,) = [json.loads(p.read_text()) for p in out.glob("*.json")]
+    wait = report["attach_wait"]
+    assert wait["db"] == "hyxstream.duckdb"
+    assert wait["n"] == 1
+    assert wait["held_n"] == 1 and wait["held_unknown_n"] == 0
+    assert isinstance(wait["held_s_max"], float) and wait["held_s_max"] >= 0.0

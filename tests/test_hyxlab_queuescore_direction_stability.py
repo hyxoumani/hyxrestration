@@ -154,6 +154,38 @@ def test_a_weather_reading_is_not_spliced_into_an_econ_trajectory(tmp_path):
     assert ds["powered_first"] == 4  # the econ prior, not the weather one
 
 
+def test_one_shared_strike_does_not_splice_a_weather_run_onto_econ(tmp_path):
+    """THE REGRESSION (2026-10-07). The default width-24 run's top-N picked up
+    one econ series (`KXHIGHNY 891, KXHIGHMIA 375, KXCPIYOY 342`), and "shares
+    any series" made the 09-16 ECON bracket its prior reading: the weather
+    trajectory printed `significant -2`, two econ market-tier verdicts
+    vanishing. Family is the plurality, which one strike cannot move."""
+    _write(
+        tmp_path,
+        "20260916T021727",
+        _report("w", markets=24, underlyings=16, composition={"KXHIGHNY": 836, "KXHIGHMIA": 391}),
+    )
+    _write(
+        tmp_path,
+        "20260916T021816",
+        _report(
+            "e",
+            markets=24,
+            underlyings=9,
+            significant=2,
+            composition={"KXCPIYOY": 1635, "KXCPI": 1251},
+        ),
+    )
+    mixed = {"KXHIGHNY": 891, "KXHIGHMIA": 375, "KXCPIYOY": 342}
+    current = _report("m", markets=24, underlyings=17, composition=mixed)
+
+    ds = direction_stability(tmp_path, current)["direction_verdict"]
+
+    assert ds["incomparable_composition"] == 1
+    assert ds["delta_vs_prior"]["counts"]["significant_over"] == 0
+    assert ds["delta_vs_prior"]["underlyings"] == 1  # 16 -> 17, not econ's 9 -> 17
+
+
 def test_a_rerun_on_the_same_orders_does_not_compare_against_itself(tmp_path):
     """Re-running minutes after shipping a field is how the archive got its
     08-03 pair. The current run's own orders must be excluded, or the delta

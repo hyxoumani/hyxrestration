@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from hyxlab.store import connect_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
 from simulator.queuebounds import QueueTracker, consuming_print
@@ -95,6 +95,33 @@ def _underlying_nets(report: dict) -> dict[str, int]:
     }
 
 
+#: Series prefixes that make a bracket a WEATHER reading. The default
+#: (unfiltered) top-N is weather-dominated, `--series` targets econ.
+WEATHER_PREFIXES = ("KXHIGH", "KXLOW")
+
+
+def series_family(composition: dict | None) -> str | None:
+    """`weather` when weather series hold the PLURALITY of a report's orders,
+    `econ` otherwise, `None` for a report that scored nothing.
+
+    THE REGRESSION (2026-10-07). Both sequence filters below used to call two
+    reports comparable when their compositions shared ANY series. That kept
+    weather and econ apart only while no run mixed them, and the 2026-10-07
+    default width-24 run did -- `KXHIGHNY 891, KXHIGHMIA 375, KXCPIYOY 342`.
+    Its `direction_stability` then read the 09-16 ECON bracket as its prior
+    reading and printed `significant -2` (two econ market-tier verdicts
+    disappearing, in a weather trajectory), and the econ run that followed
+    named the weather run as its `prior_report`. One shared strike was enough
+    to splice two populations, which is the movement-out-of-a-flag the
+    stability docstring forbids. A plurality cannot be held by both families,
+    and it is computable from every archived report -- none of which records
+    the `--series` it was run with."""
+    if not composition:
+        return None
+    weather = sum(n for k, n in composition.items() if k.startswith(WEATHER_PREFIXES))
+    return "weather" if 2 * weather > sum(composition.values()) else "econ"
+
+
 def independence_vs_prior(
     out_dir: Path, orders: list[VirtualOrder], composition: dict, conc: dict
 ) -> dict:
@@ -108,9 +135,14 @@ def independence_vs_prior(
     incidentally — `KXHIGH*` markets expire daily, so the top-N market set
     churns on its own.
 
-    Comparison is against the most recent prior report sharing a series with
-    this run, which keeps weather and econ sequences from being compared to
-    each other. Returns null counts when there is no comparable prior run.
+    The immediate prior is the most recent report of the same `series_family`,
+    which keeps weather and econ sequences from being compared to each other.
+    The `*_vs_all` union is wider on purpose: it takes EVERY prior that shares
+    a series, because an order a weather run already scored is not new
+    evidence for the econ run that scores it again (2026-10-07: 342
+    `KXCPIYOY` orders in both). Novelty is the side that must not be
+    inflated, so its union errs toward overlap. Returns null counts when there
+    is no comparable prior run.
 
     "New since the last run" is NOT "never scored before", because the scored
     market set is only the top-N by print count (`select_markets`) and that
@@ -146,6 +178,7 @@ def independence_vs_prior(
     union: set[tuple] = set()
     union_units: set[str] = set()
     n_priors = 0
+    family = series_family(composition)
     for path in sorted(out_dir.glob("*.json"), reverse=True):
         try:
             prior = json.loads(path.read_text())
@@ -157,7 +190,7 @@ def independence_vs_prior(
             (d["market_id"], d["placed"], d["price"]) for d in prior.get("orders_detail", [])
         }
         nets_there = _underlying_nets(prior)
-        if prior_keys is None:
+        if prior_keys is None and series_family(prior.get("market_composition")) == family:
             prior_name, prior_keys, prior_nets = path.name, prior_keys_here, nets_there
         union |= prior_keys_here
         union_units |= set(nets_there)
@@ -473,17 +506,19 @@ def direction_stability(out_dir: Path, current: dict) -> dict:
     `atlas.verdict_stability` made it a field. Same defect, second site; the
     lens is swept rather than the instance fixed (mistakes #33).
 
-    Priors are filtered by COMPOSITION the same way `independence_vs_prior`
-    filters them: a weather reading and an econ reading are two populations,
-    and splicing their verdicts into one trajectory would manufacture movement
-    out of a `--series` flag. Reports that carry no comparable composition are
-    counted in `incomparable_composition`, not dropped silently.
+    Priors are filtered by `series_family`, the rule `independence_vs_prior`
+    uses for its immediate prior: a weather reading and an econ reading are
+    two populations, and splicing their verdicts into one trajectory would
+    manufacture movement out of a `--series` flag. (This was "shares any
+    series" until 2026-10-07, when one mixed run did exactly that splice --
+    see `series_family`.) Reports of the other family, or with no composition,
+    are counted in `incomparable_composition`, not dropped silently.
 
     Never a verdict: a bracket gaining power is measurement improving, not
     evidence, and pre-registration still decides.
     """
     fp_here = _reading_fingerprint(current)
-    comp_here = set(current.get("market_composition") or {})
+    family_here = series_family(current.get("market_composition"))
     by_fp: dict[str, dict] = {}
     n_files = 0
     n_incomparable = 0
@@ -493,7 +528,8 @@ def direction_stability(out_dir: Path, current: dict) -> dict:
         except (OSError, json.JSONDecodeError):
             continue
         n_files += 1
-        if not set(rep.get("market_composition") or {}) & comp_here:
+        family = series_family(rep.get("market_composition"))
+        if family is None or family != family_here:
             n_incomparable += 1
             continue
         fp = _reading_fingerprint(rep)
@@ -826,24 +862,33 @@ def main() -> None:
     ap.add_argument("--out", default="reports/maker_bracket")
     args = ap.parse_args()
 
-    conn = connect_retry(args.stream_db)
-    since = conn.execute(
-        "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
-        [int(args.hours)],
-    ).fetchone()[0]
-    series = [s.strip() for s in args.series.split(",") if s.strip()] if args.series else None
-    markets = select_markets(conn, since, args.markets, series)
-    print(
-        f"[queuescore] window since {since}, {len(markets)} markets"
-        + (f", series={series}" if series else "")
-    )
+    reset_attach_waits()
+    # `held_attach`: every market is scored through a cursor on
+    # `hyxstream.duckdb` -- the file `collector.streamd` OWNS and flushes
+    # every 15s -- so the hold is the whole scoring loop, not a query. This
+    # report published no attach block until 2026-10-07, and was not even
+    # listed as debt in `tests/test_hold_discipline.py`: a standing report
+    # holding a daemon's archive with nowhere to say for how long (#91, #102).
+    with held_attach(args.stream_db) as conn:
+        since = conn.execute(
+            "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
+            [int(args.hours)],
+        ).fetchone()[0]
+        series = [s.strip() for s in args.series.split(",") if s.strip()] if args.series else None
+        markets = select_markets(conn, since, args.markets, series)
+        print(
+            f"[queuescore] window since {since}, {len(markets)} markets"
+            + (f", series={series}" if series else "")
+        )
 
-    all_orders: list[VirtualOrder] = []
-    for m in markets:
-        orders = score_market(conn, m, since, args.qty)
-        all_orders.extend(orders)
-        print(f"  {m}: {len(orders)} virtual maker orders")
-    conn.close()
+        all_orders: list[VirtualOrder] = []
+        for m in markets:
+            orders = score_market(conn, m, since, args.qty)
+            all_orders.extend(orders)
+            print(f"  {m}: {len(orders)} virtual maker orders")
+    # After the RELEASE: `held_s` is charged by the close, so a block built
+    # inside the `with` would publish `held_unknown_n 1` against this attach.
+    wait = attach_wait_block(db=Path(args.stream_db).name)
 
     n = len(all_orders)
     crossed = [o for o in all_orders if o.crossed_at]
@@ -936,6 +981,7 @@ def main() -> None:
             " in it."
         ),
         "orders_detail": [o.summary() for o in all_orders],
+        "attach_wait": wait,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     # computed against the archived priors, so it must run before this report is
@@ -945,8 +991,9 @@ def main() -> None:
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
     for k, v in report.items():
-        if k not in ("orders_detail", "direction_stability"):
+        if k not in ("orders_detail", "direction_stability", "attach_wait"):
             print(f"  {k}: {v}")
+    print(attach_wait_line(wait, prefix="[queuescore]"))
     # ...and the same decomposition ACROSS readings, because "0 significant,
     # N powered" is the same sentence whether the bracket is gaining power or
     # has just swapped to a market set that never had any.
