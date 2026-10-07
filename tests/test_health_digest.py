@@ -950,3 +950,81 @@ def test_a_restarted_daemon_clears_its_own_failure() -> None:
     fails = [health.UnitFailure("hyxlab-stream.service", BOOT_FAIL, "signal")]
     raw = health.judge("hyxlab-stream.service", up, None, NOW)
     assert health.outlived_by_failure(raw, up, None, fails).state == "OK"
+
+
+# 2026-10-07 15:31Z, verbatim fields: collect refused by a sibling project's
+# read-only attach. The manager logs the exit and the failure as two records
+# of ONE invocation; only the first carries the status.
+EXIT_ID = "98e322203f7a4ed290d09fe03c09fe15"
+
+
+def exit_rec(unit: str, inv: str, status: str, code: str = "exited") -> str:
+    return json.dumps(
+        {
+            "MESSAGE_ID": EXIT_ID,
+            "USER_UNIT": unit,
+            "USER_INVOCATION_ID": inv,
+            "EXIT_CODE": code,
+            "EXIT_STATUS": status,
+            "MESSAGE": f"{unit}: Main process exited, code={code}, status={status}/TEMPFAIL",
+            "__REALTIME_TIMESTAMP": "1791473462000000",
+        }
+    )
+
+
+def fail_rec(unit: str, inv: str, result: str = "exit-code") -> str:
+    rec = json.loads(jrec(unit, 1791473462000100, result))
+    rec["USER_INVOCATION_ID"] = inv
+    return json.dumps(rec)
+
+
+def test_a_designed_skip_is_labelled_apart_from_a_crash():
+    """Both read `exit-code`; the exit record of the SAME invocation says 75."""
+    journal = "\n".join(
+        [
+            exit_rec("hyxlab-collect.service", "870eb6f9", "75"),
+            fail_rec("hyxlab-collect.service", "870eb6f9"),
+            exit_rec("hyxlab-breadth.service", "aaaa", "1"),
+            fail_rec("hyxlab-breadth.service", "aaaa"),
+        ]
+    )
+    collect, breadth = sorted(
+        health.parse_unit_failures(journal, HYXLAB_UNITS), key=lambda f: f.unit, reverse=True
+    )
+    assert (collect.unit, collect.status) == ("hyxlab-collect.service", "75")
+    assert breadth.status == "1"
+    lines = health.failure_history_lines([collect, breadth], [], FAIL_NOW)
+    assert any("exit-code/75 " in ln and "hyxlab-collect" in ln for ln in lines)
+    assert any("exit-code/1 " in ln and "hyxlab-breadth" in ln for ln in lines)
+
+
+def test_an_exit_record_is_context_never_a_failure_of_its_own():
+    """A unit that exited 0 also logs `Main process exited`; it must not count,
+    and an exit with no matching failure must not lend its status elsewhere."""
+    journal = "\n".join(
+        [
+            exit_rec("hyxlab-collect.service", "other", "75"),
+            fail_rec("hyxlab-collect.service", "870eb6f9"),
+        ]
+    )
+    (only,) = health.parse_unit_failures(journal, HYXLAB_UNITS)
+    assert only.status is None and only.label == "exit-code"
+
+
+def test_a_signal_death_carries_no_exit_status():
+    """`code=killed status=9` beside `oom-kill` is the same fact said twice."""
+    journal = "\n".join(
+        [
+            exit_rec("hyxlab-stream.service", "k", "9", code="killed"),
+            fail_rec("hyxlab-stream.service", "k", "oom-kill"),
+        ]
+    )
+    (only,) = health.parse_unit_failures(journal, HYXLAB_UNITS)
+    assert only.label == "oom-kill"
+
+
+def test_the_journal_read_asks_for_the_exit_record_and_its_join_key():
+    src = (REPO / "collector/health.py").read_text()
+    assert "f\"MESSAGE_ID={UNIT_EXIT_MESSAGE_ID}\"" in src
+    fields = re.search(r'"--output-fields=([A-Z_,a-z]+)"', src).group(1).split(",")
+    assert {"USER_INVOCATION_ID", "EXIT_CODE", "EXIT_STATUS"} <= set(fields)

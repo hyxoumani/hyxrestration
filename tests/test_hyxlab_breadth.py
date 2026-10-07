@@ -1395,3 +1395,43 @@ def test_the_sweep_publishes_the_retry_ledger_it_spent():
     # order to rule it out, and a substring check cannot tell the two apart.
     code = "\n".join(ln.split("#", 1)[0] for ln in src.splitlines())
     assert "TRANSPORT_TRIES" not in code, "the sweep divided a sum by one budget's denominator"
+
+
+def _refused_by(pid: int):
+    """`writer_burst` exhausting its open ladder against a reader holding the file."""
+
+    def _cycle(*a, **k):
+        raise breadth.duckdb.IOException(
+            'IO Error: Could not set lock on file "/x/hyxlab.duckdb": Conflicting lock '
+            f"is held in /usr/bin/python3.14 (PID {pid}) by user devs."
+        )
+
+    return _cycle
+
+
+def test_a_cycle_refused_by_a_live_reader_is_a_skip_not_a_crash(monkeypatch, capsys):
+    """2026-10-07 15:37Z and 16:07Z: a sibling project's read-only attach held
+    the archive past the burst ladder, and breadth exited 1 with a traceback --
+    the digest's RECENT line could not tell it from a broken unit, while the
+    collector, refused by the same reader in the same window, exited 75 naming
+    it. Contention gets the collector's exit and the collector's attribution."""
+    import os
+
+    monkeypatch.setenv(breadth.ENABLE_ENV, "1")
+    monkeypatch.setattr("sys.argv", ["breadth", "--once", "--db", "/x/hyxlab.duckdb"])
+    monkeypatch.setattr(breadth, "collect_breadth_once", _refused_by(os.getpid()))
+    with pytest.raises(SystemExit) as exc:
+        breadth.main()
+    assert exc.value.code == 75
+    out = capsys.readouterr().out
+    assert "archive attach refused" in out
+    assert f"pid {os.getpid()}" in out
+
+
+def test_a_refusal_naming_no_live_holder_stays_loud(monkeypatch):
+    """A dead PID is a lock left behind -- an incident, not contention."""
+    monkeypatch.setenv(breadth.ENABLE_ENV, "1")
+    monkeypatch.setattr("sys.argv", ["breadth", "--once", "--db", "/x/hyxlab.duckdb"])
+    monkeypatch.setattr(breadth, "collect_breadth_once", _refused_by(2**22 + 7))
+    with pytest.raises(breadth.duckdb.IOException):
+        breadth.main()

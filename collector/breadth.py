@@ -112,11 +112,13 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 
+import duckdb
 import requests
 
 from collector.sweep import MARKETS_PAUSE_S, writer_burst
 from collector.venues import kalshi
 from hyxlab.models import Snapshot
+from hyxlab.store import lock_holder
 
 __all__ = [
     "CLOSE_WINDOW_H",
@@ -409,6 +411,16 @@ def main() -> None:
         except Exception as e:  # one bad cycle must not kill a long-running loop
             print(f"[breadth] cycle failed: {type(e).__name__}: {e}", flush=True)
             if args.once:
+                # A LIVE holder outside the flock (an ad-hoc reader, a sibling
+                # project) is contention: exit 75 naming it, as
+                # `collector.collect` does, so the digest's failure history
+                # does not file it beside a crash. 2026-10-07 15:37Z/16:07Z
+                # were exit 1 + traceback while collect, refused by the same
+                # reader, exited 75. No live holder is an incident: raise.
+                named = lock_holder(e) if isinstance(e, duckdb.Error) else None
+                if named is not None:
+                    print(f"[breadth] skipped: archive attach refused by {named}", flush=True)
+                    sys.exit(75)  # EX_TEMPFAIL
                 raise
         if args.once:
             break

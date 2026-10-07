@@ -879,6 +879,16 @@ def drift_report() -> list[UnitDrift]:
 # how often, and whether this is the first time.
 UNIT_FAILURE_MESSAGE_ID = "d9b373ed55a64feb8242e02dbe79a49c"
 
+# `exit-code` alone cannot tell a crash from a designed skip: `collector.collect`
+# and `collector.breadth` exit 75 (EX_TEMPFAIL) when a LIVE reader outside the
+# flock holds the archive, and both read `Failed with result 'exit-code'`. On
+# 2026-10-07 15:31-16:09Z the digest printed four collect and two breadth
+# failures that were all a sibling project's read-only attach, and the reader
+# had to dig the journal to learn that. The status is in a SECOND record, the
+# manager's "Main process exited" (this id), joined to the failure by
+# `USER_INVOCATION_ID` -- one invocation, one exit, one failure.
+UNIT_EXIT_MESSAGE_ID = "98e322203f7a4ed290d09fe03c09fe15"
+
 # The window must be at least the reader's interval or faults fall through it
 # exactly as they do now: `hyxlab-autoloop.timer` fires 02/08/14/20:15 UTC, so
 # six hours is the floor. 24h is four periods of margin, matches the window qa's
@@ -893,6 +903,14 @@ class UnitFailure:
     unit: str
     at: datetime
     result: str
+    #: The process's exit status for an `exit-code` result ("75" is a skip,
+    #: not a crash); None when the result is not an exit or the record of it
+    #: was not read -- never guessed.
+    status: str | None = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.result}/{self.status}" if self.status else self.result
 
 
 _RESULT_RE = re.compile(r"Failed with result '(?P<result>[^']+)'")
@@ -902,13 +920,24 @@ def parse_unit_failures(stdout: str, units: set[str]) -> list[UnitFailure]:
     """Journal JSON -> in-scope failures, oldest first. Pure, and forgiving by
     design: a record that cannot be parsed is skipped, never guessed at, and
     never raised out of a digest whose job is to print."""
-    out = []
+    recs = []
     for line in stdout.splitlines():
         try:
-            rec = json.loads(line)
+            recs.append(json.loads(line))
         except ValueError:
             continue
-        if rec.get("MESSAGE_ID") != UNIT_FAILURE_MESSAGE_ID:
+    statuses = {
+        rec.get("USER_INVOCATION_ID"): str(rec.get("EXIT_STATUS"))
+        for rec in recs
+        if isinstance(rec, dict)
+        and rec.get("MESSAGE_ID") == UNIT_EXIT_MESSAGE_ID
+        and rec.get("EXIT_CODE") == "exited"
+        and rec.get("USER_INVOCATION_ID")
+        and rec.get("EXIT_STATUS") is not None
+    }
+    out = []
+    for rec in recs:
+        if not isinstance(rec, dict) or rec.get("MESSAGE_ID") != UNIT_FAILURE_MESSAGE_ID:
             continue
         unit = rec.get("USER_UNIT")
         if unit not in units:
@@ -918,7 +947,9 @@ def parse_unit_failures(stdout: str, units: set[str]) -> list[UnitFailure]:
         except (KeyError, TypeError, ValueError):
             continue
         m = _RESULT_RE.search(str(rec.get("MESSAGE", "")))
-        out.append(UnitFailure(unit, at, m.group("result") if m else "failed"))
+        result = m.group("result") if m else "failed"
+        status = statuses.get(rec.get("USER_INVOCATION_ID")) if result == "exit-code" else None
+        out.append(UnitFailure(unit, at, result, status))
     return sorted(out, key=lambda f: f.at)
 
 
@@ -936,6 +967,9 @@ def read_unit_failures(units: set[str], hours: int = FAILURE_WINDOW_H) -> list[U
                 "--since",
                 f"-{hours}h",
                 f"MESSAGE_ID={UNIT_FAILURE_MESSAGE_ID}",
+                # Same field twice is an OR in journalctl: the exit record
+                # that carries the status (see UNIT_EXIT_MESSAGE_ID).
+                f"MESSAGE_ID={UNIT_EXIT_MESSAGE_ID}",
                 "-o",
                 "json",
                 # MESSAGE_ID is in this list even though it is also the server-side
@@ -944,7 +978,7 @@ def read_unit_failures(units: set[str], hours: int = FAILURE_WINDOW_H) -> list[U
                 # the field the parser keys on absent, and the section silently
                 # reports a clean box. Caught here 2026-09-08 by a "0 failures"
                 # against five that had just been measured by hand.
-                "--output-fields=MESSAGE_ID,USER_UNIT,MESSAGE,__REALTIME_TIMESTAMP",
+                "--output-fields=MESSAGE_ID,USER_UNIT,MESSAGE,__REALTIME_TIMESTAMP,USER_INVOCATION_ID,EXIT_CODE,EXIT_STATUS",
             ],
             capture_output=True,
             text=True,
@@ -1018,7 +1052,7 @@ def failure_history_lines(
         # unit rows above say nothing at all. `still failed` is not a second
         # alarm -- the count beside it is recurrence, which the row cannot carry.
         status = "still failed" if unit in still_bad else "CLEARED"
-        when = ", ".join(f"{h.result} {h.at:%m-%d %H:%M}Z" for h in hits)
+        when = ", ".join(f"{h.label} {h.at:%m-%d %H:%M}Z" for h in hits)
         lines.append(f"{'RECENT':<10} {unit:<{width}}  {len(hits)}x in {hours}h, {status}: {when}")
     covered = hours
     if floor is not None:
