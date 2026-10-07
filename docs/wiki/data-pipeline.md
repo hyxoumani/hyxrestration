@@ -676,6 +676,15 @@ self-match trap the ops rules name for `pkill -f`.
   lock the writer cannot get past, and `simulator.shadow` is the named
   holder in both. QA fails on the SPILL, never on duration: a stall inside
   the buffer loses nothing and multi-hour readers are legitimate.
+  **The sidecar drains in committed chunks** (`DRAIN_CHUNK_ROWS` 100k,
+  byte-offset checkpoint `<sidecar>.done`) since 2026-10-07: the
+  whole-file drain cost ~750 B/row resident, so a 1.69M-row sidecar
+  OOM-looped streamd for 1h53m, 189 restarts each re-running the same drain
+  (mistakes #112). Peak at 1.7M rows is now 378 MB, flat in sidecar size.
+  **Poly volume is dominated by one market** since the 10-06 20:20Z restart:
+  a token pair snapshotting its full book every ~1s, ~580k snap rows/h
+  against ~8k/h before. The buffer fill rate is ~2x `BUFFER_ROWS_PER_S`
+  while it stays in the top-50, so SPILL_CAP is ~12 min of firehose, not ~27.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,
   2.6M candles. `python -m hyxlab.sweep --doctor` = health check for
   BOTH archives (includes mirror tripwire + stream counts/size).

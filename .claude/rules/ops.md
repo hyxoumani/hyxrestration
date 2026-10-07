@@ -375,3 +375,10 @@
   the widest spacing actually observed (`sample_gap_max_s`) beside the
   nominal cadence rather than instead of it -- records written before the
   measurement exists must still be legible as nominal.
+- A recovery path whose cost grows with the outage it recovers from turns
+  a long outage into a permanent one. streamd's sidecar drain parsed the
+  whole file in one transaction (~750 B/row), so a 1.69M-row spill could
+  not fit the 2G cap. The sidecar survives restarts by design, so every
+  boot re-ran the same OOM: 189 kills in 1h53m (mistakes #112). Bound
+  every replay of durable state by a constant (`DRAIN_CHUNK_ROWS`) and
+  checkpoint it, so a kill makes progress instead of repeating.

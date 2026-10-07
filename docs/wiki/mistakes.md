@@ -2853,6 +2853,50 @@ Format: what happened → root cause → error type → prevention tier
     holding the lock. **Fixing a resource LEAK lengthens the hold, so ask
     which tests were only passing because of the leak.**
 
+112. **2026-10-07 -- one 1 Hz market became a 1h53m stream outage,
+    through two costs that scaled with something no one bounded.** Chain,
+    measured end to end:
+    (a) From streamd's 10-06 20:20Z restart, one Polymarket token pair
+    (`33339…`/`10405…`) pushed a full ~80-level book snapshot every ~1s:
+    35,453 frames in 10h, against <=112 for every other market. Poly snap
+    rows went from ~8k/h to ~580k/h. (b) QA's poly delta-replay check
+    joined `book_events` to intervals on `market_id` with a RANGE filter,
+    and compared levels in a FULL OUTER JOIN with a non-equi
+    `abs(price diff) < 1e-9` residual. Both are quadratic per market. The
+    check had run ~30s on every day to 10-06 (1.7k-4.8k intervals); on
+    10-07 it saw 99,658 intervals and took 62 min, 22h CPU and 12G,
+    holding `hyxstream.duckdb` for 3750.4s (#102's instrument recorded it
+    exactly). (c) streamd buffered to SPILL_CAP and spilled 1.69M rows
+    to the sidecar. On release, the first good flush parsed the WHOLE
+    sidecar, concatenated it with the 400k buffer and built one
+    `executemany` list, at ~750 B/row resident (measured: 279 MB at 200k,
+    730 MB at 800k). That came to ~1.6 GB under a 2G cap, so it was
+    OOM-killed at 11:12:08Z, losing the buffer. (d) The sidecar survives
+    a restart BY DESIGN, so every boot re-ran the same drain. That was
+    189 kills ~29s apart until 13:05Z, capturing nothing on any channel.
+    Fixes, both measured: the sidecar drains in committed chunks of
+    `DRAIN_CHUNK_ROWS = 100_000` with a byte-offset checkpoint
+    (`<sidecar>.done`, removed BEFORE the sidecar; a fresh sidecar removes
+    an orphan). Peak at 1.7M sidecar rows is now 378 MB (was ~1.4 GB
+    extrapolated), and a killed drain resumes instead of restarting. The
+    replay check maps deltas to intervals by ASOF JOIN and compares levels
+    on `round(price, 6)` equality. It took 10.4s on the live 26h window
+    (110,028 intervals, 8.79M levels), held against the 3750s; on a 1-hour
+    1 Hz fixture it runs in 0.04s vs 7.99s for the old form. The old SQL
+    is kept verbatim as an oracle (`tests/test_poly_replay_asof.py`, 40
+    randomized seeds plus a vacuity guard). One discovery while fixing:
+    the rounded key added BESIDE the residual still took 24.5s, because
+    the residual itself is the slow path. **A recovery path whose cost
+    grows with the outage it recovers from converts a long outage into a
+    permanent one, and a restart that re-reads the same durable input is
+    a loop, not a recovery. Bound every replay of durable state by a
+    constant, and checkpoint it so a kill makes progress. Second rule:
+    a daily check's runtime is a property of the DATA's shape, not of the
+    code; a per-market rate changing 300x is an input, not an anomaly.**
+    Also stale now: `BUFFER_ROWS_PER_S = 250` (this wedge filled at ~560
+    rows/s), so SPILL_CAP is ~12 min of firehose while the hot market
+    stays subscribed, not ~27.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
