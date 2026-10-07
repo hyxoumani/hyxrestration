@@ -57,6 +57,11 @@ class _FakeClock:
 
 
 def _run_main(tmp_path, monkeypatch, *, n_markets, deadline_min, fetch_cost_s):
+    # `main` takes the instance lock under the RELATIVE `data/`, so without
+    # this the test contends with the production `hyxlab-tradepass` run --
+    # and since #107 made that run hold its lock for hours, the suite went
+    # red (SystemExit 75) whenever the timer was mid-pass.
+    monkeypatch.chdir(tmp_path)
     clock = _FakeClock()
     db = str(tmp_path / "t.duckdb")
     tickers = _seed_settled_markets(db, n_markets)
