@@ -325,6 +325,30 @@ structure — see [venues](venues.md)).
    sign. It is the 09-12 reading re-measured. The next informative econ
    bracket is the width-24 EVENT rollover already queued (late
    September), not a clock-spaced re-run.
+   **2026-10-07 width-24 pair (`20261007T081813.json` weather,
+   `20261007T081859.json` econ). Weather: a second powered null.**
+   1,608 orders / 24 markets / 17 underlyings. `underlying_sign_p` 0.151
+   on the floor (10 over / 5 under / 2 tied) and 0.291 on the ceiling,
+   `underlying_min_sign_p` 3.1e-05. All four readings `not_significant`
+   and powered. Against the 09-16 weather reading it shares **0** underlyings, and 16 of 17
+   are new against every prior. The one repeat is `KXCPIYOY-26SEP`, an
+   econ strike the default top-24 picked up. That makes two independent
+   powered nulls on weather fill-model direction. Crossing 588,
+   `crossing_but_not_opt` 138, `pess_but_not_crossing` 161,
+   `net_disagreement` +4 on `abs_net_by_market` 74, still cancellation.
+   **Econ: the market tier's `significant_under` did not reproduce.**
+   6,137 orders / 24 markets / 7 underlyings. Crossing 305 against
+   queue-pess 310 / opt 376, where 09-16 had 209 vs 309. All four readings
+   `not_significant` (market 0.846, underlying 0.773, min 0.0078). It is
+   NOT the clean rollover that was queued: 4 of 7 underlyings are shared
+   with 09-16, and all 4 kept their sign. Only 2 of 7 are new against all
+   priors. So the market-tier shape seen on 08-29/09-12/09-16 failed to
+   recur on mostly the same events plus fresh quotes. It is not refuted by
+   an independent sample. The next econ reading that buys units is the
+   Oct prints rolling, roughly 2026-10-21 or later. Numbers above use the
+   comparability fix in 0491368 (mistakes #110). The archived JSONs'
+   own `direction_stability`/`prior_report` were computed before the fix
+   and spliced the two families.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive

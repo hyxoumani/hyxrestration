@@ -2803,6 +2803,56 @@ Format: what happened → root cause → error type → prevention tier
     the quantity. Enumerate everything that consumes it, here everything
     the clock SIGNS, and take the tightest.**
 
+109. **2026-10-07 -- the maker bracket held the daemon-owned stream
+    archive across its whole scoring loop and was never named as debt.**
+    `simulator.queuescore.main` took a bare `connect_retry` on
+    `hyxstream.duckdb` and scored every market through it, publishing no
+    attach block. `tests/test_hold_discipline.py` binds "measure your
+    holds" to modules that PUBLISH a block, and its docstring enumerates
+    the unpaid non-publishers (`simui`/`backup`/`bookreplay`/
+    `streamstore`). queuescore was in neither list, a standing report
+    with 49 archived runs. First measured readings, 2026-10-07: **32.1s**
+    (weather width-24, 1 contended attach, 4.0s slept) and **17.0s**
+    (econ width-24), each a stretch of streamd flushes refused. Fixed in
+    0491368 (`held_attach`, block built after the release, publisher set
+    +1). The end-to-end test was red with the plain `connect_retry`
+    mutant diffed in. **#102's rule reaches every CALLER of a shared
+    resource. A debt list written from memory is a sample. Derive the
+    list by grepping attaches of the file, not by recalling reports.**
+
+110. **2026-10-07 -- "shares any series" spliced a weather reading onto
+    an econ trajectory.** `independence_vs_prior` and
+    `direction_stability` both promised in their docstrings to keep the
+    weather and econ sequences apart. Both did it by calling two reports
+    comparable when their compositions intersected. That held only while
+    no run mixed families. The 10-07 default width-24 run's top-24 held
+    `KXHIGHNY 891, KXHIGHMIA 375, KXCPIYOY 342`. Its stability block took
+    the 09-16 ECON bracket as its prior reading and printed `significant
+    -2` and `underlyings +8`, both movement manufactured out of a
+    `--series` flag. The econ run 46s later named the weather run as its
+    `prior_report`. Fixed in 0491368: `series_family` is the plurality
+    family, which one strike cannot move and which every archived report
+    can be classified by. The `*_vs_all` novelty union deliberately stays
+    overlap-based, since an order scored by either family is not new
+    evidence. Both regression tests were red against the old source. **A
+    comparability rule written as set intersection is a rule about the
+    population's CURRENT composition. Ask what it does to the first
+    report that straddles two populations.**
+
+111. **2026-10-07 -- #107's fix turned two tests into a timer-state
+    probe.** `tests/test_tradepass_deadline.py` runs
+    `trades_backfill.main` with the DB and writer lock redirected to
+    `tmp_path`, but the instance lock lives under the RELATIVE `data/`.
+    Before #107, production released that lock milliseconds into its run,
+    so the test almost never met it. After 74281fb production holds it
+    for the whole pass (up to 210 min), and the suite failed `SystemExit
+    75` x2 whenever `hyxlab-tradepass` was mid-run. Red 3/3 at 08:30Z
+    with HEAD stashed, so it was not today's change. Fixed in 83b0400 with
+    `monkeypatch.chdir(tmp_path)`, the isolation
+    `test_tradepass_instance_lock.py` already used. Green with production
+    holding the lock. **Fixing a resource LEAK lengthens the hold, so ask
+    which tests were only passing because of the leak.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
