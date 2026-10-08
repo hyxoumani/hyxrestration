@@ -80,24 +80,17 @@ def _run_main(tmp_path, monkeypatch, *, n_markets, deadline_min, fetch_cost_s):
     tb.main()
     store = Store(db, read_only=True)
     try:
-        swept = {
-            r[0]
-            for r in store.conn.execute("SELECT market_id FROM trades_swept").fetchall()
-        }
+        swept = {r[0] for r in store.conn.execute("SELECT market_id FROM trades_swept").fetchall()}
     finally:
         store.close()
     return tickers, swept
 
 
-def test_deadline_stops_the_pass_and_leaves_the_rest_pending(
-    tmp_path, monkeypatch, capsys
-):
+def test_deadline_stops_the_pass_and_leaves_the_rest_pending(tmp_path, monkeypatch, capsys):
     """Each fetch costs 120 fake-seconds against a 3-minute deadline: the
     third market must not be fetched, and the unfetched tail must stay
     unmarked in trades_swept so the next run picks it up."""
-    _, swept = _run_main(
-        tmp_path, monkeypatch, n_markets=5, deadline_min=3, fetch_cost_s=120.0
-    )
+    _, swept = _run_main(tmp_path, monkeypatch, n_markets=5, deadline_min=3, fetch_cost_s=120.0)
 
     assert len(swept) == 2, f"expected 2 markets before the deadline, got {swept}"
     out = capsys.readouterr().out
@@ -168,9 +161,80 @@ def test_unit_does_not_override_the_deadline():
     from pathlib import Path
 
     unit = (
-        Path(__file__).resolve().parent.parent
-        / "scripts"
-        / "systemd"
-        / "hyxlab-tradepass.service"
+        Path(__file__).resolve().parent.parent / "scripts" / "systemd" / "hyxlab-tradepass.service"
     ).read_text()
     assert "--deadline-min" not in unit
+
+
+def _http_error(code):
+    import requests
+
+    resp = requests.Response()
+    resp.status_code = code
+    return requests.HTTPError(f"{code}", response=resp)
+
+
+def _run_with_fetch(tmp_path, monkeypatch, n_markets, fetch):
+    monkeypatch.chdir(tmp_path)
+    clock = _FakeClock()
+    sleeps: list[float] = []
+
+    def sleep(s):
+        sleeps.append(s)
+        clock.sleep(s)
+
+    clock_mod = type("T", (), {"monotonic": clock.monotonic, "sleep": staticmethod(sleep)})
+    db = str(tmp_path / "t.duckdb")
+    _seed_settled_markets(db, n_markets)
+    monkeypatch.setattr(tb, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    monkeypatch.setattr(tb, "time", clock_mod)
+    monkeypatch.setattr(tb.kalshi, "get_trades", fetch)
+    monkeypatch.setattr("sys.argv", ["tradepass", "--db", db, "--rps", "1000"])
+    tb.main()
+    store = Store(db, read_only=True)
+    try:
+        swept = {r[0] for r in store.conn.execute("SELECT market_id FROM trades_swept").fetchall()}
+    finally:
+        store.close()
+    return swept, sleeps
+
+
+def test_a_429_retries_the_same_market_after_seconds_not_30(tmp_path, monkeypatch):
+    """2026-10-08: a flat 30s sleep per 429 that then SKIPPED the market spent
+    ~167 of the run's 210 minutes asleep and left the market for tomorrow.
+    Kalshi's bucket refills in seconds, so one 429 must cost 2s and the
+    market must land in THIS run."""
+    calls: dict[str, int] = {}
+
+    def fetch(ticker, session=None):
+        calls[ticker] = calls.get(ticker, 0) + 1
+        if ticker == "KXT-1" and calls[ticker] == 1:
+            raise _http_error(429)
+        return [], False
+
+    swept, sleeps = _run_with_fetch(tmp_path, monkeypatch, 3, fetch)
+    assert swept == {"KXT-0", "KXT-1", "KXT-2"}, "the 429'd market was left pending"
+    assert calls["KXT-1"] == 2
+    assert max(sleeps) == tb.BACKOFF_429_S
+
+
+def test_a_sustained_429_storm_escalates_to_the_old_cap_and_resets(tmp_path, monkeypatch):
+    """A storm doubles the wait up to the 30s cap (never worse than the old
+    pacing), gives the market up after ATTEMPTS_429 so it stays pending, and
+    the first success resets the streak."""
+
+    calls: dict[str, int] = {}
+
+    def fetch(ticker, session=None):
+        calls[ticker] = calls.get(ticker, 0) + 1
+        if ticker == "KXT-0" or (ticker == "KXT-2" and calls[ticker] == 1):
+            raise _http_error(429)
+        return [], False
+
+    swept, sleeps = _run_with_fetch(tmp_path, monkeypatch, 3, fetch)
+    assert "KXT-0" not in swept and {"KXT-1", "KXT-2"} <= swept
+    waits = [s for s in sleeps if s >= tb.BACKOFF_429_S]
+    # 4 in-market retries (2,4,8,16) + the give-up backoff (30, capped),
+    # then KXT-1's success resets the streak: KXT-2's lone 429 costs 2s.
+    assert waits == [2.0, 4.0, 8.0, 16.0, 30.0, 2.0]
+    assert max(waits) == tb.BACKOFF_429_CAP_S

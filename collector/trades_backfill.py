@@ -36,6 +36,19 @@ LOCK_FILE = "data/writer.lock"
 #: the deadline costs nothing but calendar days; QA's BATCH_RUN_BUDGET_H
 #: (4.0h) stays true by construction. 0 disables (manual full drains).
 DEADLINE_MIN = 210.0
+#: 429 backoff: first wait, cap, and attempts per market. Kalshi's public
+#: read limit is a short per-second bucket -- probed 2026-10-08 during the
+#: sweep: 9 back-to-back requests pass, the 10th is refused, and 3s later
+#: six at 2 rps all pass. The old flat 30s sleep then SKIPPED the market:
+#: from 10-06, with the daily sweep drawing ~1,500 429s/h on the same host,
+#: the 10-08 run slept ~167 of its 210 minutes (335 x 30s), drained 4,035
+#: of 38,931, and the backlog grew 259 -> 25,298 -> 38,931 in three days.
+#: Now a 429 retries the SAME market, doubling from 2s to the old 30s cap;
+#: a success resets the streak, so a sustained storm degrades to the old
+#: pacing and a transient one costs seconds.
+BACKOFF_429_S = 2.0
+BACKOFF_429_CAP_S = 30.0
+ATTEMPTS_429 = 5
 
 
 def _flush(db: str, batch: list[tuple[str, list[tuple], str]]) -> int:
@@ -119,8 +132,9 @@ def main() -> None:
 
     sess = requests.Session()
     batch: list[tuple[str, list[tuple], str]] = []
-    totals = {"markets": 0, "trades": 0, "empty": 0, "errors": 0}
+    totals = {"markets": 0, "trades": 0, "empty": 0, "errors": 0, "rate_limited": 0}
     t0 = time.monotonic()
+    backoff = BACKOFF_429_S
     min_interval = 1.0 / args.rps
 
     for i, ticker in enumerate(targets):
@@ -135,7 +149,22 @@ def main() -> None:
             break
         t_req = time.monotonic()
         try:
-            raw, truncated = kalshi.get_trades(ticker, session=sess)
+            for attempt in range(ATTEMPTS_429):
+                try:
+                    raw, truncated = kalshi.get_trades(ticker, session=sess)
+                    backoff = BACKOFF_429_S
+                    break
+                except requests.HTTPError as exc:
+                    resp = exc.response
+                    if resp is None or resp.status_code != 429 or attempt == ATTEMPTS_429 - 1:
+                        raise
+                    totals["rate_limited"] += 1
+                    print(
+                        f"[tradepass] HTTP 429 at {ticker}; retrying in {backoff:g}s",
+                        flush=True,
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, BACKOFF_429_CAP_S)
             rows = [kalshi.trade_row(t) for t in raw]
             # Only successes get marked in trades_swept — errored markets
             # stay pending so the next run retries them. A page-capped
@@ -148,8 +177,13 @@ def main() -> None:
             totals["empty"] += 0 if rows else 1
         except requests.HTTPError as exc:
             code = exc.response.status_code if exc.response is not None else "?"
-            wait = 30 if code == 429 else 5
-            print(f"[tradepass] HTTP {code} at {ticker}; backing off {wait}s", flush=True)
+            if code == 429:
+                totals["rate_limited"] += 1
+                wait = backoff
+                backoff = min(backoff * 2, BACKOFF_429_CAP_S)
+            else:
+                wait = 5
+            print(f"[tradepass] HTTP {code} at {ticker}; backing off {wait:g}s", flush=True)
             totals["errors"] += 1
             time.sleep(wait)
         except Exception as exc:
@@ -166,7 +200,8 @@ def main() -> None:
             eta_h = (len(targets) - i - 1) / rate / 3600
             print(
                 f"[tradepass] {i + 1}/{len(targets)} | {totals['trades']} trades,"
-                f" {totals['empty']} empty, {totals['errors']} errors | ~{eta_h:.1f}h left",
+                f" {totals['empty']} empty, {totals['errors']} errors,"
+                f" {totals['rate_limited']} x 429 | ~{eta_h:.1f}h left",
                 flush=True,
             )
         elapsed = time.monotonic() - t_req
