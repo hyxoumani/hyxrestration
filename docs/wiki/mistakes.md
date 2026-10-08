@@ -2922,6 +2922,28 @@ Format: what happened → root cause → error type → prevention tier
     detail_line` was red every Thursday ~07-15Z. It asserted a bare 360.0
     while QA rightly excused the maintenance overlap (462d09c).
 
+114. **2026-10-08 -- an "external" rate-limit storm was answered with
+    backoff, while 89% of the requests it refused asked questions the
+    archive had already answered.** #113 called the 10-06 storm's cause
+    unidentified and treated it as weather. The journal says the storm IS
+    the sweep: 429s run ~1,500-2,000/h from 06:10Z until the sweep's done
+    line, then drop to the ~40/h baseline. Breadth's 16:12Z exit 1 sat
+    inside that window, too. The sweep's own load is unchanged (95-105
+    markets/min and 60-70k markets/run, before and after), and rejections
+    are uniform at ~33/min. So Kalshi's read limit fell below a rate that
+    used to fit; nothing on our side moved. Backoff can only spend hours
+    on that. Reading the archive (10-07 backup): 943,224 tapes whose
+    hourly candles were all zero-volume AND reached the close held zero
+    trades. Those candles are fetched one line earlier. The 186 zero-volume
+    markets that DID trade printed only in the final partial hour after
+    the last candle, so the rule needs the coverage clause. Fix (612de86):
+    skip those tapes as `candle_empty`, counted as `tapes_skipped`.
+    `candle_row` reads a missing `volume_fp` as 0.0, so the skip demands
+    an explicit zero. **When a shared limit tightens, first cut the
+    requests whose answer you already hold; backoff is for the rest. And
+    a reader that defaults a missing field to zero cannot be the evidence
+    for skipping work.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
