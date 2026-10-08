@@ -2897,6 +2897,31 @@ Format: what happened → root cause → error type → prevention tier
     rows/s), so SPILL_CAP is ~12 min of firehose while the hot market
     stays subscribed, not ~27.
 
+113. **2026-10-08 -- the fallback for a rate-limited fetch slept through
+    its own budget, against the same limit.** The sweep's tape fetch has
+    no 429 retry by design: "hyxlab-tradepass.timer's daily retro-pass is
+    what actually catches it". From the 10-06 06:10Z sweep (the first after
+    the 10-05 reboot), trade-tape 429s went from ~5/h to ~1,500/h, about 30%
+    of tapes. That is measured in `data/rate_limit_headers.jsonl`, and it
+    tracks the sweep's run hours exactly (it is not hylshi's family-books
+    timer: 53.8% of the 429s fall inside its windows against 51.3%
+    coverage). The external cause is NOT identified. The retro-pass slept
+    a flat 30s on every 429 and then SKIPPED the market. So the 10-08 run
+    spent ~167 of its 210-min deadline asleep (335 x 30s) and drained
+    4,035 of 38,931, and the backlog went 259 -> 25,298 -> 38,931 in three
+    days. QA saw it only as "109 stuck" because its clock starts at first
+    observation. Probed: the limit is a short per-second bucket. Nine
+    back-to-back requests pass, the 10th is refused, and 3s later six at
+    2 rps pass. Fix (ba8000b): retry the SAME market after 2s, doubling to
+    the old 30s cap, and reset the streak on a success. 429s are counted
+    apart from markets that finally fail. **A fallback that shares the
+    primary's scarce resource fails WITH the primary, so size its backoff
+    from the resource's measured refill, never from a round number. A
+    retry policy that skips the item it backed off on turns latency into
+    backlog.** Also found: `test_the_downtime_term_reaches_the_rendered_
+    detail_line` was red every Thursday ~07-15Z. It asserted a bare 360.0
+    while QA rightly excused the maintenance overlap (462d09c).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
