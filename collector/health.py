@@ -1027,6 +1027,32 @@ def journal_floor() -> datetime | None:
         proc.wait()
 
 
+#: Shortest run of one label that the RECENT line folds into `label xN a..b`.
+#: Measured 2026-10-08: streamd's 10-07 OOM loop printed 189 timestamps on one
+#: line, burying the single `exit-code/1` among them. A fold keeps every count
+#: and every change of label in order -- that interruption is the reading.
+FOLD_RUN = 3
+
+
+def _render_hits(hits: list[UnitFailure]) -> str:
+    """Chronological failures, consecutive identical labels folded into a span."""
+    runs: list[list[UnitFailure]] = []
+    for h in sorted(hits, key=lambda f: f.at):
+        if runs and runs[-1][0].label == h.label:
+            runs[-1].append(h)
+        else:
+            runs.append([h])
+    parts = []
+    for run in runs:
+        if len(run) < FOLD_RUN:
+            parts.extend(f"{h.label} {h.at:%m-%d %H:%M}Z" for h in run)
+            continue
+        first, last = run[0].at, run[-1].at
+        end = f"{last:%H:%M}Z" if last.date() == first.date() else f"{last:%m-%d %H:%M}Z"
+        parts.append(f"{run[0].label} x{len(run)} {first:%m-%d %H:%M}Z..{end}")
+    return ", ".join(parts)
+
+
 def failure_history_lines(
     failures: list[UnitFailure],
     rows: list[UnitHealth],
@@ -1052,7 +1078,7 @@ def failure_history_lines(
         # unit rows above say nothing at all. `still failed` is not a second
         # alarm -- the count beside it is recurrence, which the row cannot carry.
         status = "still failed" if unit in still_bad else "CLEARED"
-        when = ", ".join(f"{h.label} {h.at:%m-%d %H:%M}Z" for h in hits)
+        when = _render_hits(hits)
         lines.append(f"{'RECENT':<10} {unit:<{width}}  {len(hits)}x in {hours}h, {status}: {when}")
     covered = hours
     if floor is not None:
@@ -1192,9 +1218,7 @@ def outlived_by_failure(
     )
 
 
-def report(
-    now: float | None = None, failures: list[UnitFailure] | None = None
-) -> list[UnitHealth]:
+def report(now: float | None = None, failures: list[UnitFailure] | None = None) -> list[UnitHealth]:
     now = now if now is not None else datetime.now(UTC).timestamp()
     seen = [
         (svc_name, show(f"{Path(svc_name).stem}.timer") if has_timer else None, show(svc_name))

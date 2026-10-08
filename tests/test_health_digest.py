@@ -25,7 +25,7 @@ import json
 import re
 import subprocess
 import tokenize
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1025,6 +1025,34 @@ def test_a_signal_death_carries_no_exit_status():
 
 def test_the_journal_read_asks_for_the_exit_record_and_its_join_key():
     src = (REPO / "collector/health.py").read_text()
-    assert "f\"MESSAGE_ID={UNIT_EXIT_MESSAGE_ID}\"" in src
+    assert 'f"MESSAGE_ID={UNIT_EXIT_MESSAGE_ID}"' in src
     fields = re.search(r'"--output-fields=([A-Z_,a-z]+)"', src).group(1).split(",")
     assert {"USER_INVOCATION_ID", "EXIT_CODE", "EXIT_STATUS"} <= set(fields)
+
+
+def test_a_crash_loop_folds_but_keeps_its_count_and_its_interruption():
+    """2026-10-07: 189 streamd failures, one `exit-code/1` among 188 OOM kills,
+    printed as 189 timestamps on one line. The fold must keep the total, keep
+    the odd one out IN ORDER, and leave short runs verbatim."""
+    base = datetime(2026, 10, 7, 11, 12, tzinfo=UTC)
+    unit = "hyxlab-stream.service"
+    fails = [health.UnitFailure(unit, base + timedelta(minutes=i), "oom-kill") for i in range(4)]
+    fails.append(health.UnitFailure(unit, base + timedelta(minutes=4), "exit-code", "1"))
+    fails += [
+        health.UnitFailure(unit, base + timedelta(minutes=5 + i), "oom-kill") for i in range(2)
+    ]
+    (line, _) = health.failure_history_lines(list(reversed(fails)), [], FAIL_NOW)
+    assert "7x in 24h" in line
+    assert line.endswith(
+        "oom-kill x4 10-07 11:12Z..11:15Z, exit-code/1 10-07 11:16Z, "
+        "oom-kill 10-07 11:17Z, oom-kill 10-07 11:18Z"
+    )
+    # A run crossing midnight names the day it ended on.
+    late = [
+        health.UnitFailure(
+            unit, base.replace(hour=23, minute=58) + timedelta(minutes=i), "oom-kill"
+        )
+        for i in range(3)
+    ]
+    (line, _) = health.failure_history_lines(late, [], FAIL_NOW)
+    assert "oom-kill x3 10-07 23:58Z..10-08 00:00Z" in line
