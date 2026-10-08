@@ -2263,7 +2263,12 @@ def test_the_downtime_term_reaches_the_rendered_detail_line(tmp_path, capsys):
     assert qa.CAPTURE_GAP_CHECK in failed
     line = next(ln for ln in out.splitlines() if qa.CAPTURE_GAP_CHECK in ln)
     assert "daemon downtime" in line
-    assert "360.0 daemon downtime" in line, line
+    # Six hours ending NOW overlaps Kalshi's Thursday storm on Thursday
+    # mornings, and that overlap is excused (red every Thursday ~07-15Z
+    # while this asserted a bare 360.0, first seen 2026-10-08).
+    naive = NOW.replace(tzinfo=None)  # qa's window math is naive UTC
+    expected = 360.0 - qa.maintenance_overlap_s(naive - timedelta(hours=6), naive) / 60
+    assert f"{expected:.1f} daemon downtime" in line, line
 
 
 def test_capture_gap_budget_trips_through_qa_stream(tmp_path):
