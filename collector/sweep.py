@@ -173,6 +173,37 @@ BURST_OPEN_RETRIES = 150
 BURST_OPEN_DELAY_S = 2.0
 
 
+# Trade tapes the candles prove empty, skipped without a request; reset by
+# run_sweep and published in its totals. Measured 2026-10-08: from 10-06 the
+# same ~95 markets/min that drew ~45 tape 429s per run drew ~16-25k, so
+# Kalshi's read limit fell below the sweep's rate. 82% of fetched tapes were
+# empty, and the candles fetched first already say so for nearly all of them.
+_TAPES_SKIPPED = 0
+
+
+def tape_provably_empty(candles: list[dict], close_ts: int) -> bool:
+    """True when the hourly candles prove a market never traded.
+
+    Needs every candle to carry an explicit zero `volume_fp` AND the last
+    candle to end at or after the close. The coverage clause is the one that
+    matters: hourly candles can stop short of the close, and trades in that
+    final partial hour show in no candle. Measured on the 10-07 backup over
+    markets swept since 09-20: 943,224 markets were zero-volume with covering
+    candles and NONE had a trade; all 186 zero-volume markets that did trade
+    (556 prints) had every print after the last candle, which ended before
+    the close. A missing field is not a zero: `candle_row` reads an absent
+    `volume_fp` as 0.0, so an API rename must make every tape fetch again,
+    not skip every tape.
+    """
+    if not candles:
+        return False
+    for c in candles:
+        v = c.get("volume_fp")
+        if v in (None, "") or float(v) != 0.0:
+            return False
+    return max(int(c["end_period_ts"]) for c in candles) >= close_ts
+
+
 @contextmanager
 def writer_burst(db: str, lock_file: str | None = None):
     """Hold the writer lock + DB connection for ONE short write, then release.
@@ -288,6 +319,7 @@ def sweep_series(
     interval so recovery is verifiable. Bounded below by the purge
     horizon like everything else.
     """
+    global _TAPES_SKIPPED
     now = datetime.now(UTC)
     repair = refetch_from is not None
     floor_ts = now - timedelta(days=days)
@@ -383,20 +415,26 @@ def sweep_series(
             else:
                 raise
         candle_rows.extend(kalshi.candle_row(series_ticker, m, c, 3600) for c in candles)
-        # Trade tape rides along (B3.5): prints purge on the same
-        # retention clock as candles, so capture them at first sight.
-        try:
-            raw, truncated = kalshi.get_trades(m["ticker"], session=session)
-            rows = [kalshi.trade_row(t) for t in raw]
-            trade_rows.extend(rows)
-            status = "truncated" if truncated else ("ok" if rows else "empty")
-            swept.append((m["ticker"], len(rows), status))
-        except requests.HTTPError as e:
-            # Stays unmarked here (watermark advances past it regardless,
-            # so a later sweep won't retry) — hyxlab-tradepass.timer's daily
-            # retro-pass is what actually catches it.
-            code = e.response.status_code if e.response is not None else "?"
-            print(f"[sweep] {m.get('ticker', '?')} trade tape fetch HTTP {code}", flush=True)
+        if tape_provably_empty(candles, close_ts):
+            # No request: the candles already prove the tape is empty.
+            # Recorded under its own status so the skip stays auditable.
+            _TAPES_SKIPPED += 1
+            swept.append((m["ticker"], 0, "candle_empty"))
+        else:
+            # Trade tape rides along (B3.5): prints purge on the same
+            # retention clock as candles, so capture them at first sight.
+            try:
+                raw, truncated = kalshi.get_trades(m["ticker"], session=session)
+                rows = [kalshi.trade_row(t) for t in raw]
+                trade_rows.extend(rows)
+                status = "truncated" if truncated else ("ok" if rows else "empty")
+                swept.append((m["ticker"], len(rows), status))
+            except requests.HTTPError as e:
+                # Stays unmarked here (watermark advances past it regardless,
+                # so a later sweep won't retry) — hyxlab-tradepass.timer's daily
+                # retro-pass is what actually catches it.
+                code = e.response.status_code if e.response is not None else "?"
+                print(f"[sweep] {m.get('ticker', '?')} trade tape fetch HTTP {code}", flush=True)
         close_dt = datetime.fromtimestamp(close_ts, tz=UTC)
         max_close = max(max_close, close_dt)
         if len(candle_rows) + len(trade_rows) >= FLUSH_ROWS:
@@ -491,6 +529,8 @@ def run_sweep(
     targets.sort()
     if limit:
         targets = targets[:limit]
+    global _TAPES_SKIPPED
+    _TAPES_SKIPPED = 0
     totals = {
         "series": len(targets),
         "markets": 0,
@@ -597,6 +637,7 @@ def run_sweep(
                 f"{totals['errors']} errors, {totals['truncated']} truncated"
                 f" | ~{eta_min:.0f} min left"
             )
+    totals["tapes_skipped"] = _TAPES_SKIPPED
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     return totals
 
