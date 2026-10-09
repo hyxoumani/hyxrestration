@@ -1269,19 +1269,36 @@ class Store:
         self.conn.execute("DELETE FROM schema_meta")
         self.conn.execute("INSERT INTO schema_meta VALUES (?)", [v])
 
-    def insert_new(self, table: str, rows: list[tuple], key_cols: list[str]) -> int:
+    def insert_new(
+        self, table: str, rows: list[tuple], key_cols: list[str], scope: str | None = None
+    ) -> int:
         """Anti-join insert: only rows whose natural key is absent. Idempotent
-        re-runs of any backfill/sweep are safe (P5)."""
+        re-runs of any backfill/sweep are safe (P5).
+
+        `scope` names a column the dedup may restrict the existing rows to,
+        by the batch's own values. It is a claim that no key is ever stored
+        under two scope values -- pass it only where that was measured. The
+        explicit BETWEEN gives the zonemaps a range to prune on whatever the
+        optimizer does with the IN; on a wide batch it degrades to the full
+        read, never below it."""
         if not rows:
             return 0
         self.conn.execute(f"CREATE OR REPLACE TEMP TABLE _staging AS SELECT * FROM {table} LIMIT 0")
         placeholders = ",".join("?" * len(rows[0]))
         self.conn.executemany(f"INSERT INTO _staging VALUES ({placeholders})", rows)
         on = " AND ".join(f"t.{k} IS NOT DISTINCT FROM s.{k}" for k in key_cols)
+        existing, params = table, []
+        if scope is not None:
+            params = list(self.conn.execute(f"SELECT min({scope}), max({scope}) FROM _staging").fetchone())
+            existing = (
+                f"(SELECT * FROM {table} WHERE {scope} BETWEEN ? AND ?"
+                f" AND {scope} IN (SELECT {scope} FROM _staging))"
+            )
         before = self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         self.conn.execute(
             f"INSERT INTO {table} SELECT s.* FROM _staging s"
-            f" WHERE NOT EXISTS (SELECT 1 FROM {table} t WHERE {on})"
+            f" WHERE NOT EXISTS (SELECT 1 FROM {existing} t WHERE {on})",
+            params,
         )
         after = self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         self.conn.execute("DROP TABLE _staging")
@@ -1466,9 +1483,13 @@ class Store:
 
     def insert_trades(self, rows: list[tuple]) -> int:
         """(venue, market_id, trade_id, ts, yes_price, qty, taker_side,
-        is_block); dedup on trade_id so retro-pass re-runs are safe."""
+        is_block); dedup on trade_id so retro-pass re-runs are safe.
+
+        Scoped by market_id: the unscoped dedup read all 542.8M trades per
+        call (9-10s, 15.2G RSS at DuckDB's default limit; measured 2026-10-09
+        on the 10-08 backup), and 0 of those trade_ids sit under two markets."""
         rows = [(*r[:3], _naive_utc(r[3]), *r[4:]) for r in rows]
-        return self.insert_new("trades", rows, ["trade_id"])
+        return self.insert_new("trades", rows, ["trade_id"], scope="market_id")
 
     def mark_trades_swept(self, market_id: str, n_trades: int, status: str) -> None:
         self.conn.execute(

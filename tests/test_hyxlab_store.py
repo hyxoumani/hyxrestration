@@ -163,6 +163,73 @@ def test_insert_trades_dedups_on_trade_id(tmp_path):
     store.close()
 
 
+def _trade(market, i):
+    return ("kalshi", market, f"{market}-t{i}", TS, 0.5, 1.0, "yes", False)
+
+
+def test_insert_trades_dedup_reads_only_the_batch_markets(tmp_path):
+    """The dedup anti-join must not read the whole trades table.
+
+    Measured 2026-10-09 on the 10-08 backup (542.8M trades): a ~100-row
+    batch took 9-10s in the unscoped `NOT EXISTS`, at every memory limit,
+    and peaked at 15.2G RSS under DuckDB's default limit. tradepass paid
+    that per market, sweep per series flush, all inside the writer flock.
+    Scoped to the batch's markets it took 0.05-0.17s. No trade_id in that
+    archive appears under two markets (0 of 542.8M, both venues), so the
+    scope changes no answer. Asserted on what the profiled INSERT's scans
+    of `trades` EMIT, not on the SQL text.
+    """
+    import json
+
+    store = Store(tmp_path / "t.duckdb")
+    background = [_trade(f"BG{m:03d}", i) for m in range(200) for i in range(50)]
+    assert store.insert_trades(background) == len(background)
+    prof = tmp_path / "prof.json"
+    real = store.conn
+
+    class Profiled:
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+        def execute(self, sql, *a):
+            if not sql.startswith("INSERT INTO trades "):
+                return real.execute(sql, *a)
+            real.execute("PRAGMA enable_profiling='json'")
+            real.execute(f"PRAGMA profiling_output='{prof}'")
+            try:
+                return real.execute(sql, *a)
+            finally:
+                real.execute("PRAGMA disable_profiling")
+
+    store.conn = Profiled()
+    # one trade already stored (dedups away) plus two new ones
+    batch = [_trade("BG007", 3), _trade("BG007", 900), _trade("BG007", 901)]
+    assert store.insert_trades(batch) == 2
+    store.conn = real
+    store.close()
+
+    def emitted(node):
+        info = json.dumps(node.get("extra_info", {}))
+        if node.get("operator_type") == "TABLE_SCAN" and ".trades" in info:
+            yield node["operator_cardinality"]
+        for child in node.get("children", []):
+            yield from emitted(child)
+
+    rows = list(emitted(json.loads(prof.read_text())))
+    assert rows, "profile holds no scan of trades -- the probe measured nothing"
+    assert max(rows) <= 50  # BG007's own tape, never the other 199 markets
+
+
+def test_insert_trades_dedups_across_markets_in_one_batch(tmp_path):
+    store = Store(tmp_path / "t.duckdb")
+    assert store.insert_trades([_trade("A", 1), _trade("B", 1)]) == 2
+    mixed = [_trade("A", 1), _trade("A", 2), _trade("B", 1), _trade("C", 1)]
+    assert store.insert_trades(mixed) == 2
+    assert store.insert_trades(mixed) == 0
+    assert store.counts()["trades"] == 4
+    store.close()
+
+
 def test_trades_swept_tracks_progress(tmp_path):
     store = Store(tmp_path / "t.duckdb")
     assert store.trades_swept_ids() == set()
