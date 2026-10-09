@@ -2944,6 +2944,30 @@ Format: what happened → root cause → error type → prevention tier
     a reader that defaults a missing field to zero cannot be the evidence
     for skipping work.**
 
+115. **2026-10-09 -- an idempotency guard read the whole table on every
+    call, and the cost was booked as rate limiting and memory pressure.**
+    `Store.insert_new` dedups with `NOT EXISTS (SELECT 1 FROM <table> t
+    WHERE <key>)`. That is fine for candles/snapshots (0.01-0.20s at
+    14-22M rows), but `trades` reached 542.8M rows, 25x the next table.
+    Measured on the 10-08 backup: one ~100-row `insert_trades` took 9-10s
+    at EVERY memory limit (1GB through default) and peaked at 15.2G RSS
+    under DuckDB's default limit. tradepass calls it once per market
+    inside the writer flock. On 10-09, 900 of its 5,904 markets had
+    trades: ~135 of the 210-minute deadline went to dedup, not HTTP. The
+    "uncapped batch units fill whatever buffer they are handed" note (#87)
+    and the 429 story (#113/#114) both sat on top of it. Fix (aad523d):
+    `insert_new(scope=...)` restricts existing rows to the batch's own
+    `market_id`s, with an explicit BETWEEN so zonemaps prune whatever the
+    optimizer does with the IN. Only `insert_trades` passes it. That was
+    checked over the full table in 16 hash partitions: 0 of 542.8M
+    trade_ids sit under two markets, on either venue. Result: 0.06-0.11s
+    and 1.69G peak per call. The test asserts on what the profiled INSERT's
+    `trades` scan EMITS (10,000 -> <=50), not on SQL text. The mutant
+    (scope dropped) was diffed and went red. **Before costing a slow unit
+    by its external waits, time its writes at production row counts: a
+    guard that is O(batch) in a test is O(table) in the archive, and
+    tables do not grow at the same rate.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
