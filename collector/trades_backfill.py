@@ -18,6 +18,7 @@ import argparse
 import fcntl
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import requests
@@ -70,6 +71,60 @@ def _flush(db: str, batch: list[tuple[str, list[tuple], str]]) -> int:
             store.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
     return inserted
+
+
+#: Pending markets the ARCHIVED hourly candles prove never traded -- the
+#: retro-pass twin of `sweep.tape_provably_empty`. Same two clauses (every
+#: candle zero-volume, last candle ending at or after the close) plus one
+#: the archive needs and the live API does not: `candle_row` stores an
+#: absent `volume_fp` as 0.0, so a stored zero cannot tell "no trades" from
+#: "field renamed". `live` demands that some market's candle on the close's
+#: own UTC day carried volume, so a rename (every candle zero from then on)
+#: proves nothing and every tape fetches. Measured on the 10-08 22:30
+#: backup: 43,213 of 51,755 pending (83%) qualify, and across 3,380,000
+#: already-fetched tapes the predicate marked empty, NONE had a trade.
+PROVEN_EMPTY_SQL = """
+WITH pend AS (
+  SELECT m.market_id, m.close_time FROM markets m
+  LEFT JOIN trades_swept s ON s.market_id = m.market_id
+  WHERE m.venue = 'kalshi' AND m.result != '' AND s.market_id IS NULL),
+cov AS (
+  SELECT c.market_id, bool_and(c.volume = 0) AS all_zero, max(c.end_ts) AS last_end
+  FROM candles c JOIN pend ON pend.market_id = c.market_id
+  WHERE c.venue = 'kalshi' AND c.period_s = 3600 GROUP BY 1),
+live AS (
+  SELECT DISTINCT CAST(end_ts AS DATE) AS d FROM candles
+  WHERE venue = 'kalshi' AND period_s = 3600 AND volume > 0
+    AND end_ts >= (SELECT min(close_time) FROM pend) - INTERVAL 1 DAY)
+SELECT pend.market_id, ?::TIMESTAMP, 0, 'candle_empty'
+FROM pend JOIN cov ON cov.market_id = pend.market_id
+WHERE cov.all_zero IS TRUE AND cov.last_end >= pend.close_time
+  AND CAST(pend.close_time AS DATE) IN (SELECT d FROM live)
+"""
+
+
+def mark_proven_empty(db: str) -> int:
+    """Mark every pending tape the archived candles prove empty, without a
+    request, as 'candle_empty' (the sweep's status for the same proof).
+
+    One statement inside one writer burst: the proof and the mark cannot
+    disagree, and it ran in 0.13-0.22s on the 24 GB backup. Without it the
+    pass spent its rate-limited budget fetching ~83% empty tapes."""
+    with open(LOCK_FILE, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(LOCK_FILE)
+        store = open_retry(db)
+        try:
+            row = store.conn.execute(
+                f"INSERT OR REPLACE INTO trades_swept {PROVEN_EMPTY_SQL}",
+                # naive UTC like mark_trades_swept; current_timestamp would
+                # cast through the session zone (the host runs CDT)
+                [datetime.now(UTC).replace(tzinfo=None)],
+            ).fetchone()
+        finally:
+            store.close()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    return int(row[0]) if row else 0
 
 
 def pending_markets(db: str) -> list[str]:
@@ -125,6 +180,8 @@ def main() -> None:
         note_holder(LOCK_FILE)
         open_retry(args.db).close()
         fcntl.flock(wlock, fcntl.LOCK_UN)
+    skipped = mark_proven_empty(args.db)
+    print(f"[tradepass] {skipped} pending tapes candle-proven empty; marked, not fetched", flush=True)
     targets = pending_markets(args.db)
     if args.limit:
         targets = targets[: args.limit]
@@ -210,6 +267,7 @@ def main() -> None:
 
     if batch:
         _flush(args.db, batch)
+    totals["candle_empty"] = skipped
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     lock.close()  # a crash releases it too: flock dies with the process
     print(f"[tradepass] done: {totals}", flush=True)
