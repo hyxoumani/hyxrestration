@@ -13,5 +13,15 @@ Type=oneshot
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
+# MEASURED 2026-10-09 on the 10-08 backup (24 GB, 542.8M trades), each of
+# the three statements this unit runs in its own process at a pinned DuckDB
+# limit: the pending read 0.70G peak RSS at any limit; mark_proven_empty
+# 0.89G at 1GB (OutOfMemoryException, cleanly, at 512MB); insert_trades
+# 1.13G at 1GB once scoped to its market (aad523d -- unscoped it read the
+# whole table, 9-10s and 15.2G per call, which is most of the 28.2G peak
+# the 10-09 run recorded). 6G is a 3G DuckDB limit (DUCK_SHARE 0.5), ~2.7x
+# the measured floor; the remainder is Python and the page cache that
+# memory.max charges and reclaims rather than kills.
+MemoryMax=6G
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.trades_backfill
