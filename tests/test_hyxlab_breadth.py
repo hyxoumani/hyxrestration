@@ -1343,11 +1343,11 @@ def test_the_worst_transport_budget_survives_the_budget_that_held_it(monkeypatch
     assert kalshi.transport_budget_frac() == 0.0
 
 
-def test_the_trade_tape_429_is_counted_though_nothing_retries_it(monkeypatch):
-    """714 of these over 2026-09-07..23, ~42 per sweep run, every run --
-    against 19 retried 429s in the richest 48h breadth window. `get_trades`
-    calls `sess.get` directly, so every other counter in the module is
-    structurally blind to the class that fires most."""
+def test_the_trade_tape_429_ladder_counts_retries_and_the_fatal_one(monkeypatch):
+    """714 of these over 2026-09-07..23, ~42 per sweep run, every run, when
+    `get_trades` had no ladder at all (mistakes #116 gave it a per-page one).
+    The retries it spends count as rate-limit retries; the one that exhausts
+    it -- raised to the caller, nothing recovered -- counts as unretried."""
     import pytest
     import requests
 
@@ -1363,17 +1363,20 @@ def test_the_trade_tape_429_is_counted_though_nothing_retries_it(monkeypatch):
             return _Resp()
 
     monkeypatch.setattr(kalshi, "_log_429_headers", lambda *a: None)
+    monkeypatch.setattr(kalshi.time, "sleep", lambda s: None)
     kalshi.reset_retry_counts()
     with pytest.raises(requests.HTTPError):
         kalshi.get_trades("KXTEST-1", session=S())
 
+    n = len(kalshi.TAPE_PAGE_429_WAITS)
     counts = kalshi.retry_counts()
     assert counts["rate_limit_unretried"] == 1
     assert kalshi.rate_limit_unretried() == 1
-    # NOT a retry: nothing was spent and nothing recovered here. Folding it
-    # into `total` would report the 714 as 714 successful recoveries.
-    assert counts["total"] == 0
-    assert counts["rate_limit"] == 0
+    # The fatal one is NOT a retry: nothing was spent on it and nothing
+    # recovered. Folding it into `total` would overstate recoveries.
+    assert counts["rate_limit"] == n
+    assert counts["total"] == n
+    assert kalshi.rate_limit_budget_frac() == 1.0
     kalshi.reset_retry_counts()
     assert kalshi.retry_counts()["rate_limit_unretried"] == 0
 

@@ -13,6 +13,7 @@ measured local date as e.g. "KXHIGHNY-26JUL07".
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -204,6 +205,8 @@ _TRANSPORT_WORST_FRAC = 0.0
 # 86.5% control over the same close-time window (verified 2026-09-23). The
 # counter exists because that check took a journal scrape and two archive
 # queries, and nothing on the box published the population at all.
+# Since mistakes #116 the tape HAS a per-page ladder (TAPE_PAGE_429_WAITS),
+# so this now counts only the 429 that exhausts it and reaches the caller.
 _RATE_LIMIT_UNRETRIED = 0
 
 #: Attempts per request in the 429 ladder, so the ALLOWANCE is one fewer --
@@ -723,11 +726,23 @@ def get_markets_by_tickers(
     return found, absent, undetermined
 
 
+#: Waits before re-requesting a trade-tape PAGE refused with 429, per page.
+#: Kalshi's public bucket passes 9 back-to-back requests and refuses the 10th
+#: (probed 2026-10-08; 3s later it passes again), and a tape pages
+#: back-to-back, so every tape of 10+ pages (>=~9k prints) was refused at the
+#: same page on every attempt -- and every caller's retry restarted it from
+#: page 0. Archived tapes of >=9k prints fell from 88-115/day (09-25..10-04)
+#: to 0-2/day (10-05..10-08): exactly the most-traded markets (mistakes #116).
+#: Bounded at 14s a page so a sustained storm still fails fast to the caller.
+TAPE_PAGE_429_WAITS: tuple[float, ...] = (2.0, 4.0, 8.0)
+
+
 def get_trades(
     ticker: str,
     limit: int = 1000,
     max_pages: int = 100,
     session: requests.Session | None = None,
+    page_429_waits: tuple[float, ...] = TAPE_PAGE_429_WAITS,
 ) -> tuple[list[dict[str, Any]], bool]:
     """All public trade prints for one market (cursor-paginated).
 
@@ -744,20 +759,30 @@ def get_trades(
     sess = session or requests.Session()
     out: list[dict[str, Any]] = []
     cursor = ""
+    global _RATE_LIMIT_UNRETRIED, _RATE_LIMIT_RETRIES, _RATE_LIMIT_WORST_FRAC
     for _ in range(max_pages):
         params: dict[str, Any] = {"ticker": ticker, "limit": limit}
         if cursor:
             params["cursor"] = cursor
-        resp = sess.get(f"{BASE}/markets/trades", params=params, timeout=30)
-        # getattr: adds NO new happy-path requirement on the response object
-        # (a pre-existing test double here has no status_code at all).
-        if getattr(resp, "status_code", None) == 429:
-            # EXP-1333: the trade tape has no retry wrapper (a 429 escapes to
-            # sweep_series' except and is printed there) — capture the headers
-            # before raise_for_status throws them away.
+        # A 429 retries THIS page at THIS cursor: the pages already read are
+        # kept, so a tape longer than the bucket advances instead of being
+        # restarted into the same refusal (see TAPE_PAGE_429_WAITS).
+        for spent in range(len(page_429_waits) + 1):
+            resp = sess.get(f"{BASE}/markets/trades", params=params, timeout=30)
+            # getattr: adds NO new happy-path requirement on the response object
+            # (a pre-existing test double here has no status_code at all).
+            if getattr(resp, "status_code", None) != 429:
+                break
+            # EXP-1333: capture the headers before raise_for_status drops them.
             _log_429_headers(resp, f"{BASE}/markets/trades")
-            global _RATE_LIMIT_UNRETRIED
-            _RATE_LIMIT_UNRETRIED += 1
+            if spent == len(page_429_waits):
+                _RATE_LIMIT_UNRETRIED += 1  # the ladder is spent; raised below
+                break
+            _RATE_LIMIT_RETRIES += 1
+            _RATE_LIMIT_WORST_FRAC = max(
+                _RATE_LIMIT_WORST_FRAC, (spent + 1) / len(page_429_waits)
+            )
+            time.sleep(page_429_waits[spent])
         resp.raise_for_status()
         body = resp.json()
         out.extend(body.get("trades", []))

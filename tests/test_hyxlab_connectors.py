@@ -511,14 +511,16 @@ def test_exhausted_429s_each_captured_before_the_raise(monkeypatch):
     assert len(_sink_rows()) == 2  # the final, fatal 429's headers are kept too
 
 
-def test_trade_tape_429_headers_captured_before_the_raise():
-    """The trade tape has NO retry wrapper — a 429 escapes to sweep_series'
-    except arm and was previously reduced to a print. The headers must be
-    captured before raise_for_status discards the response."""
+def test_trade_tape_429_headers_captured_before_the_raise(monkeypatch):
+    """Every 429 the tape's per-page ladder sees keeps its headers, the
+    final fatal one included -- captured before raise_for_status discards
+    the response."""
     import pytest
     import requests
 
     from collector.venues import kalshi as k
+
+    monkeypatch.setattr(k.time, "sleep", lambda s: None)
 
     class _Sess:
         def get(self, url, params=None, timeout=None):
@@ -529,7 +531,7 @@ def test_trade_tape_429_headers_captured_before_the_raise():
         k.get_trades("KXHIGHNY-26AUG18-B90.5", session=_Sess())
 
     rows = _sink_rows()
-    assert len(rows) == 1
+    assert len(rows) == len(k.TAPE_PAGE_429_WAITS) + 1
     assert rows[0]["url"].endswith("/markets/trades")
     assert rows[0]["headers"] == _HDRS_429
 
