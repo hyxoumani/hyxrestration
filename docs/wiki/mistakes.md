@@ -2968,6 +2968,44 @@ Format: what happened → root cause → error type → prevention tier
     guard that is O(batch) in a test is O(table) in the archive, and
     tables do not grow at the same rate.**
 
+116. **2026-10-10 -- a 429 ladder retried the MARKET when the refusal was
+    a property of the market's LENGTH, so the retry could never succeed.**
+    The 10-08 probe recorded the bucket in `trades_backfill.py`'s own
+    comment: 9 back-to-back requests pass, the 10th is refused. But
+    `kalshi.get_trades` paged a tape back-to-back, and both its callers'
+    retries (tradepass's `ATTEMPTS_429` from ba8000b, the sweep's
+    fall-through to tradepass) re-called it from page 0. So every tape of
+    10+ pages (>=~9k prints) was refused at the same page on every attempt.
+    The pacing was BETWEEN markets, the refusal was BETWEEN pages, and the
+    pending queue is oldest-first, so those tapes led every run. Measured on
+    the 10-09 22:30 backup: archived tapes of >=9k prints per sweep day were
+    88-115 from 09-25 to 10-04, then 2 / 1 / 0 / 2 / 12 from 10-05 to 10-09.
+    Those are exactly the most-traded markets. The 10-10 tradepass spent its
+    first 100 minutes on 40 consecutive KXBTC15M tapes, each failing 5/5.
+    One live probe of KXBTC15M-26OCT040345-45 found 27 pages / 26,879
+    prints, refused at page 6 even at 1s pacing, and completed by
+    re-requesting the same cursor. Fix (b6971c5): `get_trades` retries a
+    429 at the refused page (`TAPE_PAGE_429_WAITS` = 2/4/8s, reset per
+    page), so the pages already read are kept. This applies to all three
+    callers (sweep, tradepass, reconcile). Only the 429 that exhausts the
+    ladder counts as `rate_limit_unretried`. Tests use a fake with the
+    measured bucket (27-page tape fetched once each). The mutant (ladder
+    defaulted off) was diffed and went red. **Before retrying a refusal,
+    ask whether the unit you retry is the unit that was refused: a whole-
+    unit retry of a deterministic mid-unit failure replays the failure.**
+    Retention (~64 days) has not yet passed the lost cohort, so it drains
+    from the pending queue rather than being gone.
+    **Corollary, measured within the hour:** the first fix made the tape
+    succeed by paging until refused, and that took the bucket from the
+    5-minute collector on the same host. Collect's fetch went from 25-50s
+    to 80-170s of its 300s cadence (still 569/569 snaps, 0 errors). It had
+    been fine only because the broken tradepass spent ~60% of its wall
+    clock asleep. The pacing was per MARKET; it now reaches every page
+    (`page_pause_s`: tradepass 1/rps, sweep `CANDLES_PAUSE_S`, edba964).
+    **A fix that turns a failing consumer of a shared rate limit into a
+    succeeding one raises its draw: re-read the neighbours' latency after
+    shipping it, not just the fixed unit's success.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
