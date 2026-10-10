@@ -3005,6 +3005,17 @@ Format: what happened → root cause → error type → prevention tier
     **A fix that turns a failing consumer of a shared rate limit into a
     succeeding one raises its draw: re-read the neighbours' latency after
     shipping it, not just the fixed unit's success.**
+    **Second corollary, same day, other shared resource:** succeeding on
+    deep tapes also lengthened tradepass's WRITE bursts. `_flush` was bounded
+    at 50 markets, which is a short burst for a median tape and >=2M rows
+    for a head of ~27k-print KXBTC15M tapes. `insert_trades` lands ~10k
+    rows/s, linear (measured on an archive reflink: 27k 2.9s, 270k 26.2s).
+    The 09:08Z burst held the writer flock >=211s and collect skipped
+    (exit 75, spooled, 0 rows lost). Fix (afbadc4): `FLUSH_ROWS` = 100k
+    beside `FLUSH_MARKETS`. The mutant (row condition dropped) was diffed
+    and went red. **Bound a lock-held burst in the unit its cost scales
+    with (rows), never in a proxy count (markets) whose size the fix just
+    changed.**
 
 ## Pattern analysis (Step 5)
 
