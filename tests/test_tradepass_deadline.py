@@ -238,3 +238,23 @@ def test_a_sustained_429_storm_escalates_to_the_old_cap_and_resets(tmp_path, mon
     # then KXT-1's success resets the streak: KXT-2's lone 429 costs 2s.
     assert waits == [2.0, 4.0, 8.0, 16.0, 30.0, 2.0]
     assert max(waits) == tb.BACKOFF_429_CAP_S
+
+
+def test_flush_is_bounded_by_buffered_prints(tmp_path, monkeypatch):
+    """A 50-market burst of deep tapes held the writer flock >=211s on
+    2026-10-10 and collect skipped. Bursts must close on FLUSH_ROWS too:
+    each one at most the bound plus the tape that crossed it."""
+    monkeypatch.chdir(tmp_path)
+    db = str(tmp_path / "t.duckdb")
+    _seed_settled_markets(db, 12)
+    monkeypatch.setattr(tb, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    monkeypatch.setattr(tb, "FLUSH_ROWS", 100)
+    monkeypatch.setattr(tb.kalshi, "get_trades", lambda t, session=None, **kw: ([t] * 40, False))
+    monkeypatch.setattr(tb.kalshi, "trade_row", lambda t: (t,))
+    bursts = []
+    monkeypatch.setattr(tb, "_flush", lambda db, batch: bursts.append(sum(len(r) for _, r, _ in batch)))
+    monkeypatch.setattr("sys.argv", ["tradepass", "--db", db, "--rps", "1000"])
+    tb.main()
+
+    assert sum(bursts) == 12 * 40, "every print must still be flushed"
+    assert bursts == [120, 120, 120, 120], bursts

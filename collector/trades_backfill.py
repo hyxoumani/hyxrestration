@@ -9,7 +9,7 @@ Resumable and idempotent: per-market progress in trades_swept (purged
 markets recorded as status='empty' so they aren't refetched), trade rows
 dedup'd on trade_id. Plays nice with the 5-min collector: REST fetching
 happens without any lock; the DB is touched in short flock-guarded
-open→write→close bursts every FLUSH_MARKETS markets.
+open→write→close bursts every FLUSH_MARKETS markets or FLUSH_ROWS prints.
 """
 
 from __future__ import annotations
@@ -28,6 +28,14 @@ from hyxlab.lockid import instance_lock_or_reason, note_holder
 from hyxlab.store import open_retry
 
 FLUSH_MARKETS = 50
+#: Flush bound in buffered prints, beside the market count. 50 markets is a
+#: short burst for the median tape and minutes for the deep ones: the
+#: 2026-10-10 run held the writer flock >=211s at 09:08Z on a head of
+#: ~27k-print KXBTC15M tapes and collect skipped (exit 75). Measured that
+#: day on a reflink of the archive: `insert_trades` lands ~10k rows/s,
+#: linear (27k 2.9s, 108k 10.0s, 270k 26.2s), so this bound is a ~10s burst
+#: plus at most one tape -- a tape is never split across bursts.
+FLUSH_ROWS = 100_000
 LOCK_FILE = "data/writer.lock"
 #: Wall-clock deadline (minutes). The worklist is unbounded — a sweep that
 #: opens a new asset class can queue tens of thousands of tapes overnight
@@ -253,7 +261,8 @@ def main() -> None:
             time.sleep(5)
         totals["markets"] += 1
 
-        if len(batch) >= FLUSH_MARKETS or i == len(targets) - 1:
+        buffered = sum(len(rows) for _, rows, _ in batch)
+        if len(batch) >= FLUSH_MARKETS or buffered >= FLUSH_ROWS or i == len(targets) - 1:
             _flush(args.db, batch)
             batch = []
         if (i + 1) % 500 == 0:
