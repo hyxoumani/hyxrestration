@@ -102,6 +102,7 @@ def test_sweep_skips_only_the_proven_tape_and_still_advances(monkeypatch):
         "KXT-PROVEN": [_candle(proven_close - timedelta(hours=1)), _candle(proven_close)],
         "KXT-SHORT": [_candle(short_close - timedelta(hours=1))],
     }
+    pauses: list = []
     fetched = []
     store = _Store()
 
@@ -123,7 +124,9 @@ def test_sweep_skips_only_the_proven_tape_and_still_advances(monkeypatch):
     )
     monkeypatch.setattr(sweep_mod.kalshi, "candle_row", lambda *a: ("row",))
     monkeypatch.setattr(
-        sweep_mod.kalshi, "get_trades", lambda t, **k: (fetched.append(t), ([], False))[1]
+        sweep_mod.kalshi,
+        "get_trades",
+        lambda t, **k: (fetched.append(t), pauses.append(k.get("page_pause_s")), ([], False))[2],
     )
     monkeypatch.setattr(sweep_mod.kalshi, "to_market_info", lambda m: m)
     monkeypatch.setattr(sweep_mod.time, "sleep", lambda s: None)
@@ -132,6 +135,7 @@ def test_sweep_skips_only_the_proven_tape_and_still_advances(monkeypatch):
     sweep_mod.sweep_series("unused.duckdb", "KXT", 2, session=None)
 
     assert fetched == ["KXT-SHORT"], "a proven-empty tape was requested, or a short one skipped"
+    assert pauses == [sweep_mod.CANDLES_PAUSE_S], "a tape's pages must be paced (#116)"
     assert ("KXT-PROVEN", 0, "candle_empty") in store.marks
     assert ("KXT-SHORT", 0, "empty") in store.marks
     assert sweep_mod._TAPES_SKIPPED == 1
@@ -151,11 +155,11 @@ def test_a_skipped_market_still_moves_the_watermark(monkeypatch):
 
     monkeypatch.setattr(sweep_mod, "writer_burst", fake_burst)
     monkeypatch.setattr(
-        sweep_mod.kalshi, "get_markets_ascending", lambda *a, **k: ([_market("KXT-P", close)], False)
+        sweep_mod.kalshi,
+        "get_markets_ascending",
+        lambda *a, **k: ([_market("KXT-P", close)], False),
     )
-    monkeypatch.setattr(
-        sweep_mod.kalshi, "get_candlesticks", lambda *a, **k: [_candle(close)]
-    )
+    monkeypatch.setattr(sweep_mod.kalshi, "get_candlesticks", lambda *a, **k: [_candle(close)])
     monkeypatch.setattr(sweep_mod.kalshi, "candle_row", lambda *a: ("row",))
     monkeypatch.setattr(
         sweep_mod.kalshi, "get_trades", lambda *a, **k: (_ for _ in ()).throw(AssertionError)

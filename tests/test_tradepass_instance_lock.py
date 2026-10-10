@@ -57,7 +57,7 @@ def test_instance_lock_is_held_across_every_fetch(tmp_path, monkeypatch):
 
     seen: list[str] = []
 
-    def get_trades(ticker, session=None):
+    def get_trades(ticker, session=None, **kwargs):
         seen.append(_probe(path))
         return [], False
 

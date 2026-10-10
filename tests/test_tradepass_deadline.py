@@ -68,7 +68,7 @@ def _run_main(tmp_path, monkeypatch, *, n_markets, deadline_min, fetch_cost_s):
     monkeypatch.setattr(tb, "LOCK_FILE", str(tmp_path / "writer.lock"))
     monkeypatch.setattr(tb, "time", clock)
 
-    def get_trades(ticker, session=None):
+    def get_trades(ticker, session=None, **kwargs):
         clock.t += fetch_cost_s
         return [], False
 
@@ -206,7 +206,7 @@ def test_a_429_retries_the_same_market_after_seconds_not_30(tmp_path, monkeypatc
     market must land in THIS run."""
     calls: dict[str, int] = {}
 
-    def fetch(ticker, session=None):
+    def fetch(ticker, session=None, **kwargs):
         calls[ticker] = calls.get(ticker, 0) + 1
         if ticker == "KXT-1" and calls[ticker] == 1:
             raise _http_error(429)
@@ -225,7 +225,7 @@ def test_a_sustained_429_storm_escalates_to_the_old_cap_and_resets(tmp_path, mon
 
     calls: dict[str, int] = {}
 
-    def fetch(ticker, session=None):
+    def fetch(ticker, session=None, **kwargs):
         calls[ticker] = calls.get(ticker, 0) + 1
         if ticker == "KXT-0" or (ticker == "KXT-2" and calls[ticker] == 1):
             raise _http_error(429)

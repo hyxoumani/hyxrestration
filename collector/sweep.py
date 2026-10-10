@@ -424,7 +424,9 @@ def sweep_series(
             # Trade tape rides along (B3.5): prints purge on the same
             # retention clock as candles, so capture them at first sight.
             try:
-                raw, truncated = kalshi.get_trades(m["ticker"], session=session)
+                raw, truncated = kalshi.get_trades(
+                    m["ticker"], session=session, page_pause_s=CANDLES_PAUSE_S
+                )
                 rows = [kalshi.trade_row(t) for t in raw]
                 trade_rows.extend(rows)
                 status = "truncated" if truncated else ("ok" if rows else "empty")

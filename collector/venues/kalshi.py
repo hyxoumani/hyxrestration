@@ -743,6 +743,7 @@ def get_trades(
     max_pages: int = 100,
     session: requests.Session | None = None,
     page_429_waits: tuple[float, ...] = TAPE_PAGE_429_WAITS,
+    page_pause_s: float = 0.0,
 ) -> tuple[list[dict[str, Any]], bool]:
     """All public trade prints for one market (cursor-paginated).
 
@@ -760,10 +761,16 @@ def get_trades(
     out: list[dict[str, Any]] = []
     cursor = ""
     global _RATE_LIMIT_UNRETRIED, _RATE_LIMIT_RETRIES, _RATE_LIMIT_WORST_FRAC
-    for _ in range(max_pages):
+    for page in range(max_pages):
         params: dict[str, Any] = {"ticker": ticker, "limit": limit}
         if cursor:
             params["cursor"] = cursor
+        # The caller's pacing reaches its PAGES, not just its markets: a
+        # 27-page tape fetched back-to-back drains the per-host bucket the
+        # 5-min collector shares (10-10: collect fetch 25-50s -> 80-170s
+        # while an unpaced tradepass ran).
+        if page and page_pause_s:
+            time.sleep(page_pause_s)
         # A 429 retries THIS page at THIS cursor: the pages already read are
         # kept, so a tape longer than the bucket advances instead of being
         # restarted into the same refusal (see TAPE_PAGE_429_WAITS).

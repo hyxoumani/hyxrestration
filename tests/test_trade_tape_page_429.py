@@ -104,3 +104,16 @@ def test_the_ladder_resets_per_page(monkeypatch):
 
     rows, _ = kalshi.get_trades("M1", session=_EveryPageOnce())
     assert len(rows) == n + 3
+
+
+def test_the_callers_pacing_reaches_every_page_but_the_first(monkeypatch):
+    """An unpaced 27-page tape drains the bucket the 5-min collector shares:
+    10-10, collect's fetch went 25-50s -> 80-170s while tradepass paged
+    back-to-back. The pause goes BETWEEN pages, never before the first."""
+    sleeps = []
+    monkeypatch.setattr(kalshi.time, "sleep", sleeps.append)
+    sess = _Bucket(5)
+    sess.burst = -100  # no refusals: isolate the pacing
+    rows, _ = kalshi.get_trades("M1", session=sess, page_pause_s=0.5)
+    assert len(rows) == 5
+    assert sleeps == [0.5] * 4

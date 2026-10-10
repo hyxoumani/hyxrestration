@@ -106,8 +106,11 @@ def test_main_never_fetches_a_proven_tape(tmp_path, monkeypatch):
     _seed(db, {"KXT-E": _covering(), **LIVE})
     fetched = []
 
-    def get_trades(ticker, session=None):
+    pauses = []
+
+    def get_trades(ticker, session=None, **kwargs):
         fetched.append(ticker)
+        pauses.append(kwargs.get("page_pause_s"))
         return [], False
 
     monkeypatch.setattr(tb.kalshi, "get_trades", get_trades)
@@ -115,5 +118,6 @@ def test_main_never_fetches_a_proven_tape(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.argv", ["tradepass", "--db", db])
     tb.main()
     assert fetched == ["KXT-LIVE"]
+    assert pauses == [0.5], "--rps 2 must pace a tape's pages, not just its markets (#116)"
     swept = _swept(db)
     assert swept["KXT-E"][0] == "candle_empty" and swept["KXT-LIVE"][0] == "empty"

@@ -181,7 +181,9 @@ def main() -> None:
         open_retry(args.db).close()
         fcntl.flock(wlock, fcntl.LOCK_UN)
     skipped = mark_proven_empty(args.db)
-    print(f"[tradepass] {skipped} pending tapes candle-proven empty; marked, not fetched", flush=True)
+    print(
+        f"[tradepass] {skipped} pending tapes candle-proven empty; marked, not fetched", flush=True
+    )
     targets = pending_markets(args.db)
     if args.limit:
         targets = targets[: args.limit]
@@ -208,7 +210,9 @@ def main() -> None:
         try:
             for attempt in range(ATTEMPTS_429):
                 try:
-                    raw, truncated = kalshi.get_trades(ticker, session=sess)
+                    raw, truncated = kalshi.get_trades(
+                        ticker, session=sess, page_pause_s=min_interval
+                    )
                     backoff = BACKOFF_429_S
                     break
                 except requests.HTTPError as exc:
