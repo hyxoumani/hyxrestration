@@ -13,6 +13,18 @@ Type=oneshot
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
+# MEASURED 2026-10-10 on a reflink of the 10-09 backup (24.6 GB), the whole
+# unit in a transient cgroup: a normal 24h universe (2,395 markets) succeeds
+# at 512M and is oom-killed at 256M; the WHOLE non-parlay open universe
+# (close window 9600h, 129,909 markets, untruncated under mve_filter=exclude)
+# peaks at 842 MiB anon / 1.0G charged. The cap is sized for the walk's own
+# bound, not for a normal cycle: MAX_PAGES=250 is 250k rows (~1.6G anon at
+# today's per-row cost), and the one flood ever recorded AT that bound (the
+# 2026-09-13 parlay legs, fatter rows) charged 3.9-4.7G across 123 cycles.
+# 6G holds every run this unit has ever made, so a flood on a family the
+# server-side filter misses degrades to a truncated cycle (QA watches that)
+# instead of an oom-kill every 5 min -- and bounds a runaway at 6G, not 60G.
+MemoryMax=6G
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # collector.breadth is OFF unless switched on. Installing + enabling this
 # timer IS the deliberate act; the env var below is what the unit

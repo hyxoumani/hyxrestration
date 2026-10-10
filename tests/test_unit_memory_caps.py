@@ -72,8 +72,6 @@ UNCAPPED = {
     "hyxlab-poly-sweep.service": "p50 17.7G / max 30.1G over 19 runs; ~15h "
     "multi-hour writer, floor unmeasured",
     "hyxlab-sweep.service": "p50 11.8G / max 20.5G over 18 runs; floor unmeasured",
-    "hyxlab-breadth.service": "p50 0.29G / max 4.70G over 5445 runs; "
-    "fires every 5 min, floor unmeasured",
     "hyxlab-collect.service": "p50 0.30G / max 0.53G over 5458 runs; "
     "smallest margin to a real cap, floor unmeasured",
     "hyxlab-backup.service": "no journal samples yet; floor unmeasured",
