@@ -76,7 +76,6 @@ UNCAPPED = {
     "fires every 5 min, floor unmeasured",
     "hyxlab-collect.service": "p50 0.30G / max 0.53G over 5458 runs; "
     "smallest margin to a real cap, floor unmeasured",
-    "hyxlab-signals.service": "p50 0.21G / max 0.33G over 19 runs; floor unmeasured",
     "hyxlab-backup.service": "no journal samples yet; floor unmeasured",
 }
 

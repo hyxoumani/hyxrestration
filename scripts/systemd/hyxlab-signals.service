@@ -13,5 +13,12 @@ Type=oneshot
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
+# MEASURED 2026-10-10 on a reflink of the 10-08 backup (24 GB), the whole
+# unit in a transient cgroup, fed a 2-day GDELT backlog (13,575 news items,
+# ~2x a normal day's 5-8k): anon peak 303 MiB at a 2G cap; success at 512M
+# (DuckDB 256MB); oom-kill at 256M, 37s in. 1G is a 512MB DuckDB limit
+# (DUCK_SHARE 0.5), ~3.3x the measured anon peak; systemd's 211-349M
+# "memory peak" is mostly page cache, which memory.max reclaims.
+MemoryMax=1G
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.signals
