@@ -38,12 +38,35 @@ FLUSH_MARKETS = 25
 LOCK_FILE = "data/writer.lock"
 REQUEST_PAUSE_S = 0.25  # CLOB/data-api pacing
 
+#: DuckDB worker threads for this sweep's writes. The default (one per core,
+#: 24 here) is what sized the 2026-10-11 anon spikes: a 25-market trades flush
+#: dedups against every poly print (the market_id scope's BETWEEN spans the
+#: whole random-hex range, so it never prunes), and each scan thread holds its
+#: own buffers OUTSIDE `memory_limit`. Measured on the 10-10 backup, one real
+#: 43,966-print batch: uncapped 7.7 GiB / 8.9s; capped at 2G (limit 1 GiB) at 24
+#: threads, OOM-killed; at 4 threads 855 MiB under a 1G cap in 6.4-6.8s. 2
+#: threads is 725 MiB but 9.1s. So 4 is the fastest setting as well as a small one.
+DUCK_THREADS = 4
+
+
+def _open(db: str):
+    """`open_retry` + the thread pin, closing on any escape (#97: a wrapper
+    that owns the connection between the open and its caller leaks the
+    writer lock if the tuning raises)."""
+    store = open_retry(db)  # readers (QA/doctor/backtest) don't take the flock
+    try:
+        store.conn.execute(f"SET threads = {DUCK_THREADS}")
+    except BaseException:
+        store.close()
+        raise
+    return store
+
 
 def _flush(db: str, batch: dict) -> None:
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
-        store = open_retry(db)  # readers (QA/doctor/backtest) don't take the flock
+        store = _open(db)
         try:
             if batch["infos"]:
                 store.upsert_markets(batch["infos"])
@@ -93,7 +116,7 @@ def sweep(
     with open(LOCK_FILE, "a") as lock:  # ensure schema + read watermarks
         fcntl.flock(lock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
-        store = open_retry(db)
+        store = _open(db)
         watermarks = store.poly_price_watermarks()
         store.close()
         fcntl.flock(lock, fcntl.LOCK_UN)

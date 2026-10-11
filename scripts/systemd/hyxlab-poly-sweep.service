@@ -13,6 +13,20 @@ Type=oneshot
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
+# MEASURED 2026-10-11. Sampled live every 5s (cgroup memory.stat), the run's
+# anon sat at ~410 MiB between flushes and SPIKED to 4.2-8.8 GiB for <5s, 49
+# times in 6h: a 25-market trades flush, whose market_id-scoped dedup still
+# scans every poly print (random-hex ids, so the BETWEEN never prunes), across
+# 24 DuckDB threads with a 48 GiB default limit. Reproduced on a reflink of the
+# 10-10 backup: 7.7 GiB / 8.9s for one real 43,966-print batch. A cap alone
+# does not bound it -- the scan threads' buffers sit OUTSIDE memory_limit, and
+# at 2G (limit 1G) the flush is oom-killed -- so poly_sweep pins DUCK_THREADS=4.
+# Then the whole DB sequence (watermarks + 4 real flushes, with a 450 MiB
+# ballast for the run's Python) through collector.poly_sweep itself, fresh
+# reflink per cap: oom-killed at 1G, 1.5G and 2G; peaks 2.78G at 3G (93%) and
+# 4.39G at 6G (73%). The footprint is memcap's limit (cap/2) plus ~1.3G, so
+# headroom grows only as cap/2 - 1.5G; 6G leaves 1.6G.
+MemoryMax=6G
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # A Persistent= catch-up fires seconds after boot, before the resolver is up;
 # this run's first request does not retry, so without the gate the day's

@@ -69,8 +69,6 @@ DUCK_MARKERS = ("duckdb", "hyxlab.store")
 #: cycle, and these three are the 24/7 capture path. Each needs its own
 #: measured floor, the way QA got one, before it gets a number.
 UNCAPPED = {
-    "hyxlab-poly-sweep.service": "p50 17.7G / max 30.1G over 19 runs; ~15h "
-    "multi-hour writer, floor unmeasured",
     "hyxlab-sweep.service": "p50 11.8G / max 20.5G over 18 runs; floor unmeasured",
 }
 
