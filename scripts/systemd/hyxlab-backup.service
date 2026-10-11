@@ -13,5 +13,18 @@ Type=oneshot
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
+# MEASURED 2026-10-11 on a reflink of the 10-10 backups (25.2 + 34.3 GB), the
+# whole unit in a transient cgroup. A normal run (reflinked copies, no WAL)
+# peaks at 74M, succeeds at 96M and is oom-killed at 64M. The sizing case is a
+# leftover WAL: the read-only attach REPLAYS it into memory. A 209 MB
+# hyxlab.duckdb.wal (2M trade rows) peaks at 344M, succeeds at 512M and is
+# oom-killed at 256M (~1.3 MB per WAL MB). That WAL is ~7x the realistic bound:
+# the default 16 MiB checkpoint_threshold (nothing here changes it) plus one
+# transaction's partial row group (bulk inserts write full row groups straight
+# to the file; a 1M-row insert left a 16 KB WAL), and production issues no
+# bulk DELETE. 1G is 3x the oversized-WAL peak and 13x a normal run. Not
+# measured: an off-device HYXLAB_BACKUP_DIR, whose copy is page cache, which a
+# cap reclaims rather than kills (see .claude/rules/ops.md, MemoryPeak).
+MemoryMax=1G
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.backup

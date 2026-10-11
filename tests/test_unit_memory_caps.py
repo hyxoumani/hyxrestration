@@ -72,7 +72,6 @@ UNCAPPED = {
     "hyxlab-poly-sweep.service": "p50 17.7G / max 30.1G over 19 runs; ~15h "
     "multi-hour writer, floor unmeasured",
     "hyxlab-sweep.service": "p50 11.8G / max 20.5G over 18 runs; floor unmeasured",
-    "hyxlab-backup.service": "no journal samples yet; floor unmeasured",
 }
 
 _SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([KMGT]?)$")
