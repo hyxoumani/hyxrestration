@@ -13,6 +13,20 @@ Type=oneshot
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
+# MEASURED 2026-10-11 on a reflink of the 10-09 backup (24.6 GB), the whole
+# unit in a transient cgroup, live fetch included. A normal cycle (719 snaps,
+# 5,997 markets) succeeds at 512M and is oom-killed at 256M. The sizing case
+# is the spool DRAIN: a full spool (MAX_FILES=24 cycles, 162,024 rows) peaks
+# at 536-555 MiB anon / 552-574M charged, succeeds at 768M and 1G, and is
+# oom-killed at 512M after 7 of 24 files (and at 384M after 1). The drain's
+# growth is NOT the buffer pool (flat ~218 MiB at any limit) or the Python
+# heap (flat 37 MiB under tracemalloc). It is native allocator fragmentation
+# across DuckDB's 24 threads, ~10 MiB/file and decaying (threads=2: 389 MiB,
+# MALLOC_ARENA_MAX=2: 500 MiB). It is bounded because MAX_FILES bounds the
+# drain. A kill here costs the LIVE cycle, which is fetched but never spooled,
+# so the cap must hold the worst drain: 1.5G is 2.8x that anon peak and 2.2x
+# the largest charged peak in the journal (681M, uncapped).
+MemoryMax=1536M
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # No `flock -n` wrapper: it dropped the cycle before python started, so the
 # hole was invisible to every archive-reading instrument. collector.collect
