@@ -68,9 +68,7 @@ DUCK_MARKERS = ("duckdb", "hyxlab.store")
 #: is too TIGHT turns an OutOfMemoryException into a failed collection
 #: cycle, and these three are the 24/7 capture path. Each needs its own
 #: measured floor, the way QA got one, before it gets a number.
-UNCAPPED = {
-    "hyxlab-sweep.service": "p50 11.8G / max 20.5G over 18 runs; floor unmeasured",
-}
+UNCAPPED: dict[str, str] = {}
 
 _SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([KMGT]?)$")
 _SCALE = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}

@@ -13,6 +13,19 @@ Type=oneshot
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
+# MEASURED 2026-10-12. Sampled live every 5s (cgroup memory.stat) across the
+# whole 10-12 run (06:10Z -> 17:03Z, 10h54m, uncapped, 24 threads, 48 GiB
+# default limit): anon sat at 256-512 MiB for 84% of samples and spiked to
+# 1.2-1.84 GiB for <10s at flushes. The pre-#115 21-30G peaks are gone. The
+# worst write is a burst the run never actually does, used as the sizing case:
+# a 320k-print KXBTC15M trade flush (this week's largest was 305k) AND a 250k
+# candle flush, in one writer_burst, three times, on a reflink of the 10-11
+# backup. 2G (limit 1G) survives at 1902 MiB (95%) with no ballast and is
+# oom-killed with a 500 MiB one; 3G peaks 2321 MiB (77%), 4G 2377 MiB (58%).
+# The peak follows memcap's limit (cap/2) at the bottom and levels off near
+# 2.4G above it, so 4G leaves 1.6G over the rehearsal and >2G over anything
+# sampled. Threads stay at the default: 2G survived at 24.
+MemoryMax=4G
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # No flock wrapper: a unit-level lock is held for the whole multi-hour run,
 # which starved hyxlab-collect of 421/3706 cycles in the 14d to 2026-08-02.
