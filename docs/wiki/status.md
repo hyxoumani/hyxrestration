@@ -1,6 +1,8 @@
 # Status & next steps (living page)
 
-Updated: **2026-10-11 14:30Z (CHECK -- LADDER (4) in progress: sweep/poly-sweep anon sampler armed; QA red is the once-only unread-report line.)**
+Updated: **2026-10-12 02:30Z (PASS -- LADDER (4): poly-sweep cap 9c7e8ef PROMOTED; it had been committed and pushed but not promoted or written up.)**
+
+**2026-10-11 14:30Z (CHECK -- LADDER (4) in progress: sweep/poly-sweep anon sampler armed; QA red is the once-only unread-report line.)**
 
 **2026-10-11 14:30Z CHECK -- LADDER (4), measuring, nothing shipped.** Digest: 12/13 ok. The red is today's 10:00Z QA, whose only FAIL is `prior QA run was read`. It names the 10-10 run's `collect-skips` / `capture gaps` FAILs, which went green today. Both were attributed at 10-10 20:30Z, and the check fires once by design (`_own_findings`). Every other check PASSed or WATCHed as already reported. **Tradepass 10-11:** 3,770 tapes, 11.29M prints, 0 errors, 0x429, 2.3G peak. It hit the 210-min deadline with 3,041 pending (6,811 at start), so the backlog is still draining. **UNCAPPED debt (sweep, poly-sweep):** the journal `memory peak` is total charge with page cache, not the footprint. Live at 14:15Z the sweep held anon 348 MiB / file 439 MiB, and the poly-sweep anon 418 MiB / file 264 MiB. The sweep's 10-10 run, the first complete one after the #115 dedup fix, peaked at **2.1G total** vs 21.4-29.8G on 10-07..09, so its anon peak is <= 2.1G and the test's `max 20.5G` reason is stale. Armed: `sweepcap-sampler` (a transient user unit, `~/scratch/sweepcap/sample.sh`, until 10-13 00:30Z) samples anon/file/current of both cgroups every 5s into `~/scratch/sweepcap/samples.tsv`. Today's runs are partial (lower bounds only); the 10-12 runs are sampled whole. A sub-5s anon spike can be missed, so the cap gets headroom over the sampled max. NEXT: the 10-11 sweep's completion line (data-gated, ~3h), then cap both units from the 10-12 whole-run anon max.
 
