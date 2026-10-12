@@ -148,7 +148,7 @@ def backup_one(src: str | Path, dest_dir: Path, retries: int = 30) -> BackupResu
             src_fd = os.open(src, os.O_RDONLY)
             fds.append(src_fd)
             _copy_out(src_fd, stage)
-            if wal.exists():  # only after an unclean writer shutdown
+            if wal.exists():  # absent once the last writer checkpointed on close
                 wal_fd = os.open(wal, os.O_RDONLY)
                 fds.append(wal_fd)
                 _copy_out(wal_fd, stage_wal)
@@ -165,25 +165,35 @@ def backup_one(src: str | Path, dest_dir: Path, retries: int = 30) -> BackupResu
 
     # The archive is free from here down: everything below reads the stage.
     off_device = not _same_device(stage, dest_dir)
+    # `out` is day-named and overwritten weekly, so the WAL an older run
+    # published may still sit beside it -- and DuckDB replays a foreign WAL
+    # silently (measured 2026-10-12: a 5-row snapshot read 1,005 rows and a
+    # table it never had). So drop the old WAL BEFORE the new file lands, and
+    # publish the new WAL AFTER it: a crash in between leaves a snapshot
+    # missing its WAL tail (an older consistent state), never a foreign pair.
     out_wal = Path(f"{out}.wal")
     try:
         if off_device:
             tmp = out.with_suffix(".tmp")
             try:
                 _transfer(stage, tmp)
+                tmp_wal = out.with_suffix(".tmp.wal")
+                tmp_wal.unlink(missing_ok=True)  # a SIGKILLed run's, never ours
                 if stage_wal.exists():
-                    tmp_wal = out.with_suffix(".tmp.wal")
                     _transfer(stage_wal, tmp_wal)
-                    os.replace(tmp_wal, out_wal)
+                out_wal.unlink(missing_ok=True)
                 os.replace(tmp, out)
+                if tmp_wal.exists():
+                    os.replace(tmp_wal, out_wal)
             except BaseException:
                 tmp.unlink(missing_ok=True)
                 out.with_suffix(".tmp.wal").unlink(missing_ok=True)
                 raise
         else:
+            out_wal.unlink(missing_ok=True)
+            os.replace(stage, out)
             if stage_wal.exists():
                 os.replace(stage_wal, out_wal)
-            os.replace(stage, out)
     finally:
         stage.unlink(missing_ok=True)
         stage_wal.unlink(missing_ok=True)

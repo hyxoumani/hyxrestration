@@ -213,3 +213,46 @@ def test_the_descriptors_are_closed_when_the_run_ends(src, dest):
     for _ in range(3):
         backup.backup_one(src, dest)
     assert len(list(Path("/proc/self/fd").iterdir())) == before
+
+
+# A day-named backup is overwritten weekly, and its WAL is published only
+# when the source HAS one. So a WAL that last week's run copied out sits
+# beside this week's clean snapshot unless the run removes it, and DuckDB
+# replays a foreign WAL without a word: measured 2026-10-12 on 1.5.2, a
+# 5-row snapshot opened beside an older file's WAL read 1,005 rows and a
+# table that never existed in it. Built for real (a writer killed with
+# commits uncheckpointed), because a byte-string WAL would fail to replay
+# loudly and so could not show the silent case.
+FOREIGN_WAL = """
+import duckdb, os, sys
+c = duckdb.connect(sys.argv[1])
+c.execute("SET checkpoint_threshold='1GB'")
+c.execute("CREATE TABLE t (i BIGINT, s VARCHAR)")
+c.execute("CHECKPOINT")
+c.execute("INSERT INTO t SELECT range, 'ghost' FROM range(1000)")
+c.execute("CREATE TABLE only_in_the_old_wal (x INT)")
+os._exit(9)
+"""
+
+
+@pytest.mark.parametrize("off_device", [False, True], ids=["same-device", "off-device"])
+def test_a_clean_snapshot_never_inherits_an_older_runs_wal(monkeypatch, tmp_path, src, dest, off_device):
+    if off_device:
+        _force_off_device(monkeypatch)
+    old = tmp_path / "old.duckdb"
+    subprocess.run([sys.executable, "-c", FOREIGN_WAL, str(old)], check=False, timeout=120)
+    assert Path(f"{old}.wal").stat().st_size > 0, "vacuity: no foreign WAL was built"
+    res = backup.backup_one(src, dest)  # creates out; plant last week's WAL beside it
+    Path(f"{res.path}.wal").write_bytes(Path(f"{old}.wal").read_bytes())
+    # ...and, off-device, a killed run's staged WAL, which no except cleared
+    res.path.with_suffix(".tmp.wal").write_bytes(Path(f"{old}.wal").read_bytes())
+
+    assert not Path(f"{src}.wal").exists()
+    res = backup.backup_one(src, dest)
+
+    assert not Path(f"{res.path}.wal").exists(), "a clean snapshot was published beside a stale WAL"
+    conn = duckdb.connect(str(res.path), read_only=True)
+    try:
+        assert conn.execute("SELECT count(*) FROM t").fetchone() == (200,)
+    finally:
+        conn.close()
