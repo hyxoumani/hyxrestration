@@ -90,9 +90,7 @@ def test_wall_clock_is_read_after_over_not_the_cpu_time_before_it(monkeypatch):
     assert sweep[0].wall_h == pytest.approx(10.1107, abs=1e-3)
     assert sweep[0].end == datetime(2026, 8, 3, 21, 16, 38, tzinfo=UTC)
     # ...and the start is derived, so the interval is the real one.
-    assert abs(sweep[0].start - datetime(2026, 8, 3, 11, 10, 0, tzinfo=UTC)) < timedelta(
-        seconds=1
-    )
+    assert abs(sweep[0].start - datetime(2026, 8, 3, 11, 10, 0, tzinfo=UTC)) < timedelta(seconds=1)
 
 
 def test_another_units_line_in_the_same_journal_is_not_counted(monkeypatch):
@@ -137,9 +135,7 @@ def test_the_2026_08_03_sweep_breaches_the_budget_it_was_written_against():
 
 
 def test_no_completed_run_reads_unverified_never_pass(capsys):
-    failed, skipped = _run(
-        {"hyxlab-sweep.timer": None, "hyxlab-tradepass.timer": None}
-    )
+    failed, skipped = _run({"hyxlab-sweep.timer": None, "hyxlab-tradepass.timer": None})
     assert not failed
     assert skipped == ["batch-run-budget"]
     assert "UNVERIFIED" in capsys.readouterr().out
@@ -500,3 +496,86 @@ def test_an_unrecorded_breach_with_no_abort_in_view_still_fails(capsys):
     failed, _ = _run(runs, now=datetime(2026, 9, 17, 10, tzinfo=UTC))
     assert failed == {"batch units within measured run budget"}
     assert "catch-up" not in capsys.readouterr().out
+
+
+# --- #118: a failure with no `Consumed` line ---------------------------------
+#
+# Live case, verbatim. The 10-05 sweep exited 1 at boot before its cgroup did
+# any work, so systemd wrote no `Consumed` line, and the failure flag rode on
+# to the 10-06 run: a CLEAN 18.94h finish (`'aborted': False` in its own done
+# line) read as an abort for five QA runs. On 10-12 the 10-05 line left the
+# 7-day read, the flag stopped leaking, and the same run flipped to a stale-
+# budget FAIL -- for a run that was in truth catching up the missed day.
+
+BOOT_FAIL_THEN_CLEAN_RUN = (
+    "2026-10-05T04:01:39-05:00 hyz systemd[765]: Starting hyxlab daily incremental sweep...\n"
+    "2026-10-05T04:01:39-05:00 hyz systemd[765]: hyxlab-sweep.service: "
+    "Main process exited, code=exited, status=1/FAILURE\n"
+    "2026-10-05T04:01:39-05:00 hyz systemd[765]: hyxlab-sweep.service: "
+    "Failed with result 'exit-code'.\n"
+    "-- Boot b626d443e4b54894aa5a8b952c609d9b --\n"
+    "2026-10-06T01:10:00-05:00 hyz systemd[759]: Starting hyxlab daily incremental sweep...\n"
+    "2026-10-06T20:06:38-05:00 hyz systemd[759]: Finished hyxlab daily incremental sweep.\n"
+    "2026-10-06T20:06:38-05:00 hyz systemd[759]: hyxlab-sweep.service: Consumed 2h 53min "
+    "43.660s CPU time over 18h 56min 37.744s wall clock time, 14.8G memory peak."
+)
+
+QA_10_12 = datetime(2026, 10, 12, 10, 0, tzinfo=UTC)
+
+
+def _sweep_journal(text):
+    return lambda unit, since, until: text if unit == "hyxlab-sweep.service" else ""
+
+
+def test_a_failure_with_no_consumed_line_does_not_leak_onto_the_next_run(monkeypatch):
+    monkeypatch.setattr(qa, "_journal", _sweep_journal(BOOT_FAIL_THEN_CLEAN_RUN))
+    sweep = qa.read_batch_runs(now=QA_10_12)["hyxlab-sweep.timer"]
+    assert [(r.ok, round(r.wall_h, 2)) for r in sweep] == [(False, 0.0), (True, 18.94)]
+    assert sweep[0].end == datetime(2026, 10, 5, 9, 1, 39, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("boundary", ["-- Boot", "Starting"])
+def test_each_run_boundary_closes_a_cgroupless_failure(monkeypatch, boundary):
+    """Either boundary alone must close it -- a reboot need not precede a start."""
+    lines = [
+        ln
+        for ln in BOOT_FAIL_THEN_CLEAN_RUN.splitlines()
+        if not (ln.startswith("-- Boot") if boundary == "Starting" else "T01:10:00" in ln)
+    ]
+    monkeypatch.setattr(qa, "_journal", _sweep_journal("\n".join(lines)))
+    sweep = qa.read_batch_runs(now=QA_10_12)["hyxlab-sweep.timer"]
+    assert [r.ok for r in sweep] == [False, True]
+
+
+def test_a_cgroupless_failure_at_the_end_of_the_read_is_still_an_abort(monkeypatch):
+    head = "\n".join(BOOT_FAIL_THEN_CLEAN_RUN.splitlines()[:3])
+    monkeypatch.setattr(qa, "_journal", _sweep_journal(head))
+    sweep = qa.read_batch_runs(now=QA_10_12)["hyxlab-sweep.timer"]
+    assert [(r.ok, r.wall_h) for r in sweep] == [(False, 0.0)]
+
+
+def test_the_read_reaches_behind_the_lookback_for_the_catch_up_witness(monkeypatch):
+    seen = []
+    monkeypatch.setattr(qa, "_journal", lambda unit, since, until: seen.append(since) or "")
+    qa.read_batch_runs(now=QA_10_12)
+    days = qa.BATCH_RUN_LOOKBACK_DAYS + qa.BATCH_RUN_CONTEXT_DAYS
+    assert set(seen) == {QA_10_12 - timedelta(days=days)}
+    assert qa.BATCH_RUN_CONTEXT_DAYS >= 1
+
+
+def test_the_10_12_reading_is_a_catch_up_not_a_stale_budget(monkeypatch, capsys):
+    """The 10-05 abort sits behind the lookback yet still certifies 10-06."""
+    monkeypatch.setattr(qa, "_journal", _sweep_journal(BOOT_FAIL_THEN_CLEAN_RUN))
+    _run(None, now=QA_10_12)
+    out = capsys.readouterr().out
+    assert "catch-up after the 10-05 09:01Z abort" in out
+    # The context abort is a witness only: not counted, not reported.
+    assert "aborted (" not in out and "ABORTED" not in out
+
+
+def test_a_context_run_is_never_a_verdict(capsys):
+    """A breach that ended before the lookback is out of scope, as before."""
+    old = _sweep(QA_10_12 - timedelta(days=8), 18.0)
+    failed, _ = _run({"hyxlab-sweep.timer": [old]}, now=QA_10_12)
+    assert "18.00h" not in capsys.readouterr().out
+    assert failed == set()

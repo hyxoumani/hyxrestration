@@ -440,6 +440,10 @@ BATCH_RUN_BUDGET_H = {
 #: Journald on this box holds ~16M / ~2 days, so this is a ceiling on the
 #: lookback, not a promise of one. Unreachable days read UNMEASURED.
 BATCH_RUN_LOOKBACK_DAYS = 7
+#: Extra days `read_batch_runs` reads BEHIND the lookback so the run before
+#: the oldest in-window run is visible as a catch-up witness. Two covers a
+#: daily unit whose prior run started the day before and ran past its budget.
+BATCH_RUN_CONTEXT_DAYS = 2
 
 # EXP-1359 — the freshness checks are INSTANTANEOUS, so an outage that heals
 # before the next daily QA run is structurally invisible to them. The
@@ -3343,6 +3347,10 @@ _CONSUMED_RE = re.compile(r"^(\S+)\s.*?:\s*(\S+\.service): Consumed .*? over (.+
 #: form is matched with an explicit non-zero test because `status=0/SUCCESS`
 #: rides the same sentence on a clean stop.
 _FAILED_RE = re.compile(r"Failed with result|Main process exited, code=\w+, status=(?!0/)")
+#: systemd's start announcement. It carries the unit's Description, not its
+#: name, so it is only meaningful inside a `-u <unit>` read -- which is the
+#: only read `read_batch_runs` makes.
+_STARTING_RE = re.compile(r"\ssystemd\[\d+\]: Starting ")
 
 
 def parse_systemd_duration(text: str) -> float | None:
@@ -3387,6 +3395,23 @@ def _fade_overlap_h(start: datetime, end: datetime) -> float:
     return total / 3600.0
 
 
+def _cgroupless_abort(timer: str, failed_at: str | None) -> list[BatchRun]:
+    """The run a failure with no `Consumed` line stands for, if there was one.
+
+    A unit that fails before its cgroup does any work -- 10-05 09:01Z, the
+    sweep exiting 1 at boot -- gets NO `Consumed` line. It is still a run that
+    did not do its work: an abort of zero length. Before #118 its flag rode on
+    to the NEXT run's `Consumed` and marked a clean 18.94h finish as an abort.
+    """
+    if failed_at is None:
+        return []
+    try:
+        end = datetime.fromisoformat(failed_at).astimezone(UTC)
+    except ValueError:
+        return []
+    return [BatchRun(timer, end, 0.0, ok=False)]
+
+
 def read_batch_runs(
     days: int = BATCH_RUN_LOOKBACK_DAYS, now: datetime | None = None
 ) -> dict[str, list[BatchRun] | None]:
@@ -3396,7 +3421,12 @@ def read_batch_runs(
     unit never ran" are different facts and only one of them is a problem.
     """
     now = now or datetime.now(UTC)
-    since = now - timedelta(days=days)
+    # Read one CONTEXT span wider than the lookback: the run before the oldest
+    # in-window run is the witness `_catch_up_abort` needs, and an abort always
+    # ends before the catch-up it certifies, so it is always the first to leave
+    # a read of exactly `days` (#56, #118). The check counts only runs ending
+    # inside the lookback; the context ones are siblings, never verdicts.
+    since = now - timedelta(days=days + BATCH_RUN_CONTEXT_DAYS)
     out: dict[str, list[BatchRun] | None] = {}
     for timer in sorted(BATCH_RUN_BUDGET_H):
         service = timer.removesuffix(".timer") + ".service"
@@ -3405,17 +3435,24 @@ def read_batch_runs(
             out[timer] = None
             continue
         runs = []
-        failed = False
+        # Timestamp of a failure line whose `Consumed` line has not arrived.
+        failed_at: str | None = None
+
         for line in text.splitlines():
             # Failure is announced BEFORE the cgroup accounting, so the flag is
             # always set by the time its own `Consumed` line arrives, and is
-            # cleared there so it cannot leak onto the next run in the read.
+            # cleared there. A run BOUNDARY (the next start, or a reboot) with
+            # the flag still set means that `Consumed` line never came.
+            if line.startswith("-- Boot") or _STARTING_RE.search(line):
+                runs += _cgroupless_abort(timer, failed_at)
+                failed_at = None
+                continue
             if _FAILED_RE.search(line) and f"{service}:" in line:
-                failed = True
+                failed_at = failed_at or line.split(maxsplit=1)[0]
             m = _CONSUMED_RE.match(line)
             if not m or m.group(2) != service:
                 continue
-            ok, failed = not failed, False
+            ok, failed_at = failed_at is None, None
             try:
                 end = datetime.fromisoformat(m.group(1)).astimezone(UTC)
             except ValueError:
@@ -3424,6 +3461,7 @@ def read_batch_runs(
             if secs is None:
                 continue
             runs.append(BatchRun(timer, end, secs / 3600.0, ok=ok))
+        runs += _cgroupless_abort(timer, failed_at)
         out[timer] = runs
     return out
 
@@ -3491,6 +3529,11 @@ def qa_batch_run_budget(
     now = now or datetime.now(UTC)
     name = "batch units within measured run budget"
     runs = read_batch_runs(now=now) if runs is None else runs
+    # `siblings` keeps the context read for catch-up attribution; every count,
+    # verdict and key below is over the lookback only.
+    siblings = {u: r for u, r in runs.items() if r}
+    since = now - timedelta(days=BATCH_RUN_LOOKBACK_DAYS)
+    runs = {u: None if r is None else [x for x in r if x.end >= since] for u, r in runs.items()}
 
     measured = {u: r for u, r in runs.items() if r}
     if not measured:
@@ -3527,7 +3570,7 @@ def qa_batch_run_budget(
     state = _load_state()
     entry = state.setdefault("batch-run-budget", {})
     reported = set(entry.get("reported") or [])
-    catch_up = {id(r): a for r in over if (a := _catch_up_abort(r, measured[r.unit])) is not None}
+    catch_up = {id(r): a for r in over if (a := _catch_up_abort(r, siblings[r.unit])) is not None}
     # An abort always ENDS before the catch-up it certifies, so it leaves the
     # lookback first: 09-17 10:00Z read the 09-11 catch-up without the 09-10
     # 07:45Z abort and failed it as a stale budget. A catch-up key is minted
@@ -3546,7 +3589,7 @@ def qa_batch_run_budget(
                 f" — catch-up after an abort now outside the {BATCH_RUN_LOOKBACK_DAYS}d read"
                 " (certified on the record), not a stale budget"
             )
-        return _catch_up_clause(r, measured[r.unit])
+        return _catch_up_clause(r, siblings[r.unit])
 
     stale_budget = [r for r in over if id(r) not in catch_up]
     # Overlap, unlike the budget, is about quota actually spent — a run that

@@ -3034,6 +3034,30 @@ Format: what happened → root cause → error type → prevention tier
     **When an artifact is a SET of files under a reused name, publishing
     it means making the whole set current. A member you only write when
     it exists is a member you never delete.**
+118. **2026-10-12 -- a failure flag that clears only on the line the
+    failure is supposed to precede leaks when that line never comes.**
+    `qa.read_batch_runs` set `failed` on systemd's failure line and
+    cleared it on the next `Consumed ... over ...` line, assuming every
+    run writes one. The 10-05 09:01Z sweep exited 1 at boot before its
+    cgroup did any work, so it wrote NO `Consumed` line. The flag rode
+    on to the 10-06 run, a CLEAN 18.94h finish (its own done line says
+    `'aborted': False`), and QA called it an abort for five runs (10-07
+    to 10-11). On 10-12 the 10-05 line left the 7-day read, the flag
+    stopped leaking, and the same run flipped to a stale-budget FAIL.
+    Neither reading was right: it was a catch-up of the missed day
+    (105,712 markets against 54,826 on 10-04). Fix: close a pending
+    failure at each run boundary (`Starting`, `-- Boot`, end of read)
+    as a zero-length abort, and read `BATCH_RUN_CONTEXT_DAYS = 2` behind
+    the lookback, so the abort that certifies a catch-up is still in view
+    (#98's wider-read rule; #56's record is the fallback). The context
+    runs are witnesses only, never counted. All 7 new tests went red on
+    the reverted file. Replayed on the real journal: 10-13 fails ONCE as
+    a catch-up, then WATCH. Residue: the 10-07 13.64h run keeps the
+    catch-up key it was given against the misread "abort", left on the
+    record rather than revoked. **A state machine fed by a log needs a
+    reset at the boundary of the thing it describes, not at the event
+    it expects next. An expected event that can be missing makes it an
+    assumption, and here the assumption broke on a reboot.**
 
 ## Pattern analysis (Step 5)
 
