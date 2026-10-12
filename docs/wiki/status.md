@@ -1,6 +1,10 @@
 # Status & next steps (living page)
 
-Updated: **2026-10-12 02:30Z (PASS -- LADDER (4): poly-sweep cap 9c7e8ef PROMOTED; it had been committed and pushed but not promoted or written up.)**
+Updated: **2026-10-12 08:40Z (PASS -- LADDER (4): backup stale-WAL fix d7475b8, promoted; the sweep cap waits on today's run.)**
+
+**2026-10-12 08:40Z PASS -- LADDER (4), SHIPPED d7475b8 (backup; promoted, no daemon restart; suite 1923 green + 2 new).** Digest: 12/13 ok. The red is 10-11's QA once-only `prior QA run was read` line, already attributed. **Cap check (in progress, data-gated):** `sweepcap-sampler` is live. The poly-sweep's FIRST CAPPED run (04:15Z, 6G, threads=4) has an anon max of 4,097 MiB so far, against 8,816 MiB uncapped on 10-11, with `memory.events` max 0 and oom_kill 0. The sweep (06:10Z, still the last UNCAPPED unit) has an anon max of 1,539 MiB so far. Its 10-10 and 10-11 whole runs charged 2.1G and 2.3G in total (with page cache), which is an upper bound on anon. **The shipped item:** I was re-checking the 08:40Z note's claim that backup.py's "only after an unclean writer shutdown" comment was wrong. The claim was itself wrong: the 406-byte live WAL belongs to the sweep's open writer session, and no backup this week carries a WAL. But the check turned up a real latent bug (mistakes #117). Day-named backups are overwritten weekly and the `.wal` is written only when one exists, so a stale WAL would survive beside later clean snapshots, and DuckDB replays a foreign WAL silently (1,005 rows read from a 5-row snapshot). NEXT: the sweep's 10-12 completion (~16:30Z) and the poly-sweep's (~20:45Z). Then cap the sweep from its whole-run sampled anon max with headroom, delete the UNCAPPED line, and confirm the poly-sweep finished under 6G with oom_kill 0.
+
+**2026-10-12 02:30Z (PASS -- LADDER (4): poly-sweep cap 9c7e8ef PROMOTED; it had been committed and pushed but not promoted or written up.)**
 
 **2026-10-11 14:30Z (CHECK -- LADDER (4) in progress: sweep/poly-sweep anon sampler armed; QA red is the once-only unread-report line.)**
 

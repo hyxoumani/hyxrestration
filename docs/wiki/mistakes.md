@@ -3017,6 +3017,24 @@ Format: what happened → root cause → error type → prevention tier
     with (rows), never in a proxy count (markets) whose size the fix just
     changed.**
 
+117. **2026-10-12 -- a backup published its WAL only when it had one, so
+    a later clean snapshot kept an OLDER run's WAL.** `collector.backup`
+    names outputs by weekday (`hyxlab.Mon.duckdb`) and overwrites them
+    weekly. It wrote `<out>.wal` only when the source had a WAL and never
+    removed one otherwise, so after a single unclean shutdown that WAL
+    would sit beside every later Monday snapshot. DuckDB 1.5.2 replays a
+    foreign WAL SILENTLY. Measured: a 5-row snapshot opened beside an
+    older file's WAL read 1,005 rows and a table it never had. The bug was
+    latent: no backup holds a WAL today, because every writer checkpoints
+    on close. It was also the opposite of what the 10-11 08:40Z note had
+    suspected (that comment was right; the live 406-byte WAL it saw
+    belonged to the sweep's open session). Fix (d7475b8): unlink the old
+    WAL before the file lands, publish the new one after it, and clear a
+    killed run's `.tmp.wal`. Both mutants were diffed and went red.
+    **When an artifact is a SET of files under a reused name, publishing
+    it means making the whole set current. A member you only write when
+    it exists is a member you never delete.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
