@@ -9,6 +9,13 @@ ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m simul
 Restart=always
 RestartSec=10
 MemoryMax=1G
+# The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
+# cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
+# journal's `memory peak` is total charge including page cache, == the cap
+# for any healthy I/O-heavy run, so it cannot tell reclaim from near-death.
+# ExecStopPost runs inside the cgroup after the main process is gone: the
+# last reader. Reports only; never fails the unit (scripts/cgmem.sh).
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 
 [Install]
 WantedBy=default.target

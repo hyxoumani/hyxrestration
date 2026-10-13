@@ -52,6 +52,13 @@ OOMScoreAdjust=220
 # If the window ever outgrows it the failure is an OutOfMemoryException --
 # one red QA check naming itself -- and no longer 21 dead processes.
 MemoryMax=12G
+# The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
+# cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
+# journal's `memory peak` is total charge including page cache, == the cap
+# for any healthy I/O-heavy run, so it cannot tell reclaim from near-death.
+# ExecStopPost runs inside the cgroup after the main process is gone: the
+# last reader. Reports only; never fails the unit (scripts/cgmem.sh).
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # The one directory both worktrees must agree on. `reports/` is a REAL
 # directory in each tree (unlike data/.env/.secrets, which the stable tree

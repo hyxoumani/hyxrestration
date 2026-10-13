@@ -27,6 +27,13 @@ OOMScoreAdjust=220
 # 4.39G at 6G (73%). The footprint is memcap's limit (cap/2) plus ~1.3G, so
 # headroom grows only as cap/2 - 1.5G; 6G leaves 1.6G.
 MemoryMax=6G
+# The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
+# cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
+# journal's `memory peak` is total charge including page cache, == the cap
+# for any healthy I/O-heavy run, so it cannot tell reclaim from near-death.
+# ExecStopPost runs inside the cgroup after the main process is gone: the
+# last reader. Reports only; never fails the unit (scripts/cgmem.sh).
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # A Persistent= catch-up fires seconds after boot, before the resolver is up;
 # this run's first request does not retry, so without the gate the day's

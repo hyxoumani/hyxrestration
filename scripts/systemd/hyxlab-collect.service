@@ -27,6 +27,13 @@ OOMScoreAdjust=220
 # so the cap must hold the worst drain: 1.5G is 2.8x that anon peak and 2.2x
 # the largest charged peak in the journal (681M, uncapped).
 MemoryMax=1536M
+# The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
+# cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
+# journal's `memory peak` is total charge including page cache, == the cap
+# for any healthy I/O-heavy run, so it cannot tell reclaim from near-death.
+# ExecStopPost runs inside the cgroup after the main process is gone: the
+# last reader. Reports only; never fails the unit (scripts/cgmem.sh).
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # No `flock -n` wrapper: it dropped the cycle before python started, so the
 # hole was invisible to every archive-reading instrument. collector.collect

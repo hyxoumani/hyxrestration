@@ -25,6 +25,13 @@ OOMScoreAdjust=220
 # server-side filter misses degrades to a truncated cycle (QA watches that)
 # instead of an oom-kill every 5 min -- and bounds a runaway at 6G, not 60G.
 MemoryMax=6G
+# The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
+# cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
+# journal's `memory peak` is total charge including page cache, == the cap
+# for any healthy I/O-heavy run, so it cannot tell reclaim from near-death.
+# ExecStopPost runs inside the cgroup after the main process is gone: the
+# last reader. Reports only; never fails the unit (scripts/cgmem.sh).
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # collector.breadth is OFF unless switched on. Installing + enabling this
 # timer IS the deliberate act; the env var below is what the unit

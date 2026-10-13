@@ -26,6 +26,13 @@ OOMScoreAdjust=220
 # 2.4G above it, so 4G leaves 1.6G over the rehearsal and >2G over anything
 # sampled. Threads stay at the default: 2G survived at 24.
 MemoryMax=4G
+# The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
+# cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
+# journal's `memory peak` is total charge including page cache, == the cap
+# for any healthy I/O-heavy run, so it cannot tell reclaim from near-death.
+# ExecStopPost runs inside the cgroup after the main process is gone: the
+# last reader. Reports only; never fails the unit (scripts/cgmem.sh).
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # No flock wrapper: a unit-level lock is held for the whole multi-hour run,
 # which starved hyxlab-collect of 421/3706 cycles in the 14d to 2026-08-02.

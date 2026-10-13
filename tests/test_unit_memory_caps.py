@@ -185,9 +185,7 @@ def test_autoloop_is_not_claimed_by_a_walk_that_cannot_see_it():
 def test_every_duckdb_unit_declares_a_memory_cap():
     """The precondition `hyxlab.memcap` needs and cannot check for itself."""
     missing = [
-        n
-        for n, t in duckdb_units().items()
-        if not _field(t, "MemoryMax") and n not in UNCAPPED
+        n for n, t in duckdb_units().items() if not _field(t, "MemoryMax") and n not in UNCAPPED
     ]
     assert not missing, (
         f"{missing} open a DuckDB and declare no MemoryMax, so "
@@ -232,3 +230,47 @@ def test_a_declared_cap_leaves_duckdb_more_than_the_floor():
                 f"{name} caps at {raw}, leaving DuckDB "
                 f"{int(n * DUCK_SHARE)}B -- at or under the {FLOOR_BYTES}B floor"
             )
+
+
+# --- a cap without its verdict -------------------------------------------
+
+#: Where the units run from. Every ExecStart above points here, and so must
+#: the reporter, or the stable worktree's unit runs the dev tree's script.
+STABLE = "/home/devs/workspace/hyxrestration-stable"
+CGMEM = f"{STABLE}/scripts/cgmem.sh"
+
+
+def capped_units() -> dict[str, str]:
+    return {n: t for n, t in _units().items() if _field(t, "MemoryMax")}
+
+
+def test_every_capped_unit_publishes_its_cgroup_verdict_at_stop():
+    """A cap answers "how much may it take"; `memory.events` answers "did it
+    get there" -- `max` (reclaimed at the cap) and `oom_kill` (killed). That
+    file lives in the cgroup and the cgroup goes with the unit, while the
+    `Consumed ... memory peak` line that survives is total charge INCLUDING
+    page cache, == the cap for any healthy I/O-heavy unit (ops.md). Measured
+    2026-10-13: the poly-sweep's first capped run read `max 2,800,000 /
+    oom_kill 0` live and left `6G memory peak` behind, indistinguishable from
+    a run that was nearly killed. `ExecStopPost` is the last reader inside
+    the cgroup (tests/test_cgmem.py proves it sees an oom_kill), so a unit
+    that declares a cap must also carry it -- discovered, so the next capped
+    unit cannot forget."""
+    found = capped_units()
+    assert len(found) >= 12, f"only {len(found)} capped units: {sorted(found)}"
+    missing = [n for n, t in found.items() if CGMEM not in _field(t, "ExecStopPost")]
+    assert not missing, (
+        f"{missing} declare MemoryMax but no `ExecStopPost={CGMEM}`: their cap's "
+        "verdict (memory.events max/oom_kill) is deleted with the cgroup and the "
+        "journal's `memory peak` cannot stand in for it."
+    )
+
+
+def test_the_reporter_the_units_name_exists_and_runs():
+    """The ExecStopPost path is the stable worktree's; the file promoted
+    there is this one. A reporter that is not executable fails the unit it
+    was meant to describe -- `systemd-analyze verify` does not check Exec*
+    beyond ExecStart (tests/test_systemd_verify.py)."""
+    script = ROOT / "scripts" / "cgmem.sh"
+    assert script.is_file() and (script.stat().st_mode & 0o111), script
+    assert CGMEM.endswith("/" + script.relative_to(ROOT).as_posix())

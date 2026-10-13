@@ -335,11 +335,31 @@ def test_nothing_outside_qa_reads_qa(monkeypatch):
         capture_output=True,
         text=True,
     ).stdout.split()
+    # `ExecStopPost=.../cgmem.sh` (2026-10-13) is a REPORTER of the cgroup's
+    # memory counters, not a consumer of the unit's result: it runs inside
+    # the dying cgroup and prints memory.events, and the assertion below
+    # keeps it from ever reading $SERVICE_RESULT / $EXIT_STATUS. The premise
+    # -- nothing reads QA's VERDICT -- is untouched by it.
+    cgmem = (REPO / "scripts/cgmem.sh").read_text()
+    assert not re.search(r"SERVICE_RESULT|EXIT_STATUS|EXIT_CODE|is-failed", cgmem), (
+        "cgmem.sh now reads the unit's result; it is a consumer, and the premise "
+        "of this test (and qa_prior_run) must be rewritten"
+    )
+    out = [
+        f
+        for f in out
+        if any(
+            not re.match(r"^ExecStopPost=.*/scripts/cgmem\.sh$", line)
+            for line in (REPO / f).read_text().splitlines()
+            if re.search(r"OnFailure=|ExecStopPost=|is-failed|systemctl .*--failed", line)
+        )
+    ]
     assert out == [], f"a consumer of unit state now exists: {out}"
 
     service = (REPO / "scripts/systemd/hyxlab-qa.service").read_text()
     assert "Type=oneshot" in service
-    assert not re.search(r"^(OnFailure|ExecStopPost|Restart)=", service, re.M)
+    assert not re.search(r"^(OnFailure|Restart)=", service, re.M)
+    assert not re.search(r"^ExecStopPost=(?!.*/scripts/cgmem\.sh$)", service, re.M)
     # the project's only journal reader, and it does not cover this unit
     assert "hyxlab-qa.timer" not in qa.BATCH_RUN_BUDGET_H
 

@@ -26,5 +26,12 @@ OOMScoreAdjust=220
 # measured: an off-device HYXLAB_BACKUP_DIR, whose copy is page cache, which a
 # cap reclaims rather than kills (see .claude/rules/ops.md, MemoryPeak).
 MemoryMax=1G
+# The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
+# cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
+# journal's `memory peak` is total charge including page cache, == the cap
+# for any healthy I/O-heavy run, so it cannot tell reclaim from near-death.
+# ExecStopPost runs inside the cgroup after the main process is gone: the
+# last reader. Reports only; never fails the unit (scripts/cgmem.sh).
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.backup
