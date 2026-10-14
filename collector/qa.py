@@ -2812,9 +2812,11 @@ def qa_stream_stalls(
     is a known archive-hole class, and that boundary is the daemon's own
     declared one, not a number invented by this check.
 
-    A SHUTDOWN HANDOFF is not that. When the final drain fails, streamd moves
-    the WHOLE buffer to the same sidecar so a restart landing mid-stall does
-    not drop it (before 2026-09-12 it did, silently, on every `systemctl
+    A SHUTDOWN HANDOFF is not that. When the final drain fails or is declined,
+    streamd moves the WHOLE buffer to the sidecar -- or, when a flush still
+    holds the store, to a fresh snapshot file the next boot adopts into it
+    (2026-10-14, mistakes #119) -- so a restart landing mid-stall does not
+    drop it (before 2026-09-12 it did, silently, on every `systemctl
     restart` -- SIGTERM never reached the drain at all). Those rows carry a
     `handoff` count and are reported, never failed on: the alarm would fire
     exactly when the safety net held, which is the alarm-fatigue trap
