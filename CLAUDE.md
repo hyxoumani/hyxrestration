@@ -30,7 +30,9 @@ irreversible actions, or a user-only credential/verification — and
 name it. "Done for now" is not a valid terminal state. Mechanically:
 the harness re-invokes only on a signal — before ending an autonomous
 turn, arm the next one (running background task, or ScheduleWakeup
-~1200–1800s with a resume-the-ladder prompt).
+~1200–1800s with a resume-the-ladder prompt) — unless `AUTOLOOP_DEADLINE`
+(scripts/autoloop.sh) is under 30 min away, when the 6h timer is the
+armed next turn and ending clean beats being SIGTERMed mid-pass.
 
 ## Commands
 

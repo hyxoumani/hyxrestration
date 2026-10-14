@@ -418,3 +418,15 @@
   (or the state set {inactive, failed}), never `ActiveState=inactive`
   alone -- a oneshot that exits non-zero lands in `failed`, and the
   11:20Z 10-14 waiter sat 50 min on a 28s QA run that way.
+- A supervisor's timeout is a backstop, not a budget. `hyxlab-autoloop`'s
+  only bound was the unit's `TimeoutStartSec=3h`, and under the never-stop
+  working mode (one claude process alive across passes via ScheduleWakeup)
+  both 10-14 runs reached it: SIGTERM at an arbitrary point in a pass,
+  filed `result=timeout` -- a FAILURE on the digest's RECENT line -- twice
+  a day (mistakes #122). The process that knows where a clean stop is owns
+  the deadline: `scripts/autoloop.sh` runs claude under `timeout` strictly
+  inside the unit's bound, exports `AUTOLOOP_DEADLINE`, and files the
+  TERM-honoured stop as exit 0 with the stop named in the journal. A pass
+  checks `date +%s` against it before arming a wakeup; under 30 min left,
+  commit what is in flight and end clean -- the 6h timer is the armed next
+  turn.

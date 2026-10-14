@@ -15,3 +15,11 @@ collection-side, push origin main, update the wiki. Hard rules are
 binding: zero capital, no retro-rescues, pre-registration before any
 backtest verdict. If everything is user-gated or data-gated, write one
 line to docs/wiki/status.md noting the check and stop cleanly.
+
+Budget: `AUTOLOOP_DEADLINE` (env, epoch seconds) is when the launcher
+sends SIGTERM to this process; `date +%s` tells you what is left. Before
+starting a ship or arming a wakeup, check it. Under 30 minutes left:
+finish and commit what is in flight, write the status line, and end the
+turn WITHOUT arming — the hyxlab-autoloop timer (6h) is the armed next
+turn. Never arm a wakeup that lands after the deadline: a pass cut by the
+kill leaves uncommitted work for the next run to inherit unread.

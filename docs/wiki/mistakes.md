@@ -3146,6 +3146,45 @@ Format: what happened → root cause → error type → prevention tier
     deciding which two the rule is about, and ask of each "which of
     these says the mechanism I call harmless was not".
 
+122. **2026-10-14 -- the autoloop's only bound was the supervisor's
+    backstop, so every run under the never-stop mode ended as a FAILURE
+    at an arbitrary point in a pass.** `scripts/autoloop.sh` ran
+    `claude -p` with no budget of its own; the unit's `TimeoutStartSec=3h`
+    was the only stop. That was invisible while a run was one pass
+    (3-10 min on 10-13: 4m42, 9m51, 3m21, 6m00). The 10-11 working-mode
+    directive ("never stop": arm a `ScheduleWakeup` before ending every
+    turn) keeps ONE process alive across passes, so both 10-14 runs lived
+    the full 3h and systemd SIGTERMed them: 08:15Z -> 11:15Z with the
+    11:20Z status entry uncommitted (inherited by the 14:15Z run's `git
+    pull`, unread), 14:15Z -> 17:15Z five minutes after the last commit
+    (b835556 at 17:10Z) with the status entry stamped "17:25Z" -- a time
+    the process never saw. The digest filed both as `RECENT
+    hyxlab-autoloop.service 2x in 24h, CLEARED: timeout` and three passes
+    read past the line as "the previous pass's own turn ending".
+    Type: `wrong-assumption` (a bound inherited from the supervisor read
+    as a design) + `unread-verdict` (the digest line named it twice a day).
+    Fix: the launcher owns the budget -- `timeout --signal=TERM
+    --kill-after=300 10200 claude ...` (170 + 5 min < 3h, pinned against
+    the unit file by `tests/test_autoloop_budget.py`), exports
+    `AUTOLOOP_DEADLINE` (epoch) so the pass can `date +%s` and decline to
+    arm a wakeup it cannot finish, maps `timeout`'s 124 to exit 0 with the
+    stop NAMED in the journal (the 6h timer is the armed next turn), and
+    leaves 137 (TERM ignored, SIGKILLed) a failure, because that one is a
+    finding. The prompt and CLAUDE.md say when to stop arming (under 30
+    min left). Tests run the real script against a fake `claude` on PATH
+    in a throwaway root: hang -> SIGTERM -> exit 0 with the deadline the
+    child saw inside [start+budget, +2s]; child exit codes pass through;
+    the flock skip is unchanged; three mutants (124 unmapped, budget over
+    the backstop, export dropped) each red with the diff watched.
+    Rule: **a supervisor's timeout is a backstop, not a budget. The
+    process that knows where a clean stopping point is has to own the
+    deadline, be told it, and file reaching it as the designed outcome --
+    a bound you did not write is one the digest will call a failure, and
+    a kill you did not schedule lands wherever it lands.** Corollary for
+    the working mode: "never stop" is "never stop without arming the next
+    turn", and a timer that fires in 6h IS the armed next turn once the
+    budget is spent.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
