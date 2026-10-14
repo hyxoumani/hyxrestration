@@ -3059,6 +3059,37 @@ Format: what happened → root cause → error type → prevention tier
     it expects next. An expected event that can be missing makes it an
     assumption, and here the assumption broke on a reboot.**
 
+119. **2026-10-14 -- a "safe decline" that chooses a bounded loss over a
+    race is still a loss, and the bound is only as small as the window is
+    short.** `streamd._final_drain`'s refused branch (#62) found a periodic
+    flush holding `store.exclusive` and declined to touch the sidecar --
+    correctly, since a `spill_all` there lands in the file the in-flight
+    flush unlinks on commit -- and then let the buffer die with the
+    process, reasoning that the rows "are in many cases the very ones that
+    flush is writing". Measured 2026-10-14 03:06:25Z, the branch's first
+    production firing: the host was powered off while a hylshi session in
+    a Chromium scope held `hyxstream.duckdb`, the flush was stuck INSIDE
+    that hold with the lock taken (44 failed attempts, `hold_lower_s`
+    645.9), and the rows that arrived since its buffer swap were not "a
+    few": `143520 row(s) left in memory` at ~494 rows/s, i.e. the whole
+    hold's worth, 98% of `SPILL_CAP`, gone. The reasoning assumed the
+    window between a flush's swap and its commit is one flush long; under
+    an outside hold it is the hold long. Fix: the refused branch snapshots
+    the buffer to a FRESH, uniquely named sidecar the in-flight flush
+    cannot name (`StreamStore.spill_snapshot`, lock-free, untrimmed, so
+    the flush's own restore path still works), and `run()` adopts every
+    snapshot into the sidecar at boot before the flusher exists
+    (`adopt_snapshots`). Duplicates possible, holes not; the #62 two-writer
+    measurement re-run against the new file, both ways the flush can end
+    (`tests/test_shutdown_snapshot.py`). Found beside it: the DECLINED and
+    SKIPPED branches recorded `handoff` without advancing the ledger's
+    `spilled` (only `observe` did), so QA's `spilled - handoff` read a
+    design-working handoff as negative cap rows. **When a shared file is
+    the thing two writers race on, the escape is a file only one of them
+    can name -- not a refusal. And "bounded" needs the bound written down
+    in the units the outage is measured in: a window measured in flushes
+    is measured in holds the moment a hold contains the flush.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

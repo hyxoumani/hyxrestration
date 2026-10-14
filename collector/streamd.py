@@ -471,7 +471,7 @@ class FlushStalls:
         ).total_seconds() >= STALL_HEARTBEAT_S:
             self._record("open", now)
 
-    def interrupted(self, now: datetime, handoff: int = 0) -> None:
+    def interrupted(self, now: datetime, handoff: int = 0, spilled: int | None = None) -> None:
         """Record an episode this process will not see the end of.
 
         Written `open` and never `closed`: the drain that would have ended
@@ -493,6 +493,14 @@ class FlushStalls:
         """
         if self.started is None:
             return
+        # `spilled` on this record is the ledger's copy, advanced only by
+        # `observe` -- which the DECLINED and SKIPPED branches never call
+        # (no flush failed there). Without this, a handoff of N rows was
+        # recorded beside a `spilled` that did not include it, and QA's
+        # `spilled - handoff` read a design-working handoff as negative cap
+        # rows. The FAILED branch observes first and passes nothing.
+        if spilled is not None:
+            self.spilled = max(self.spilled, spilled)
         self._record("open", now, interrupted=True, handoff=handoff)
 
     def ok(self, now: datetime) -> None:
@@ -891,17 +899,33 @@ class Daemon:
         with self.store.exclusive(DRAIN_LOCK_WAIT_S) as got:
             if not got:
                 # (d) A periodic flush is still writing on its worker
-                # thread, so every action here is a hole: a flush would
-                # archive the sidecar twice, a spill would be unlinked by
-                # the commit in flight. Declining is the only safe move,
-                # and the rows are in many cases the very ones that flush
-                # is writing -- what is at risk is only what arrived since
-                # it swapped the buffers.
-                _log(
-                    f"CRITICAL final drain SKIPPED: a flush still holds the store after "
-                    f"{DRAIN_LOCK_WAIT_S:.0f}s; {self.store.pending} row(s) left in memory"
-                )
-                self.stalls.interrupted(now, handoff=0)
+                # thread, so touching the SIDECAR here is a hole: a flush
+                # would archive it twice, a spill would be unlinked by the
+                # commit in flight. What is at risk is only what arrived
+                # since that flush swapped the buffers -- and until
+                # 2026-10-14 this branch left exactly that to die with the
+                # process (measured: a poweroff inside an outside hold,
+                # 143,520 rows "left in memory"). The snapshot goes to a
+                # FRESH file the in-flight flush cannot see, untrimmed, so
+                # the next boot adopts it: duplicates possible, holes not.
+                held = self.store.pending
+                try:
+                    moved, path = self.store.spill_snapshot(now)
+                except Exception as snap_exc:
+                    _log(
+                        f"CRITICAL final drain SKIPPED: a flush still holds the store "
+                        f"after {DRAIN_LOCK_WAIT_S:.0f}s and the snapshot refused "
+                        f"({_short_err(snap_exc)}) -- {held} row(s) lost"
+                    )
+                    moved = 0
+                else:
+                    _log(
+                        f"final drain SKIPPED: a flush still holds the store after "
+                        f"{DRAIN_LOCK_WAIT_S:.0f}s; {moved} row(s) snapshotted to "
+                        f"{path.name if path else 'nothing'} for the next boot to adopt "
+                        f"(the in-flight flush keeps its own batch)"
+                    )
+                self.stalls.interrupted(now, handoff=moved, spilled=self.store.spilled)
                 return
             self._drain_locked(now, elapsed)
 
@@ -947,7 +971,7 @@ class Daemon:
             # exception is accounted against it; `interrupted` is a no-op
             # unless a stall was already open, which is the only way a
             # sidecar this large gets built in the first place.
-            self.stalls.interrupted(now, handoff=moved)
+            self.stalls.interrupted(now, handoff=moved, spilled=self.store.spilled)
             return
         try:
             out = self.store.flush_outcome()
@@ -995,6 +1019,12 @@ class Daemon:
                 self.stalls.interrupted(now, handoff=0)
 
     async def run(self, duration: float | None = None) -> None:
+        # Before any flush: a shutdown snapshot (see `_final_drain`, the
+        # refused branch) is a sidecar the flusher does not know about until
+        # it is folded in, and this is the one moment no flush can race it.
+        adopted = self.store.adopt_snapshots()
+        if adopted:
+            _log(f"adopted {adopted} row(s) from shutdown snapshot(s) into the sidecar")
         self.store.mark_startup_gap()
         self.stalls.arm(datetime.now(UTC))
         tasks = [

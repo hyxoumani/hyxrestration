@@ -189,6 +189,12 @@ class _Store:
         self.spilled += moved
         return moved
 
+    def spill_snapshot(self, now=None):
+        # Mirrors the real store: a copy, so `pending` is NOT reduced.
+        self.spill_snapshots = getattr(self, "spill_snapshots", 0) + 1
+        self.spilled += self.pending
+        return self.pending, Path("s.duckdb.spill.snap-x.jsonl")
+
 
 def _daemon(tmp_path, store):
     d = streamd.Daemon.__new__(streamd.Daemon)
@@ -213,8 +219,11 @@ def test_the_drain_will_not_write_while_a_flush_holds_the_store(tmp_path, capsys
         assert not held.is_alive(), "the drain blocked past its own lock budget"
 
     assert store.flushes == 0 and store.spill_alls == 0
+    # Since 2026-10-14 the refused branch is not a loss: the buffer goes to
+    # a snapshot file the in-flight flush cannot see (test_shutdown_snapshot).
+    assert store.spill_snapshots == 1
     out = capsys.readouterr().out
-    assert "CRITICAL" in out and "5000" in out.replace(",", "")
+    assert "SKIPPED" in out and "5000" in out.replace(",", "") and "snapshotted" in out
 
 
 def test_a_drain_that_gets_the_store_flushes_as_before(tmp_path):

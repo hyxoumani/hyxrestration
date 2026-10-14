@@ -382,3 +382,13 @@
   boot re-ran the same OOM: 189 kills in 1h53m (mistakes #112). Bound
   every replay of durable state by a constant (`DRAIN_CHUNK_ROWS`) and
   checkpoint it, so a kill makes progress instead of repeating.
+- A "safe decline" between two racing writers of one file is a bounded
+  loss, and the bound is the length of the RACE WINDOW in the units of the
+  outage, not of the code. `streamd`'s refused drain (#62) let the buffer
+  die rather than spill into the sidecar an in-flight flush would unlink,
+  reasoning the window was one flush long; under an outside hold the flush
+  is stuck inside the hold and the window is the hold: 143,520 rows at the
+  2026-10-14 poweroff (mistakes #119). The escape from a two-writer race on
+  a shared file is a file only one writer can name (`spill_snapshot` ->
+  `adopt_snapshots` at boot, before the second writer exists), never a
+  refusal that leaves rows in memory.

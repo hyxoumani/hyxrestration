@@ -224,6 +224,9 @@ class _Store:
     def drain_rows_estimate(self) -> int:
         return self.pending + self.sidecar_rows
 
+    def adopt_snapshots(self) -> int:
+        return 0
+
     def mark_startup_gap(self) -> None:
         pass
 

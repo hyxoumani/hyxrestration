@@ -476,6 +476,84 @@ class StreamStore:
         """
         return self._spill_overflow(cap=0)
 
+    # -- shutdown snapshot: a sidecar no in-flight flush knows about ---------
+    # The drain's REFUSED branch (streamd.DRAIN_LOCK_WAIT_S): a periodic
+    # flush still holds `_flush_lock`, so `spill_all` would append to the
+    # sidecar that flush unlinks post-commit (mistakes #62, measured). Until
+    # 2026-10-14 the drain therefore declined and the buffer died with the
+    # process: measured that day, a poweroff landed inside an outside hold
+    # and 143,520 rows were "left in memory" -- gone. A snapshot to a FRESH
+    # file closes that: the in-flight flush never learns the file's name, so
+    # it can neither parse it twice nor unlink it, and the next boot adopts
+    # it into the sidecar before any flush runs. The buffers are NOT trimmed
+    # (the flush's failure path restores and overflow-spills them, and a
+    # trim would race that), so the worst case is a duplicate, never a hole.
+
+    @property
+    def _snapshot_glob(self) -> str:
+        return self.path.name + ".spill.snap-*.jsonl"
+
+    def _snapshot_path(self, now: datetime | None = None) -> Path:
+        ts = (now or datetime.now(UTC)).strftime("%Y%m%dT%H%M%S%f")
+        return self.path.parent / f"{self.path.name}.spill.snap-{ts}-{os.getpid()}.jsonl"
+
+    def spill_snapshot(self, now: datetime | None = None) -> tuple[int, Path | None]:
+        """Copy EVERY pending row to a fresh, uniquely named sidecar WITHOUT
+        taking the writer lock or trimming the buffers; returns rows written
+        and the file, or (0, None) when there was nothing to write.
+
+        Deliberately lock-free: it exists for the one moment the lock is
+        held by a flush this process cannot wait for (SIGKILL is
+        `TimeoutStopSec` away). Each buffer is copied in ONE list operation,
+        which under the GIL is atomic against the flush worker's restore
+        (`buf[:0] = batch`) and overflow trim (`del buf[:take]`), so the copy
+        is a consistent instant of the buffer -- either side of the restore,
+        never half of it. All-or-nothing on disk: a partial file is removed
+        rather than left for the next boot to parse a torn tail from.
+        """
+        events, trades, gaps = list(self._events), list(self._trades), list(self._gaps)
+        n = len(events) + len(trades) + len(gaps)
+        if n == 0:
+            return 0, None
+        path = self._snapshot_path(now)
+        try:
+            with path.open("x", encoding="utf-8") as f:
+                f.writelines(_enc_event(e) for e in events)
+                f.writelines(_enc_trade(t) for t in trades)
+                f.writelines(_enc_gap(g) for g in gaps)
+                f.flush()
+                os.fsync(f.fileno())
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        self.spilled += n
+        return n, path
+
+    def adopt_snapshots(self) -> int:
+        """Fold every shutdown snapshot into the sidecar, oldest first;
+        returns rows adopted. Call at BOOT, before the first flush: the
+        snapshot's rows are newer than anything the sidecar held at the
+        shutdown that wrote it, so they are appended, and the `.done`
+        offset (a prefix of the existing file) stays valid. With no sidecar
+        on disk the snapshot BECOMES it, and a stale `.done` is removed
+        first so an orphaned offset cannot skip the adopted rows."""
+        with self._flush_lock:
+            adopted = 0
+            for snap in sorted(self.path.parent.glob(self._snapshot_glob)):
+                data = snap.read_bytes()
+                rows = sum(1 for line in data.splitlines() if line.strip())
+                if self._spill_path.exists() and self._spill_path.stat().st_size > 0:
+                    with self._spill_path.open("ab") as f:
+                        f.write(data)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    snap.unlink()
+                else:
+                    self._spill_done_path.unlink(missing_ok=True)
+                    os.replace(snap, self._spill_path)
+                adopted += rows
+            return adopted
+
     def _spill_overflow(self, cap: int | None = None) -> int:
         """Move the oldest pending rows to the sidecar until the buffer
         is back at `cap` (SPILL_CAP by default); returns rows moved.
