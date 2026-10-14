@@ -130,6 +130,7 @@ PROPS = (
     "DropInPaths",
     "NeedDaemonReload",
     "UnitFileState",
+    "ControlGroup",
 )
 
 # Where `promote.sh` installs: `cp "$DEV"/scripts/systemd/hyxlab-* ~/.config/systemd/user/`.
@@ -315,6 +316,129 @@ def _age(ts: float | None, now: float) -> str:
         return "never"
     h = (now - ts) / 3600.0
     return f"{h:.1f}h ago" if h >= 1 else f"{(now - ts) / 60.0:.0f}m ago"
+
+
+# --- live cgroup memory -----------------------------------------------------
+# The ops rule: a capped unit's health is `memory.events`, never `MemoryPeak`.
+# `scripts/cgmem.sh` publishes that at STOP (ExecStopPost is the last reader
+# before the cgroup is removed), which covers every oneshot and covers a
+# daemon only when it dies. A healthy daemon never stops -- `hyxlab-shadow`
+# was 209h up on 2026-10-14 -- so its verdict was reachable only by hand.
+# The cgroup is kernel state under /sys/fs/cgroup, readable by this user with
+# no lock and no process touched, so the digest reads it for every unit the
+# manager says is RUNNING. Measured 2026-10-14 02:20Z, the first such reading:
+# stream peak 2.0G == cap 2.0G with 37,742 `max` events and anon 162M
+# (reclaim, 89h up); shadow 1.0G == 1.0G, 986 events, anon 257M; simui 34M of
+# 1.0G, 0 events. All three oom_kill 0.
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+@dataclass(frozen=True)
+class CgMem:
+    """One running unit's cgroup memory counters. `None` is a counter the
+    kernel did not expose (never 0: a zero is a measurement), except `cap`,
+    where `None` means `memory.max` reads `max`, i.e. uncapped."""
+
+    unit: str
+    anon: int | None
+    peak: int | None
+    cap: int | None
+    max_events: int | None
+    oom_kill: int | None
+
+
+def _int_or_none(text: str | None) -> int | None:
+    if text is None:
+        return None
+    text = text.strip()
+    return int(text) if text.isdigit() else None
+
+
+def parse_cgmem(
+    unit: str,
+    stat_text: str | None,
+    events_text: str | None,
+    peak_text: str | None,
+    max_text: str | None,
+) -> CgMem:
+    """Pure: the four files' contents -> counters. `memory.stat` and
+    `memory.events` are `name value` lines; `memory.peak` and `memory.max`
+    are one integer, or the word `max` for no cap."""
+
+    def table(text: str | None) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for line in (text or "").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                out[parts[0]] = int(parts[1])
+        return out
+
+    stat = table(stat_text)
+    events = table(events_text)
+    return CgMem(
+        unit=unit,
+        anon=stat.get("anon"),
+        peak=_int_or_none(peak_text),
+        cap=_int_or_none(max_text),
+        max_events=events.get("max"),
+        oom_kill=events.get("oom_kill"),
+    )
+
+
+def read_cgmem(unit: str, control_group: str, root: Path = CGROUP_ROOT) -> CgMem | None:
+    """Read one unit's cgroup under `root`; None if the directory is gone
+    (the unit stopped between `show` and this read -- normal, not a fault)."""
+    d = root / control_group.lstrip("/")
+    if not control_group or not d.is_dir():
+        return None
+    return parse_cgmem(
+        unit,
+        _read(d / "memory.stat"),
+        _read(d / "memory.events"),
+        _read(d / "memory.peak"),
+        _read(d / "memory.max"),
+    )
+
+
+def _mib(n: int | None) -> str:
+    if n is None:
+        return "?"
+    return f"{n / 2**30:.1f}G" if n >= 2**30 else f"{n // 2**20}M"
+
+
+def judge_cgmem(c: CgMem) -> UnitHealth:
+    """Render the ops rule: `oom_kill > 0` is the fault; `peak == cap` with
+    `max > 0` is reclaim and is said so in words, because the number alone
+    reads as a footprint at the cap (mistakes: ops.md `MemoryPeak`)."""
+    if c.cap is None:
+        shape = f"peak {_mib(c.peak)}, uncapped"
+    elif c.peak is not None and c.peak >= c.cap:
+        shape = (
+            f"peak {_mib(c.peak)} == cap {_mib(c.cap)} "
+            f"({c.max_events if c.max_events is not None else '?'} reclaim events, not kills)"
+        )
+    else:
+        shape = f"peak {_mib(c.peak)} of cap {_mib(c.cap)} (cap never reached)"
+    detail = (
+        f"anon {_mib(c.anon)}, {shape}, oom_kill {c.oom_kill if c.oom_kill is not None else '?'}"
+    )
+    state = "OOM-KILLED" if c.oom_kill else "CGMEM"
+    return UnitHealth(c.unit, state, detail)
+
+
+def live_cgmem(units: list[str] | None = None) -> list[CgMem]:
+    """Counters for every unit the manager reports BUSY with a cgroup. A
+    unit that is idle has no cgroup; `cgmem.sh` already published its last."""
+    names = units if units is not None else [u for u, _ in discover_units()]
+    out: list[CgMem] = []
+    for unit in names:
+        props = show(unit)
+        if props.get("ActiveState") not in BUSY:
+            continue
+        c = read_cgmem(unit, props.get("ControlGroup", ""))
+        if c is not None:
+            out.append(c)
+    return out
 
 
 # --- OOM attribution -------------------------------------------------------
@@ -1300,6 +1424,12 @@ def main() -> None:
         print(f"{r.state:<10} {r.unit:<{width}}  {r.detail}", flush=True)
     for line in failure_history_lines(failures, rows, now, journal_floor(), width=width):
         print(line, flush=True)
+    killed: list[str] = []
+    for c in live_cgmem(sorted(units)):
+        v = judge_cgmem(c)
+        print(f"{v.state:<10} {v.unit:<{width}}  {v.detail}", flush=True)
+        if v.state == "OOM-KILLED":
+            killed.append(v.unit)
     qa_svc = show(QA_UNIT)
     print(judge_qa(_load_state(qa_record_path(qa_svc)), qa_svc, now), flush=True)
     drift = drift_report()
@@ -1317,7 +1447,7 @@ def main() -> None:
         + (f"; DRIFT: {[d.unit for d in drifted]}" if drifted else ""),
         flush=True,
     )
-    bad = [r.unit for r in rows if not r.ok]
+    bad = [r.unit for r in rows if not r.ok] + killed
     print(
         f"[health] {len(rows) - len(bad)}/{len(rows)} units ok"
         + (f"; ATTENTION: {bad}" if bad else ""),
