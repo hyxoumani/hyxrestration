@@ -122,3 +122,41 @@ def duck_memory_limit() -> int | None:
     if cap is None:
         return None
     return max(int(cap * DUCK_SHARE), min(FLOOR_BYTES, cap))
+
+
+def sock_throttled_from_events(text: str | None) -> int | None:
+    """`memory.events` contents -> the `sock_throttled` counter, or None when
+    the kernel did not expose one (never 0: a zero is a measurement).
+
+    The counter is the number of times the kernel throttled this cgroup's
+    SOCKETS because the cgroup was under memory pressure -- clamping the
+    transmit window, refusing receive/send buffers room to grow. Every
+    other `memory.events` key says reclaim HAPPENED; this one says reclaim
+    had a COST, and on a daemon whose whole job is to receive it is the one
+    counter that separates the ops-rule reading (`peak == cap` with a large
+    `max` is harmless page-cache reclaim) from a daemon being slowed by its
+    own cap. Measured 2026-10-14: `hyxlab-stream`'s 10-10 .. 10-14 run left
+    `sock_throttled=441` on its stop line and nothing read the field.
+    """
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "sock_throttled" and parts[1].isdigit():
+            return int(parts[1])
+    return None
+
+
+def cgroup_sock_throttled(root: Path | None = None, rel: str | None = None) -> int | None:
+    """This process's cgroup `sock_throttled` counter, or None when there is
+    no cgroup v2, no `memory.events`, or no such key. Read from the LEAF
+    only: the events file is hierarchical, so the leaf's count already
+    includes everything charged under it, and an ancestor's would fold in
+    sibling units."""
+    rel = _self_cgroup() if rel is None else rel
+    if rel is None:
+        return None
+    node = (root or _CGROUP_ROOT) / rel.lstrip("/")
+    try:
+        text = (node / "memory.events").read_text()
+    except OSError:
+        return None
+    return sock_throttled_from_events(text)

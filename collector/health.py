@@ -345,6 +345,14 @@ class CgMem:
     cap: int | None
     max_events: int | None
     oom_kill: int | None
+    #: Times the kernel throttled the cgroup's SOCKETS under memory
+    #: pressure. `max` says reclaim happened; this says it had a cost, and
+    #: on a daemon that receives for a living it is the counter that tells
+    #: harmless page-cache reclaim from a daemon slowed by its own cap.
+    #: Cumulative over the run -- the timed increment is on streamd's own
+    #: stats line (`SockThrottleWatch`); measured 2026-10-14: 441 on the
+    #: stream's 10-10..10-14 run, 0 on the next, read by nobody until now.
+    sock_throttled: int | None = None
 
 
 def _int_or_none(text: str | None) -> int | None:
@@ -382,6 +390,7 @@ def parse_cgmem(
         cap=_int_or_none(max_text),
         max_events=events.get("max"),
         oom_kill=events.get("oom_kill"),
+        sock_throttled=events.get("sock_throttled"),
     )
 
 
@@ -419,8 +428,12 @@ def judge_cgmem(c: CgMem) -> UnitHealth:
         )
     else:
         shape = f"peak {_mib(c.peak)} of cap {_mib(c.cap)} (cap never reached)"
+    sock = "?" if c.sock_throttled is None else str(c.sock_throttled)
+    if c.sock_throttled:
+        sock += " (reclaim clamped its sockets)"
     detail = (
         f"anon {_mib(c.anon)}, {shape}, oom_kill {c.oom_kill if c.oom_kill is not None else '?'}"
+        f", sock_throttled {sock}"
     )
     state = "OOM-KILLED" if c.oom_kill else "CGMEM"
     return UnitHealth(c.unit, state, detail)

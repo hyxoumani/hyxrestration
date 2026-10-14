@@ -3114,6 +3114,38 @@ Format: what happened → root cause → error type → prevention tier
     boundary, list the record kinds written AT that boundary -- they are
     the ones the cut removes -- and make the fixture carry the boundary.**
 
+121. **2026-10-14 -- the one counter that says reclaim had a COST was
+    published by the stop script and read by nobody, so the ops rule's
+    "reclaim, not kills" stood over a run whose sockets were clamped 441
+    times.** `scripts/cgmem.sh` prints every key of `memory.events` at
+    stop; `collector.health`'s live `CGMEM` line and the rule it renders
+    read `max` and `oom_kill` only, and `max` reclaim events on a unit at
+    its cap are worded as harmless page cache (ops.md, measured 08-27).
+    This kernel's `memory.events` also carries `sock_throttled`: the
+    number of times the kernel throttled the cgroup's SOCKETS because the
+    cgroup was under memory pressure (transmit window clamped, receive
+    and send buffers refused room to grow). The first daemon stop lines
+    (the 03:06Z poweroff) read `hyxlab-stream sock_throttled=441` over
+    its 10-10 .. 10-14 run (3d18h, 37,742 `max` events) and `0` over the
+    next (03:09Z .. 09:05Z, 49,604 `max` events) -- so the `max` count
+    does NOT predict it, and on the one unit whose entire job is to
+    receive from two venues it is the cost the rule assumes away. The
+    stop line could not place the 441 in time (during the 02:48Z hold
+    that buffered 393,435 rows? a sidecar drain? four days of trickle?)
+    because it is one cumulative total. Fix: `hyxlab.memcap` reads the
+    counter from the leaf (`cgroup_sock_throttled`, None is unknown and
+    never 0); `streamd.SockThrottleWatch` appends `sock_throttled=N (+d)`
+    to every 5-min stats line and a `WARNING` line in the period the
+    increment lands, beside the GAP lines it may have caused; the health
+    line carries the cumulative field with "reclaim clamped its sockets"
+    on a nonzero. Five mutants (suffix dropped, warning gated off, delta
+    zeroed, health field dropped twice) red, each watched in the diff.
+    Lesson, #95's one layer earlier: a field that reaches the journal
+    only through a shell script's `awk` over a whole file is PUBLISHED
+    but not READ -- enumerate the keys a kernel file can carry before
+    deciding which two the rule is about, and ask of each "which of
+    these says the mechanism I call harmless was not".
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

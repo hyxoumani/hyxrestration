@@ -45,6 +45,7 @@ import websockets
 
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
 from hyxlab.lockid import db_owner_lock_or_reason
+from hyxlab.memcap import cgroup_sock_throttled
 from hyxlab.store import lock_holder
 from hyxlab.streamstore import StreamStore
 
@@ -175,6 +176,44 @@ def load_env(path: str | Path = ".env") -> None:
 
 def _log(msg: str) -> None:
     print(f"[streamd] {datetime.now(UTC):%H:%M:%S} {msg}", flush=True)
+
+
+class SockThrottleWatch:
+    """The cgroup's `sock_throttled` counter, as a DELTA per stats line.
+
+    `scripts/cgmem.sh` prints the counter once, at stop, as a total over the
+    whole run: `hyxlab-stream`'s 2026-10-10 .. 10-14 run (3d18h) left
+    `sock_throttled=441` and the next run (5h56m) left 0, and nothing can
+    say WHEN the 441 happened -- during the 02:48Z hold that buffered
+    393,435 rows, during a sidecar drain, or spread over four days. The
+    kernel throttles a cgroup's sockets when the cgroup is under memory
+    pressure (ops.md: this unit lives at its cap against page cache), and a
+    throttled socket on a daemon whose job is to RECEIVE is events arriving
+    late or a venue closing a slow consumer -- the cost that `max` reclaim
+    events alone say nothing about. So the daemon reads its own counter at
+    every stats line and publishes the increment beside the event counts it
+    may have cost, the way a stall is ledgered next to the flush it failed:
+    measured at the victim, with a timestamp the victim holds.
+
+    Unreadable is `?`, never 0 -- a `--smoke` run outside a cgroup, or a
+    kernel without the key, must not read as "no throttling".
+    """
+
+    def __init__(self, reader: Callable[[], int | None] = cgroup_sock_throttled) -> None:
+        self._reader = reader
+        self.last: int | None = None
+
+    def note(self) -> tuple[str, int]:
+        """`(suffix for the stats line, increment since the last call)`.
+        The first call's increment is 0: the counter's past belongs to the
+        previous stats period, which was never read, not to this one."""
+        cur = self._reader()
+        if cur is None:
+            self.last = None
+            return "sock_throttled=?", 0
+        delta = 0 if self.last is None else max(0, cur - self.last)
+        self.last = cur
+        return f"sock_throttled={cur} (+{delta})", delta
 
 
 def _venue_clock_note(exc: BaseException, now: datetime) -> str:
@@ -531,6 +570,7 @@ class Daemon:
         pem_path = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")
         self.pem = Path(pem_path).read_bytes() if pem_path and Path(pem_path).exists() else b""
         self.stats: dict[str, int] = {}
+        self.sock_throttle = SockThrottleWatch()
         self._spill_corrupt_seen = 0
         self.stalls = FlushStalls()
 
@@ -805,7 +845,16 @@ class Daemon:
                 )
             now = asyncio.get_event_loop().time()
             if now - last_stats >= STATS_SECS:
-                _log(f"stats {self.stats} (flushed {out.rows} this round)")
+                sock, throttled = self.sock_throttle.note()
+                _log(f"stats {self.stats} (flushed {out.rows} this round) {sock}")
+                if throttled:
+                    # Its own line, so a grep for the word finds the PERIOD
+                    # it landed in, not every stats line ever printed.
+                    _log(
+                        f"WARNING sock_throttled +{throttled} this period: the cgroup's"
+                        " memory pressure clamped this daemon's sockets (reclaim with"
+                        " a cost -- check the next GAP lines and the stall ledger)"
+                    )
                 last_stats = now
 
     def _install_stop(self) -> asyncio.Task | None:

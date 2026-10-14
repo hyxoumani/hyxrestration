@@ -23,7 +23,7 @@ EVENTS = "low 0\nhigh 0\nmax 37742\noom 0\noom_kill 0\noom_group_kill 0\nsock_th
 
 def test_parse_reads_anon_peak_cap_and_events() -> None:
     c = health.parse_cgmem("u.service", STAT, EVENTS, "2147549184\n", "2147483648\n")
-    assert c == health.CgMem("u.service", 166502400, 2147549184, 2147483648, 37742, 0)
+    assert c == health.CgMem("u.service", 166502400, 2147549184, 2147483648, 37742, 0, 0)
 
 
 def test_an_uncapped_unit_reads_cap_none_not_zero() -> None:
@@ -75,7 +75,7 @@ def test_read_cgmem_reads_the_four_files_under_the_root(tmp_path: Path) -> None:
     (d / "memory.peak").write_text("5\n")
     (d / "memory.max").write_text("9\n")
     c = health.read_cgmem("x.service", "/user.slice/x.service", root=tmp_path)
-    assert c == health.CgMem("x.service", 166502400, 5, 9, 37742, 0)
+    assert c == health.CgMem("x.service", 166502400, 5, 9, 37742, 0, 0)
 
 
 def test_a_cgroup_that_vanished_between_show_and_read_is_none(tmp_path: Path) -> None:
@@ -142,3 +142,33 @@ def test_the_line_and_the_attention_headline_reach_stdout(
     assert "37742 reclaim events, not kills" in out
     assert "OOM-KILLED hyxlab-shadow.service" in out
     assert "ATTENTION: ['hyxlab-shadow.service']" in out
+
+
+def test_sock_throttled_is_read_and_a_zero_is_a_measurement() -> None:
+    """`memory.events` has one key that says reclaim had a COST: the kernel
+    throttled the cgroup's sockets under memory pressure. `cgmem.sh` printed
+    it at stop (441 on the stream's 10-10..10-14 run) and the live line
+    dropped it, so the ops-rule wording -- reclaim, not kills -- stood for a
+    run whose sockets were clamped 441 times."""
+    c = health.parse_cgmem("hyxlab-stream.service", STAT, EVENTS, "2147549184", "2147483648")
+    assert c.sock_throttled == 0
+    assert health.judge_cgmem(c).detail.endswith("oom_kill 0, sock_throttled 0")
+
+
+def test_a_nonzero_sock_throttled_is_worded_as_reclaim_with_a_cost() -> None:
+    c = health.parse_cgmem(
+        "hyxlab-stream.service",
+        STAT,
+        EVENTS.replace("sock_throttled 0", "sock_throttled 441"),
+        "1",
+        "1",
+    )
+    v = health.judge_cgmem(c)
+    assert v.state == "CGMEM"  # cumulative over the run; the timed signal is streamd's own line
+    assert "sock_throttled 441 (reclaim clamped its sockets)" in v.detail
+
+
+def test_a_kernel_without_the_key_reads_unknown_not_zero() -> None:
+    c = health.parse_cgmem("u", STAT, "max 0\noom_kill 0\n", "1", "2")
+    assert c.sock_throttled is None
+    assert "sock_throttled ?" in health.judge_cgmem(c).detail

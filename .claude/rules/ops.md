@@ -392,3 +392,13 @@
   a shared file is a file only one writer can name (`spill_snapshot` ->
   `adopt_snapshots` at boot, before the second writer exists), never a
   refusal that leaves rows in memory.
+- `memory.events` has a key that says reclaim had a COST: `sock_throttled`,
+  the times the kernel clamped the cgroup's sockets under memory pressure.
+  `max` does not predict it (stream: 37,742 `max` with 441 throttles on
+  one run, 49,604 with 0 on the next; mistakes #121), and on a daemon
+  that receives for a living it is the number the "reclaim, not kills"
+  reading leaves out. Read it live from the digest's `CGMEM` line and,
+  timed, from streamd's stats line (`sock_throttled=N (+d)` plus a
+  `WARNING sock_throttled` line in the period it lands); a nonzero
+  increment is the cue to read that period's GAP lines and stall ledger
+  before calling the cap sized right.
