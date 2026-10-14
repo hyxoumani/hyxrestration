@@ -350,7 +350,45 @@ structure — see [venues](venues.md)).
    own `direction_stability`/`prior_report` were computed before the fix
    and spliced the two families.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
-   accumulates sample fast. Gated on: B4 signal layer.
+   accumulates sample fast. Gated on: B4 signal layer (SHIPPED 07-11; gate open).
+   **Coverage probe (2026-10-14, read on the 10-13 backup; no edge was
+   measured -- this is the pre-registration's INPUT, not a reading).**
+   `KXJOBLESSCLAIMS` ("Weekly initial jobless claims", Economics,
+   quadratic fee, weekly): 247 markets over 24 Thursday events 05-07 ..
+   10-15, 10-11 `greater_or_equal` strikes per event at 5k spacing,
+   close 12:25Z = 5 min before the 12:30Z print. Quotes exist for the
+   14 events from 07-09 (~1,900 5-min snapshots per market, the last one
+   AT close); the 9 earlier events have markets and results but no book.
+   Pre-close book at T-60min (10-08 event): tails 0.98/1.00, mid-ladder
+   spreads 6-7c, volumes 1-3.7k per strike. **Resolution rule verified
+   against the vintage table:** for every one of the 14 events whose
+   FIRST print `econ_vintages` captured (ICSA, pull started 07-12), the
+   result equals `first_print >= floor_strike` on all 143 strikes, 0
+   mismatches. For the 9 events before the pull existed, the table holds
+   only the REVISED value, and 4 of those 9 events show exactly one
+   crossed strike each -- the signature of an upward revision through a
+   strike. So: the market settles on the first print, and a naive
+   latest-vintage join misgrades ~4 of 9 events, which is the B4
+   two-dimensional-vintage design doing its job. Revision pattern in the
+   captured data, recorded as a fact and not a lead: 13 of 13 first
+   prints were revised UP by 1-3k the following week (late-filed claims
+   is the a-priori mechanism); it cannot touch a market that settles on
+   the first print. `knowable_at` for a print is the pull's 03:59Z next
+   day, ~15.5h after the market closed -- pessimistic by design, fine
+   for resolution, and any feature must use the PRIOR weeks' prints.
+   **Sample arithmetic at the honest unit (events, not strikes):**
+   one-sided sign test at alpha 0.05 -- n=14: reject at k>=11, power 22% vs 65/35, 52% vs 75/25; n=26: reject at k>=18, power 41% vs 65/35, 82% vs 75/25; n=40: reject at k>=26, power 57% vs 65/35, 95% vs 75/25. So 14 events cannot
+   power a directional reading against anything but a gross bias; ~26
+   events (12 more weeks, ~2027-01-08) reach 41% power against 65/35
+   and 82% against 75/25; 40 events (~2027-04-16) 57% and 95%. A calibration (atlas-style
+   implied-vs-realized by strike distance) pools strikes within an event
+   and must not count them as independent draws (the 08-29 lesson).
+   Probe SQL: `ev = close_time::date, obs = close - 5 days; first print
+   = arg_min(value, knowable_at) per obs_date; mismatch = (result='yes')
+   <> (first >= floor_strike)`. NEXT for this item: write the pre-reg
+   when ~26 events have quotes, with a fixed model (seasonal AR on prior
+   first prints, vintage-honest) and the market-implied CDF at a fixed
+   T-before-close; until then it accumulates on its own.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
    splits leak adjacent-day regimes). New registration, not a rescue.
 4. **Cross-venue arb** — measurement framing; expect fee-wall null
