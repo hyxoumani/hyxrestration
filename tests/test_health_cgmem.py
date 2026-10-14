@@ -110,7 +110,9 @@ def test_only_busy_units_are_read(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         health,
         "read_cgmem",
-        lambda u, cg, root=None: read.append((u, cg)) or health.CgMem(u, 1, 1, 1, 0, 0),
+        lambda u, cg, root=None, uptime_s=None: (
+            read.append((u, cg)) or health.CgMem(u, 1, 1, 1, 0, 0)
+        ),
     )
     out = health.live_cgmem(list(props))
     assert read == [("a.service", "/a"), ("c.service", "/c")]
@@ -152,7 +154,7 @@ def test_sock_throttled_is_read_and_a_zero_is_a_measurement() -> None:
     run whose sockets were clamped 441 times."""
     c = health.parse_cgmem("hyxlab-stream.service", STAT, EVENTS, "2147549184", "2147483648")
     assert c.sock_throttled == 0
-    assert health.judge_cgmem(c).detail.endswith("oom_kill 0, sock_throttled 0")
+    assert "oom_kill 0, sock_throttled 0, " in health.judge_cgmem(c).detail
 
 
 def test_a_nonzero_sock_throttled_is_worded_as_reclaim_with_a_cost() -> None:
@@ -172,3 +174,90 @@ def test_a_kernel_without_the_key_reads_unknown_not_zero() -> None:
     c = health.parse_cgmem("u", STAT, "max 0\noom_kill 0\n", "1", "2")
     assert c.sock_throttled is None
     assert "sock_throttled ?" in health.judge_cgmem(c).detail
+
+
+PRESSURE = (
+    "some avg10=0.00 avg60=0.00 avg300=0.00 total=141016\n"
+    "full avg10=0.00 avg60=0.00 avg300=0.00 total=140367\n"
+)
+
+
+def test_psi_full_stall_is_read_and_shared_over_the_uptime() -> None:
+    """`max` reclaim events are a count; `memory.pressure` is their COST.
+    Measured 2026-10-14 15:07Z: the stream's 43,761 events (all at boot,
+    flat 90s later at 833M file cache of 2G) were 0.14s of full stall over
+    36 minutes. The line says the seconds and the share, so a reader can
+    tell a boot burst from a daemon living under pressure."""
+    c = health.parse_cgmem(
+        "hyxlab-stream.service", STAT, EVENTS, "2147549184", "2147483648", PRESSURE, 2160.0
+    )
+    assert c.stall_full_us == 140367 and c.uptime_s == 2160.0
+    assert health.judge_cgmem(c).detail.endswith("memory stall 0.1s (0.01% of 0.6h)")
+
+
+def test_a_stall_over_an_unknown_uptime_prints_no_share() -> None:
+    c = health.parse_cgmem("u", STAT, EVENTS, "1", "2", PRESSURE, None)
+    d = health.judge_cgmem(c).detail
+    assert d.endswith("memory stall 0.1s") and "%" not in d
+
+
+def test_a_missing_pressure_file_reads_unknown_not_zero() -> None:
+    c = health.parse_cgmem("u", STAT, EVENTS, "1", "2", None, 10.0)
+    assert c.stall_full_us is None
+    assert health.judge_cgmem(c).detail.endswith("memory stall ?")
+
+
+def test_read_cgmem_reads_pressure_and_carries_the_uptime(tmp_path: Path) -> None:
+    d = tmp_path / "x.service"
+    d.mkdir()
+    (d / "memory.events").write_text(EVENTS)
+    (d / "memory.pressure").write_text(PRESSURE)
+    c = health.read_cgmem("x.service", "/x.service", root=tmp_path, uptime_s=5.0)
+    assert c is not None and c.stall_full_us == 140367 and c.uptime_s == 5.0
+
+
+def test_live_cgmem_derives_the_uptime_from_active_enter(monkeypatch: pytest.MonkeyPatch) -> None:
+    props = {
+        "a.service": {"ActiveState": "active", "ControlGroup": "/a", "ActiveEnterTimestamp": "@100"}
+    }
+    seen: dict = {}
+    monkeypatch.setattr(health, "show", lambda u: props[u])
+    monkeypatch.setattr(health._time, "time", lambda: 160.0)
+    monkeypatch.setattr(
+        health,
+        "read_cgmem",
+        lambda u, cg, root=None, uptime_s=None: (
+            seen.update(up=uptime_s) or health.CgMem(u, 1, 1, 1, 0, 0)
+        ),
+    )
+    health.live_cgmem(["a.service"])
+    assert seen["up"] == 60.0
+
+
+def test_a_running_oneshot_takes_its_base_from_the_main_process_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A oneshot is `activating` for its whole run and never enters `active`,
+    so `ActiveEnterTimestamp` is empty for exactly the units (sweep,
+    poly-sweep) whose stall share matters most -- poly-sweep read 28.0s with
+    no share on the first smoke run."""
+    props = {
+        "s.service": {
+            "ActiveState": "activating",
+            "ControlGroup": "/s",
+            "ActiveEnterTimestamp": "",
+            "ExecMainStartTimestamp": "@40",
+        }
+    }
+    seen: dict = {}
+    monkeypatch.setattr(health, "show", lambda u: props[u])
+    monkeypatch.setattr(health._time, "time", lambda: 100.0)
+    monkeypatch.setattr(
+        health,
+        "read_cgmem",
+        lambda u, cg, root=None, uptime_s=None: (
+            seen.update(up=uptime_s) or health.CgMem(u, 1, 1, 1, 0, 0)
+        ),
+    )
+    health.live_cgmem(["s.service"])
+    assert seen["up"] == 60.0

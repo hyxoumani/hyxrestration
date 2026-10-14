@@ -90,7 +90,8 @@ def test_missing_counters_print_as_unknown_and_never_fail(tmp_path):
     p = _run(str(d))
     assert p.returncode == 0, "a reporter must not turn a clean run into a failed one"
     (line,) = p.stdout.splitlines()
-    assert " peak=? " in line and " cap=? " in line and line.endswith(" events=?"), line
+    assert " peak=? " in line and " cap=? " in line and " events=? " in line, line
+    assert line.endswith(" psi_full_us=?"), line
     # `?` is a stated unknown, never a fabricated zero (ops.md: an unmeasured
     # hold is None, never 0.0).
     assert "=0" not in line, line
@@ -105,3 +106,28 @@ def test_default_resolves_the_callers_own_cgroup():
     assert line.startswith("[cgmem] dir=/sys/fs/cgroup/"), line
     assert " events=?" not in line, f"own cgroup has no memory.events: {line}"
     assert " oom_kill=" in line and " peak=" in line, line
+
+
+PRESSURE = (
+    "some avg10=0.00 avg60=0.00 avg300=0.00 total=141016\n"
+    "full avg10=0.00 avg60=0.00 avg300=0.00 total=140367\n"
+)
+
+
+def test_psi_full_stall_reaches_the_line(tmp_path):
+    """`max` counts reclaim events; `memory.pressure` says what they cost
+    (stream, 2026-10-14: 43,761 events, 0.14s of full stall). The stop line
+    is the only reader after the cgroup is gone, so it carries the total."""
+    d = _fake(
+        tmp_path,
+        memory_events=EVENTS,
+        memory_pressure=PRESSURE,
+        memory_peak="1\n",
+        memory_max="2\n",
+    )
+    line = _run(str(d)).stdout
+    assert line.rstrip().endswith(" psi_full_us=140367"), line
+    d2 = _fake(
+        tmp_path / "b", memory_events=EVENTS, memory_pressure=PRESSURE.replace("140367", "7")
+    )
+    assert _run(str(d2)).stdout.rstrip().endswith(" psi_full_us=7")

@@ -402,3 +402,19 @@
   `WARNING sock_throttled` line in the period it lands); a nonzero
   increment is the cue to read that period's GAP lines and stall ledger
   before calling the cap sized right.
+- `max` in `memory.events` is a COUNT of reclaim events, and the count
+  says nothing about what they cost. The cost is PSI, `memory.pressure`
+  `full ... total=` (microseconds every task in the cgroup was stalled
+  on memory). Measured 2026-10-14 15:07Z: the fresh stream daemon's
+  43,761 `max` events were ALL accrued at boot (flat across 90s with
+  file cache at 833M of a 2G cap) and cost 0.14s of stall over 36 min;
+  poly-sweep's 5.18M events cost 27.9s over 10.8h (0.07%). Read the
+  digest's `memory stall Xs (Y% of Zh)` and the stop line's
+  `psi_full_us` -- a cap is costing something only when that share is
+  material, whatever the event count says. A running oneshot never
+  enters `active`, so its base is `ExecMainStartTimestamp`, not
+  `ActiveEnterTimestamp`.
+- Waiting on a oneshot unit from a script: poll `ExecMainExitTimestamp`
+  (or the state set {inactive, failed}), never `ActiveState=inactive`
+  alone -- a oneshot that exits non-zero lands in `failed`, and the
+  11:20Z 10-14 waiter sat 50 min on a 28s QA run that way.

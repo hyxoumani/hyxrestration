@@ -101,6 +101,7 @@ import json
 import re
 import subprocess
 import sys
+import time as _time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -122,6 +123,7 @@ PROPS = (
     "NRestarts",
     "ExecMainStatus",
     "ExecMainStartTimestamp",
+    "ActiveEnterTimestamp",
     "ExecMainExitTimestamp",
     "LastTriggerUSec",
     "NextElapseUSecRealtime",
@@ -353,6 +355,17 @@ class CgMem:
     #: stats line (`SockThrottleWatch`); measured 2026-10-14: 441 on the
     #: stream's 10-10..10-14 run, 0 on the next, read by nobody until now.
     sock_throttled: int | None = None
+    #: `memory.pressure` `full ... total=` -- microseconds EVERY runnable task
+    #: in the cgroup spent stalled on memory (PSI). This is the COST of the
+    #: reclaim that `max_events` only counts: measured 2026-10-14 15:07Z, the
+    #: stream's 43,761 `max` events (all accrued at boot; flat 90s later with
+    #: file cache at 833M of 2G) cost 0.14s of full stall over a 36-minute
+    #: run, and poly-sweep's 5.18M events cost 27.9s over 10.8h (0.07%). A
+    #: count of events says reclaim HAPPENED; this says what it took.
+    stall_full_us: int | None = None
+    #: Seconds since the unit entered `active` (systemd's clock), the base
+    #: the stall is a share of. None when the manager did not say.
+    uptime_s: float | None = None
 
 
 def _int_or_none(text: str | None) -> int | None:
@@ -368,10 +381,13 @@ def parse_cgmem(
     events_text: str | None,
     peak_text: str | None,
     max_text: str | None,
+    pressure_text: str | None = None,
+    uptime_s: float | None = None,
 ) -> CgMem:
-    """Pure: the four files' contents -> counters. `memory.stat` and
+    """Pure: the files' contents -> counters. `memory.stat` and
     `memory.events` are `name value` lines; `memory.peak` and `memory.max`
-    are one integer, or the word `max` for no cap."""
+    are one integer, or the word `max` for no cap; `memory.pressure` is
+    `some avg10=.. avg60=.. avg300=.. total=<us>` then the same for `full`."""
 
     def table(text: str | None) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -391,10 +407,25 @@ def parse_cgmem(
         max_events=events.get("max"),
         oom_kill=events.get("oom_kill"),
         sock_throttled=events.get("sock_throttled"),
+        stall_full_us=_psi_full_total(pressure_text),
+        uptime_s=uptime_s,
     )
 
 
-def read_cgmem(unit: str, control_group: str, root: Path = CGROUP_ROOT) -> CgMem | None:
+def _psi_full_total(text: str | None) -> int | None:
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if parts and parts[0] == "full":
+            for kv in parts[1:]:
+                k, _, v = kv.partition("=")
+                if k == "total" and v.isdigit():
+                    return int(v)
+    return None
+
+
+def read_cgmem(
+    unit: str, control_group: str, root: Path = CGROUP_ROOT, uptime_s: float | None = None
+) -> CgMem | None:
     """Read one unit's cgroup under `root`; None if the directory is gone
     (the unit stopped between `show` and this read -- normal, not a fault)."""
     d = root / control_group.lstrip("/")
@@ -406,6 +437,8 @@ def read_cgmem(unit: str, control_group: str, root: Path = CGROUP_ROOT) -> CgMem
         _read(d / "memory.events"),
         _read(d / "memory.peak"),
         _read(d / "memory.max"),
+        _read(d / "memory.pressure"),
+        uptime_s,
     )
 
 
@@ -413,6 +446,19 @@ def _mib(n: int | None) -> str:
     if n is None:
         return "?"
     return f"{n / 2**30:.1f}G" if n >= 2**30 else f"{n // 2**20}M"
+
+
+def _stall_words(stall_us: int | None, uptime_s: float | None) -> str:
+    """PSI full stall as seconds and, when the uptime is known, as a share
+    of it -- the number that says whether `N reclaim events` cost anything.
+    `?` for an unmeasured stall; a share is never printed over an unknown
+    base (0.14s over `?` is not 0.00%)."""
+    if stall_us is None:
+        return "memory stall ?"
+    out = f"memory stall {stall_us / 1e6:.1f}s"
+    if uptime_s is not None and uptime_s > 0:
+        out += f" ({100.0 * stall_us / 1e6 / uptime_s:.2f}% of {uptime_s / 3600:.1f}h)"
+    return out
 
 
 def judge_cgmem(c: CgMem) -> UnitHealth:
@@ -433,7 +479,7 @@ def judge_cgmem(c: CgMem) -> UnitHealth:
         sock += " (reclaim clamped its sockets)"
     detail = (
         f"anon {_mib(c.anon)}, {shape}, oom_kill {c.oom_kill if c.oom_kill is not None else '?'}"
-        f", sock_throttled {sock}"
+        f", sock_throttled {sock}, {_stall_words(c.stall_full_us, c.uptime_s)}"
     )
     state = "OOM-KILLED" if c.oom_kill else "CGMEM"
     return UnitHealth(c.unit, state, detail)
@@ -448,7 +494,14 @@ def live_cgmem(units: list[str] | None = None) -> list[CgMem]:
         props = show(unit)
         if props.get("ActiveState") not in BUSY:
             continue
-        c = read_cgmem(unit, props.get("ControlGroup", ""))
+        # A daemon's base is when it became active; a RUNNING oneshot never
+        # enters `active` (it is `activating` for its whole run, so that
+        # field is empty) and its base is the main process's start.
+        since = _epoch(props.get("ActiveEnterTimestamp", "")) or _epoch(
+            props.get("ExecMainStartTimestamp", "")
+        )
+        uptime = None if since is None else max(0.0, _time.time() - since)
+        c = read_cgmem(unit, props.get("ControlGroup", ""), uptime_s=uptime)
         if c is not None:
             out.append(c)
     return out

@@ -37,5 +37,17 @@ else
     events="events=?"
 fi
 
-printf '[cgmem] dir=%s peak=%s cap=%s %s\n' \
-    "$dir" "$(read_one memory.peak)" "$(read_one memory.max)" "$events"
+# `memory.pressure` (PSI): microseconds every task in the cgroup spent
+# stalled on memory, i.e. what the `max` reclaim events above COST. Measured
+# 2026-10-14: stream 43,761 events = 0.14s of stall; poly-sweep 5.18M events
+# = 27.9s over 10.8h. The share of wall is the reader's to compute against
+# systemd's own `Consumed ... wall clock time` line, printed beside this.
+psi="?"
+if [ -r "$dir/memory.pressure" ]; then
+    psi=$(awk '$1=="full"{for(i=2;i<=NF;i++){split($i,kv,"=");if(kv[1]=="total")print kv[2]}}' \
+        "$dir/memory.pressure")
+    [ -n "$psi" ] || psi="?"
+fi
+
+printf '[cgmem] dir=%s peak=%s cap=%s %s psi_full_us=%s\n' \
+    "$dir" "$(read_one memory.peak)" "$(read_one memory.max)" "$events" "$psi"
