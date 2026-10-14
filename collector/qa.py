@@ -2832,16 +2832,31 @@ def qa_stream_stalls(
     # The window the WITNESS may testify about: never earlier than the epoch,
     # so a restart (or a promote that has not restarted the daemon yet) cannot
     # make yesterday's journalled failures indict today's producer.
+    #
+    # THE EPOCH BOUNDS THE LIVENESS ARM ONLY, NEVER THE REPORT. Until
+    # 2026-10-14 the episode list itself was cut at the epoch, and a restart
+    # is exactly what writes the records this check exists to read: a
+    # shutdown `handoff` is written at SIGTERM and the next boot's `armed`
+    # record lands seconds later, so every handoff in this ledger's history
+    # sat BEFORE the epoch and the "rescued, not lost" clause below was
+    # unreachable in production (the test that covered it fed a ledger with
+    # no `armed` record at all). Measured 2026-10-14 10:00Z: the 03:06Z
+    # poweroff handoff and a 03:33Z episode at 95% of SPILL_CAP, both before
+    # the 09:05Z promote restart, and the run printed "2 episode(s) in 24h"
+    # (mistakes #120). The producer question is "did the daemon that is
+    # running now write what it journalled", and that is what the epoch is
+    # for; what the archive lost is a fact about the archive, whichever
+    # incarnation lost it, and is reported over the whole window.
     epoch = stall_epoch(ledger)
     since = now - timedelta(hours=hours)
     if epoch is not None and epoch > since:
         since = epoch
-        episodes = [e for e in episodes if datetime.fromisoformat(e["at"]) >= epoch]
+    recent = [e for e in episodes if epoch is None or datetime.fromisoformat(e["at"]) >= epoch]
     witness = (
         journal_stream_flush_fails(since, now) if journal_fails is _QUERY_JOURNAL else journal_fails
     )
 
-    if not episodes:
+    if not recent and (witness or not episodes):
         if witness:
             check(
                 name,

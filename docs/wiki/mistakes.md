@@ -3090,6 +3090,30 @@ Format: what happened → root cause → error type → prevention tier
     in the units the outage is measured in: a window measured in flushes
     is measured in holds the moment a hold contains the flush.**
 
+120. **2026-10-14 -- a reader's window that starts at the event the records
+    it exists to read are written beside can never contain them.**
+    `qa.qa_stream_stalls` cut its episode list at the ledger's newest
+    `armed` record (the daemon's start), so that journalled flush failures
+    from before a promote restart could not indict the daemon running now
+    -- a liveness argument, applied to the report. But a shutdown
+    `handoff` is written at SIGTERM and the restart's `armed` lands
+    seconds later, so every handoff this ledger has ever held sat before
+    the epoch, and the check's "rescued, not lost" clause -- the whole
+    reason `handoff` is a field -- had never printed in production. The
+    test that covered it (`test_a_shutdown_handoff_is_reported_but_never_
+    failed_on`) fed a ledger with no `armed` record at all, which is a
+    shape production cannot produce. Measured 2026-10-14 10:00Z, the first
+    QA after the 09:05Z promote restart: `2 episode(s) in 24h; longest
+    57s` over a day that held the 02:48Z stall (hold >= 646s, 393,435 rows
+    at 98% of SPILL_CAP, never closed: the poweroff) and the 03:33Z one
+    (>= 600s, 95% of cap). Re-run with the fix: `37 episode(s) in 24h;
+    longest 1090s ... 2 over 600s`. Fix: the epoch bounds the LIVENESS
+    arm (journalled fails vs episodes since the daemon armed) and nothing
+    else; what the archive lost is reported over the whole window,
+    whichever incarnation lost it. **Before cutting a window at a
+    boundary, list the record kinds written AT that boundary -- they are
+    the ones the cut removes -- and make the fixture carry the boundary.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

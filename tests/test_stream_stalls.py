@@ -687,6 +687,53 @@ def test_a_shutdown_handoff_is_reported_but_never_failed_on(tmp_path):
     assert "rescued, not lost" in out
 
 
+def _armed(at: datetime) -> dict:
+    return {"at": at.isoformat(), "state": "armed"}
+
+
+def test_a_handoff_the_next_boot_armed_past_is_still_reported(tmp_path):
+    """THE PRODUCTION SHAPE, which the test above does not have: a handoff is
+    written at SIGTERM and the restart's `armed` record lands seconds later,
+    so every handoff ever written sits BEFORE the epoch. Until 2026-10-14
+    the episode list was cut at the epoch and the "rescued, not lost" clause
+    had never printed in production (mistakes #120)."""
+    path = _ledger(
+        tmp_path,
+        _ep(T0, 19.0, state="open", spilled=7094, handoff=7094),
+        _armed(T0 + timedelta(seconds=30)),
+    )
+    failed, skipped, out = _run_check(path=path, journal_fails=0, now=NOW)
+    assert not failed and not skipped, out
+    assert "1 shutdown handoff(s) carrying 7094 row(s)" in out
+
+
+def test_a_capped_episode_before_a_restart_still_fails(tmp_path):
+    """What the archive lost is a fact about the archive, whichever daemon
+    incarnation lost it: a restart must not launder a cap spill."""
+    path = _ledger(
+        tmp_path,
+        _ep(T0, 3600.0, spilled=34_691),
+        _armed(T0 + timedelta(hours=1, minutes=1)),
+    )
+    failed, _, out = _run_check(path=path, journal_fails=0, now=NOW)
+    assert failed == {"streamd flush stalls stay inside the buffer"}, out
+    assert "moved 34691 row(s)" in out
+
+
+def test_the_epoch_still_bounds_the_liveness_arm(tmp_path):
+    """Journalled failures since the epoch with no episode since the epoch
+    is INERT, even when an older incarnation's episodes are in the window:
+    the producer question is about the daemon running NOW."""
+    path = _ledger(
+        tmp_path,
+        _ep(T0, 19.0),
+        _armed(T0 + timedelta(minutes=5)),
+    )
+    failed, _, out = _run_check(path=path, journal_fails=4, now=NOW)
+    assert failed == {"streamd flush stalls stay inside the buffer"}, out
+    assert "PRODUCER INERT" in out
+
+
 def test_a_capped_episode_a_restart_interrupted_still_fails(tmp_path):
     """`handoff` is SUBTRACTED from `spilled`, not substituted for it: an
     episode that hit SPILL_CAP and was then interrupted by a restart is still
