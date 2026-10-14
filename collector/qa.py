@@ -1976,6 +1976,7 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
 
     qa_tape_coverage(conn, now)
     qa_poly_tail_absorbed(conn, now)
+    qa_econ_resolution(conn, now)
     return pull_age_d
 
 
@@ -2313,6 +2314,94 @@ def qa_signals_fetch(
             + tail
         ),
     )
+
+
+# An econ market and the vintage series it settles on, with the offset from
+# the market's close date back to the observation date the print reports.
+# KXJOBLESSCLAIMS closes Thursday 12:25Z, five minutes before the 12:30Z
+# print of the week ending the previous Saturday (close - 5 days).
+ECON_RESOLUTION_PAIRS: tuple[tuple[str, str, int], ...] = (("KXJOBLESSCLAIMS", "ICSA", 5),)
+# A first print is "captured" when its earliest vintage landed within this
+# many days of the market's close. The next revision lands 7 days later, so
+# anything inside this window IS the first print; the 9 events that settled
+# before the pull existed carry only the revised value and are excluded by
+# it (4 of those 9 would otherwise read as one crossed strike each).
+ECON_FIRST_PRINT_WINDOW_D = 6
+
+
+def qa_econ_resolution(conn, now: datetime) -> None:
+    """Does the market settle on the FIRST print, as the vintage table holds it?
+
+    Measured 2026-10-14 on the 10-13 backup (strategy-verdicts item 2): for
+    every KXJOBLESSCLAIMS event whose first ICSA print the pull captured, the
+    result equals `first_print >= floor_strike` on all 143 strikes. The 9
+    pre-pull events, where only the REVISED value exists, show 4 with
+    exactly one crossed strike -- the signature of an upward revision
+    through a strike (13 of 13 captured first prints were revised up 1-3k
+    the following week). So a latest-vintage join misgrades ~4 of 9 events,
+    and the pre-registration queued for ~26 quoted events rests on this
+    invariant holding. It fails on three things nothing else here watches:
+    Kalshi changing its settlement source, the strike parse breaking, and
+    the pull capturing a revised value as the first one.
+
+    Per pair, the events reach the verdict only when their first print was
+    captured; none captured is UNVERIFIED (watch), never a pass.
+    """
+    for series, series_id, offset_d in ECON_RESOLUTION_PAIRS:
+        name = f"econ market settles on the first print ({series} vs {series_id})"
+        rows = conn.execute(
+            f"""
+            WITH ev AS (
+                SELECT CAST(close_time AS DATE) AS d,
+                       CAST(CAST(close_time AS DATE) - INTERVAL {offset_d:d} DAY AS DATE) AS obs
+                FROM markets
+                WHERE venue = 'kalshi' AND series = ? AND result IN ('yes', 'no')
+                      AND strike_type = 'greater_or_equal'
+                GROUP BY 1, 2
+            ),
+            fv AS (
+                SELECT obs_date, arg_min(value, knowable_at) AS v0, min(knowable_at) AS k0
+                FROM econ_vintages WHERE series_id = ? GROUP BY 1
+            )
+            SELECT ev.d, fv.v0,
+                   (SELECT count(*) FROM markets m
+                     WHERE m.venue = 'kalshi' AND m.series = ? AND m.result IN ('yes', 'no')
+                       AND m.strike_type = 'greater_or_equal'
+                       AND CAST(m.close_time AS DATE) = ev.d) AS strikes,
+                   (SELECT count(*) FROM markets m
+                     WHERE m.venue = 'kalshi' AND m.series = ? AND m.result IN ('yes', 'no')
+                       AND m.strike_type = 'greater_or_equal'
+                       AND CAST(m.close_time AS DATE) = ev.d
+                       AND ((m.result = 'yes') <> (fv.v0 >= m.floor_strike))) AS mism
+            FROM ev JOIN fv ON fv.obs_date = ev.obs
+            WHERE CAST(fv.k0 AS DATE) <= ev.d + INTERVAL {ECON_FIRST_PRINT_WINDOW_D:d} DAY
+            ORDER BY ev.d
+            """,
+            [series, series_id, series, series],
+        ).fetchall()
+        if not rows:
+            # UNMEASURED, so a plain print (see `watch`): no event reached a
+            # verdict, and "did not run" is the true thing to say.
+            print(
+                f"WATCH {name} — UNVERIFIED: no settled event whose first print the"
+                f" vintage pull captured (within {ECON_FIRST_PRINT_WINDOW_D}d of the"
+                " close) -- nothing to hold the rule to yet",
+                flush=True,
+            )
+            continue
+        strikes = sum(r[2] for r in rows)
+        bad = [(r[0], r[1], r[3]) for r in rows if r[3]]
+        check(
+            name,
+            not bad,
+            f"{len(rows)} event(s) / {strikes} strike(s) verified against the first print"
+            + (
+                "; MISMATCH on "
+                + ", ".join(f"{d:%Y-%m-%d} (print {v:g}, {m} strike(s))" for d, v, m in bad)
+                if bad
+                else ", 0 mismatches"
+            ),
+        )
 
 
 def qa_tape_coverage(conn, now: datetime) -> None:

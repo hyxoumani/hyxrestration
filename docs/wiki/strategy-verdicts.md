@@ -363,7 +363,7 @@ structure — see [venues](venues.md)).
    spreads 6-7c, volumes 1-3.7k per strike. **Resolution rule verified
    against the vintage table:** for every one of the 14 events whose
    FIRST print `econ_vintages` captured (ICSA, pull started 07-12), the
-   result equals `first_print >= floor_strike` on all 143 strikes, 0
+   result equals `first_print >= floor_strike` on all 146 strikes, 0
    mismatches. For the 9 events before the pull existed, the table holds
    only the REVISED value, and 4 of those 9 events show exactly one
    crossed strike each -- the signature of an upward revision through a
@@ -385,7 +385,11 @@ structure — see [venues](venues.md)).
    and must not count them as independent draws (the 08-29 lesson).
    Probe SQL: `ev = close_time::date, obs = close - 5 days; first print
    = arg_min(value, knowable_at) per obs_date; mismatch = (result='yes')
-   <> (first >= floor_strike)`. NEXT for this item: write the pre-reg
+   <> (first >= floor_strike)`. The rule is now a standing QA check,
+   `econ market settles on the first print (KXJOBLESSCLAIMS vs ICSA)`
+   (`qa.qa_econ_resolution`, 2026-10-14): events whose first print the
+   pull captured within 6d of the close, mismatches FAIL and name the
+   event, none captured is an UNVERIFIED watch. NEXT for this item: write the pre-reg
    when ~26 events have quotes, with a fixed model (seasonal AR on prior
    first prints, vintage-honest) and the market-implied CDF at a fixed
    T-before-close; until then it accumulates on its own.
