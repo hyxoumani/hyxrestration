@@ -385,7 +385,14 @@ structure — see [venues](venues.md)).
    and must not count them as independent draws (the 08-29 lesson).
    Probe SQL: `ev = close_time::date, obs = close - 5 days; first print
    = arg_min(value, knowable_at) per obs_date; mismatch = (result='yes')
-   <> (first >= floor_strike)`. The rule is now a standing QA check,
+   <> (first >= floor_strike)`. Continuing claims (`KXCONTCLAIMS`, 7 weekly events
+   since 08-27, 11 strikes each) is NOT yet a second pair: the archive
+   holds ZERO snapshots for it (not on the collector's watchlist), `CCSA`
+   is not in `alfred.SERIES`, and Kalshi's strike field changed units
+   between events (08-27: 1.75-1.85, i.e. millions; from 09-03:
+   1740-1840, thousands) -- a pair would need unit normalisation and a
+   watchlist/pull change, both of which start a new comparability series.
+   The rule is now a standing QA check,
    `econ market settles on the first print (KXJOBLESSCLAIMS vs ICSA)`
    (`qa.qa_econ_resolution`, 2026-10-14): events whose first print the
    pull captured within 6d of the close, mismatches FAIL and name the

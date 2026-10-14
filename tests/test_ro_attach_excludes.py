@@ -53,14 +53,20 @@ _WRITER = textwrap.dedent(
     i = 0
     while time.time() < end:
         i += 1
-        # streamd's exact pattern: open read-write, write, close.
+        # streamd's exact pattern: open read-write, write, close. An attempt
+        # is a SPAN, stamped at both ends: under full-suite load (2026-10-14,
+        # sweep + poly-sweep running) an open that began before the holder's
+        # close and was refused finished AFTER it, and a single end-stamp
+        # filed that refusal under "after the close" -- a flaky red against a
+        # premise that held. The reader classifies by the whole interval.
+        began = time.time()
         try:
             with duck_connect(path) as conn:
                 conn.execute("insert into t values (?)", [i])
             ok = True
         except duckdb.Error:
             ok = False
-        print(json.dumps({{"at": time.time(), "ok": ok}}), flush=True)
+        print(json.dumps({{"began": began, "at": time.time(), "ok": ok}}), flush=True)
         time.sleep(cadence)
     """
 )
@@ -76,10 +82,46 @@ def probe_db(tmp_path):
 
 def _writer(repo: Path, db: Path, runtime: float) -> subprocess.Popen:
     return subprocess.Popen(
-        [sys.executable, "-u", "-c", _WRITER.format(repo=str(repo)), str(db), str(CADENCE_S), str(runtime)],
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            _WRITER.format(repo=str(repo)),
+            str(db),
+            str(CADENCE_S),
+            str(runtime),
+        ],
         stdout=subprocess.PIPE,
         text=True,
     )
+
+
+def _classify(rows, opened, queried, closed):
+    """Attempts by window. An attempt belongs to a window only if it lies
+    WHOLLY inside it; one that straddles an edge (began on one side, finished
+    on the other) proves nothing about either side and is excluded from both.
+    Classifying by the end stamp alone filed a refusal that began before the
+    close under "after the close" (flaky red, 2026-10-14, full-suite load)."""
+    before = [r for r in rows if r["at"] < opened]
+    idle = [r for r in rows if opened < r["began"] and r["at"] < queried]
+    busy = [r for r in rows if queried < r["began"] and r["at"] < closed]
+    after = [r for r in rows if r["began"] > closed]
+    return before, idle, busy, after
+
+
+def test_an_attempt_straddling_the_close_proves_nothing_about_either_side():
+    """The refusal began at 9.9 (holder still open) and finished at 10.1
+    (after the close). By its end stamp it is an `after` failure; by its
+    interval it is neither side's evidence."""
+    rows = [
+        {"began": 9.0, "at": 9.05, "ok": False},
+        {"began": 9.9, "at": 10.1, "ok": False},
+        {"began": 10.2, "at": 10.25, "ok": True},
+    ]
+    before, idle, busy, after = _classify(rows, opened=1.0, queried=2.0, closed=10.0)
+    assert busy == [rows[0]]
+    assert after == [rows[2]]
+    assert rows[1] not in before + idle + busy + after
 
 
 def test_a_read_only_attach_excludes_the_writer_from_the_open_until_the_close(probe_db):
@@ -106,10 +148,7 @@ def test_a_read_only_attach_excludes_the_writer_from_the_open_until_the_close(pr
         out, _ = proc.communicate(timeout=30)
 
     rows = [json.loads(line) for line in out.splitlines() if line.strip()]
-    before = [r for r in rows if r["at"] < opened]
-    idle = [r for r in rows if opened < r["at"] < queried]
-    busy = [r for r in rows if queried < r["at"] < closed]
-    after = [r for r in rows if r["at"] > closed]
+    before, idle, busy, after = _classify(rows, opened, queried, closed)
 
     # Vacuity, both ends: without these the test passes against a writer that
     # never worked and against a hold that never happened.
