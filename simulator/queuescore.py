@@ -765,12 +765,22 @@ def select_markets(conn, since: datetime, top_n: int, series: list[str] | None =
     given, restrict to markets whose series prefix (before the first '-')
     is in that set — this is how a bracket targets a non-weather category
     to close the coverage gap noted in the module docstring."""
+    # The EXISTS is bounded to the venue and the window ON PURPOSE. Without
+    # the bound it is a correlated scan of the WHOLE book_events table,
+    # which the 2026-10-06 Polymarket ~1s full-book token (~580k rows/h)
+    # grows by ~14M rows/day: on 2026-10-15 the unbounded form spilled past
+    # the 16 GiB spill cap inside `select_markets` and the weather width-24
+    # bracket died (OutOfMemoryException) where the same command had held
+    # the archive 32s on 10-07. `score_market` reads deltas only inside the
+    # window anyway, so a market whose deltas all pre-date `since` was never
+    # scoreable -- the bound changes cost, not the selected set.
     sql = (
         "SELECT t.market_id FROM stream_trades t WHERE t.venue='kalshi'"
         " AND t.recv_ts > ? AND EXISTS (SELECT 1 FROM book_events b"
-        "   WHERE b.market_id = t.market_id AND b.kind='delta')"
+        "   WHERE b.venue='kalshi' AND b.market_id = t.market_id"
+        "   AND b.kind='delta' AND b.recv_ts > ?)"
     )
-    params: list = [since]
+    params: list = [since, since]
     if series:
         placeholders = ",".join("?" for _ in series)
         sql += f" AND split_part(t.market_id, '-', 1) IN ({placeholders})"

@@ -349,6 +349,44 @@ structure — see [venues](venues.md)).
    comparability fix in 0491368 (mistakes #110). The archived JSONs'
    own `direction_stability`/`prior_report` were computed before the fix
    and spliced the two families.
+   **2026-10-15 width-24 pair (`20261015T212655.json` econ,
+   `20261015T213006.json` weather), run as transient units, and the
+   weather one died first.** The unbounded `EXISTS` in
+   `queuescore.select_markets` spilled past the 16 GiB cap on the
+   book_events table the 10-06 poly flood grows ~14M rows/day
+   (mistakes #124; bounded to venue + window, red/green tested, re-run
+   clean: held 62.7s). Together the three brackets cost streamd one
+   105.5s stall episode (5 failed flushes, 0 spilled). **Weather: a third
+   independent floor null, and the first ceiling-only significance.**
+   1,434 orders / 24 markets / 15 underlyings, **0** shared with the 10-07
+   reading, 9 of 15 new against every prior. Floor (pess, the registered
+   bound): 7 over / 7 under / 1 tied, `underlying_sign_p` 0.605,
+   `not_significant`, powered (`min` 6.1e-05). Ceiling (opt): 3 over /
+   11 under, p 0.0287, `significant_under` -- the only significant
+   reading of the four, on the OPTIMISTIC bound, with `net_disagreement`
+   -1 on the floor against -28 on the ceiling (crossing 581, queue-pess
+   582, opt 669; `crossing_but_not_pess` 141 vs `pess_but_not_crossing`
+   142 -- the floor is cancellation again). Read it as: three
+   independent powered floor nulls on weather (09-16, 10-07, 10-15), and
+   one ceiling reading at alpha .05 among four per report, which the next
+   weather reading either repeats on fresh underlyings or does not --
+   it is NOT a direction verdict. Carry the three-null tally; do not
+   carry the ceiling as a lean. **Econ: 10-07's non-reproduction holds,
+   still on mostly the same events.** 5,979 orders / 24 markets / 8
+   underlyings; all four readings `not_significant` and powered
+   (floor 4 over / 4 under, `underlying_sign_p` 0.637, `min` 0.0039;
+   market tier 0.154). Crossing 249 vs queue-pess 290 / opt 345,
+   `net_disagreement` -41 on `abs_net_by_underlying` 97 (KXCPI-26SEP
+   -29, KXCPIYOY-26SEP -21, KXFED-26DEC -17 against KXCPI-26OCT +10,
+   KXPAYROLLS-26OCT +9, KXFED-26OCT +7): the SEP events lean under and
+   the OCT events lean over, which is a sign the 08-29/09-12/09-16
+   `significant_under` was those September events. 5 of 8 underlyings
+   are shared with 10-07 (4 kept sign, 1 flipped), 2 of 8 new against
+   all priors -- not the clean rollover either; that is still the Oct
+   prints rolling (~10-21 or later). A default-width 24h weather run in
+   the same pass (`20261015T212439.json`, 8 markets / 4 underlyings,
+   market tier `significant_under`, underlying tier `underpowered`) is
+   archived and structurally uninformative, per the 07-14 note.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer (SHIPPED 07-11; gate open).
    **Coverage probe (2026-10-14, read on the 10-13 backup; no edge was

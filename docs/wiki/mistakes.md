@@ -3225,6 +3225,33 @@ Format: what happened → root cause → error type → prevention tier
     by truncate-and-write -- and when a mutant passes, compute WHERE it
     landed before calling the test sound.**
 
+124. **2026-10-15 21:25Z -- the weather width-24 maker bracket died of an
+    unbounded correlated EXISTS, eight days after the same command held the
+    archive 32s.** `queuescore.select_markets` picked top-N markets by
+    print count in the window `AND EXISTS (SELECT 1 FROM book_events b
+    WHERE b.market_id = t.market_id AND b.kind='delta')` -- no venue, no
+    `recv_ts` bound. That is a scan of the WHOLE `book_events` table,
+    correlated per candidate, and the table's growth is owned by nobody
+    on this side: since 2026-10-06 one Polymarket token pair pushes a
+    full ~80-level book every ~1s (#112, ~580k rows/h), so the table
+    gains ~14M rows a day the weather bracket never reads. On 10-07 the
+    unbounded form cost 32s; on 10-15 it spilled past the 16 GiB spill
+    cap and raised `OutOfMemoryException` inside `select_markets`, the
+    transient unit exited 1 at its 4G cap, and the other two brackets run
+    in the same minutes cost `collector.streamd` a 105.5s stall episode
+    (5 failed flushes, `hold_lower_s` 60, 58,523 rows pending, 0 spilled).
+    The scoring loop one function down had always bounded its delta reads
+    to `venue='kalshi' AND recv_ts > since`, so the selector was admitting
+    markets the scorer could not score and paying the whole archive to do
+    it. Fix: the EXISTS carries the same venue and window bound; the
+    regression test seeds a market whose only delta pre-dates the window
+    and was red against the old query, green against the new. Rule: a
+    correlated subquery on an archive table is bounded by the same
+    predicate as the read it gates, or its cost is the archive's growth
+    rate, and the archive grows on another venue's schedule. The
+    weather-vs-econ asymmetry was the tell -- econ held 60s (3.5x 10-07)
+    and survived only because `--series` shrank the OUTER query.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

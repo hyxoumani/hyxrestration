@@ -1006,3 +1006,27 @@ def test_main_publishes_the_hold_it_takes_on_the_stream_archive(tmp_path, monkey
     assert wait["n"] == 1
     assert wait["held_n"] == 1 and wait["held_unknown_n"] == 0
     assert isinstance(wait["held_s_max"], float) and wait["held_s_max"] >= 0.0
+
+
+def test_select_markets_ignores_deltas_outside_the_window(tmp_path):
+    """A market whose only L2 deltas pre-date `since` cannot be scored
+    (score_market reads deltas inside the window only), so it must not be
+    SELECTED either -- and the EXISTS that selects it must carry the window
+    bound, or it scans the whole archive (2026-10-15: the unbounded form
+    spilled past 16 GiB and killed the weather width-24 bracket)."""
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    _tape_market(store, "KXHIGHNY-26JUL13-B84.5", 10)
+    # prints inside the window, but the only delta is an hour before it
+    stale = "KXHIGHCHI-26JUL13-B70.5"
+    store.append_events(_delta(stale, 50, T0 - timedelta(hours=1), "yes", "0.1000", "1.00"))
+    for i in range(3):
+        store.append_trades(
+            _trade(stale, 60 + i, T0 + timedelta(seconds=10 + i), "0.4000", "5.00", "no")
+        )
+    store.flush()
+
+    conn = duckdb.connect(str(db), read_only=True)
+    top = select_markets(conn, T0 - timedelta(minutes=1), top_n=8)
+    conn.close()
+    assert top == ["KXHIGHNY-26JUL13-B84.5"]
