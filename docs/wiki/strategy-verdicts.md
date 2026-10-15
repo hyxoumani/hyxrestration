@@ -452,7 +452,22 @@ structure — see [venues](venues.md)).
    either pair. Neither direction can touch a market that settles on
    the first print, and a feature built on CCSA prints must use the
    vintage as of the PRIOR week, which the two-dimensional table gives
-   it. NEXT for this item: write the pre-reg
+   it. **Boundary semantics verified live on both pairs (2026-10-15):**
+   `greater_or_equal` is INCLUSIVE in settlement practice, which is the
+   one case a `>` vs `>=` slip in the probe or the check would misgrade.
+   ICSA prints land on a 5k strike about one event in five (4 of 23
+   events; prints are 1k-granular) and the only CAPTURED one, 07-09
+   (first print 215,000, strike 215000), settled `yes`; today's CCSA
+   event settled T1710 `yes` on a first print of exactly 1,710,000. The
+   three pre-pull ICSA equality rows (05-21 210k `no`, 06-04 225k
+   `yes`, 06-11 230k `no`) are REVISED values sitting on a strike, i.e.
+   two of the four crossed-strike events named above -- an upward
+   revision onto the strike from a first print below it reads as a
+   `no` at equality, which is the latest-vintage misgrade, not a
+   boundary exception. The QA check's `>=` is the right comparison on
+   both pairs, and the pre-reg's model must score the strike-equality
+   outcome as `yes` for the ladder's `floor_strike`.
+   NEXT for this item: write the pre-reg
    when ~26 events have quotes, with a fixed model (seasonal AR on prior
    first prints, vintage-honest) and the market-implied CDF at a fixed
    T-before-close; until then it accumulates on its own.
