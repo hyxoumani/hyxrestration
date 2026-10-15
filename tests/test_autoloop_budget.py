@@ -193,3 +193,47 @@ def test_in_place_rewrite_during_the_run_does_not_break_the_launcher(root: Path)
     assert copy.read_text() == prepended, "the fake must have rewritten the running copy"
     assert proc.returncode == 0, f"rc={proc.returncode}\nstderr={proc.stderr}"
     assert "syntax error" not in proc.stderr
+
+
+UNITS_DIR = REPO / "scripts" / "systemd"
+LONG_RUN_S = 3600
+PARSED_WHOLE_LAST_LINE = 'main "$@"; exit "$?"'
+
+
+def _long_running_shell_launchers() -> list[tuple[str, Path]]:
+    """(unit name, repo path) for every ExecStart that is a shell script on a
+    unit that lives an hour or more: `Type=simple` daemons, or oneshots whose
+    `TimeoutStartSec` is at least LONG_RUN_S. Paths are mapped from whichever
+    worktree the unit names back into this repo."""
+    found = []
+    for unit in sorted(UNITS_DIR.glob("*.service")):
+        text = unit.read_text()
+        simple = re.search(r"^Type=simple$", text, re.M) is not None
+        m = re.search(r"^TimeoutStartSec=(.+)$", text, re.M)
+        long_oneshot = m is not None and _systemd_seconds(m.group(1)) >= LONG_RUN_S
+        if not (simple or long_oneshot):
+            continue
+        for exe in re.findall(r"^ExecStart=(\S+)", text, re.M):
+            if exe.endswith(".sh"):
+                rel = exe.split("/scripts/", 1)[1]
+                found.append((unit.name, REPO / "scripts" / rel))
+    return found
+
+
+def test_long_running_shell_launchers_are_parsed_whole() -> None:
+    """bash reads a script by offset as it runs (mistakes #123), so a shell
+    script that a unit keeps alive for hours must be one function called on
+    its last line with `exit` on that line -- parsed whole before anything
+    runs, and never read past. Enumerated from the unit files, so the next
+    hour-long launcher is bound the day it is wired, not the day it dies."""
+    launchers = _long_running_shell_launchers()
+    assert ("hyxlab-autoloop.service", SCRIPT) in launchers, (
+        "vacuity guard: the autoloop launcher is the measured case and must be found"
+    )
+    for unit, path in launchers:
+        lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+        assert lines[-1] == PARSED_WHOLE_LAST_LINE, (
+            f"{unit} runs {path.relative_to(REPO)} for >= {LONG_RUN_S}s; its last "
+            f"line must be {PARSED_WHOLE_LAST_LINE!r}, got {lines[-1]!r}"
+        )
+        assert re.search(r"^main\(\) \{$", path.read_text(), re.M), f"{path}: no main() body"
