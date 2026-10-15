@@ -736,6 +736,28 @@ self-match trap the ops rules name for `pkill -f`.
   sweep starts 06:10Z and the fade window opens 23:00Z, leaving 16.83h;
   the catch-up run used 14.64h of it, so a deeper abort on a heavier day
   could push a catch-up run into the live window.
+- **A healthy sweep's wall is the venue's OPEN-MARKET COUNT, not drift
+  (measured 2026-10-15 over 14 healthy runs 09-27..10-14):**
+  `wall_min = 97 + 8.4 x (markets / 1000)`, r = 0.89, residual sd 23
+  min -- 0.50 s per market, which is `CANDLES_PAUSE_S` 0.35 plus
+  ~0.15 s of request latency, times one candlesticks request per
+  market. The 12.5h budget is therefore crossed at ~77,800 markets,
+  and 10-14 swept 74,681 in 12h28m (748.4 min, +28 residual), one
+  minute inside it; 10-09..10-13 swept 59-72k in 10.3-11.3h. The count
+  is Kalshi's 15-minute/hourly crypto and index ladders -- on 10-14
+  KXSOLD/KXSOLE/KXETH/KXETHD ~7.2k each, KXHYPE 4.9k, KXBTC/KXBTCD
+  ~4.5k, KXHYPED/KXNASDAQ100U ~2.8k -- so a day the venue lists ~3k
+  more of them breaches, and the breach would be filed as a
+  `stale_budget` FAIL that keeps failing. Rate limits are NOT the
+  driver: 429 retries fell 2,701/day (10-06) to 525 (10-14) while wall
+  rose. This answers the question `BATCH_RUN_BUDGET_H`'s comment left
+  open in August (8k-budget backlog or steady state?): steady state,
+  proportional to the listing count, with ~4% headroom at the 10-14
+  count. The constant stays until a healthy breach is read -- a
+  breach IS the finding the check exists to print -- and the response
+  to one is a per-market cost or a category decision, never a
+  budget bump (the fade-window clearance has 4.3h to spare, so the
+  bump would be free and would say nothing).
 
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.

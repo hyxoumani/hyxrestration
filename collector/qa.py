@@ -419,9 +419,15 @@ FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
 #:                     — the same shape as the 08-03 step: a capacity change
 #:                     moved the worst case, not drift. 12.5 is that
 #:                     measurement plus ~0.35h. Whether 12h09m is the 8k-budget
-#:                     backlog or its steady state is UNKNOWN until subsequent
-#:                     passes complete; `qa_batch_run_budget` is what will say
-#:                     so out loud, exactly as it did last time.
+#:                     backlog or its steady state was UNKNOWN then; answered
+#:                     2026-10-15 over 14 healthy runs 09-27..10-14: wall_min =
+#:                     97 + 8.4 per 1k markets swept (0.50 s/market = the
+#:                     0.35s candles pause + latency, r 0.89), so the budget
+#:                     is a claim that Kalshi lists under ~77.8k markets in
+#:                     the swept categories; 10-14 swept 74,681 in 12h28m.
+#:                     A healthy breach means the listing count grew, and
+#:                     the answer is per-market cost, not a bigger constant
+#:                     (docs/wiki/data-pipeline.md, "OPEN-MARKET COUNT").
 #:   hyxlab-tradepass  up to 2h51m (see QA_CLEARANCE_H in the unit tests);
 #:                     4.0h allowed.
 #:
