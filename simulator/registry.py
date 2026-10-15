@@ -14,6 +14,7 @@ pair list) are wired by their dedicated runners instead.
 from __future__ import annotations
 
 from simulator.strategy import Strategy
+from strategies.econ_claims import EconClaimsRW
 from strategies.fav_long import FavoriteLongshot
 from strategies.fav_long_tight import FavLongTight
 from strategies.hylshi_fade import HylshiFade
@@ -25,6 +26,7 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "hylshi_fade": HylshiFade,
     "fav_long": FavoriteLongshot,
     "fav_long_tight": FavLongTight,
+    "econ_claims": EconClaimsRW,
     "weather_nws": WeatherNWS,
 }
 

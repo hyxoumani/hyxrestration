@@ -828,6 +828,22 @@ self-match trap the ops rules name for `pkill -f`.
   series' fetch outcome), read by `qa_signals_fetch`, which decides an
   absent sidecar against the archive rather than trusting it.
 
+- **The July 2026 focus tape has a DAILY ~11:10-11:45Z hole (measured
+  2026-10-15, read-only):** over 07-09..08-02 every day with snapshots
+  has zero collector cycles between 11:10Z and 11:40Z while the cycles
+  on either side are present (07-22: cycles at 11:05 then 11:50; 5-6 of
+  the 7 possible cycles in the neighbouring half-hours). Closed from
+  08-03 on (6/6 cycles in the window on 08-05 and 08-06), which is the
+  08-02 breadth/watchlist widening's first days. The cause is outside
+  journal retention (boots start 09-06) and is recorded as UNRESOLVED,
+  not guessed. Why it matters: the hole sits exactly on the one window
+  the econ-claims registration reads (`[close-60min, close-50min]` on
+  a 12:25Z close), so the 07-16/07-23/07-30 `KXJOBLESSCLAIMS` events are
+  quoted but NOT scorable, and the registration's sample starts 08-06.
+  A strategy that reads one fixed window a day is blind to a daily hole
+  at that window in a way a continuity check averaging over the day is
+  not -- check the window, not the day.
+
 ## Gotchas (stream)
 
 - **Box clock is ~20 s fast; NTP is OFF** (found by the 2026-07-07 stream

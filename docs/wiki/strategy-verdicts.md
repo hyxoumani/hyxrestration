@@ -467,10 +467,31 @@ structure — see [venues](venues.md)).
    boundary exception. The QA check's `>=` is the right comparison on
    both pairs, and the pre-reg's model must score the strike-equality
    outcome as `yes` for the ladder's `floor_strike`.
-   NEXT for this item: write the pre-reg
-   when ~26 events have quotes, with a fixed model (seasonal AR on prior
-   first prints, vintage-honest) and the market-implied CDF at a fixed
-   T-before-close; until then it accumulates on its own.
+   **REGISTERED 2026-10-15 20:20Z, BEFORE the sample exists:**
+   `docs/hyxpredict/prereg_econ_claims_backtest.md` (EconClaimsRW v1).
+   Written now rather than "when ~26 events have quotes", because a
+   registration drafted with 26 events of prices and prints in the
+   archive is contaminated by whatever its author glanced at counting
+   them. Frozen: a zero-parameter random walk on the prior week's FIRST
+   print as-of decision time (`ctx.econ_series`, so the vintage table
+   decides what was knowable), sigma from the trailing 52 weekly changes
+   as known then, half-unit continuity correction toward YES (equality
+   settles yes); one look per market at the first snapshot in
+   [close-60min, close-50min]; taker IOC 10 contracts on the side the
+   model clears the ask by >= 0.10; held to settlement; the EVENT is the
+   unit. One read at 26 scorable events (sign test k=18 of n traded,
+   ROI > +1.0%, both halves positive, n_traded >= 20 else UNDERPOWERED
+   with one pre-declared second read at 40). A primary SURVIVE is
+   exploratory (atlas contact disclosed) and authorizes only a Tier-2
+   registration; a FAIL closes the random-walk claims family. Code:
+   `strategies.econ_claims.EconClaimsRW` + `simulator.run_econ_claims`,
+   whose count gate refuses to replay or print PnL under 26 -- it decides
+   scorability from markets, snapshots and vintages alone, never from a
+   price against an outcome. First gated run 20:25Z: ICSA 11 scorable
+   (08-06..10-15; the 07-16/07-23/07-30 events have a 11:10-11:40Z
+   focus-tape hole and the window is NOT widened to admit them), CCSA 0
+   (set begins 10-22). 26th ICSA event ~2027-01-28, CCSA ~2027-04-15.
+   Until then it accumulates on its own; nothing to run.
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
    splits leak adjacent-day regimes). New registration, not a rescue.
 4. **Cross-venue arb** — measurement framing; expect fee-wall null
