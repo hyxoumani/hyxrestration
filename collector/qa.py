@@ -2316,11 +2316,28 @@ def qa_signals_fetch(
     )
 
 
-# An econ market and the vintage series it settles on, with the offset from
-# the market's close date back to the observation date the print reports.
+# An econ market and the vintage series it settles on: the offset from the
+# market's close date back to the observation date the print reports, and
+# the multiplier from `floor_strike` to the series' own unit (ALFRED holds
+# both claims series in persons).
 # KXJOBLESSCLAIMS closes Thursday 12:25Z, five minutes before the 12:30Z
-# print of the week ending the previous Saturday (close - 5 days).
-ECON_RESOLUTION_PAIRS: tuple[tuple[str, str, int], ...] = (("KXJOBLESSCLAIMS", "ICSA", 5),)
+# print of the week ending the previous Saturday (close - 5 days); strikes
+# in persons.
+# KXCONTCLAIMS closes Thursday 12:29Z before the same print, which reports
+# continuing claims for the week ending the Saturday BEFORE that one (close
+# - 12 days; measured from every title, "week ending Oct 3" on the 10-15
+# close). Strikes are in THOUSANDS from 09-03 on (`T1660` = 1,660K); the
+# 08-27 event was quoted in millions (`T1.75`), which is what the unit
+# guard below exists to name -- a naive compare in persons is always true.
+ECON_RESOLUTION_PAIRS: tuple[tuple[str, str, int, float], ...] = (
+    ("KXJOBLESSCLAIMS", "ICSA", 5, 1.0),
+    ("KXCONTCLAIMS", "CCSA", 12, 1000.0),
+)
+# A scaled strike further than this factor from the print is in the wrong
+# UNIT (1.75 "million" scaled as thousands reads 1,750 against 1,716,000),
+# and its result compare means nothing: it is reported as a unit failure,
+# never as a settlement verdict either way. Weekly claims never move 2x.
+ECON_STRIKE_UNIT_FACTOR = 2.0
 # A first print is "captured" when its earliest vintage landed within this
 # many days of the market's close. The next revision lands 7 days later, so
 # anything inside this window IS the first print; the 9 events that settled
@@ -2345,9 +2362,12 @@ def qa_econ_resolution(conn, now: datetime) -> None:
     the pull capturing a revised value as the first one.
 
     Per pair, the events reach the verdict only when their first print was
-    captured; none captured is UNVERIFIED (watch), never a pass.
+    captured; none captured is UNVERIFIED (watch), never a pass. A strike
+    whose scaled value is not within `ECON_STRIKE_UNIT_FACTOR` of the print
+    is a UNIT failure (the strike parse or the venue's quoting changed) and
+    is kept out of the settlement compare, whose answer it would fake.
     """
-    for series, series_id, offset_d in ECON_RESOLUTION_PAIRS:
+    for series, series_id, offset_d, unit in ECON_RESOLUTION_PAIRS:
         name = f"econ market settles on the first print ({series} vs {series_id})"
         rows = conn.execute(
             f"""
@@ -2372,12 +2392,31 @@ def qa_econ_resolution(conn, now: datetime) -> None:
                      WHERE m.venue = 'kalshi' AND m.series = ? AND m.result IN ('yes', 'no')
                        AND m.strike_type = 'greater_or_equal'
                        AND CAST(m.close_time AS DATE) = ev.d
-                       AND ((m.result = 'yes') <> (fv.v0 >= m.floor_strike))) AS mism
+                       AND m.floor_strike * ? BETWEEN fv.v0 / ? AND fv.v0 * ?
+                       AND ((m.result = 'yes') <> (fv.v0 >= m.floor_strike * ?))) AS mism,
+                   (SELECT count(*) FROM markets m
+                     WHERE m.venue = 'kalshi' AND m.series = ? AND m.result IN ('yes', 'no')
+                       AND m.strike_type = 'greater_or_equal'
+                       AND CAST(m.close_time AS DATE) = ev.d
+                       AND NOT (m.floor_strike * ? BETWEEN fv.v0 / ? AND fv.v0 * ?)) AS unit_bad
             FROM ev JOIN fv ON fv.obs_date = ev.obs
             WHERE CAST(fv.k0 AS DATE) <= ev.d + INTERVAL {ECON_FIRST_PRINT_WINDOW_D:d} DAY
             ORDER BY ev.d
             """,
-            [series, series_id, series, series],
+            [
+                series,
+                series_id,
+                series,
+                series,
+                unit,
+                ECON_STRIKE_UNIT_FACTOR,
+                ECON_STRIKE_UNIT_FACTOR,
+                unit,
+                series,
+                unit,
+                ECON_STRIKE_UNIT_FACTOR,
+                ECON_STRIKE_UNIT_FACTOR,
+            ],
         ).fetchall()
         if not rows:
             # UNMEASURED, so a plain print (see `watch`): no event reached a
@@ -2391,15 +2430,23 @@ def qa_econ_resolution(conn, now: datetime) -> None:
             continue
         strikes = sum(r[2] for r in rows)
         bad = [(r[0], r[1], r[3]) for r in rows if r[3]]
+        unit_bad = [(r[0], r[1], r[4]) for r in rows if r[4]]
         check(
             name,
-            not bad,
+            not bad and not unit_bad,
             f"{len(rows)} event(s) / {strikes} strike(s) verified against the first print"
             + (
                 "; MISMATCH on "
                 + ", ".join(f"{d:%Y-%m-%d} (print {v:g}, {m} strike(s))" for d, v, m in bad)
                 if bad
                 else ", 0 mismatches"
+            )
+            + (
+                "; UNIT (strike x"
+                + f"{unit:g} not within {ECON_STRIKE_UNIT_FACTOR:g}x of the print) on "
+                + ", ".join(f"{d:%Y-%m-%d} (print {v:g}, {u} strike(s))" for d, v, u in unit_bad)
+                if unit_bad
+                else ""
             ),
         )
 

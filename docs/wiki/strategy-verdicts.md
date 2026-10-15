@@ -395,17 +395,27 @@ structure — see [venues](venues.md)).
    **Capture started 2026-10-15 (promoted ~03:45Z):** `KXCONTCLAIMS` is on
    the collector watchlist and `CCSA` in `alfred.SERIES`, so the 10-15
    event (11 strikes T1660..T1760, close 12:29Z, books empty at 03:27Z)
-   is the first with snapshots, and the first CCSA vintage lands with
-   the next signals run (~23:40Z). Units differ: CCSA is persons
-   (1,712,000 for 09-26), strikes are thousands -- the QA first-print
-   check is NOT extended to this pair until it normalises (a naive
-   `first >= floor_strike` is always true). Its sample clock starts at
-   this event: ~26 quoted events is ~2027-04-09.
-   The rule is now a standing QA check,
+   is the first with snapshots. The first CCSA vintages landed with the
+   10-15 04:40Z signals run (3,117 rows, obs 1967-01-07..2026-09-26,
+   all stamped knowable 10-16 03:59Z -- the pessimistic stamp, so no
+   settled event's first print counts as captured yet). Units differ:
+   CCSA is persons (1,716,000 for 09-26), strikes are THOUSANDS from
+   09-03 on (`T1660`) and were MILLIONS on the 08-27 event (`T1.75`).
+   The offset is 12 days (every title: close 10-15 reports "week ending
+   Oct 3"), one week behind ICSA's. Its sample clock starts at this
+   event: ~26 quoted events is ~2027-04-09.
+   The rule is a standing QA check for BOTH pairs,
    `econ market settles on the first print (KXJOBLESSCLAIMS vs ICSA)`
-   (`qa.qa_econ_resolution`, 2026-10-14): events whose first print the
-   pull captured within 6d of the close, mismatches FAIL and name the
-   event, none captured is an UNVERIFIED watch. NEXT for this item: write the pre-reg
+   and `(... KXCONTCLAIMS vs CCSA)` (`qa.qa_econ_resolution`, 2026-10-14,
+   pair + unit guard 2026-10-15): events whose first print the pull
+   captured within 6d of the close, mismatches FAIL and name the event,
+   none captured is an UNVERIFIED watch. Each pair carries its strike
+   unit (x1, x1000), and a strike whose scaled value is not within 2x of
+   the print is a UNIT failure kept OUT of the settlement compare -- the
+   08-27-style quoting change lands as a named failure, never as an
+   always-true pass. First reading for the pair: the 10-16 10:00Z QA,
+   once the 10-15 event settles (12:30Z print) and the 10-16 04:40Z
+   pull captures CCSA for 10-03. NEXT for this item: write the pre-reg
    when ~26 events have quotes, with a fixed model (seasonal AR on prior
    first prints, vintage-honest) and the market-implied CDF at a fixed
    T-before-close; until then it accumulates on its own.

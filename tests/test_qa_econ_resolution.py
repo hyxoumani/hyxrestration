@@ -25,19 +25,24 @@ OBS = CLOSE.date() - timedelta(days=5)
 
 
 def _markets(
-    store, print_value: float, strikes=(190000, 195000, 200000), flip: float | None = None
+    store,
+    print_value: float,
+    strikes=(190000, 195000, 200000),
+    flip: float | None = None,
+    series: str = "KXJOBLESSCLAIMS",
+    unit: float = 1.0,
 ):
     rows = []
     for k in strikes:
-        yes = print_value >= k
+        yes = print_value >= k * unit
         if flip == k:
             yes = not yes
         rows.append(
             (
                 "kalshi",
-                f"KXJOBLESSCLAIMS-26OCT08-{k}",
+                f"{series}-26OCT08-T{k}",
                 "t",
-                "KXJOBLESSCLAIMS",
+                series,
                 CLOSE,
                 "greater_or_equal",
                 float(k),
@@ -51,10 +56,10 @@ def _markets(
     store.conn.executemany("INSERT INTO markets VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
 
-def _vintages(store, values_and_knowable):
+def _vintages(store, values_and_knowable, series_id: str = "ICSA", obs=OBS):
     store.conn.executemany(
         "INSERT INTO econ_vintages VALUES (?, ?, ?, ?)",
-        [("ICSA", OBS, v, k) for v, k in values_and_knowable],
+        [(series_id, obs, v, k) for v, k in values_and_knowable],
     )
 
 
@@ -127,3 +132,60 @@ def test_an_event_whose_first_print_was_not_captured_is_unverified_never_a_pass(
 
 def test_the_window_is_inside_one_revision_cycle():
     assert qa.ECON_FIRST_PRINT_WINDOW_D < 7
+
+
+# --- the continuing-claims pair: strikes in thousands, prints in persons ---
+
+CC_NAME = "econ market settles on the first print (KXCONTCLAIMS vs CCSA)"
+CC_OBS = CLOSE.date() - timedelta(days=12)  # the Saturday before ICSA's week
+CC_STRIKES = (1700, 1710, 1720)  # `T1710` = 1,710K, as the venue quotes since 09-03
+
+
+def test_the_continuing_claims_pair_compares_in_the_series_unit(tmp_path, capsys):
+    """CCSA is held in persons (1,716,000) and the strikes in thousands
+    (1710): scaled, 1716000 >= 1710000 is yes and >= 1720000 is no. Without
+    the x1000 every strike reads yes against 1,716,000, and the one `no`
+    market here would be a MISMATCH -- this arm is red under unit=1.0."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _markets(store, 1716000.0, strikes=CC_STRIKES, series="KXCONTCLAIMS", unit=1000.0)
+    _vintages(store, [(1716000.0, FIRST_AT), (1719000.0, REVISED_AT)], "CCSA", CC_OBS)
+    store.close()
+    failed, out = _run(db, capsys)
+    assert CC_NAME not in failed
+    assert f"PASS {CC_NAME}" in out or "1 event(s) / 3 strike(s) verified" in out
+    assert "UNIT" not in out
+
+
+def test_a_strike_quoted_in_the_wrong_unit_is_a_unit_failure_not_a_verdict(tmp_path, capsys):
+    """The 08-27 event was quoted in millions (`T1.75`): scaled as thousands
+    it is 1,750 against a 1,716,000 print, so every strike would read yes
+    and the three `no` markets would be MISMATCHes of a compare that means
+    nothing. The guard names the event as UNIT and keeps those strikes out
+    of the mismatch count."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    # Results as the venue settled them in millions: 1.716 >= 1.70, 1.71; not 1.72.
+    _markets(store, 1.716, strikes=(1.70, 1.71, 1.72), series="KXCONTCLAIMS", unit=1.0)
+    _vintages(store, [(1716000.0, FIRST_AT)], "CCSA", CC_OBS)
+    store.close()
+    failed, out = _run(db, capsys)
+    assert CC_NAME in failed
+    assert "UNIT (strike x1000 not within 2x of the print) on 2026-10-08" in out
+    assert "3 strike(s))" in out
+    assert "MISMATCH" not in out
+
+
+def test_each_pair_observes_the_saturday_its_print_reports():
+    """Both claims prints report a week ending Saturday; a Thursday close
+    minus the pair's offset must land on one, and the continuing-claims
+    print lags the initial-claims print by exactly one week. The unit is
+    the venue's quoting (persons; thousands since 09-03)."""
+    assert CLOSE.weekday() == 3
+    pairs = {s: (o, u) for s, _, o, u in qa.ECON_RESOLUTION_PAIRS}
+    for offset, _unit in pairs.values():
+        assert (CLOSE.date() - timedelta(days=offset)).weekday() == 5
+    assert pairs["KXCONTCLAIMS"][0] - pairs["KXJOBLESSCLAIMS"][0] == 7
+    assert pairs["KXJOBLESSCLAIMS"][1] == 1.0
+    assert pairs["KXCONTCLAIMS"][1] == 1000.0
+    assert qa.ECON_STRIKE_UNIT_FACTOR < 1000  # a factor that admits the wrong unit guards nothing
