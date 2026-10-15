@@ -415,7 +415,44 @@ structure — see [venues](venues.md)).
    08-27-style quoting change lands as a named failure, never as an
    always-true pass. First reading for the pair: the 10-16 10:00Z QA,
    once the 10-15 event settles (12:30Z print) and the 10-16 04:40Z
-   pull captures CCSA for 10-03. NEXT for this item: write the pre-reg
+   pull captures CCSA for 10-03.
+   **10-15 event settled, read 14:15Z (read-only; ALFRED keyless, no
+   archive write):** 11 strikes, T1660..T1710 `yes`, T1720..T1760 `no`,
+   1,177 snapshots over 11 markets 03:35Z..12:25Z (the last cycle before
+   the 12:29Z close; book at 12:25Z: T1700 0.69/0.79, T1710 0.45/0.55,
+   T1720 0.24/0.34 -- the market priced the print inside the bracket it
+   landed in). ALFRED's 10-15 vintage, fetched after the print: CCSA
+   obs 10-03 = **1,710,000**, i.e. `1,710,000 >= 1710 x 1000` is yes and
+   `>= 1720 x 1000` is no -- 11 of 11 strikes agree with the first-print
+   rule at the x1000 unit. PREDICTION for the 10-16 10:00Z QA: the
+   CCSA line turns from UNVERIFIED to `PASS 1 event(s) / 11 strike(s),
+   0 mismatches` (the 10-16 04:40Z pull stamps the 10-03 obs knowable
+   10-17 03:59Z, inside the 6d window; the 10-08 event stays EXCLUDED
+   even though the archive happens to hold its true first print,
+   1,716,000 for 09-26 fetched before the revision, because the
+   pessimistic stamp 10-16 03:59Z falls outside 10-08 + 6d -- the
+   conservative side), and the ICSA line reads 15 events / 157 strikes
+   (ICSA obs 10-10 first print 199,000; the 10-15 event settled 195000
+   `yes`, 200000 `no`). Anything else on either line is a finding.
+   **Revision direction is a per-series fact, measured 2026-10-15 from
+   14 consecutive ALFRED release-day vintages (07-09..10-08, each first
+   print vs the next week's vintage of the same week):** ICSA revised
+   UP 13 of 14, 0 down, 1 unchanged, +1k..+3k against 5k strikes (the
+   note above, extended one week); CCSA revised **DOWN 12 of 14**, 2
+   up, -2k..-13k against 10k strikes (07-04 -7k, 09-05 -13k, 09-26 -2k).
+   The a-priori mechanism differs: initial claims gain late filings,
+   continuing claims lose them to re-employment and state corrections.
+   Consequence for the pair, recorded as a fact and not a lead: a
+   latest-vintage join would misgrade a CCSA event in the OPPOSITE
+   direction to an ICSA one (revised value below a strike the first
+   print cleared reads a settled `yes` as a mismatch), and the ratio of
+   revision to strike spacing (up to 1.3x for CCSA vs 0.6x for ICSA)
+   makes a crossed strike MORE likely per CCSA event; both are reasons
+   the first-print check, not a latest-vintage read, is the rule for
+   either pair. Neither direction can touch a market that settles on
+   the first print, and a feature built on CCSA prints must use the
+   vintage as of the PRIOR week, which the two-dimensional table gives
+   it. NEXT for this item: write the pre-reg
    when ~26 events have quotes, with a fixed model (seasonal AR on prior
    first prints, vintage-honest) and the market-implied CDF at a fixed
    T-before-close; until then it accumulates on its own.
