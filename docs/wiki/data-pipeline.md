@@ -258,6 +258,27 @@ the recent window, re-measure it over the whole retention before writing
 down a start date; "since <date>" is a claim about the data's edge as often
 as about the world.**
 
+**The venue's own schedule, read 2026-10-15** (`GET /trade-api/v2/exchange/
+schedule`, no auth): `standard_hours.thursday` is two sessions, 00:00-03:00
+and 05:00-24:00, i.e. a published weekly closure **03:00-05:00 ET** (07:00-
+09:00Z in EDT), and `maintenance_windows` is empty. Confirmed live the same
+morning: `exchange/status` read `trading_active: false` on all five exchange
+indices at 08:59:22Z and `true` on all five at 09:00:04Z. The closure is
+total, not a WS artefact: REST snapshots kept landing (587 markets per 5-min
+cycle, 0 errors) with `volume` frozen on EVERY market from the 07:05Z cycle
+to 09:00Z, on 10-01 and 10-08 as well (22-23 frozen cycles each), while
+Polymarket flowed at ~50k events per 5 min throughout. So a replay across
+the window sees flat books and flat volume, not missing rows -- which is
+why it must be EXCLUDED rather than read as illiquidity. The record-derived
+06-10Z excuse brackets the ET window with an hour each side; the hours are
+ET, so **after DST ends (2026-11-01) the closure sits at 08:00-10:00Z** and
+its reopen bleed (~5-6 min of reconnect gaps) lands in the first minutes of
+the NEXT 10:00Z QA slot, outside the excuse and against the 30-min budget.
+First Thursday to read: 2026-11-05. The streamd journal under
+`--since "7 days ago"` starts mid-storm on the matching weekday, so a
+per-day gap count over that range under-counts the oldest Thursday -- the
+10-15 pass nearly chased a 100-vs-8 "drift" that was this truncation.
+
 **`stream_gaps` volume is budgeted by QA** (`kalshi capture gaps within
 budget outside venue maintenance`, 30 min per channel per 26h). Every other
 reader spends a gap row as an EXCUSE — it suppresses a seq hole, skips a
