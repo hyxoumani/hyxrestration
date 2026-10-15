@@ -430,3 +430,16 @@
   checks `date +%s` against it before arming a wakeup; under 30 min left,
   commit what is in flight and end clean -- the 6h timer is the armed next
   turn.
+- A running shell script is read from disk BY OFFSET as it executes, so
+  editing it in place edits the process. bash discards its read buffer
+  before forking an external command and re-reads from the file when the
+  child returns; the 10-14 20:15Z autoloop run shipped a longer
+  `scripts/autoloop.sh` in place while its own launcher waited on
+  `claude -p`, and the launcher resumed inside the new comment block:
+  `syntax error near unexpected token ')'`, exit 2, unit `failed`
+  (mistakes #123). So: a launcher's body is one `main()` called on the
+  last line with `exit` on the same line (parsed whole before it runs);
+  and a script that may be live is replaced by RENAME (`mv new path`,
+  new inode -- `/proc/<pid>/fd/255` then shows `(deleted)` and the old
+  copy keeps running), never by truncate-and-write. The Edit/Write tools
+  truncate in place; check `pgrep -a -f 'autoloo[p].sh'` first.

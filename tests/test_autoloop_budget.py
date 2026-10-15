@@ -37,6 +37,7 @@ args="$*"; printf 'deadline=%s\\nargs=%s\\n' "${AUTOLOOP_DEADLINE:-UNSET}" "${ar
 case "${FAKE_MODE:-hang}" in
   hang) exec sleep 60 ;;
   exit) exit "${FAKE_RC:-0}" ;;
+  rewrite) cat "$FAKE_REWRITE" > "$FAKE_SCRIPT"; exit 0 ;;
 esac
 """
 
@@ -79,13 +80,15 @@ def root(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _run(root: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess:
+def _run(
+    root: Path, env_extra: dict[str, str], script: Path = SCRIPT
+) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PATH"] = f"{root / 'bin'}:{env['PATH']}"
     env["AUTOLOOP_ROOT"] = str(root)
     env["FAKE_OUT"] = str(root / "fake.out")
     env.update(env_extra)
-    return subprocess.run([str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
+    return subprocess.run([str(script)], env=env, capture_output=True, text=True, timeout=60)
 
 
 def _fake_out(root: Path) -> dict[str, str]:
@@ -152,3 +155,41 @@ def test_prompt_names_the_deadline() -> None:
     text = PROMPT.read_text()
     assert "AUTOLOOP_DEADLINE" in text
     assert "date +%s" in text
+
+
+def test_in_place_rewrite_during_the_run_does_not_break_the_launcher(root: Path) -> None:
+    """bash reads a script by byte offset AS it executes. A pass that commits
+    a new launcher while `claude -p` runs rewrites the file under the bash
+    that is waiting on claude; when claude returns, bash resumes at the old
+    offset in the NEW text. Measured 2026-10-14 21:45Z: the 20:15Z run
+    shipped 76a860c (this script, longer) and its own launcher died
+    `line 13: syntax error near unexpected token ')'`, exit 2, unit
+    `failed` (mistakes #123). The fake claude here replays that: it
+    overwrites the running copy IN PLACE (same inode, so no rename saves
+    it) with a valid launcher that has a long comment block prepended, the
+    shape of the real commit, and exits 0. The launcher must still take
+    its normal path and exit 0."""
+    copy = root / "scripts" / "autoloop.sh"
+    shutil.copy(SCRIPT, copy)
+    copy.chmod(copy.stat().st_mode | stat.S_IXUSR)
+    # ONE comment line, longer than the launcher: wherever bash resumes
+    # inside it, the remainder is `)))...` with no `#` before it. Sixty
+    # short lines looked the same and were not -- an unwrapped launcher
+    # passed when its offset landed exactly on a line's `#` (1 in 71).
+    body = SCRIPT.read_text().split("\n", 1)[1]
+    assert len(SCRIPT.read_bytes()) < 8000, "grow the comment line with the launcher"
+    prepended = "#!/usr/bin/env bash\n# " + ")" * 8000 + "\n" + body
+    rewrite = root / "rewrite.sh"
+    rewrite.write_text(prepended)
+    rewrite.chmod(rewrite.stat().st_mode | stat.S_IXUSR)
+    # The rewrite is itself a correct launcher: a FRESH run of it is fine.
+    fresh = _run(root, {"FAKE_MODE": "exit", "FAKE_RC": "0"}, script=rewrite)
+    assert fresh.returncode == 0, fresh.stderr
+    proc = _run(
+        root,
+        {"FAKE_MODE": "rewrite", "FAKE_REWRITE": str(rewrite), "FAKE_SCRIPT": str(copy)},
+        script=copy,
+    )
+    assert copy.read_text() == prepended, "the fake must have rewritten the running copy"
+    assert proc.returncode == 0, f"rc={proc.returncode}\nstderr={proc.stderr}"
+    assert "syntax error" not in proc.stderr

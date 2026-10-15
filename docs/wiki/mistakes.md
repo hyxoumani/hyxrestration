@@ -3185,6 +3185,46 @@ Format: what happened → root cause → error type → prevention tier
     turn", and a timer that fires in 6h IS the armed next turn once the
     budget is spent.
 
+123. **2026-10-14 21:45Z -- the autoloop launcher was rewritten under its
+    own running bash, and the run that shipped the budget fix died of
+    the edit: `exit-code/2`, unit `failed`.** bash reads a script by
+    BYTE OFFSET as it executes: before forking an external command it
+    discards its read buffer and syncs the fd to the logical offset, and
+    when the child returns it reads the next command from the file at
+    that offset. The 20:15Z run edited `scripts/autoloop.sh` in place
+    (same inode) to ship 76a860c, a 13-line-longer file, while its OWN
+    launcher's bash was waiting on `claude -p`. When claude exited at
+    21:45:31Z the bash resumed at the old file's offset inside the new
+    file's comment block: `line 13: syntax error near unexpected token
+    ')'`, exit 2, `Failed with result 'exit-code'`, 1h30m of work filed as
+    a failure on the digest's RECENT line -- and the 21:50Z status entry
+    said "this process ends clean" about a unit that had already failed.
+    Confirmed live on 10-15 02:15Z: the running launcher's `/proc/<pid>/
+    fd/255` pointed at `scripts/autoloop.sh`, so the fix itself had to be
+    installed by RENAME (new inode; the fd then reads `(deleted)` and the
+    old copy stays intact) or it would have killed this run the same way.
+    Type: `wrong-assumption` (a shell script read as loaded-then-run, like
+    a Python module) + `unread-verdict` (the digest line was new and the
+    status page contradicted it).
+    Fix: the launcher's body is one `main()` and the last line is
+    `main "$@"; exit "$?"` -- bash parses a function whole before any of it
+    runs, and `exit` on the call's own line keeps it from reading past.
+    `tests/test_autoloop_budget.py::test_in_place_rewrite_during_the_run_
+    does_not_break_the_launcher` replays the event: a fake claude
+    overwrites the running copy IN PLACE with a valid launcher that has a
+    long comment prepended, exits 0, and the launcher must still exit 0.
+    Red on the old script and on an unwrapped mutant, both `rc=2` with the
+    syntax error in stderr. The test's first form, sixty 71-byte comment
+    lines, was itself a lesson: the unwrapped mutant PASSED it because its
+    resume offset landed exactly on a line's `#` (2789 - 20 = 39 x 71), a
+    1-in-71 accident that looked like a defeated mutant; the prepend is
+    now ONE 8,000-byte comment line, so any offset inside it is an error.
+    Rule: **a running shell script is read from disk as it runs, so
+    editing it in place edits the process. Wrap the body in a function
+    called on the last line, and replace a live script by rename, never
+    by truncate-and-write -- and when a mutant passes, compute WHERE it
+    landed before calling the test sound.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
