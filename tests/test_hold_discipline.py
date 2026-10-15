@@ -239,6 +239,7 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # had published no block -- nor been named as debt -- since it was
         # written, so the rule above could not see a hold it never reported.
         "simulator/queuescore.py",
+        "simulator/run_econ_claims.py",
         "simulator/run_l2.py",
         # Not a report -- a daemon. It publishes into its own ledger table
         # and its 300s journal line, which is what brought the repo's

@@ -20,10 +20,11 @@ import json
 from collections import defaultdict
 from datetime import date, datetime
 from math import comb
+from pathlib import Path
 from statistics import median_low
 
 from hyxlab.models import MarketInfo, Snapshot
-from hyxlab.store import open_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 from simulator.capabilities import live_feed_caps
 from simulator.features import FeatureView
 from simulator.harness import data_fingerprint, write_manifest
@@ -170,27 +171,32 @@ def main() -> None:
     pair = PAIRS[args.pair]
     strat = EconClaimsRW(pair=pair)
 
-    store = open_retry(args.db, read_only=True)
-    # Bounded load (test_markets_load_discipline): the series' ids only.
-    ids = [
-        r[0]
-        for r in store.conn.execute(
-            "SELECT market_id FROM markets WHERE venue='kalshi' AND series=? ORDER BY 1",
+    reset_attach_waits()
+    # `held_open`: this is the 5-minute collector's file, and the hold is
+    # the whole load (markets + snapshots + the vintage table), not a
+    # query -- measured and printed after the release (#91, #96).
+    with held_open(args.db, read_only=True) as store:
+        # Bounded load (test_markets_load_discipline): the series' ids only.
+        ids = [
+            r[0]
+            for r in store.conn.execute(
+                "SELECT market_id FROM markets WHERE venue='kalshi' AND series=? ORDER BY 1",
+                [pair.market_series],
+            ).fetchall()
+        ]
+        markets = store.markets(venue="kalshi", market_ids=ids)
+        rows = store.conn.execute(
+            "SELECT venue, market_id, ts, yes_bid, yes_ask, no_bid, no_ask, yes_bid_size,"
+            " yes_ask_size, no_bid_size, no_ask_size, last_price, volume, open_interest"
+            " FROM snapshots WHERE venue='kalshi' AND market_id IN"
+            " (SELECT market_id FROM markets WHERE venue='kalshi' AND series=?)"
+            " ORDER BY ts, venue, market_id",
             [pair.market_series],
         ).fetchall()
-    ]
-    markets = store.markets(venue="kalshi", market_ids=ids)
-    rows = store.conn.execute(
-        "SELECT venue, market_id, ts, yes_bid, yes_ask, no_bid, no_ask, yes_bid_size,"
-        " yes_ask_size, no_bid_size, no_ask_size, last_price, volume, open_interest"
-        " FROM snapshots WHERE venue='kalshi' AND market_id IN"
-        " (SELECT market_id FROM markets WHERE venue='kalshi' AND series=?)"
-        " ORDER BY ts, venue, market_id",
-        [pair.market_series],
-    ).fetchall()
-    snapshots = [Snapshot(*r) for r in rows]
-    fv = FeatureView.from_store(store)
-    store.close()
+        snapshots = [Snapshot(*r) for r in rows]
+        fv = FeatureView.from_store(store)
+    # After the release: `held_s` is charged by the close.
+    print(attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[econ-claims]"))
 
     events = scorable_events(markets, snapshots, fv, pair, strat)
     n_scorable = sum(1 for e in events.values() if e["scorable"])
