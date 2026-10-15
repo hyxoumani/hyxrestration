@@ -392,6 +392,15 @@ structure — see [venues](venues.md)).
    between events (08-27: 1.75-1.85, i.e. millions; from 09-03:
    1740-1840, thousands) -- a pair would need unit normalisation and a
    watchlist/pull change, both of which start a new comparability series.
+   **Capture started 2026-10-15 (promoted ~03:45Z):** `KXCONTCLAIMS` is on
+   the collector watchlist and `CCSA` in `alfred.SERIES`, so the 10-15
+   event (11 strikes T1660..T1760, close 12:29Z, books empty at 03:27Z)
+   is the first with snapshots, and the first CCSA vintage lands with
+   the next signals run (~23:40Z). Units differ: CCSA is persons
+   (1,712,000 for 09-26), strikes are thousands -- the QA first-print
+   check is NOT extended to this pair until it normalises (a naive
+   `first >= floor_strike` is always true). Its sample clock starts at
+   this event: ~26 quoted events is ~2027-04-09.
    The rule is now a standing QA check,
    `econ market settles on the first print (KXJOBLESSCLAIMS vs ICSA)`
    (`qa.qa_econ_resolution`, 2026-10-14): events whose first print the
