@@ -239,6 +239,10 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         "hyxlab/store.py",
         "simulator/atlas.py",
         "simulator/divergence.py",
+        # The trade->book-decrement check (2026-10-16): same cursor on the
+        # daemon-owned stream archive as queuescore, and the same unbounded
+        # EXISTS as #124 until it started importing queuescore's selector.
+        "simulator/prioritycheck.py",
         # The maker fill-model bracket, joined 2026-10-07: it scores every
         # market through a cursor on the daemon-owned `hyxstream.duckdb` and
         # had published no block -- nor been named as debt -- since it was
@@ -251,6 +255,9 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         "simulator/run_favlong.py",
         "simulator/run_favlong_tight.py",
         "simulator/run_l2.py",
+        # The shadow PnL attribution (2026-10-16): read-only on the ledger
+        # the shadow daemon owns and persists into every poll.
+        "simulator/shadow_attribution.py",
         # Not a report -- a daemon. It publishes into its own ledger table
         # and its 300s journal line, which is what brought the repo's
         # largest unmeasured hold under this rule (2026-09-27).

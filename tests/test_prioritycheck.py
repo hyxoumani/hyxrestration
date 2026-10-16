@@ -146,7 +146,7 @@ def test_p95_is_the_nearest_rank_not_the_maximum():
 
 
 def test_timing_censuses_the_tail_that_sizes_the_window():
-    """"ABSORB_WINDOW=2s is generous" has to be checkable FROM the artifact.
+    """ "ABSORB_WINDOW=2s is generous" has to be checkable FROM the artifact.
 
     The 2026-09-20 reading needed 1796ms of window on its widest pairing
     -- 90% of the 2s budget -- which no statistic the old timing block
@@ -156,3 +156,41 @@ def test_timing_censuses_the_tail_that_sizes_the_window():
 
     out = _timing(sorted([-1796.2, -0.5, 0.5, 6.0, 60.0]))
     assert out["over_ms"] == {"5": 3, "50": 2, "500": 1}
+
+
+def test_the_selector_is_queuescores_not_a_copy():
+    """`main` carried the SAME unbounded correlated EXISTS over `book_events`
+    that killed the weather width-24 bracket (#124), one file over from the
+    fix. The fix is to have ONE selector: a second query string here is a
+    second place for the bound to be missing."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "simulator/prioritycheck.py").read_text()
+    assert "FROM book_events b" not in src, "a second selector query string"
+    assert "from simulator.queuescore import select_markets" in src
+
+
+def test_main_measures_the_hold_on_the_stream_archive(tmp_path, monkeypatch, capsys):
+    """The check holds `hyxstream.duckdb` -- streamd's file -- across its
+    whole loop and until 2026-10-16 published nothing about it. Driven
+    end-to-end on an empty archive: zero markets, one measured hold, the
+    line rendered through the one renderer and the block in the report."""
+    import json
+
+    from hyxlab.streamstore import StreamStore
+    from simulator import prioritycheck
+
+    db = tmp_path / "hyxstream.duckdb"
+    StreamStore(db).flush()
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(
+        "sys.argv", ["prioritycheck", "--stream-db", str(db), "--out", str(out_dir)]
+    )
+    prioritycheck.main()
+    text = capsys.readouterr().out
+    lines = [ln for ln in text.splitlines() if ln.startswith("[prioritycheck] attach_wait:")]
+    assert len(lines) == 1 and "on hyxstream.duckdb 1 attaches" in lines[0], text
+    assert "held 1 for" in lines[0] and "0 unmeasured" in lines[0], lines[0]
+    report = json.loads(next(out_dir.glob("*.json")).read_text())
+    assert report["markets"] == 0
+    assert report["attach_wait"]["held_n"] == 1 and report["attach_wait"]["held_unknown_n"] == 0

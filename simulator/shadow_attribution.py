@@ -91,7 +91,7 @@ from pathlib import Path
 
 import duckdb
 
-from hyxlab.store import connect_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 
 SHADOW_DB = "data/hyxshadow.duckdb"
 #: Entry-price band edges. Chosen to straddle the sign crossing the
@@ -327,11 +327,15 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--out", default="reports/shadow_attribution")
     args = ap.parse_args(argv)
 
-    ledger = connect_retry(args.ledger, read_only=True)
-    try:
+    reset_attach_waits()
+    # `held_attach`: `hyxshadow.duckdb` is the file `simulator.shadow` OWNS
+    # and persists into every poll, so this read-only attach excludes the
+    # daemon for its whole length -- measured and published (#91, #102).
+    with held_attach(args.ledger, read_only=True) as ledger:
         report = build_attribution(ledger, args.run)
-    finally:
-        ledger.close()
+    # After the RELEASE: `held_s` is charged by the close.
+    report["attach_wait"] = attach_wait_block(db=Path(args.ledger).name)
+    print(attach_wait_line(report["attach_wait"], prefix="[shadow_attribution]"))
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

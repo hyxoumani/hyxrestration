@@ -49,7 +49,8 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from hyxlab.store import connect_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
+from simulator.queuescore import select_markets
 
 STREAM_DB = "data/hyxstream.duckdb"
 EXACT_WINDOW = 0.005  # s: tight pairing for the exact-match rate / timing stats
@@ -136,7 +137,9 @@ def check_market(conn, market_id: str, since: datetime) -> dict:
     for ts, p, q, taker in trades:
         key = predicted_level(taker, p)
         near_exact = [
-            (dts, dec) for dts, dec in idx.get(key, []) if abs((dts - ts).total_seconds()) <= EXACT_WINDOW
+            (dts, dec)
+            for dts, dec in idx.get(key, [])
+            if abs((dts - ts).total_seconds()) <= EXACT_WINDOW
         ]
         hit = next((dts for dts, dec in near_exact if abs(dec - q) < PRICE_EPS), None)
         if hit is not None:
@@ -146,7 +149,9 @@ def check_market(conn, market_id: str, since: datetime) -> dict:
             continue
         # miss at the tight window: decompose it
         near_absorb = [
-            (dts, dec) for dts, dec in idx.get(key, []) if abs((dts - ts).total_seconds()) <= ABSORB_WINDOW
+            (dts, dec)
+            for dts, dec in idx.get(key, [])
+            if abs((dts - ts).total_seconds()) <= ABSORB_WINDOW
         ]
         late = next((dts for dts, dec in near_absorb if abs(dec - q) < PRICE_EPS), None)
         if late is not None:
@@ -175,34 +180,46 @@ def main() -> None:
     ap.add_argument("--out", default="reports/priority_check")
     args = ap.parse_args()
 
-    conn = connect_retry(args.stream_db)
-    since = conn.execute(
-        "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
-        [int(args.hours)],
-    ).fetchone()[0]
-    markets = [
-        r[0]
-        for r in conn.execute(
-            "SELECT t.market_id FROM stream_trades t WHERE t.venue='kalshi'"
-            " AND t.recv_ts > ? AND EXISTS (SELECT 1 FROM book_events b"
-            "   WHERE b.market_id = t.market_id AND b.kind='delta')"
-            " GROUP BY 1 ORDER BY count(*) DESC LIMIT ?",
-            [since, args.markets],
-        ).fetchall()
-    ]
-    print(f"[prioritycheck] window since {since}, {len(markets)} markets")
+    reset_attach_waits()
+    # `held_attach`: every market is checked through a cursor on
+    # `hyxstream.duckdb` -- the file `collector.streamd` OWNS -- so the hold
+    # is the whole loop, measured and published (#91, #102). The selector is
+    # `queuescore.select_markets`, not a copy: this module carried the SAME
+    # unbounded correlated EXISTS that killed the weather bracket (#124),
+    # one file over from the fix. The window aggregate stays bare on purpose
+    # (statistics-folded; a venue bound makes it a 1.2e9-row scan).
+    with held_attach(args.stream_db) as conn:
+        since = conn.execute(
+            "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
+            [int(args.hours)],
+        ).fetchone()[0]
+        markets = select_markets(conn, since, args.markets)
+        print(f"[prioritycheck] window since {since}, {len(markets)} markets")
 
-    per_market = []
-    dt_ms: list[float] = []
-    for m in markets:
-        r = check_market(conn, m, since)
-        dt_ms.extend(r.pop("dt_ms"))
-        per_market.append(r)
-        print(f"  {m}: trades={r['trades']} exact={r['exact_match']} absorb={r['absorb_match']}")
-    conn.close()
+        per_market = []
+        dt_ms: list[float] = []
+        for m in markets:
+            r = check_market(conn, m, since)
+            dt_ms.extend(r.pop("dt_ms"))
+            per_market.append(r)
+            print(
+                f"  {m}: trades={r['trades']} exact={r['exact_match']} absorb={r['absorb_match']}"
+            )
+    # After the RELEASE: `held_s` is charged by the close.
+    wait = attach_wait_block(db=Path(args.stream_db).name)
 
     tot = sum(r["trades"] for r in per_market)
-    agg = {k: sum(r[k] for r in per_market) for k in ("exact_match", "absorb_match", "naive_would_match", "late_decrement", "no_decrement_at_level", "batched_with_cancels")}
+    agg = {
+        k: sum(r[k] for r in per_market)
+        for k in (
+            "exact_match",
+            "absorb_match",
+            "naive_would_match",
+            "late_decrement",
+            "no_decrement_at_level",
+            "batched_with_cancels",
+        )
+    }
     dt_ms.sort()
     timing = {}
     if dt_ms:
@@ -237,14 +254,16 @@ def main() -> None:
             " front-vs-back order within it (that is the pess/opt bracket)."
         ),
         "per_market": per_market,
+        "attach_wait": wait,
     }
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
     for k, v in report.items():
-        if k not in ("per_market", "note"):
+        if k not in ("per_market", "note", "attach_wait"):
             print(f"  {k}: {v}")
+    print(attach_wait_line(wait, prefix="[prioritycheck]"))
     print(f"[prioritycheck] written to {out}")
 
 

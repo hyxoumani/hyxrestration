@@ -176,3 +176,36 @@ def test_band_labels_sort_in_price_order():
     assert labels == sorted(labels)
     assert labels[0].endswith("0c-5c")
     assert labels[-1].endswith("45c+")
+
+
+def test_main_measures_the_hold_on_the_shadow_ledger(tmp_path, monkeypatch, capsys):
+    """`hyxshadow.duckdb` is the file the shadow daemon owns and persists
+    into every poll; until 2026-10-16 this report held it bare. Driven
+    end-to-end on a file-backed ledger with one run: one measured hold,
+    rendered through the one renderer and carried in the report."""
+    import json
+
+    from simulator import shadow_attribution
+
+    db = tmp_path / "hyxshadow.duckdb"
+    conn = duckdb.connect(str(db))
+    for stmt in (
+        "CREATE TABLE shadow_fills (run_id VARCHAR, strategy VARCHAR, venue VARCHAR,"
+        " market_id VARCHAR, side VARCHAR, qty DOUBLE, price DOUBLE, fee DOUBLE, ts TIMESTAMP)",
+        "CREATE TABLE shadow_settlements (run_id VARCHAR, market_id VARCHAR,"
+        " side VARCHAR, payout DOUBLE, ts TIMESTAMP)",
+        "CREATE TABLE shadow_equity (run_id VARCHAR, ts TIMESTAMP, equity DOUBLE)",
+        f"INSERT INTO shadow_fills VALUES ('r1','probe','kalshi','M','yes',10,0.6,0.1,'{T0}')",
+        f"INSERT INTO shadow_equity VALUES ('r1','{T0}',100.0),"
+        f" ('r1','{T0 + timedelta(hours=1)}',99.9)",
+    ):
+        conn.execute(stmt)
+    conn.close()
+    out_dir = tmp_path / "out"
+    shadow_attribution.main(["--ledger", str(db), "--out", str(out_dir)])
+    text = capsys.readouterr().out
+    lines = [ln for ln in text.splitlines() if ln.startswith("[shadow_attribution] attach_wait:")]
+    assert len(lines) == 1 and "on hyxshadow.duckdb 1 attaches" in lines[0], text
+    assert "held 1 for" in lines[0] and "0 unmeasured" in lines[0], lines[0]
+    report = json.loads(next(out_dir.glob("*.json")).read_text())
+    assert report["attach_wait"]["held_n"] == 1 and report["attach_wait"]["held_unknown_n"] == 0
