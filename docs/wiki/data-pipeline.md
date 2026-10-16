@@ -777,7 +777,21 @@ self-match trap the ops rules name for `pkill -f`.
   s/mkt), KXGOLD15M 7-8 (4.7-5.1), KXXRP15M 4.5-6.8 (3.3-4.2), KXSOL15M
   3.7-5 (2.6-3.1), KXDOGE15M 3-4 (2.0-2.6); the family 92-115 min/run
   since 10-11 (23-30 before it). Per run 10-09..10-15: 678 / 639 / 617
-  / 653 / 676 / 748 / 655 min. So a breach has two candidate responses
+  / 653 / 676 / 748 / 655 min. **The 10-11 step is the TRUE cost
+  arriving, not a regression**: KXBTC15M cost 0.8-2.0 min on 10-06..
+  10-10 with the same 91-96 markets because those were the 429-storm
+  runs (28,562 / 20,105 / 17,933 / 2,286 / 2,836 sweep 429s) in which a
+  mid-tape 429 restarted the tape, so its ~3,500-page tape never
+  completed -- the journal has ZERO `KXBTC15M mid-series flush` lines
+  on those five days against 12-13 on 10-03, 10-04 and every day from
+  10-11. `b6971c5` (resume the refused page) and `edba964` (pace pages
+  at the caller's 0.35s) on 10-10 made the tape complete again from the
+  10-11 run, at the paced price: ~3.5M prints / 1,000 per page = ~3,500
+  pages x 0.35s = 20 min of pacing alone, ~47 min with the fetches
+  (10-04, unpaced, was 21.2 min for the same 12 flushes). The five
+  storm days' BTC15M prints were recovered by `hyxlab-tradepass`, which
+  drained the 51,777-market backlog at 11.9M / 11.3M / 11.5M prints per
+  run on 10-10..10-12 and has been at 49-94 pending since 10-13. So a breach has two candidate responses
   and the attribution line tells them apart: a per-market cost (the
   BTC15M tape, ~50 min = 6.7% of the 12.5h budget, more than the ~4%
   headroom the 10-14 run left) or a category decision (the crypto
