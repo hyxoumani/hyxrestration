@@ -349,6 +349,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from math import comb
@@ -356,7 +357,7 @@ from pathlib import Path
 
 import duckdb
 
-from hyxlab.store import connect_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 
 SHADOW_DB = "data/hyxshadow.duckdb"
 #: Strategies whose fills are known to be taken under a one-tick spread
@@ -2366,23 +2367,30 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--panel-shortfall", action="store_true")
     args = ap.parse_args(argv)
 
+    reset_attach_waits()
+    # `held_attach`: `hyxshadow.duckdb` is the file `simulator.shadow` OWNS
+    # and persists into every poll, so each read-only attach here excludes
+    # the daemon for its whole length -- measured and published (#91, #102).
     if args.panel_shortfall:
-        ledger = connect_retry(args.ledger, read_only=True)
-        try:
+        with held_attach(args.ledger, read_only=True) as ledger:
             short = panel_shortfall(ledger)
-        finally:
-            ledger.close()
+        # stdout is the one machine-readable line `restart_decision.sh`
+        # parses, so the hold reads out on stderr -- rendered, not dropped.
+        print(
+            attach_wait_line(attach_wait_block(db=Path(args.ledger).name), prefix="[shadow_diurnal]"),
+            file=sys.stderr,
+        )
         if "reason" in short:
             print(f"panel_shortfall none {short['reason']}")
         else:
             print(f"panel_shortfall {short['run_id']} {short['banked']} {short['needed']}")
         return
 
-    ledger = connect_retry(args.ledger, read_only=True)
-    try:
+    with held_attach(args.ledger, read_only=True) as ledger:
         report = build_diurnal(ledger, args.run)
-    finally:
-        ledger.close()
+    # After the RELEASE: `held_s` is charged by the close.
+    report["attach_wait"] = attach_wait_block(db=Path(args.ledger).name)
+    print(attach_wait_line(report["attach_wait"], prefix="[shadow_diurnal]"))
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2542,13 +2550,26 @@ def main(argv: list[str] | None = None) -> None:
                 )
 
         r = best["range_extremes"]
-        print(
-            f"\n[shadow_diurnal] loudest hour {r['loudest_hour_of_day']:02d}Z"
-            f" (mean range {r['loudest_mean_range']}) vs quietest"
-            f" {r['quietest_hour_of_day']:02d}Z ({r['quietest_mean_range']}) —"
-            " read the LEVEL off mean_end_bal, never off mean_min and never"
-            " off a ragged mean_end."
-        )
+        if r["loudest_hour_of_day"] is None:
+            # `build_diurnal` publishes None when no hour of the run is dense
+            # enough to carry a range (every hour under MIN_PTS_PER_HOUR).
+            # Found by the first end-to-end drive of this path, 2026-10-16:
+            # the `:02d` below raised on None and the report that had
+            # already been WRITTEN was never summarised. An absence printed
+            # as an absence, never as a crash.
+            print(
+                "\n[shadow_diurnal] range extremes UNSCORABLE — no hour of this"
+                f" run has {MIN_PTS_PER_HOUR}+ points, so no hour carries a mean"
+                " range (the hour-of-day table above still reads)."
+            )
+        else:
+            print(
+                f"\n[shadow_diurnal] loudest hour {r['loudest_hour_of_day']:02d}Z"
+                f" (mean range {r['loudest_mean_range']}) vs quietest"
+                f" {r['quietest_hour_of_day']:02d}Z ({r['quietest_mean_range']}) —"
+                " read the LEVEL off mean_end_bal, never off mean_min and never"
+                " off a ragged mean_end."
+            )
 
         # Bound 6: the same hour-ends UNAVERAGED, because the column
         # above cannot distinguish a repeating cycle from three unlike

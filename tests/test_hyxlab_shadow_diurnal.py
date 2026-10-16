@@ -1918,12 +1918,52 @@ def test_panel_shortfall_mode_prints_one_line_and_writes_no_report(tmp_path, cap
 
     out_dir = tmp_path / "reports"
     main(["--ledger", str(db), "--out", str(out_dir), "--panel-shortfall"])
-    line = capsys.readouterr().out.strip()
+    captured = capsys.readouterr()
+    line = captured.out.strip()
     assert len(line.splitlines()) == 1
+    # The hold on the daemon-owned ledger is measured and RENDERED (#95),
+    # on stderr so the one-line stdout contract above holds.
+    err = [ln for ln in captured.err.splitlines() if ln.startswith("[shadow_diurnal] attach_wait:")]
+    assert len(err) == 1 and "held 1 for" in err[0] and "0 unmeasured" in err[0], captured.err
+    assert "led.duckdb" in err[0], err[0]
     kind, rid, banked, needed = line.split()
     assert kind == "panel_shortfall" and rid == "LIVE"
     assert int(needed) == 10 and 0 <= int(banked) < int(needed)
     assert not out_dir.exists()  # no report file, and no directory either
+
+
+def test_report_mode_measures_its_hold_on_the_ledger_and_publishes_it(tmp_path, capsys):
+    """The first end-to-end drive of `main`'s report path (2026-10-16).
+    `hyxshadow.duckdb` is the file the shadow daemon persists into every
+    poll; this read-only attach excludes it for the length of
+    `build_diurnal`, and until now nothing said for how long."""
+    from simulator.shadow_diurnal import main
+
+    db = tmp_path / "led.duckdb"
+    src = _live_clock_ledger(6, lambda d, hod: -10.0 + (d - 3.0), run_id="LIVE")
+    dst = duckdb.connect(str(db))
+    for tbl in ("shadow_equity", "shadow_fills", "shadow_settlements"):
+        cols = src.execute(f"describe {tbl}").fetchall()
+        dst.execute(f"create table {tbl} ({', '.join(f'{c[0]} {c[1]}' for c in cols)})")
+        rows = src.execute(f"select * from {tbl}").fetchall()
+        if rows:
+            dst.executemany(f"insert into {tbl} values ({', '.join('?' * len(cols))})", rows)
+    dst.close()
+
+    out_dir = tmp_path / "reports"
+    main(["--ledger", str(db), "--out", str(out_dir)])
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.startswith("[shadow_diurnal] attach_wait:")]
+    assert len(lines) == 1 and "held 1 for" in lines[0] and "0 unmeasured" in lines[0], out
+    report = json.loads(next(out_dir.glob("*.json")).read_text())
+    aw = report["attach_wait"]
+    assert aw["db"] == "led.duckdb" and aw["held_n"] == 1 and aw["held_unknown_n"] == 0, aw
+    # The same drive found the renderer: this fixture has two points per
+    # hour, under MIN_PTS_PER_HOUR, so every `mean_range` is None and the
+    # loudest/quietest headline used to raise on `None:02d` AFTER the JSON
+    # was written -- an unsummarised report. Red on the old code.
+    assert report["runs"][0]["range_extremes"]["loudest_hour_of_day"] is None
+    assert "range extremes UNSCORABLE" in out, out
 
 
 # --- bound 15: the selection, and the looks ---------------------------------

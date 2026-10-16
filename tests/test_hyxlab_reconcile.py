@@ -236,6 +236,13 @@ def test_cli_census_line_prints_both_halves_of_the_split(tmp_path, capsys):
     assert "missing_excluded_by_prefix=2" in out
     assert "missing_in_scope=1" in out
     assert "KXMVE*" in out                 # names WHAT is excluded, not just counts
+    # The census's holds, rendered (2026-10-16): the collector's file twice
+    # (series allowlist, archived-id export) and the stream archive once --
+    # the GROUP BY over the whole trade tape, at the daemon that owns it.
+    lines = [ln for ln in out.splitlines() if ln.startswith("[reconcile] attach_wait:")]
+    assert len(lines) == 1 and "3 attaches" in lines[0], out
+    assert "held 3 across 2 files" in lines[0] and "0 unmeasured" in lines[0], lines[0]
+    assert "lab.duckdb 2 for" in lines[0] and "stream.duckdb 1 for" in lines[0], lines[0]
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +322,11 @@ def test_deferred_work_keeps_the_run_incomplete(tmp_path, monkeypatch):
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["complete"] is False
     assert summary["deferred_by_series_cap"] == 2
+    # The full path's holds: the census's three reads plus every
+    # `writer_burst` the repair took, none unmeasured.
+    aw = summary["attach_wait"]
+    assert aw["held_n"] >= 3 and aw["held_unknown_n"] == 0, aw
+    assert aw["held_n"] == aw["n"] - aw["exhausted_n"], aw
 
 
 # ---------------------------------------------------------------------------

@@ -128,7 +128,7 @@ from collector.sweep import (
 )
 from collector.venues import kalshi
 from hyxlab.lockid import instance_lock_or_reason
-from hyxlab.store import connect_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 
 __all__ = [
     "GRACE_DAYS",
@@ -232,13 +232,13 @@ def time_to_purge_days(
 
 def _allowed_series(db: str, categories: list[str] | None) -> dict[str, str]:
     """series ticker -> category, from ONE short read burst on the archive."""
-    con = connect_retry(db, read_only=True)
-    try:
+    # `held_attach`: `data/hyxlab.duckdb` is the 5-minute collector's file,
+    # so even a "short read burst" excludes a capture cycle for its length
+    # -- measured and published (#91, #96).
+    with held_attach(db, read_only=True) as con:
         rows = con.execute(
             "SELECT ticker, category FROM series WHERE venue='kalshi'"
         ).fetchall()
-    finally:
-        con.close()
     cats = None if categories is None else set(categories)
     return {t: (c or "") for t, c in rows if cats is None or (c or "") in cats}
 
@@ -251,8 +251,7 @@ def _export_archived_ids(db: str, out_path: str) -> int:
     held for milliseconds instead of for the length of a 7.9M-row scan of
     the OTHER database. Readers exclude the 5-min collector's writer.
     """
-    con = connect_retry(db, read_only=True)
-    try:
+    with held_attach(db, read_only=True) as con:
         con.execute(
             f"COPY (SELECT market_id FROM markets WHERE venue='kalshi')"
             f" TO '{out_path}' (FORMAT PARQUET)"
@@ -260,8 +259,6 @@ def _export_archived_ids(db: str, out_path: str) -> int:
         return con.execute(
             "SELECT count(*) FROM markets WHERE venue='kalshi'"
         ).fetchone()[0]
-    finally:
-        con.close()
 
 
 def diff_missing(
@@ -295,8 +292,11 @@ def diff_missing(
     with tempfile.TemporaryDirectory() as tmp:
         ids_path = str(Path(tmp) / "archived_ids.parquet")
         n_archived = _export_archived_ids(db, ids_path)
-        con = connect_retry(stream_db, read_only=True)
-        try:
+        # `held_attach` on the STREAM archive: `collector.streamd` owns it
+        # and flushes every 15s, so this read -- the long one, a GROUP BY
+        # over the whole trade tape -- is a stall at the daemon for its
+        # length (#91, #102). Measured; the line prints after the release.
+        with held_attach(stream_db, read_only=True) as con:
             con.execute("CREATE TEMP TABLE _allowed(series VARCHAR, category VARCHAR)")
             if allowed:
                 con.executemany(
@@ -350,8 +350,6 @@ def diff_missing(
                 + " ORDER BY s.last_ts ASC, s.series, s.market_id LIMIT ?",
                 [*params, int(scan_limit)],
             ).fetchall()
-        finally:
-            con.close()
 
     missing = [
         Missing(mid, ser, cat or "", ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts)
@@ -776,6 +774,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     now = datetime.now(UTC)
+    reset_attach_waits()
 
     if args.probe_horizon:
         print(f"purge-horizon probe ({datetime.now(UTC):%Y-%m-%dT%H:%MZ}), "
@@ -823,6 +822,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         print("  DRY RUN — no requests made, nothing written.")
+        # The census held two files (the collector's twice, the stream
+        # archive once); the dry run's whole reading is stdout, so the
+        # hold goes there through the one renderer (#95).
+        print(attach_wait_line(attach_wait_block(), prefix="[reconcile]"))
         return 2 if census["missing_total"] else 0
 
     # Single-INSTANCE guard, taken here rather than at startup: the
@@ -853,6 +856,12 @@ def main(argv: list[str] | None = None) -> int:
         and not dropped
         and census["missing_total"] <= census["missing_scanned"]
     )
+    # After every RELEASE: the census's three read attaches plus one
+    # `writer_burst` (`held_open`) per repaired batch, process-wide
+    # because two files were held. In the summary JSON and on its own
+    # journal line -- a block serialised but never rendered is #95.
+    summary["attach_wait"] = attach_wait_block()
+    print(attach_wait_line(summary["attach_wait"], prefix="[reconcile]"))
     print(f"[reconcile] {summary}")
     try:
         Path(args.summary).parent.mkdir(parents=True, exist_ok=True)

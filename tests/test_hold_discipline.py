@@ -230,6 +230,10 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # this repo with nowhere to say so (the `simui`/`backup`/`bookreplay`/
         # `streamstore` attaches are the same debt, still unpaid).
         "collector/qa.py",
+        # The archive reconciliation (2026-10-16): hand-run, but its census
+        # holds the collector's file twice and the daemon-owned stream
+        # archive once -- across a GROUP BY over the whole trade tape.
+        "collector/reconcile.py",
         # The daily ALFRED/GDELT pull (2026-10-16): a timer unit that holds
         # the 5-minute collector's file twice per run, once read-only for
         # the watermark and once read-write inside the writer flock, and
@@ -261,6 +265,10 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # The shadow outcome-coverage report (2026-10-16): holds the shadow
         # ledger AND the collector's file, both bare until now.
         "simulator/shadow_coverage.py",
+        # The shadow diurnal report (2026-10-16): two read-only attaches on
+        # the ledger the shadow daemon owns; `--panel-shortfall` runs on
+        # every promote that moves shadow's closure.
+        "simulator/shadow_diurnal.py",
         # Not a report -- a daemon. It publishes into its own ledger table
         # and its 300s journal line, which is what brought the repo's
         # largest unmeasured hold under this rule (2026-09-27).
