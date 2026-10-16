@@ -26,13 +26,14 @@ import argparse
 import sys
 import time
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import requests
 
 from collector.sweep import FLUSH_ROWS, writer_burst
 from collector.venues import iem, kalshi
 from hyxlab.lockid import instance_lock_or_reason
-from hyxlab.store import open_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 
 WEATHER_SERIES = ["KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHAUS", "KXHIGHDEN"]
 
@@ -138,7 +139,7 @@ def backfill_iem(
     return n_obs, n_fc
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="hyxlab historical backfill")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
     ap.add_argument("--days", type=int, default=365)
@@ -146,7 +147,8 @@ def main() -> None:
     ap.add_argument("--stations", nargs="*", default=list(iem.STATION_ICAO))
     ap.add_argument("--skip-kalshi", action="store_true")
     ap.add_argument("--skip-iem", action="store_true")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    reset_attach_waits()
 
     # Single-INSTANCE guard: a --days 365 pass is 5 series x up to 50
     # pages plus a candle call per settled market at 0.35 s apart, hours
@@ -170,11 +172,13 @@ def main() -> None:
     finally:
         lock.close()
     # The closing summary is a READ; it must not re-take the writer lock.
-    store = open_retry(args.db, read_only=True)
-    try:
-        print(f"[backfill] db={store.counts()}")
-    finally:
-        store.close()
+    # `held_open`, like every `writer_burst` above: this is the 5-minute
+    # collector's file, and the line after the release is the run's whole
+    # exclusion of it -- every burst plus this read (#91, #96).
+    with held_open(args.db, read_only=True) as store:
+        counts = store.counts()
+    print(attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[backfill]"))
+    print(f"[backfill] db={counts}")
 
 
 if __name__ == "__main__":

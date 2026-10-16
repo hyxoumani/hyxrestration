@@ -42,9 +42,10 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from collector.sweep import writer_burst
-from hyxlab.store import open_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 
 DEFAULT_UNIT = "hyxlab-poly-sweep"
 MARKER = "stopped early at"
@@ -117,25 +118,30 @@ def resolve_prefixes(store, prefixes: list[str]) -> dict[str, str]:
     return {r[0]: r[1] for r in rows}
 
 
-def main() -> int:
+def _attach_line(db: str) -> str:
+    """The run's holds on the collector's file, through the one renderer
+    (#95): the read-only resolve plus, under --commit, the writer burst."""
+    return attach_wait_line(attach_wait_block(db=Path(db).name), prefix="[tailfill]")
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--db", default="data/hyxlab.duckdb")
     ap.add_argument("--unit", default=DEFAULT_UNIT)
     ap.add_argument("--commit", action="store_true", help="write the rows (default: report only)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    reset_attach_waits()
 
     stops = parse_stops(read_journal(args.unit))
     print(f"[tailfill] {len(stops)} stop line(s) parsed from {args.unit}")
     if not stops:
         return 0
 
-    store = open_retry(args.db, read_only=True)
-    try:
+    # `held_open`: the 5-minute collector's file, measured (#91, #96).
+    with held_open(args.db, read_only=True) as store:
         floor = store.conn.execute("SELECT min(stopped_at) FROM poly_tail_stops").fetchone()[0]
         prefixes = sorted({s[0] for s in stops})
         ids = resolve_prefixes(store, prefixes)
-    finally:
-        store.close()
 
     unresolved = [p for p in prefixes if p not in ids]
     if unresolved:
@@ -162,11 +168,13 @@ def main() -> int:
     )
     if not args.commit:
         print("[tailfill] dry run — pass --commit to write")
+        print(_attach_line(args.db))
         return 0
 
     with writer_burst(args.db) as store:
         n = store.insert_poly_tail_stops(rows)
     print(f"[tailfill] inserted {n} new row(s) ({len(rows) - n} already present)")
+    print(_attach_line(args.db))
     return 0
 
 

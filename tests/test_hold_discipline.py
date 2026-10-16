@@ -229,6 +229,11 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # both live archives and, until 2026-09-28, was the largest hold in
         # this repo with nowhere to say so (the `simui`/`backup`/`bookreplay`/
         # `streamstore` attaches are the same debt, still unpaid).
+        # The two hand-run backfills (2026-10-16): every write already went
+        # through `writer_burst` (`held_open`), and the one bare read each --
+        # the closing census, the prefix resolve -- is what this closes.
+        "collector/backfill.py",
+        "collector/poly_tail_backfill.py",
         "collector/qa.py",
         # The archive reconciliation (2026-10-16): hand-run, but its census
         # holds the collector's file twice and the daemon-owned stream
@@ -266,6 +271,9 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         "simulator/run_favlong.py",
         "simulator/run_favlong_tight.py",
         "simulator/run_l2.py",
+        # The documented strategy replay (2026-10-16): same shape as
+        # `run_backtest`, the whole snapshot table from the collector's file.
+        "simulator/run_sim.py",
         # The shadow PnL attribution (2026-10-16): read-only on the ledger
         # the shadow daemon owns and persists into every poll.
         "simulator/shadow_attribution.py",
