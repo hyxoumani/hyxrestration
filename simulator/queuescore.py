@@ -880,6 +880,13 @@ def main() -> None:
     # listed as debt in `tests/test_hold_discipline.py`: a standing report
     # holding a daemon's archive with nowhere to say for how long (#91, #102).
     with held_attach(args.stream_db) as conn:
+        # UNBOUNDED ON PURPOSE -- the one read in this path that must NOT
+        # carry the #124 venue/window bound. A bare `max(recv_ts)` is folded
+        # from the table's statistics (measured 2026-10-16 over 1.23e9 rows:
+        # 0.085s, EXPLAIN ANALYZE total 0.0000s); the same aggregate under
+        # `WHERE venue='kalshi'` loses the fold and scans the column, 2.96s,
+        # 35x more and all of it a hold on streamd's file
+        # (`tests/test_hyxlab_queuescore.py` pins the form).
         since = conn.execute(
             "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
             [int(args.hours)],

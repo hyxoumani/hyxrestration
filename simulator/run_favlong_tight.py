@@ -21,9 +21,10 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict
+from pathlib import Path
 from statistics import median_low
 
-from hyxlab.store import open_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 from simulator.capabilities import candle_feed_caps
 from simulator.harness import data_fingerprint, write_manifest
 from simulator.iterate import deflated_sharpe
@@ -141,15 +142,20 @@ def main() -> None:
     ap.add_argument("--db", default="data/hyxlab.duckdb")
     args = ap.parse_args()
 
-    store = open_retry(args.db, read_only=True)
-    markets = store.markets()
-    snapshots = store.candles_as_snapshots()
-    categories = dict(
-        store.conn.execute(
-            "SELECT ticker, coalesce(category, '?') FROM series WHERE venue='kalshi'"
-        ).fetchall()
-    )
-    store.close()
+    reset_attach_waits()
+    # `held_open`: this is the 5-minute collector's file, and the hold is
+    # the whole load (markets + every candle + the series table), not a
+    # query -- measured and printed after the release (#91, #96).
+    with held_open(args.db, read_only=True) as store:
+        markets = store.markets()
+        snapshots = store.candles_as_snapshots()
+        categories = dict(
+            store.conn.execute(
+                "SELECT ticker, coalesce(category, '?') FROM series WHERE venue='kalshi'"
+            ).fetchall()
+        )
+    # After the release: `held_s` is charged by the close.
+    print(attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[favlong]"))
 
     print(f"== replaying {len(snapshots)} candle-snapshots over {len(markets)} markets ==")
     strats = []
@@ -169,8 +175,7 @@ def main() -> None:
         settled[f.strategy].append((f, info, payout))
 
     blocks = {
-        label: _band_block(spec, settled[spec["name"]], categories)
-        for label, spec in BANDS.items()
+        label: _band_block(spec, settled[spec["name"]], categories) for label, spec in BANDS.items()
     }
     for label, block in blocks.items():
         lo, hi = BANDS[label]["band"]

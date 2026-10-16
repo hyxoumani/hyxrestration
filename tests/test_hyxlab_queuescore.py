@@ -1030,3 +1030,28 @@ def test_select_markets_ignores_deltas_outside_the_window(tmp_path):
     top = select_markets(conn, T0 - timedelta(minutes=1), top_n=8)
     conn.close()
     assert top == ["KXHIGHNY-26JUL13-B84.5"]
+
+
+def test_the_window_aggregate_stays_unbounded():
+    """The one read in `main` that must NOT carry the #124 bound.
+
+    `since` is `max(recv_ts)` over `book_events`, and bare, DuckDB folds
+    it from the table's statistics: measured 2026-10-16 over 1,233,940,516
+    rows, 0.085s with an EXPLAIN ANALYZE total of 0.0000s. The same
+    aggregate under `WHERE venue='kalshi'` loses the fold and scans the
+    column -- 2.96s, 35x more, every second of it a hold on the file
+    `collector.streamd` owns. "Bound every read" is the rule for a
+    correlated scan; for a statistics-folded aggregate it is the regression.
+    """
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "simulator/queuescore.py").read_text()
+    body = src.split("def main(", 1)[1]
+    aggs = re.findall(r'"SELECT max\(recv_ts\)[^"]*"', body)
+    assert aggs == [
+        '"SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events"'
+    ], (
+        "the window aggregate is folded from statistics only while it is bare;"
+        f" a WHERE there is a 1.2e9-row column scan under the daemon's lock: {aggs}"
+    )

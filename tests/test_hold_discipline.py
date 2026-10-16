@@ -240,6 +240,11 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # written, so the rule above could not see a hold it never reported.
         "simulator/queuescore.py",
         "simulator/run_econ_claims.py",
+        # The closed fav-long registrations (2026-10-16): run by hand only,
+        # but each loads the WHOLE candle table from the 5-minute
+        # collector's file through what was a bare `open_retry`.
+        "simulator/run_favlong.py",
+        "simulator/run_favlong_tight.py",
         "simulator/run_l2.py",
         # Not a report -- a daemon. It publishes into its own ledger table
         # and its 300s journal line, which is what brought the repo's

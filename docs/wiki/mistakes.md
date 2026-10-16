@@ -3251,6 +3251,16 @@ Format: what happened → root cause → error type → prevention tier
     rate, and the archive grows on another venue's schedule. The
     weather-vs-econ asymmetry was the tell -- econ held 60s (3.5x 10-07)
     and survived only because `--series` shrank the OUTER query.
+    COROLLARY, measured 2026-10-16 02:16Z before the rule could be
+    over-applied: the OTHER read in that path, `since = max(recv_ts) FROM
+    book_events`, is cheap ONLY while it is unbounded. Bare, DuckDB folds
+    it from the table's statistics -- 0.085s over 1,233,940,516 rows,
+    EXPLAIN ANALYZE total 0.0000s; under `WHERE venue='kalshi'` the fold is
+    lost and the column is scanned, 2.96s, 35x more, all of it a hold on
+    streamd's file. "Bound every read" is a rule about correlated scans;
+    a statistics-folded aggregate is the one shape it makes worse, and
+    `tests/test_hyxlab_queuescore.py` now pins the bare form (red against
+    the bounded mutant).
 
 ## Pattern analysis (Step 5)
 
