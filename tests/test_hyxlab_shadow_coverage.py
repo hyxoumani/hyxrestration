@@ -601,3 +601,51 @@ def test_runs_with_gap_over_grace_counts_runs_not_gaps():
     pooled = build_coverage(ledger, markets)["pooled"]
     assert pooled["tick_gap"]["over_grace_n"] == 3
     assert pooled["runs_with_gap_over_grace"] == 1
+
+
+def test_main_measures_both_holds(tmp_path, monkeypatch, capsys):
+    """The report holds two files owned by other processes -- the shadow
+    daemon's ledger and the 5-minute collector's archive -- and until
+    2026-10-16 held both bare. Driven end-to-end on file-backed copies:
+    two measured holds, one line through the one renderer, the block in
+    the report."""
+    import json
+
+    from simulator import shadow_coverage
+
+    ledger_db = tmp_path / "hyxshadow.duckdb"
+    conn = duckdb.connect(str(ledger_db))
+    conn.execute("CREATE TABLE shadow_runs (run_id VARCHAR, started_at TIMESTAMP)")
+    conn.execute(
+        "CREATE TABLE shadow_fills (run_id VARCHAR, market_id VARCHAR, qty DOUBLE, price DOUBLE)"
+    )
+    conn.execute("CREATE TABLE shadow_equity (run_id VARCHAR, ts TIMESTAMP)")
+    conn.close()
+    markets_db = tmp_path / "hyxlab.duckdb"
+    conn = duckdb.connect(str(markets_db))
+    conn.execute(
+        "CREATE TABLE markets (market_id VARCHAR, close_time TIMESTAMP,"
+        " result VARCHAR, updated_at TIMESTAMP)"
+    )
+    conn.close()
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "shadow_coverage",
+            "--ledger",
+            str(ledger_db),
+            "--db",
+            str(markets_db),
+            "--out",
+            str(out_dir),
+        ],
+    )
+    shadow_coverage.main()
+    text = capsys.readouterr().out
+    lines = [ln for ln in text.splitlines() if ln.startswith("[shadow_coverage] attach_wait:")]
+    assert len(lines) == 1 and "2 attaches" in lines[0], text
+    assert "held 2 across 2 files" in lines[0] and "0 unmeasured" in lines[0], lines[0]
+    assert "hyxlab.duckdb 1 for" in lines[0] and "hyxshadow.duckdb 1 for" in lines[0], lines[0]
+    report = json.loads(next(out_dir.glob("*.json")).read_text())
+    assert report["attach_wait"]["held_n"] == 2 and report["attach_wait"]["held_unknown_n"] == 0

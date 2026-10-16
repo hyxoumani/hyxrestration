@@ -109,7 +109,7 @@ import statistics
 from datetime import UTC, datetime
 from pathlib import Path
 
-from hyxlab.store import connect_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 
 # Runs pooled into the `recent` block. Five is the span over which the
 # live ledger first read 100% unobserved, so it is the window that shows
@@ -525,13 +525,17 @@ def main() -> None:
     ap.add_argument("--out", default="reports/shadow_coverage")
     args = ap.parse_args()
 
-    ledger = connect_retry(args.ledger)
-    markets_conn = connect_retry(args.db)
-    try:
+    reset_attach_waits()
+    # `held_attach` on BOTH: `hyxshadow.duckdb` is the file the shadow daemon
+    # persists into every poll and `hyxlab.duckdb` the 5-minute collector's,
+    # and this report held each bare, read-only, for its whole build -- so
+    # both holds are measured and published (#91, #96, #102). The block is
+    # process-wide, not `db=`-scoped, because two files are held here.
+    with held_attach(args.ledger) as ledger, held_attach(args.db) as markets_conn:
         report = build_coverage(ledger, markets_conn)
-    finally:
-        ledger.close()
-        markets_conn.close()
+    # After the RELEASE: `held_s` is charged by the close.
+    report["attach_wait"] = attach_wait_block()
+    print(attach_wait_line(report["attach_wait"], prefix="[shadow_coverage]"))
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

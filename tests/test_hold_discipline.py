@@ -258,6 +258,9 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # The shadow PnL attribution (2026-10-16): read-only on the ledger
         # the shadow daemon owns and persists into every poll.
         "simulator/shadow_attribution.py",
+        # The shadow outcome-coverage report (2026-10-16): holds the shadow
+        # ledger AND the collector's file, both bare until now.
+        "simulator/shadow_coverage.py",
         # Not a report -- a daemon. It publishes into its own ledger table
         # and its 300s journal line, which is what brought the repo's
         # largest unmeasured hold under this rule (2026-09-27).
