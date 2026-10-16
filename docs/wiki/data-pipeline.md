@@ -807,7 +807,19 @@ self-match trap the ops rules name for `pkill -f`.
   711, residual +29 min, 1.3 sd, after +22 on 10-15 -- two positive
   residuals in a row, so the per-market rate may be edging up from 0.50
   s; the 10-17 attribution line is the read). Budget crossing at the
-  fit is ~77.8k markets; the 10-14 run swept 74.3k.
+  fit is ~77.8k markets; the 10-14 run swept 74.3k. **Decomposed by
+  hand-differencing `sweep_log` over 10-14 / 10-15 / 10-16** (read
+  20:58Z 10-16): the 33 ladders (>= 200 markets, BTC15M aside) cost
+  528 / 454 / 538 min for 69,536 / 59,847 / 68,773 markets = 0.456 /
+  0.456 / **0.469** s/mkt; the ~3,900 small series a flat 170 / 154 /
+  156 min at 2.4-2.6 s/series (the fit's intercept); KXBTC15M 49.8 /
+  46.9 / 46.6 min at 30.4-30.9 s/mkt. So the 10-16 residual is a +2.9%
+  ladder rate on one day, carried by KXSOLE and KXETH (0.44 -> 0.47)
+  while KXSOLD/KXETHD held 0.43-0.44 -- one day, not a trend; the
+  attribution line reads it daily from 10-17. Budget headroom restated
+  on the ladders, which is where the listings grow: 750 - 156 - 47 =
+  ~547 min for ladders = ~70k ladder markets at 0.469 s; 10-14 swept
+  69.5k of them. ~2% headroom, not the linear fit's ~4%.
 - **The sweep's `~N min left` is weighted by the previous run's
   per-series wall** (2026-10-16, `collector.sweep.prior_series_wall` /
   `eta_minutes`; first production line at the 10-17 06:10Z run). The old
