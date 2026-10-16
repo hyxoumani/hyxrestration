@@ -65,10 +65,6 @@ ALLOWED: dict[str, tuple[str, str]] = {
         "names the lock holder from the error text, so QA can distinguish a"
         " live writer from an unreachable file instead of crying wolf",
     ),
-    "simulator/simui/session.py::_connect_ro": (
-        "RETRY",
-        "8x0.75s — a UI must fail fast, not hang for the helper's 30s",
-    ),
     # `collector/sweep.py::main` was here with "5 attempts then exit
     # nonzero, so systemd records a failed doctor run". Its hand-rolled
     # loop is gone (2026-09-28): the same ladder is `held_open(...,
@@ -79,7 +75,7 @@ ALLOWED: dict[str, tuple[str, str]] = {
     # -- degrade: continues without the data ------------------------------
     "simulator/simui/session.py::_try_load_markets": (
         "DEGRADE",
-        "UI falls back to bare tickers",
+        "UI falls back to bare tickers; the hold is measured (held_store) and printed per request",
     ),
     "collector/sweep.py::doctor": ("DEGRADE", "prints the archive line without stream counts"),
     "simulator/shadow.py::ShadowRunner._try_load_markets": (

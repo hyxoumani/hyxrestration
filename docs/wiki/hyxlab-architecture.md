@@ -131,7 +131,11 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   (a restart drops a live paper session) — it prints a NOTICE instead,
   so "not restarted" is not spelled "not mentioned". session.py
   (ReplaySession; every metadata load is bounded to the ids it renders;
-  seek = flat restart; chunked advance proven ≡ one-shot sim.run),
+  seek = flat restart; chunked advance proven ≡ one-shot sim.run;
+  since 2026-10-16 every attach -- the stream archive under `_held_ro`,
+  the collector's file under `held_store` -- is a measured hold printed
+  as a one-row `[simui] <request> attach_wait:` journal line per
+  request, because the server has no artifact for a block),
   server.py (websockets clock, guarded — errors log+pause, never die
   silently), static/index.html (single-file Kalshi-style UI with WS
   auto-reconnect). Design: `docs/plans/simui/plan.md`.

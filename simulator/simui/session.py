@@ -21,7 +21,6 @@ Honesty rules (see docs/plans/simui/plan.md):
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -29,7 +28,7 @@ from datetime import UTC, datetime, timedelta
 import duckdb
 
 from hyxlab.models import Cancel, MarketInfo, Order
-from hyxlab.store import Store, duck_connect
+from hyxlab.store import _LAST_ATTACH, attach_wait_block, attach_wait_line, held_attach, held_store
 from hyxlab.streamstore import BookEvent, StreamTrade
 from simulator.bookreplay import BookReplayer, replay_snapshots
 from simulator.capabilities import LIVE_VENUE_CAPS
@@ -73,17 +72,37 @@ class ManualTrader(Strategy):
 # -- catalog ----------------------------------------------------------------
 
 
-def _connect_ro(path: str, attempts: int = 8, wait: float = 0.75):
-    """The stream daemon / collector may hold the write lock for a burst;
-    retry briefly instead of failing the UI."""
-    last: duckdb.Error | None = None
-    for _ in range(attempts):
-        try:
-            return duck_connect(path, read_only=True)
-        except duckdb.Error as e:  # pragma: no cover - timing dependent
-            last = e
-            time.sleep(wait)
-    raise last
+def _held_ro(path: str, attempts: int = 8, wait: float = 0.75):
+    """A read-only attach on a file a daemon owns, with the hold MEASURED.
+
+    The stream daemon / collector may hold the write lock for a burst, so
+    the ladder is short (8 x 0.75s: a UI must fail fast, not hang for the
+    helper's 30s default) -- but the ladder is only half the cost. The
+    other half is what THIS attach costs the daemon, and `list_events`
+    runs a GROUP BY over every kalshi `book_events` row under it (the same
+    long shape as QA's 26s hold, #102). `held_attach` times the hold from
+    the open to the close and charges it to the ledger row; `_report_hold`
+    prints it, because simui has no artifact for a block to live in.
+    """
+    return held_attach(path, read_only=True, retries=attempts, delay=wait)
+
+
+def _report_hold(what: str) -> None:
+    """One journal line for the hold the calling thread just released.
+
+    Per REQUEST, not cumulative: the server runs every session call under
+    `asyncio.to_thread`, which copies the context, so `_LAST_ATTACH` is the
+    row this call's own open recorded (a refused attach records no row
+    there -- it held nothing). An explicit one-row population through
+    `attach_wait_block`, rendered by the one renderer (mistakes #95); a
+    process-wide block would be every request since the unit started.
+    """
+    row = _LAST_ATTACH.get()
+    if row is None:  # pragma: no cover - only when nothing attached
+        return
+    print(
+        attach_wait_line(attach_wait_block([row], db=row.db), prefix=f"[simui] {what}"), flush=True
+    )
 
 
 def _event_ticker(market_id: str) -> str:
@@ -105,24 +124,28 @@ def _try_load_markets(
     markets simply have no metadata row stops asking instead of retrying
     forever.
     """
+    opened = False
     try:
-        store = Store(archive_db, read_only=True)
+        with held_store(archive_db, read_only=True) as store:
+            opened = True
+            infos = store.markets(venue="kalshi", market_ids=market_ids)
     except duckdb.Error:
+        if opened:  # a query error is not "the archive is unavailable"
+            raise
         return None
-    try:
-        return store.markets(venue="kalshi", market_ids=market_ids)
-    finally:
-        store.close()
+    _report_hold("markets")
+    return infos
 
 
 def list_events(stream_db: str = STREAM_DB, archive_db: str = ARCHIVE_DB) -> list[dict]:
     """Replayable Kalshi event groups in the stream archive, most book
     activity first."""
-    with _connect_ro(stream_db) as conn:
+    with _held_ro(stream_db) as conn:
         rows = conn.execute(
             "SELECT market_id, count(*), min(recv_ts), max(recv_ts)"
             " FROM book_events WHERE venue = 'kalshi' GROUP BY market_id"
         ).fetchall()
+    _report_hold("list_events")
     infos = _try_load_markets(archive_db, [r[0] for r in rows]) or {}
     events: dict[str, dict] = {}
     for market_id, n, t0, t1 in rows:
@@ -461,7 +484,7 @@ def load_session(
     start_cash: float = 1000.0,
 ) -> ReplaySession:
     """Load one event group's archive slice into a fresh session."""
-    with _connect_ro(stream_db) as conn:
+    with _held_ro(stream_db) as conn:
         ev_rows = conn.execute(
             "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side,"
             " price, qty FROM book_events WHERE venue = 'kalshi'"
@@ -477,14 +500,14 @@ def load_session(
         gaps = conn.execute(
             "SELECT started_at, ended_at FROM stream_gaps ORDER BY started_at"
         ).fetchall()
+    _report_hold("load_session")
     events = [BookEvent(*r) for r in ev_rows]
     if not events:
         raise ValueError(f"no archived book events for event {event!r}")
     market_ids = sorted({e.market_id for e in events})
     infos = _try_load_markets(archive_db, market_ids)
     markets = {
-        ("kalshi", m): (infos or {}).get(("kalshi", m), MarketInfo("kalshi", m))
-        for m in market_ids
+        ("kalshi", m): (infos or {}).get(("kalshi", m), MarketInfo("kalshi", m)) for m in market_ids
     }
     return ReplaySession(
         market_ids,

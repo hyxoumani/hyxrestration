@@ -227,8 +227,10 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
     assert set(publishers()) == {
         # Not a report about data either -- the daily QA run, which reads
         # both live archives and, until 2026-09-28, was the largest hold in
-        # this repo with nowhere to say so (the `simui`/`bookreplay`/
-        # `streamstore` attaches are the same debt, still unpaid).
+        # this repo with nowhere to say so. `bookreplay` attaches only its
+        # own scratch `reader.duckdb` and `streamstore` IS the owner's writer,
+        # so neither holds a file anyone else wants; the simui debt is paid
+        # below.
         # The nightly backup (2026-10-16): the one unit that holds ALL THREE
         # live files every day. It printed a hand-clocked `hold` for weeks,
         # started after the open and read before the release, and silent on
@@ -279,6 +281,13 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # The documented strategy replay (2026-10-16): same shape as
         # `run_backtest`, the whole snapshot table from the collector's file.
         "simulator/run_sim.py",
+        # The market-replay UI (2026-10-16): per-request attaches on the
+        # daemon-owned stream archive (a GROUP BY over every kalshi book
+        # event under `list_events`) and on the collector's file, through
+        # `held_attach`/`held_store`, each printed as a one-row block
+        # because the server has no artifact. Reaches production at the
+        # next simui restart (promote NOTICEs, never restarts it).
+        "simulator/simui/session.py",
         # The shadow PnL attribution (2026-10-16): read-only on the ledger
         # the shadow daemon owns and persists into every poll.
         "simulator/shadow_attribution.py",

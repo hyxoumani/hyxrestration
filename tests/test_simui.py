@@ -300,8 +300,13 @@ def test_chunked_session_replay_equals_one_shot_run():
 
     # Path B: session advanced in random-size time chunks.
     s = ReplaySession(
-        mids, list(events), [], list(gaps), markets,
-        strategies_factory=lambda: [probe()], latency=2.0,
+        mids,
+        list(events),
+        [],
+        list(gaps),
+        markets,
+        strategies_factory=lambda: [probe()],
+        latency=2.0,
     )
     rng = random.Random(99)
     cur = s.t_min
@@ -317,3 +322,38 @@ def test_chunked_session_replay_equals_one_shot_run():
     accts = s._accounts()
     total_delta = sum(a["equity"] - s.start_cash for a in accts.values())
     assert total_delta == pytest.approx(s.sim._equity())
+
+
+def test_every_simui_attach_is_a_measured_hold_with_a_line(tmp_path, capsys):
+    """The UI holds a daemon-owned archive per request; each hold is charged
+    to the ledger row its open recorded and printed as a one-row block."""
+    from hyxlab import store as hs
+
+    db = str(tmp_path / "hyxstream.duckdb")
+    st = StreamStore(db)
+    st.append_events(image(mid="KXTEST-26JUL07-B1.5"))
+    st.flush()
+    archive = str(tmp_path / "hyxlab.duckdb")
+    hs.Store(archive).close()  # an empty but openable collector's file
+    hs.reset_attach_waits()
+    list_events(stream_db=db, archive_db=archive)
+    load_session("KXTEST-26JUL07", stream_db=db, archive_db=archive, latency=0.0)
+    rows = hs.attach_waits()
+    assert [w.db for w in rows] == ["hyxstream.duckdb", "hyxlab.duckdb"] * 2
+    assert all(w.held_s is not None for w in rows), "an attach whose hold nobody charged"
+    out = capsys.readouterr().out.splitlines()
+    lines = [ln for ln in out if "attach_wait:" in ln]
+    assert [ln.split()[1] for ln in lines] == ["list_events", "markets", "load_session", "markets"]
+    assert all("1 attaches" in ln and "held 1 for" in ln for ln in lines)
+
+
+def test_an_unavailable_archive_still_degrades_to_bare_tickers(tmp_path, capsys):
+    """DEGRADE kept: a refused/missing collector's file is None (bare tickers),
+    prints no hold line -- it held nothing -- and a missing file does not
+    leave a row the next request's line would be charged to."""
+    from hyxlab import store as hs
+    from simulator.simui.session import _try_load_markets
+
+    hs.reset_attach_waits()
+    assert _try_load_markets(str(tmp_path / "missing.duckdb"), ["KXTEST-26JUL07-B1.5"]) is None
+    assert "attach_wait:" not in capsys.readouterr().out
