@@ -555,7 +555,20 @@ def run_sweep(
     t0 = time.monotonic()
     consec_errors = 0
     consec_lock_skips = 0
+    # ticker -> (wall seconds, markets). The run's budget (`qa.BATCH_RUN_BUDGET_H`,
+    # 12.5h) is spent per SERIES and nothing recorded which: the journal has one
+    # line per 100 series and `sweep_log` a timestamp per series, so a breach
+    # could be attributed only by hand-differencing 3,900 `swept_at` values. On
+    # 2026-10-16 that hand read found the 10-15 run's 655 min to be 61% crypto
+    # ladders at a flat ~0.45 s/market -- and ONE series, KXBTC15M, at 47 min
+    # for 91 markets (31 s/market: ~3.5M trade prints a day), 7% of the wall
+    # for 0.15% of the markets, every day for a week. The breach the budget
+    # check exists to print needs that table on the same journal, so the loop
+    # keeps it and `wall_attribution_line` renders it.
+    series_wall: dict[str, tuple[float, int]] = {}
     for i, ticker in enumerate(targets):
+        s0 = time.monotonic()
+        n_m = 0
         # Per-series raises ride the DEFAULT budget only; an explicit
         # --max-markets (or 0 = unbounded) wins uniformly, so a --limit
         # smoke test never burns an hour draining 8,000 KXETH markets.
@@ -630,6 +643,7 @@ def run_sweep(
                     flush=True,
                 )
                 break
+        series_wall[ticker] = (time.monotonic() - s0, n_m)
         if (i + 1) % 100 == 0:
             rate = (i + 1) / (time.monotonic() - t0)
             eta_min = (len(targets) - i - 1) / rate / 60
@@ -641,7 +655,48 @@ def run_sweep(
             )
     totals["tapes_skipped"] = _TAPES_SKIPPED
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
+    totals["slowest"] = slowest_series(series_wall)
+    print(wall_attribution_line(series_wall, time.monotonic() - t0), flush=True)
     return totals
+
+
+#: How many series the attribution line names. Five covered 29% of the 10-15
+#: run's wall (KXBTC15M, KXETHD, KXSOLD, KXSOLE, KXETH) and every one of the
+#: series whose per-market cost was not the flat ~0.45s.
+ATTRIBUTION_TOP_N = 5
+
+
+def slowest_series(series_wall: dict[str, tuple[float, int]]) -> list[tuple[str, float, int]]:
+    """`(ticker, wall_s, markets)` for the `ATTRIBUTION_TOP_N` longest series,
+    longest first -- the done dict's copy of the line below, so an analyst
+    reading `totals` is not sent back to the journal (mistakes #46)."""
+    ranked = sorted(series_wall.items(), key=lambda kv: kv[1][0], reverse=True)
+    return [(t, round(w, 1), n) for t, (w, n) in ranked[:ATTRIBUTION_TOP_N]]
+
+
+def wall_attribution_line(series_wall: dict[str, tuple[float, int]], elapsed_s: float) -> str:
+    """ONE journal line: where the run's wall clock went, by series.
+
+    Each entry prints minutes, markets and seconds per market, because the
+    per-market rate is the number that separates "many markets" (a listing
+    count, which only a category decision changes) from "expensive markets"
+    (a per-market cost, which a tape or candle rule changes): the 10-15 run's
+    top five were 0.43-0.45 s/market except the one at 30.9. The share is of
+    the whole run's elapsed, not of the series sum, so the line is honest
+    about overhead outside the loop (the listing refresh, the closing burst).
+    """
+    if not series_wall:
+        return "[sweep] wall attribution: no series ran"
+    top = slowest_series(series_wall)
+    top_s = sum(w for _, w, _ in top)
+    share = 100.0 * top_s / elapsed_s if elapsed_s > 0 else 0.0
+    parts = ", ".join(
+        f"{t} {w / 60:.1f}min/{n} mkts ({w / max(n, 1):.1f} s/mkt)" for t, w, n in top
+    )
+    return (
+        f"[sweep] wall attribution: top {len(top)} of {len(series_wall)} series"
+        f" = {top_s / 60:.1f} of {elapsed_s / 60:.1f} min ({share:.0f}%): {parts}"
+    )
 
 
 def doctor(store: Store) -> None:

@@ -758,6 +758,36 @@ self-match trap the ops rules name for `pkill -f`.
   to one is a per-market cost or a category decision, never a
   budget bump (the fade-window clearance has 4.3h to spare, so the
   bump would be free and would say nothing).
+- **Where the sweep's wall goes, per series (measured 2026-10-16 from
+  `sweep_log.swept_at` differences -- each series writes its row in its
+  own closing burst, so consecutive gaps are per-series wall; the method
+  reproduces the 10-15 done line, 655.4 vs 655.7 min).** 10-15 run:
+  16 series over 10 min = 420.5 of 655.4 min (64%) for 50,327 of 64,026
+  markets (79%); crypto families (BTC/ETH/SOL/BNB/DOGE/XRP/HYPE/CRYPTO)
+  399.7 min (61%) for 44,653 markets. The big ladders are a FLAT
+  0.43-0.52 s/market (KXETHD 5,440 mkts 40.4 min; KXSOLD/KXSOLE 5,475
+  each 40.0; KXETH 38.8; KXBTCD 33.4; KXBTC 30.2; KXPLATINUMH 23.5;
+  KXNASDAQ100U 22.4; KXHYPED/KXHYPE 22.2/19.4 truncated at budget) --
+  so for them wall IS listing count, as the paragraph above says. The
+  exception is the 15-minute family, which costs per PRINT, not per
+  market: **KXBTC15M 44-51 min on every run 10-11..10-15 for 91-98
+  markets (27.8-31.8 s/market)** -- 13-14 mid-series flushes of ~275k
+  trades = ~3.5-4M prints a day for ~96 fifteen-minute markets, 7% of
+  the run's wall for 0.15% of its markets; KXETH15M 7-9 min (4.6-5.3
+  s/mkt), KXGOLD15M 7-8 (4.7-5.1), KXXRP15M 4.5-6.8 (3.3-4.2), KXSOL15M
+  3.7-5 (2.6-3.1), KXDOGE15M 3-4 (2.0-2.6); the family 92-115 min/run
+  since 10-11 (23-30 before it). Per run 10-09..10-15: 678 / 639 / 617
+  / 653 / 676 / 748 / 655 min. So a breach has two candidate responses
+  and the attribution line tells them apart: a per-market cost (the
+  BTC15M tape, ~50 min = 6.7% of the 12.5h budget, more than the ~4%
+  headroom the 10-14 run left) or a category decision (the crypto
+  ladders, 61% at the flat rate). Neither is taken until a healthy
+  breach is read. The sweep now prints `[sweep] wall attribution: top 5
+  of N series = X of Y min (Z%): TICKER Mmin/N mkts (R s/mkt), ...` at
+  the end of every run and carries the same five in `totals["slowest"]`
+  (`collector.sweep.wall_attribution_line`; first production line at the
+  10-17 06:10Z run, expected to name KXBTC15M at ~30 s/mkt beside four
+  ladders at ~0.45).
 
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.
