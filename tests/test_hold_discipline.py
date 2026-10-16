@@ -227,8 +227,13 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
     assert set(publishers()) == {
         # Not a report about data either -- the daily QA run, which reads
         # both live archives and, until 2026-09-28, was the largest hold in
-        # this repo with nowhere to say so (the `simui`/`backup`/`bookreplay`/
+        # this repo with nowhere to say so (the `simui`/`bookreplay`/
         # `streamstore` attaches are the same debt, still unpaid).
+        # The nightly backup (2026-10-16): the one unit that holds ALL THREE
+        # live files every day. It printed a hand-clocked `hold` for weeks,
+        # started after the open and read before the release, and silent on
+        # a raise; now the ledger's reading, db-scoped, after each file.
+        "collector/backup.py",
         # The two hand-run backfills (2026-10-16): every write already went
         # through `writer_burst` (`held_open`), and the one bare read each --
         # the closing census, the prefix resolve -- is what this closes.

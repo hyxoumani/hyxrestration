@@ -68,9 +68,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-import duckdb
-
-from hyxlab.store import duck_connect
+from hyxlab.store import (
+    attach_wait_block,
+    attach_wait_line,
+    attach_waits,
+    held_attach,
+    reset_attach_waits,
+)
 
 DBS = ["data/hyxlab.duckdb", "data/hyxstream.duckdb", "data/hyxshadow.duckdb"]
 
@@ -131,37 +135,36 @@ def backup_one(src: str | Path, dest_dir: Path, retries: int = 30) -> BackupResu
     stage_wal = Path(f"{stage}.wal")
     wal = src.with_suffix(src.suffix + ".wal")
 
-    conn = None
-    for attempt in range(retries):
-        try:
-            conn = duck_connect(str(src), read_only=True)
-            break
-        except duckdb.Error:
-            if attempt == retries - 1:
-                raise
-            time.sleep(2)
-
+    # `held_attach`: the attach is the hold. DuckDB's lock is taken by the
+    # open and dropped by the close, so the seconds are timed from the
+    # moment the connection EXISTS until `charge_hold` has closed it -- not
+    # a hand clock started after the open and read before the release,
+    # which is what this function kept until 2026-10-16. Recorded in
+    # `finally`, so a copy that dies mid-hold still says what it held; and
+    # charged to the ledger row, so the journal line below comes from the
+    # one renderer rather than a second f-string (mistakes #95). The
+    # descriptors are closed only AFTER the connection: closing one of
+    # them while it is open drops the lock (mistakes #90).
     fds: list[int] = []
     try:
-        hold0 = time.monotonic()
-        try:
-            src_fd = os.open(src, os.O_RDONLY)
-            fds.append(src_fd)
-            _copy_out(src_fd, stage)
-            if wal.exists():  # absent once the last writer checkpointed on close
-                wal_fd = os.open(wal, os.O_RDONLY)
-                fds.append(wal_fd)
-                _copy_out(wal_fd, stage_wal)
-            hold_s = time.monotonic() - hold0
-        except BaseException:
-            stage.unlink(missing_ok=True)
-            stage_wal.unlink(missing_ok=True)
-            raise
+        with held_attach(src, read_only=True, retries=retries, delay=2.0):
+            try:
+                src_fd = os.open(src, os.O_RDONLY)
+                fds.append(src_fd)
+                _copy_out(src_fd, stage)
+                if wal.exists():  # absent once the last writer checkpointed on close
+                    wal_fd = os.open(wal, os.O_RDONLY)
+                    fds.append(wal_fd)
+                    _copy_out(wal_fd, stage_wal)
+            except BaseException:
+                stage.unlink(missing_ok=True)
+                stage_wal.unlink(missing_ok=True)
+                raise
     finally:
-        if conn is not None:
-            conn.close()
         for fd in fds:  # only now: closing one of these drops the lock
             os.close(fd)
+    held = attach_waits()[-1].held_s
+    hold_s = 0.0 if held is None else held
 
     # The archive is free from here down: everything below reads the stage.
     off_device = not _same_device(stage, dest_dir)
@@ -209,6 +212,7 @@ def main() -> None:
     args = ap.parse_args()
     dest = Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
+    reset_attach_waits()
     for db in DBS:
         res = backup_one(db, dest)
         if res is None:
@@ -221,6 +225,9 @@ def main() -> None:
             f" hold {res.hold_s:.1f}s, total {res.total_s:.1f}s, {leg})",
             flush=True,
         )
+        # The ledger's reading of the same hold, db-scoped (three files are
+        # held per run, so a process-wide block would average them).
+        print(attach_wait_line(attach_wait_block(db=Path(db).name), prefix="[backup]"), flush=True)
         if res.hold_s > HOLD_WARN_S:
             print(
                 f"[backup] WARNING: {db} writers were excluded for"

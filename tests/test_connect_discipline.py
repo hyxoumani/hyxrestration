@@ -60,10 +60,6 @@ ALLOWED: dict[str, tuple[str, str]] = {
     # entry in this table that did not answer the table's question was also
     # the one site that had no answer. It now routes through the helper with
     # a measured budget and is invisible to this guard by construction.
-    "collector/backup.py::backup_one": (
-        "RETRY",
-        "30x2s; must not silently skip a database it was asked to back up",
-    ),
     "collector/qa.py::_connect_ro": (
         "RETRY",
         "names the lock holder from the error text, so QA can distinguish a"

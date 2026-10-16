@@ -888,7 +888,17 @@ ingestion behind a `FeatureView` as-of API.
 - `hyxlab-backup.timer` (03:30 UTC): holding a read-only DuckDB attach
   excludes writers → consistent file copy; 7-slot weekday rotation in
   data/backups (local tier); point HYXLAB_BACKUP_DIR at a mount for
-  off-box (standing user item).
+  off-box (standing user item). Since 2026-10-16 the attach goes through
+  `hyxlab.store.held_attach` (30 x 2.0s, the same budget the hand-rolled
+  ladder had), so `hold` on the per-file journal line IS the ledger's
+  `held_s` -- timed from the open to the close, recorded in `finally` --
+  and each file is followed by a db-scoped `[backup] attach_wait: on
+  <file> ...` line through the one renderer. The hand clock it replaces
+  started after the open, stopped before the release, and printed
+  nothing when the copy raised. `collector/backup.py` is in the pinned
+  publisher set (`tests/test_hold_discipline.py`); the
+  `test_connect_discipline.py` RETRY allowlist entry was deleted, not
+  emptied.
 - Poly PRICE day-bucket counts MATURE for many days (later sweeps
   backfill history into past days), so fresh-vs-matured comparisons
   overstate decline without bound — measured 2026-08-23: 10,984 at

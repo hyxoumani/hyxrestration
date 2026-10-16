@@ -31,6 +31,7 @@ import duckdb
 import pytest
 
 from collector import backup
+from hyxlab import store
 
 WRITER = "import duckdb,sys; duckdb.connect(sys.argv[1]).close()"
 
@@ -256,3 +257,35 @@ def test_a_clean_snapshot_never_inherits_an_older_runs_wal(monkeypatch, tmp_path
         assert conn.execute("SELECT count(*) FROM t").fetchone() == (200,)
     finally:
         conn.close()
+
+
+def test_the_hold_is_the_ledgers_reading_and_covers_the_release(src, dest):
+    """The hold the journal prints is the ATTACH's, charged to the ledger
+    row the open recorded (`held_attach`), not a hand clock. Two things the
+    hand clock got wrong: it started after the open and stopped BEFORE the
+    close, and DuckDB's lock spans exactly the connection's life.
+    """
+    store.reset_attach_waits()
+    res = backup.backup_one(src, dest)
+    assert res is not None
+    rows = store.attach_waits()
+    assert [w.db for w in rows] == [src.name]
+    assert rows[0].held_s is not None
+    assert res.hold_s == rows[0].held_s
+    assert store.attach_wait_block(db=src.name)["held_n"] == 1
+
+
+def test_a_copy_that_dies_still_charges_the_hold(monkeypatch, src, dest):
+    """Recorded in `finally`: a backup killed mid-copy held the archive for
+    as long as it ran, and that is the run most worth reading afterwards."""
+
+    def boom(fd: int, dst: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(backup, "_copy_out", boom)
+    store.reset_attach_waits()
+    with pytest.raises(OSError):
+        backup.backup_one(src, dest)
+    rows = store.attach_waits()
+    assert len(rows) == 1 and rows[0].held_s is not None
+    assert _writable_from_outside(src), "the failed run leaked the attach"
