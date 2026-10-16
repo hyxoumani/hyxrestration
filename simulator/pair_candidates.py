@@ -21,7 +21,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from hyxlab.store import open_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 
 STOP = {
     "will",
@@ -104,28 +104,33 @@ def candidates(kalshi: list[tuple], poly: list[tuple], min_score: float) -> list
     return out
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="cross-venue pair candidates (leads only)")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
     ap.add_argument("--min-score", type=float, default=0.4)
     ap.add_argument("--top", type=int, default=100)
     ap.add_argument("--out", default="reports/pairs")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
-    store = open_retry(args.db, read_only=True)
+    reset_attach_waits()
     now = datetime.now(UTC).replace(tzinfo=None)
-    kalshi = store.conn.execute(
-        "SELECT market_id, title, close_time FROM markets WHERE venue='kalshi'"
-        " AND result='' AND title IS NOT NULL AND close_time > ?",
-        [now],
-    ).fetchall()
-    poly = store.conn.execute(
-        "SELECT market_id, title, close_time FROM markets WHERE venue='polymarket'"
-        " AND result='' AND title IS NOT NULL"
-        " AND (close_time IS NULL OR close_time > ?)",
-        [now - timedelta(days=1)],
-    ).fetchall()
-    store.close()
+    # `held_open`: this is the 5-minute collector's file, so even two
+    # title scans exclude a capture cycle for their length -- measured and
+    # printed after the release (#91, #96).
+    with held_open(args.db, read_only=True) as store:
+        kalshi = store.conn.execute(
+            "SELECT market_id, title, close_time FROM markets WHERE venue='kalshi'"
+            " AND result='' AND title IS NOT NULL AND close_time > ?",
+            [now],
+        ).fetchall()
+        poly = store.conn.execute(
+            "SELECT market_id, title, close_time FROM markets WHERE venue='polymarket'"
+            " AND result='' AND title IS NOT NULL"
+            " AND (close_time IS NULL OR close_time > ?)",
+            [now - timedelta(days=1)],
+        ).fetchall()
+    # After the release: `held_s` is charged by the close.
+    print(attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[pairs]"))
 
     rows = candidates(kalshi, poly, args.min_score)[: args.top]
     out_dir = Path(args.out)

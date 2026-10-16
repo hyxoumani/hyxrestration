@@ -15,8 +15,9 @@ import argparse
 import json
 from collections import defaultdict
 from datetime import timedelta
+from pathlib import Path
 
-from hyxlab.store import Store, open_retry
+from hyxlab.store import Store, attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 from simulator.capabilities import candle_feed_caps
 from simulator.sim import Simulator
 from strategies import WeatherNWS
@@ -51,25 +52,31 @@ def forecast_diagnostic(store: Store) -> dict[str, dict[str, float]]:
     return out
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="hyxlab Tier-1 backtest")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
     ap.add_argument("--sigma", type=float, default=2.7)
     ap.add_argument("--bias", type=float, default=0.0)
     ap.add_argument("--min-edge", type=float, default=0.05)
     ap.add_argument("--max-qty", type=float, default=20.0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
+    reset_attach_waits()
     # read_only + retry: this backtest only READS. A read-write open takes
     # the archive's writer lock, which is what crashed the shadow daemon
     # mid-persist on 2026-07-12 (mistakes #20) — and this one is a
     # DOCUMENTED command, so the hazard is not ad-hoc.
-    store = open_retry(args.db, read_only=True)
-    markets = store.markets()
-    snapshots = store.candles_as_snapshots()
-    forecasts = store.forecasts()
+    # `held_open`: the hold is the WHOLE load (markets + every candle +
+    # forecasts + observations) on the 5-minute collector's file, so it is
+    # measured and printed after the release (#91, #96) -- and released
+    # BEFORE the replay, which needs nothing from the file.
+    with held_open(args.db, read_only=True) as store:
+        markets = store.markets()
+        snapshots = store.candles_as_snapshots()
+        forecasts = store.forecasts()
+        diag = forecast_diagnostic(store)
+    print(attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[backtest]"))
 
-    diag = forecast_diagnostic(store)
     print("== forecast diagnostic (day-ahead MOS vs climate report) ==")
     print(json.dumps(diag, indent=2))
     # Gate per prereg_weather_backtest.md Addendum 1: MAE in [1, 5] °F and
@@ -80,7 +87,6 @@ def main() -> None:
             f"ABORT: forecast MAE out of sane range for {bad or 'all stations'} — "
             "check the MOS parsing convention before trusting any backtest."
         )
-        store.close()
         return
 
     print(
@@ -125,7 +131,6 @@ def main() -> None:
             f"  {series:12s} fills={b['n_fills']:5.0f} cost=${b['cost']:9.2f} "
             f"pnl=${pnl:+9.2f} roi={roi:+.1%}"
         )
-    store.close()
 
 
 if __name__ == "__main__":

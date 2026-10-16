@@ -243,6 +243,9 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         "hyxlab/store.py",
         "simulator/atlas.py",
         "simulator/divergence.py",
+        # The cross-venue pair-candidate lead list (2026-10-16): two title
+        # scans of the collector's file, bare `open_retry` until now.
+        "simulator/pair_candidates.py",
         # The trade->book-decrement check (2026-10-16): same cursor on the
         # daemon-owned stream archive as queuescore, and the same unbounded
         # EXISTS as #124 until it started importing queuescore's selector.
@@ -252,6 +255,10 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # had published no block -- nor been named as debt -- since it was
         # written, so the rule above could not see a hold it never reported.
         "simulator/queuescore.py",
+        # The documented Tier-1 weather backtest (2026-10-16): loads the whole
+        # candle table plus forecasts and observations from the collector's
+        # file, and held it across the replay too until the hold was scoped.
+        "simulator/run_backtest.py",
         "simulator/run_econ_claims.py",
         # The closed fav-long registrations (2026-10-16): run by hand only,
         # but each loads the WHOLE candle table from the 5-minute
