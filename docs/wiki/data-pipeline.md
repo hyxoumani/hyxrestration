@@ -788,7 +788,14 @@ self-match trap the ops rules name for `pkill -f`.
   at the caller's 0.35s) on 10-10 made the tape complete again from the
   10-11 run, at the paced price: ~3.5M prints / 1,000 per page = ~3,500
   pages x 0.35s = 20 min of pacing alone, ~47 min with the fetches
-  (10-04, unpaced, was 21.2 min for the same 12 flushes). The five
+  (10-04, unpaced, was 21.2 min for the same 12 flushes). VERIFIED
+  2026-10-16 from the journal alone: the 10-16 run's 13 `KXBTC15M
+  mid-series flush` lines sum to 3,559,822 prints before the closing
+  remainder (<250k), i.e. 3.56-3.8M prints / ~3,600-3,800 pages; the
+  flushes land every ~3.3 min for ~270k rows = ~1,370 rows/s, so a page
+  costs ~0.73s -- the 0.35s pause plus ~0.38s of fetch, about half each.
+  The tape's cost is therefore not reducible below ~23 min by any pacing
+  change; only skipping or truncating the tape moves it. The five
   storm days' BTC15M prints were recovered by `hyxlab-tradepass`, which
   drained the 51,777-market backlog at 11.9M / 11.3M / 11.5M prints per
   run on 10-10..10-12 and has been at 49-94 pending since 10-13. So a breach has two candidate responses
