@@ -42,7 +42,7 @@ import requests
 from collector.venues import alfred, gdelt
 from hyxlab.lockid import note_holder
 from hyxlab.models import EconVintage, NewsItem
-from hyxlab.store import Store, open_retry
+from hyxlab.store import Store, attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 
 LOCK_FILE = "data/writer.lock"
 GKG_PAUSE_S = 0.2
@@ -157,15 +157,18 @@ def main() -> None:
     # read the watermark in a short-lived read-only open; a read-only
     # Store doesn't create schema, so a pre-B4 archive lacks the table
     # until the first write below — treat that as a cold start.
-    store = open_retry(args.db, read_only=True)
-    try:
-        last_news = store.conn.execute(
-            "SELECT max(knowable_at) FROM news_items WHERE source='gdelt'"
-        ).fetchone()[0]
-    except duckdb.CatalogException:
-        last_news = None
-    finally:
-        store.close()
+    # `held_open`: this is the 5-minute collector's file, and this unit
+    # holds it twice a day -- here, and read-write inside the flock below
+    # -- so both holds are measured and printed after the release (#96,
+    # #102); until 2026-10-16 both were bare `open_retry`, charged to nobody.
+    reset_attach_waits()
+    with held_open(args.db, read_only=True) as store:
+        try:
+            last_news = store.conn.execute(
+                "SELECT max(knowable_at) FROM news_items WHERE source='gdelt'"
+            ).fetchone()[0]
+        except duckdb.CatalogException:
+            last_news = None
 
     vintage_date = now.date()
     fetched, outcomes = fetch_alfred(sess, today=vintage_date)
@@ -183,13 +186,12 @@ def main() -> None:
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
-        store = open_retry(args.db)
         try:
-            new_vintages = diff_vintages(store, fetched)
-            nv = store.insert_vintages(new_vintages)
-            nn = store.insert_news(items)
+            with held_open(args.db) as store:
+                new_vintages = diff_vintages(store, fetched)
+                nv = store.insert_vintages(new_vintages)
+                nn = store.insert_news(items)
         finally:
-            store.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
     failed = sorted(k for k, v in outcomes.items() if not v["ok"])
     print(
@@ -198,6 +200,11 @@ def main() -> None:
         f" alfred {len(outcomes) - len(failed)}/{len(outcomes)} fetched"
         + (f"; FAILED {', '.join(failed)}" if failed else ""),
         flush=True,
+    )
+    # After the release: `held_s` is charged by the close. ONE renderer
+    # (#95), never a format string over the block's keys.
+    print(
+        attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[signals]"), flush=True
     )
 
 

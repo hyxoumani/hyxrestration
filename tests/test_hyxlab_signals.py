@@ -111,3 +111,25 @@ def test_rows_counts_observations_fetched_not_rows_inserted(tmp_path, monkeypatc
     monkeypatch.setattr(alfred, "get_vintage", lambda *a, **k: vints)
     _out, outcomes = signals.fetch_alfred(requests.Session(), today=date(2026, 8, 24))
     assert outcomes["UNRATE"]["rows"] == 2
+
+
+def test_main_measures_both_holds_on_the_collectors_file(tmp_path, monkeypatch, capsys):
+    """The daily pull holds `data/hyxlab.duckdb` twice -- read-only for the
+    watermark, read-write inside the writer flock -- and until 2026-10-16
+    both were bare `open_retry`: charged to nobody, with a hand-written
+    journal line that could not say so (#96, #102). The line it prints
+    now is the ONE renderer, and it must count both holds as measured."""
+    from collector import signals
+
+    db = tmp_path / "hyxlab.duckdb"
+    Store(db).close()  # the archive exists before the read-only open, as in production
+    monkeypatch.setattr(signals, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    monkeypatch.setattr(signals, "fetch_alfred", lambda sess, today=None: ({}, {}))
+    monkeypatch.setattr(signals, "record_fetch", lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt"])
+    signals.main()
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.startswith("[signals] attach_wait:")]
+    assert len(lines) == 1, out
+    assert "on hyxlab.duckdb 2 attaches" in lines[0], lines[0]
+    assert "held 2 for" in lines[0] and "0 unmeasured" in lines[0], lines[0]
