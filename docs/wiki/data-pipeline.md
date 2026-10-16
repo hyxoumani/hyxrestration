@@ -801,7 +801,33 @@ self-match trap the ops rules name for `pkill -f`.
   the end of every run and carries the same five in `totals["slowest"]`
   (`collector.sweep.wall_attribution_line`; first production line at the
   10-17 06:10Z run, expected to name KXBTC15M at ~30 s/mkt beside four
-  ladders at ~0.45).
+  ladders at ~0.45). **10-16 done line: 740.5 min for 73,245 markets**
+  (12h20m; 9.5 min under the 750-min budget, the second run in three
+  inside 10 min of it; the 10-15 fit `97 + 8.39 x markets/1k` predicts
+  711, residual +29 min, 1.3 sd, after +22 on 10-15 -- two positive
+  residuals in a row, so the per-market rate may be edging up from 0.50
+  s; the 10-17 attribution line is the read). Budget crossing at the
+  fit is ~77.8k markets; the 10-14 run swept 74.3k.
+- **The sweep's `~N min left` is weighted by the previous run's
+  per-series wall** (2026-10-16, `collector.sweep.prior_series_wall` /
+  `eta_minutes`; first production line at the 10-17 06:10Z run). The old
+  line was series-rate -- remaining series / series per second -- and
+  the cost is per market, with the ~7k-market crypto ladders past index
+  3000 of ~3950: on 10-16 it read `~330 min left` at 400/3958 (703
+  actual) and `~152` at 3100 (190 actual), and three passes projected a
+  done time off it and missed by 1-2h. `sweep_log` has one `swept_at`
+  per series, in the same sorted order every run, so consecutive
+  differences within the previous run are each series' wall (a read
+  inside the listing-refresh burst, no extra attach; the largest run in
+  a 30h window, so a hand `--series` repair cannot stand in for the
+  day). The remainder is priced at those walls -- median for a series
+  with none -- scaled by today's pace over the series already done.
+  Replayed on the 10-16 run with the 10-15 prior: 717 vs 703 at 400,
+  379 vs 378 at 1600, 164 vs 190 at 3100 (the 3 unpriced series there
+  were ladders), 34 vs 38 at 3700. The tag on the line names which
+  estimate it is: `(prior-run weighted x1.12, 3 unpriced)` or
+  `(series-rate)` when no prior exists. An ETA is advisory: a failed or
+  stubbed prior read is `{}`, never an aborted run.
 
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.

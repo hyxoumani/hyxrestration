@@ -173,6 +173,83 @@ BURST_OPEN_RETRIES = 150
 BURST_OPEN_DELAY_S = 2.0
 
 
+# The `~N min left` line is an ETA over SERIES, and the run's cost is per
+# MARKET: the 06-10 crypto ladders (KXSOLD/KXSOLE/KXETH/KXETHD ~7.2k markets
+# each at a flat ~0.45 s) sit past index 3000 of ~3950, so a series-rate
+# ETA read `~152 min left` at 3100/3958 on 2026-10-16 and the run took 190;
+# at 400 it said 330 against 703. Three passes in a row projected a done
+# time off that line and missed by 1-2h. The previous run's per-series wall
+# IS recorded -- `sweep_log` has one `swept_at` per series, in the same
+# sorted order every day, so consecutive differences are each series' wall
+# -- and weighting the remainder by it, scaled by today's pace over the
+# series already done, replayed the 10-16 run within 5-14% from index 400 on
+# (at 3100: 164 vs 190 actual; at 1600: 379 vs 378). Rows this far back
+# cover the previous daily run and nothing older; the largest run in the
+# window is taken so a hand `--series` repair cannot stand in for the day.
+ETA_PRIOR_LOOKBACK_H = 30
+# A gap this long between consecutive `sweep_log` rows is a run boundary; a
+# single series never takes this long (the slowest, KXBTC15M, is ~50 min).
+ETA_RUN_GAP_S = 2 * 3600.0
+# Progress line cadence, in series.
+PROGRESS_EVERY = 100
+
+
+def prior_series_wall(store, now: datetime | None = None) -> dict[str, float]:
+    """`ticker -> wall seconds` from the previous run's `sweep_log` rows.
+
+    The first series of a run has no wall (nothing marks the run's start),
+    so it is absent and falls to the median like a new series. Advisory: a
+    wrong prior costs an ETA, nothing else, so any read failure returns {}.
+    """
+    conn = getattr(store, "conn", None)
+    if conn is None:  # a store-like stub with no archive behind it
+        return {}
+    now = now or datetime.now(UTC).replace(tzinfo=None)
+    since = now - timedelta(hours=ETA_PRIOR_LOOKBACK_H)
+    try:
+        rows = conn.execute(
+            "SELECT series, swept_at FROM sweep_log WHERE swept_at >= ? ORDER BY swept_at",
+            [since],
+        ).fetchall()
+    except duckdb.Error:
+        return {}
+    runs: list[list[tuple[str, datetime]]] = []
+    cur: list[tuple[str, datetime]] = []
+    for series, at in rows:
+        if cur and (at - cur[-1][1]).total_seconds() > ETA_RUN_GAP_S:
+            runs.append(cur)
+            cur = []
+        cur.append((series, at))
+    if cur:
+        runs.append(cur)
+    if not runs:
+        return {}
+    run = max(runs, key=len)
+    return {s1: (t1 - t0).total_seconds() for (_, t0), (s1, t1) in zip(run, run[1:], strict=False)}
+
+
+def eta_minutes(
+    done: list[str], remaining: list[str], elapsed_s: float, prior: dict[str, float]
+) -> tuple[float, str]:
+    """ETA for `remaining` plus a tag naming the estimate it is.
+
+    With a prior: each remaining series costs its previous-run wall (the
+    median prior for a series without one), scaled by today's pace --
+    elapsed over the prior cost of the series already done. Without one:
+    the series-rate estimate, tagged so a reader knows it is the weak one.
+    """
+    if not prior or not done or elapsed_s <= 0:
+        rate = len(done) / elapsed_s if done and elapsed_s > 0 else 0.0
+        eta = len(remaining) / rate / 60 if rate > 0 else 0.0
+        return eta, "series-rate"
+    med = sorted(prior.values())[len(prior) // 2]
+    prior_done = sum(prior.get(t, med) for t in done)
+    scale = elapsed_s / prior_done if prior_done > 0 else 1.0
+    unpriced = sum(1 for t in remaining if t not in prior)
+    eta = sum(prior.get(t, med) for t in remaining) * scale / 60
+    return eta, f"prior-run weighted x{scale:.2f}, {unpriced} unpriced"
+
+
 # Trade tapes the candles prove empty, skipped without a request; reset by
 # run_sweep and published in its totals. Measured 2026-10-08: from 10-06 the
 # same ~95 markets/min that drew ~45 tape 429s per run drew ~16-25k, so
@@ -517,6 +594,7 @@ def run_sweep(
     series = kalshi.get_series_list(sess)  # HTTP outside the lock
     with writer_burst(db) as store:
         all_series = refresh_series(store, sess, series=series)
+        eta_prior = prior_series_wall(store)
     targets = [s["ticker"] for s in all_series if s.get("category") in categories]
     if only_series:
         # Targeted repair pass: the alphabetical whole-category order is what
@@ -644,14 +722,15 @@ def run_sweep(
                 )
                 break
         series_wall[ticker] = (time.monotonic() - s0, n_m)
-        if (i + 1) % 100 == 0:
-            rate = (i + 1) / (time.monotonic() - t0)
-            eta_min = (len(targets) - i - 1) / rate / 60
+        if (i + 1) % PROGRESS_EVERY == 0:
+            eta_min, eta_tag = eta_minutes(
+                targets[: i + 1], targets[i + 1 :], time.monotonic() - t0, eta_prior
+            )
             print(
                 f"[sweep] {i + 1}/{len(targets)} series | "
                 f"{totals['markets']} markets, {totals['candles']} candles, "
                 f"{totals['errors']} errors, {totals['truncated']} truncated"
-                f" | ~{eta_min:.0f} min left"
+                f" | ~{eta_min:.0f} min left ({eta_tag})"
             )
     totals["tapes_skipped"] = _TAPES_SKIPPED
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
