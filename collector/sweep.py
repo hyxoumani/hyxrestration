@@ -660,7 +660,7 @@ def run_sweep(
     return totals
 
 
-#: How many series the attribution line names. Five covered 29% of the 10-15
+#: How many series the attribution line names. Five covered 31% of the 10-15
 #: run's wall (KXBTC15M, KXETHD, KXSOLD, KXSOLE, KXETH) and every one of the
 #: series whose per-market cost was not the flat ~0.45s.
 ATTRIBUTION_TOP_N = 5
