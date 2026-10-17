@@ -735,7 +735,9 @@ def run_sweep(
     totals["tapes_skipped"] = _TAPES_SKIPPED
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["slowest"] = slowest_series(series_wall)
+    totals["by_class"] = wall_by_class(series_wall)
     print(wall_attribution_line(series_wall, time.monotonic() - t0), flush=True)
+    print(wall_class_line(totals["by_class"], time.monotonic() - t0), flush=True)
     return totals
 
 
@@ -775,6 +777,75 @@ def wall_attribution_line(series_wall: dict[str, tuple[float, int]], elapsed_s: 
     return (
         f"[sweep] wall attribution: top {len(top)} of {len(series_wall)} series"
         f" = {top_s / 60:.1f} of {elapsed_s / 60:.1f} min ({share:.0f}%): {parts}"
+    )
+
+
+#: A series with at least this many markets is a LADDER: its wall is the
+#: listing count times a flat ~0.45 s/market (10-13..10-17: 28-33 ladders,
+#: 0.456-0.469 s/mkt), so it grows with listings and only a category
+#: decision changes it.
+LADDER_MIN_MARKETS = 200
+#: A sub-ladder series at this per-market cost is DENSE: its wall is the
+#: trade tape, not the listing, and only a per-market rule changes it.
+#: Measured 10-13..10-17 over the ~100-130 sub-ladder series with >= 10
+#: markets: KXBTC15M at 27.8-32.0 s/mkt, the next at 4.7-6.1 (KXGOLD15M,
+#: KXETH15M), everything else below -- a gap of 20 s, so 10.0 names the class
+#: on every run. The class is a RATE, not a wall: KXSOL15M swept 0 markets on
+#: 10-16 and 192 on 10-17 (606 s at 3.2 s/mkt), and a wall threshold would
+#: have classed that catch-up as dense for one day.
+DENSE_S_PER_MKT = 10.0
+#: Below this many markets a series' per-market rate is one retried request
+#: away from any value, so it is small whatever it cost.
+DENSE_MIN_MARKETS = 10
+
+
+def wall_by_class(series_wall: dict[str, tuple[float, int]]) -> dict[str, dict]:
+    """The run's wall in the three terms the budget model is written in.
+
+    `qa.BATCH_RUN_BUDGET_H` headroom is `budget - small - dense` divided
+    by the ladder rate (data-pipeline.md), and until 2026-10-17 those three
+    numbers came from hand-differencing `sweep_log` -- the 10-15 linear fit
+    `97 + 8.39 x markets/1k` lumped the ~150-170 min flat block into its
+    slope and under-predicted every run with fewer listings (three positive
+    residuals, +22/+29/+32 min, all of them the intercept). Each class:
+    `n` series, `wall_s`, `markets`, and `tickers` for the dense class only
+    (it is one or two names and the line should say which).
+    """
+    out = {k: {"n": 0, "wall_s": 0.0, "markets": 0} for k in ("ladder", "dense", "small")}
+    out["dense"]["tickers"] = []
+    for t, (w, n) in series_wall.items():
+        if n >= LADDER_MIN_MARKETS:
+            k = "ladder"
+        elif n >= DENSE_MIN_MARKETS and w / n >= DENSE_S_PER_MKT:
+            k = "dense"
+            out["dense"]["tickers"].append(t)
+        else:
+            k = "small"
+        out[k]["n"] += 1
+        out[k]["wall_s"] += w
+        out[k]["markets"] += n
+    for c in out.values():
+        c["wall_s"] = round(c["wall_s"], 1)
+    out["dense"]["tickers"].sort()
+    return out
+
+
+def wall_class_line(by_class: dict[str, dict], elapsed_s: float) -> str:
+    """ONE journal line for `wall_by_class`: ladders and dense at s/mkt (the
+    rate a listing change or a per-market rule moves), small at s/series
+    (its markets are ~1 each, so the per-series cost is the flat block)."""
+    lad, den, sm = by_class["ladder"], by_class["dense"], by_class["small"]
+    loop_s = lad["wall_s"] + den["wall_s"] + sm["wall_s"]
+    names = f" [{', '.join(den['tickers'])}]" if den["tickers"] else ""
+    return (
+        f"[sweep] wall by class: ladders (>={LADDER_MIN_MARKETS} mkts) {lad['n']} series"
+        f" {lad['wall_s'] / 60:.1f} min/{lad['markets']} mkts"
+        f" ({lad['wall_s'] / max(lad['markets'], 1):.3f} s/mkt);"
+        f" dense (>={DENSE_S_PER_MKT:.0f} s/mkt) {den['n']} series {den['wall_s'] / 60:.1f} min/"
+        f"{den['markets']} mkts ({den['wall_s'] / max(den['markets'], 1):.1f} s/mkt){names};"
+        f" small {sm['n']} series {sm['wall_s'] / 60:.1f} min/{sm['markets']} mkts"
+        f" ({sm['wall_s'] / max(sm['n'], 1):.2f} s/series);"
+        f" loop {loop_s / 60:.1f} of {elapsed_s / 60:.1f} min"
     )
 
 

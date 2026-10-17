@@ -84,3 +84,38 @@ def test_a_skipped_or_failed_series_is_still_charged_its_wall(monkeypatch):
     monkeypatch.setattr(sweep_mod, "refresh_series", lambda store, sess, series=None: only)
     totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
     assert totals["slowest"] == [("ONLY", 120.0, 0)]
+
+
+def test_the_done_dict_and_the_line_split_the_wall_into_the_budget_model_terms(monkeypatch, capsys):
+    """The budget headroom is `budget - small - dense` over the ladder rate
+    (data-pipeline.md); until 10-17 those terms were a hand read of sweep_log."""
+    _wire(monkeypatch)
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+    bc = totals["by_class"]
+    assert bc["ladder"] == {"n": 1, "wall_s": 80.0, "markets": 200}
+    assert bc["dense"] == {"n": 1, "wall_s": 600.0, "markets": 20, "tickers": ["BIG"]}
+    assert bc["small"] == {"n": 5, "wall_s": 15.0, "markets": 5}
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "wall by class" in ln)
+    assert "ladders (>=200 mkts) 1 series 1.3 min/200 mkts (0.400 s/mkt)" in line
+    assert "dense (>=10 s/mkt) 1 series 10.0 min/20 mkts (30.0 s/mkt) [BIG]" in line
+    assert "small 5 series 0.2 min/5 mkts (3.00 s/series)" in line
+    assert line.endswith("loop 11.6 of 11.6 min")
+
+
+def test_a_class_is_decided_by_count_then_rate_and_a_slow_ladder_is_still_a_ladder():
+    wall = {
+        "LAD": (7000.0, 250),  # 28 s/mkt on many markets: the count wins, a ladder
+        "TAPE": (950.0, 95),  # 10.0 s/mkt on 95 markets: dense, at the threshold
+        "CATCHUP": (606.0, 192),  # KXSOL15M 10-17: a long wall at 3.2 s/mkt is small
+        "FEW": (300.0, 9),  # 33 s/mkt on 9 markets: too few to be a rate, small
+        "NEW": (0.5, 0),  # a series with no markets is a 0-market small series
+    }
+    bc = sweep_mod.wall_by_class(wall)
+    assert bc["ladder"] == {"n": 1, "wall_s": 7000.0, "markets": 250}
+    assert bc["dense"] == {"n": 1, "wall_s": 950.0, "markets": 95, "tickers": ["TAPE"]}
+    assert bc["small"] == {"n": 3, "wall_s": 906.5, "markets": 201}
+    empty = sweep_mod.wall_by_class({})
+    assert empty["dense"] == {"n": 0, "wall_s": 0.0, "markets": 0, "tickers": []}
+    line = sweep_mod.wall_class_line(empty, elapsed_s=120.0)
+    assert "dense (>=10 s/mkt) 0 series 0.0 min/0 mkts (0.0 s/mkt);" in line  # no names
+    assert line.endswith("loop 0.0 of 2.0 min")

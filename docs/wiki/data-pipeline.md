@@ -870,6 +870,47 @@ self-match trap the ops rules name for `pkill -f`.
   estimate it is: `(prior-run weighted x1.12, 3 unpriced)` or
   `(series-rate)` when no prior exists. An ETA is advisory: a failed or
   stubbed prior read is `{}`, never an aborted run.
+  **First production run, 10-17 06:10Z (done 17:28Z, 677.8 min):** the
+  weighted line read 55-70 min HIGH from index 800 to 2500 (555 vs 484
+  actual at 800, 429 vs 375 at 1500, 255 vs 202 at 2500 -- 13-22%), then
+  174 vs 175 at 3100, 73 vs 65 at 3200, 35 vs 36 at 3700, 2 vs 2 at 3800.
+  The cause is structural, not a bug: the prior (10-16) had 68,773
+  ladder markets and 10-17 had 61,750, and a series' market count is
+  learned only when that series is fetched, so the remainder is priced
+  at yesterday's listings until the ladders themselves are done. Read
+  the line as an upper bound while the ladders are ahead (indices
+  ~700-3200), and as the ETA after.
+- **The sweep prints its wall in the three terms the budget model is
+  written in** (2026-10-17, `collector.sweep.wall_by_class` /
+  `wall_class_line`, `totals['by_class']`; first production line at the
+  10-18 06:10Z run): `[sweep] wall by class: ladders (>=200 mkts) 32
+  series 478.4 min/61750 mkts (0.465 s/mkt); dense (>=10 s/mkt) 1 series
+  51.2 min/96 mkts (32.0 s/mkt) [KXBTC15M]; small 3924 series 148.2
+  min/3541 mkts (2.27 s/series); loop 677.8 of 677.8 min` -- that is the
+  10-17 run through the function, and it reproduces the hand read to
+  the tenth. Classes are name-free: a ladder is >= 200 markets (count
+  first, so a 28 s/mkt ladder is still a ladder); dense is >= 10 s/mkt
+  on >= 10 markets (measured over the ~100-130 sub-ladder series with
+  >= 10 markets on 10-13..10-17: KXBTC15M 27.8-32.0, next 4.7-6.1
+  (KXGOLD15M / KXETH15M), a 20 s gap); the rest is small. The rate, not
+  a wall: KXSOL15M swept 0 markets on 10-16 and caught up 192 on 10-17
+  (606 s at 3.2 s/mkt), which a wall threshold would have classed dense
+  for one day and moved 10 min between classes. **The 10-15 linear fit
+  `97 + 8.39 x markets/1k` is RETIRED as the predictor**: its +22/+29/
+  +32 residuals (10-15/16/17) were its intercept -- the flat block is
+  148-170 min plus 44-51 for KXBTC15M, ~200 min, and the fit lumped
+  that into its slope, so every run with fewer listings came in over
+  it. Five-run decomposition: ladders 28-33 series, 0.456-0.469 s/mkt
+  (10-17: 0.465, flat after 10-16's 0.469); small 138-170 min at
+  2.27-2.64 s/series; KXBTC15M 44.1-51.2 min (10-17 is the high, 32.0
+  s/mkt, 96 markets). Predictor: `small + dense + ladder_mkts x rate`
+  = 148 + 51 + 61,750 x 0.465 / 60 = 678 on 10-17. Headroom unchanged:
+  750 - 155 - 50 = ~545 min of ladders = ~70k ladder markets at 0.469.
+  Weekend note: the FX / metals / commodity 15M series settle few or no
+  markets into a Saturday run (10-11: KXEURUSD15M, KXGOLD15M,
+  KXSILVER15M, KXUSDJPY15M all 0; 10-17: 14-36; Sunday 10-12: 56-75)
+  while the crypto 15M series hold ~92-97 every day -- market hours,
+  not a capture hole.
 
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.
