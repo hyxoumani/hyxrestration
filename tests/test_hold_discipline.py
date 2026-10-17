@@ -252,6 +252,14 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # whose journal line was the whole reading -- with no hold in it.
         "collector/signals.py",
         "collector/sweep.py",
+        # The daily trade-tape retro-pass (2026-10-17): a timer unit whose
+        # every attach is on the 5-minute collector's file -- the schema
+        # burst, the proven-empty mark and each `_flush` read-write inside
+        # the writer flock, the pending read outside it -- and whose
+        # hand-written `done:` line was the whole reading, with no hold in
+        # it. Measured 11.9M prints per 210-min run during the 10-10..10-12
+        # storm drain, charged to nobody.
+        "collector/trades_backfill.py",
         "hyxlab/store.py",
         "simulator/atlas.py",
         "simulator/divergence.py",

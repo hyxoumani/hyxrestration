@@ -25,7 +25,7 @@ import requests
 
 from collector.venues import kalshi
 from hyxlab.lockid import instance_lock_or_reason, note_holder
-from hyxlab.store import open_retry
+from hyxlab.store import attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 
 FLUSH_MARKETS = 50
 #: Flush bound in buffered prints, beside the market count. 50 markets is a
@@ -66,17 +66,19 @@ def _flush(db: str, batch: list[tuple[str, list[tuple], str]]) -> int:
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
-        # open_retry, not Store: the flock excludes other WRITERS, but DuckDB
-        # also refuses a read-write open while any read-only holder (QA,
-        # doctor, simui — none of which flock) is attached. A bare open here
-        # killed the 2026-08-04 run at 26,000/42,978 markets.
-        store = open_retry(db)
+        # held_open (open_retry + the hold measured), not Store: the flock
+        # excludes other WRITERS, but DuckDB also refuses a read-write open
+        # while any read-only holder (QA, doctor, simui — none of which
+        # flock) is attached. A bare open here killed the 2026-08-04 run at
+        # 26,000/42,978 markets. This is the 5-minute collector's file, so
+        # every burst's seconds are a capture cycle's exposure; the run's
+        # total prints after the done line (mistakes #96/#102 shape).
         try:
-            for market_id, rows, status in batch:
-                inserted += store.insert_trades(rows)
-                store.mark_trades_swept(market_id, len(rows), status)
+            with held_open(db) as store:
+                for market_id, rows, status in batch:
+                    inserted += store.insert_trades(rows)
+                    store.mark_trades_swept(market_id, len(rows), status)
         finally:
-            store.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
     return inserted
 
@@ -121,16 +123,15 @@ def mark_proven_empty(db: str) -> int:
     with open(LOCK_FILE, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
-        store = open_retry(db)
         try:
-            row = store.conn.execute(
-                f"INSERT OR REPLACE INTO trades_swept {PROVEN_EMPTY_SQL}",
-                # naive UTC like mark_trades_swept; current_timestamp would
-                # cast through the session zone (the host runs CDT)
-                [datetime.now(UTC).replace(tzinfo=None)],
-            ).fetchone()
+            with held_open(db) as store:
+                row = store.conn.execute(
+                    f"INSERT OR REPLACE INTO trades_swept {PROVEN_EMPTY_SQL}",
+                    # naive UTC like mark_trades_swept; current_timestamp would
+                    # cast through the session zone (the host runs CDT)
+                    [datetime.now(UTC).replace(tzinfo=None)],
+                ).fetchone()
         finally:
-            store.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
     return int(row[0]) if row else 0
 
@@ -138,22 +139,19 @@ def mark_proven_empty(db: str) -> int:
 def pending_markets(db: str) -> list[str]:
     """Settled markets without a trades sweep, oldest close first (the
     retention clock eats oldest-settled markets first)."""
-    # open_retry, not a bare Store, and for the mirror-image reason to
-    # _flush's: this read runs OUTSIDE the flock, so a writer (poly_sweep
-    # holds the archive for ~7h) can take the file in the gap after the
-    # schema burst above closes. DuckDB refuses a read-only open against
-    # a read-write holder, and a bare open here kills the whole pass at
-    # its first statement.
-    store = open_retry(db, read_only=True)
-    try:
+    # held_open (open_retry + the hold measured), not a bare Store, and for
+    # the mirror-image reason to _flush's: this read runs OUTSIDE the
+    # flock, so a writer (poly_sweep holds the archive for ~7h) can take
+    # the file in the gap after the schema burst above closes. DuckDB
+    # refuses a read-only open against a read-write holder, and a bare
+    # open here kills the whole pass at its first statement.
+    with held_open(db, read_only=True) as store:
         rows = store.conn.execute(
             "SELECT m.market_id FROM markets m"
             " LEFT JOIN trades_swept s ON s.market_id = m.market_id"
             " WHERE m.venue = 'kalshi' AND m.result != '' AND s.market_id IS NULL"
             " ORDER BY m.close_time ASC"
         ).fetchall()
-    finally:
-        store.close()
     return [r[0] for r in rows]
 
 
@@ -183,11 +181,18 @@ def main() -> None:
     # `wlock`, never `lock`: rebinding the instance lock's name dropped its
     # last reference, CPython closed it, and the flock was gone before the
     # first fetch (mistakes #107).
+    # Every attach below is charged to this process's ledger and summed on
+    # the `[tradepass] attach_wait:` line after `done:` -- the schema burst,
+    # the proven-empty mark, the pending read and every `_flush`.
+    reset_attach_waits()
     with open(LOCK_FILE, "a") as wlock:
         fcntl.flock(wlock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
-        open_retry(args.db).close()
-        fcntl.flock(wlock, fcntl.LOCK_UN)
+        try:
+            with held_open(args.db):
+                pass
+        finally:
+            fcntl.flock(wlock, fcntl.LOCK_UN)
     skipped = mark_proven_empty(args.db)
     print(
         f"[tradepass] {skipped} pending tapes candle-proven empty; marked, not fetched", flush=True
@@ -284,6 +289,12 @@ def main() -> None:
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     lock.close()  # a crash releases it too: flock dies with the process
     print(f"[tradepass] done: {totals}", flush=True)
+    # The run's whole exclusion of the collector's file, through the one
+    # renderer (#95); db-scoped so a stray attach elsewhere cannot fold in.
+    print(
+        attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[tradepass]"),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

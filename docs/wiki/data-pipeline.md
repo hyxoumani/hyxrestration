@@ -652,7 +652,14 @@ self-match trap the ops rules name for `pkill -f`.
   stamp a stale quote with a fresh `ts`.
 - `hyxlab-tradepass.timer` (daily 06:35 UTC): `collector.trades_backfill`
   — retro-pass over the trade tape, catching the gaps `sweep` leaves when
-  a per-market fetch raises HTTPError and is swallowed.
+  a per-market fetch raises HTTPError and is swallowed. Since 2026-10-17
+  every attach it takes on the collector's file (the flocked schema
+  burst, the proven-empty mark, the pending read, one `_flush` per
+  market batch) goes through `held_open`, and the run's whole exclusion
+  prints as one `[tradepass] attach_wait: on hyxlab.duckdb N attaches ...
+  held N for Xs` line after `done:` (the #96/#102 shape; `signals` was
+  the previous instance). Expect `held` = 3 + flushes; the first
+  production line is the 10-17 06:35Z run.
 - `hyxlab-qa.timer` (daily 07:00 UTC): data-quality checks, both
   archives; FAIL lines land in the journal with exit 1. It watches
   tradepass through `qa_tape_coverage` (per-market persistence, plus a

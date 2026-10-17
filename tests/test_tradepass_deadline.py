@@ -25,7 +25,7 @@ import pytest
 
 import collector.qa as qa
 import collector.trades_backfill as tb
-from hyxlab.store import Store, open_retry
+from hyxlab.store import Store, held_open
 
 
 def _seed_settled_markets(db: str, n: int) -> list[str]:
@@ -123,7 +123,9 @@ def test_flush_waits_out_a_read_only_holder(tmp_path, monkeypatch):
     db = str(tmp_path / "t.duckdb")
     _seed_settled_markets(db, 1)
     monkeypatch.setattr(tb, "LOCK_FILE", str(tmp_path / "writer.lock"))
-    monkeypatch.setattr(tb, "open_retry", functools.partial(open_retry, delay=0.05))
+    # `_flush` attaches through `held_open` (open_retry + the hold measured,
+    # 2026-10-17); the retry ladder underneath is the same one.
+    monkeypatch.setattr(tb, "held_open", functools.partial(held_open, delay=0.05))
 
     reader = duckdb.connect(db, read_only=True)
     release = threading.Timer(0.4, reader.close)
@@ -252,7 +254,9 @@ def test_flush_is_bounded_by_buffered_prints(tmp_path, monkeypatch):
     monkeypatch.setattr(tb.kalshi, "get_trades", lambda t, session=None, **kw: ([t] * 40, False))
     monkeypatch.setattr(tb.kalshi, "trade_row", lambda t: (t,))
     bursts = []
-    monkeypatch.setattr(tb, "_flush", lambda db, batch: bursts.append(sum(len(r) for _, r, _ in batch)))
+    monkeypatch.setattr(
+        tb, "_flush", lambda db, batch: bursts.append(sum(len(r) for _, r, _ in batch))
+    )
     monkeypatch.setattr("sys.argv", ["tradepass", "--db", db, "--rps", "1000"])
     tb.main()
 
