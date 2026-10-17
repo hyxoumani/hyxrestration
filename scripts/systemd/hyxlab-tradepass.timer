@@ -1,7 +1,18 @@
 [Unit]
-Description=hyxlab trade-tape retro-pass daily 06:35 UTC
+Description=hyxlab trade-tape retro-pass daily 06:37 UTC (off the collector's :0/5 tick)
 [Timer]
-OnCalendar=*-*-* 06:35:00 UTC
+# 06:37, not 06:35: the 5-min collector fires on every :0/5 tick and shares
+# Kalshi's REST budget with this pass. Measured 2026-10-12..10-17, six of
+# six days: the collector's 06:35Z cycle drew 9-15 x 429 retries against
+# 3-9 on the neighbouring ticks and its fetch_s was the slowest of the
+# 06:30-06:45 band every day (94/59/49/54/84/69s vs ~24-49s). 120s past the
+# tick clears the collector's measured p99 wall (117.8s over 1,724 cycles)
+# and a quiet-day pass (0.8-1.6 min) ends before the next tick.
+# tests/test_systemd_units.py pins the offset to those two measurements.
+# AccuracySec: systemd's default coalescing window is 1 min, which would
+# let the start drift back onto the tick's tail.
+OnCalendar=*-*-* 06:37:00 UTC
+AccuracySec=1s
 Persistent=true
 [Install]
 WantedBy=timers.target

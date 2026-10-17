@@ -1,5 +1,5 @@
 [Unit]
-Description=hyxlab QA daily 10:00 UTC (after the 06:10 sweep and the 06:35 tradepass)
+Description=hyxlab QA daily 10:00 UTC (after the 06:10 sweep and the 06:37 tradepass)
 [Timer]
 OnCalendar=*-*-* 10:00:00 UTC
 Persistent=true

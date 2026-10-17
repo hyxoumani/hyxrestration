@@ -3262,6 +3262,35 @@ Format: what happened → root cause → error type → prevention tier
     `tests/test_hyxlab_queuescore.py` now pins the bare form (red against
     the bounded mutant).
 
+124. **2026-10-17 08:15Z -- a daily timer was placed ON the 5-minute
+    collector's tick and paid for by the collector for 75 days.**
+    `hyxlab-tradepass.timer` fired `06:35:00 UTC` since the 2026-08-03
+    timezone fix; `hyxlab-collect.timer` fires `*:0/5`, so the pass's
+    whole quiet-day life (0.8-1.6 min) ran inside one collector cycle,
+    both spending the same Kalshi REST budget. Nobody measured it: the
+    hold work (#96, #102, tradepass 10-17 02:22Z) was about the FILE, and
+    the file reading on the first instrumented run was clean (`held 5 for
+    6.5s`, collector `wait_s 0.0`). The collector's own cycle line carries
+    `fetch_s`, and reading it by TICK rather than by day: six of six days
+    10-12..10-17, the 06:35Z cycle drew 9-15 x 429 retries against 3-9 on
+    06:30/06:40/06:45 and its fetch was the band's slowest every day
+    (94.1/59.0/48.8/53.9/84.1/69.3s vs 18-49s) -- ~35s a day, and a p99
+    collector cycle (117.8s over 1,724) was the pass's whole run. The
+    structural tests all read the HOUR (`_utc_hour`: the pin test, the
+    sweep -> tradepass -> QA order test, the fade-window test), so a
+    collision in the SECONDS was invisible to every one of them. Fix:
+    `06:37:00 UTC` + `AccuracySec=1s` (systemd's default 1-min coalescing
+    would slide the start back onto the tick's tail), and
+    `test_the_tradepass_starts_between_collector_cycles` pins the offset
+    to the two measurements it rests on: >= the collector's p99 wall
+    past the tick, and a quiet-day run ending before the next tick.
+    Red-verified by mutating the timer back to `06:35:00`. Rule: **two
+    timers that share a rate budget collide in the seconds, and a
+    measurement of the shared FILE says nothing about the shared API --
+    read the victim's cost by the tick the suspect fires on, not by the
+    day.** Prediction to read on 10-18: the 06:35Z cycle's 429 count and
+    fetch_s fall to the neighbours' band and 06:40Z stays flat.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -44,9 +44,7 @@ _PROSE_TZ_RE = re.compile(r"\bUTC\b|\b\d{1,2}:\d{2}Z\b")
 
 # A trailing timezone suffix on an OnCalendar spec: a zone name ("UTC",
 # "America/Chicago") or a numeric offset ("+0200"). systemd accepts both.
-_TZ_SUFFIX_RE = re.compile(
-    r"\s(?:[A-Za-z]+(?:/[A-Za-z_+-]+)+|[A-Z]{2,5}|[+-]\d{2}:?\d{2})$"
-)
+_TZ_SUFFIX_RE = re.compile(r"\s(?:[A-Za-z]+(?:/[A-Za-z_+-]+)+|[A-Z]{2,5}|[+-]\d{2}:?\d{2})$")
 
 # An hour-pinned spec: a concrete hour field followed by :MM. Specs like
 # `*:0/5` and `*:2/5` pin no wall-clock hour, so they fire at the same
@@ -242,6 +240,68 @@ def test_the_daily_archive_pipeline_runs_in_dependency_order():
     )
 
 
+#: The 5-min collector fires on every :0/5 tick (`OnCalendar=*:0/5`) and
+#: shares Kalshi's REST budget with every other Kalshi-facing unit. A short
+#: daily timer that starts ON that tick runs its whole life inside one
+#: collector cycle and is paid for in the collector's 429 retries and fetch
+#: wall. Measured 2026-10-12..10-17 with the tradepass at 06:35:00Z: six of
+#: six days the collector's 06:35Z cycle drew 9-15 x 429 retries against
+#: 3-9 on the 06:30/06:40/06:45 ticks, and its fetch_s was the slowest of
+#: the band every day (94.1/59.0/48.8/53.9/84.1/69.3s vs 18-49s), while its
+#: DuckDB `wait_s` stayed 0.0 -- the cost was the API, not the file.
+COLLECT_TICK_S = 300
+#: Collector wall p99 over 1,724 cycles, 2026-10-11..10-17 (p50 32.3s, p95
+#: 68.1s). A start this far past the tick lands after the cycle has closed.
+COLLECT_WALL_P99_S = 117.8
+#: Quiet-day tradepass wall, worst of 2026-10-13..10-17 (0.8/0.9/1.1/1.2/
+#: 1.6 min). Storm-drain days (205.6 min on 10-12) span every tick anyway.
+TRADEPASS_QUIET_WALL_S = 96.0
+
+
+def _utc_second_of_day(spec):
+    """Seconds since midnight of a `HH:MM:SS UTC` OnCalendar, else None."""
+    m = re.search(r"(?<![\d/*])(\d{1,2}):(\d{2}):(\d{2})\s+UTC$", spec.strip())
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3)) if m else None
+
+
+def test_the_tradepass_starts_between_collector_cycles():
+    """The tradepass must start after the collector's tick has closed and end
+    before its next one, on a quiet day.
+
+    Starting ON the tick is what the unit did from 2026-08-03 to 10-17 and
+    nothing here could see it: the pin test, the order test and the fade
+    test all read the HOUR, and the collision is in the seconds. The cost
+    was measured only once the collector's own cycle line carried fetch_s.
+    """
+    timers = _timers()
+    specs = _field(timers["hyxlab-tradepass.timer"], "OnCalendar")
+    assert len(specs) == 1, specs
+    start = _utc_second_of_day(specs[0])
+    assert start is not None, f"OnCalendar {specs[0]!r} is not HH:MM:SS UTC"
+    offset = start % COLLECT_TICK_S
+    assert offset >= COLLECT_WALL_P99_S, (
+        f"tradepass starts {offset:.0f}s past the collector's :0/5 tick, inside "
+        f"the collector's p99 cycle ({COLLECT_WALL_P99_S:g}s): both units then "
+        "spend the same Kalshi REST budget and the collector pays in 429 "
+        "retries (measured 9-15 vs 3-9 per cycle, 2026-10-12..10-17)"
+    )
+    assert offset + TRADEPASS_QUIET_WALL_S <= COLLECT_TICK_S, (
+        f"tradepass starts {offset:.0f}s past the tick and a quiet-day run "
+        f"({TRADEPASS_QUIET_WALL_S:g}s) would still be fetching at the next one"
+    )
+    # systemd coalesces timer elapses within AccuracySec (default 1 min),
+    # which would let the start slide back toward the tick's tail.
+    accuracy = _field(timers["hyxlab-tradepass.timer"], "AccuracySec")
+    assert accuracy == ["1s"], f"AccuracySec must pin the start: {accuracy}"
+
+
+def test_utc_second_of_day_reads_seconds():
+    assert _utc_second_of_day("*-*-* 06:37:00 UTC") == 6 * 3600 + 37 * 60
+    assert _utc_second_of_day("*-*-* 06:35:00 UTC") % COLLECT_TICK_S == 0
+    assert _utc_second_of_day("*-*-* 06:37:00") is None
+    assert _utc_second_of_day("*:0/5") is None
+
+
 #: Start of the live agent's fade window (hylshi CLAUDE.md playbook item 5:
 #: KXLOWT candidates appear almost exclusively 23:00-04:00Z). The Kalshi REST
 #: budget is RIVAL between this lab's batch archival and that agent's live
@@ -354,10 +414,7 @@ def test_promote_restarts_a_daemon_only_when_its_own_code_moved():
     daemon running stale code after a promote.
     """
     text = PROMOTE.read_text()
-    guards = dict(
-        (unit, (root, paths))
-        for root, paths, unit in _RESTART_GUARD_RE.findall(text)
-    )
+    guards = dict((unit, (root, paths)) for root, paths, unit in _RESTART_GUARD_RE.findall(text))
     assert guards, "promote.sh no longer guards its daemon restarts"
 
     services = _services()

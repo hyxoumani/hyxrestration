@@ -659,7 +659,10 @@ self-match trap the ops rules name for `pkill -f`.
   shares Kalshi's rate budget with the live trader. `Persistent=false`:
   a missed cycle is a missed instant, and replaying it at boot would
   stamp a stale quote with a fresh `ts`.
-- `hyxlab-tradepass.timer` (daily 06:35 UTC): `collector.trades_backfill`
+- `hyxlab-tradepass.timer` (daily 06:37 UTC, `AccuracySec=1s`; 06:35 until
+  2026-10-17 -- ON the collector's :0/5 tick, which cost the collector's
+  06:35Z cycle 9-15 x 429 retries and the band's slowest fetch six days of
+  six, see mistakes #124): `collector.trades_backfill`
   — retro-pass over the trade tape, catching the gaps `sweep` leaves when
   a per-market fetch raises HTTPError and is swallowed. Since 2026-10-17
   every attach it takes on the collector's file (the flocked schema
@@ -668,7 +671,10 @@ self-match trap the ops rules name for `pkill -f`.
   prints as one `[tradepass] attach_wait: on hyxlab.duckdb N attaches ...
   held N for Xs` line after `done:` (the #96/#102 shape; `signals` was
   the previous instance). Expect `held` = 3 + flushes; the first
-  production line is the 10-17 06:35Z run.
+  production line, 10-17 06:35Z: 55 markets, 2 flushes, `held 5 for 6.5s
+  in total, worst 5.5s`, 0 contended -- 5 = 3 + 2 as predicted; the
+  collector's same-minute cycle read `wait_s 0.0` (its write landed after
+  the pass closed), so the file cost it nothing and the API cost it 36s.
 - `hyxlab-qa.timer` (daily 07:00 UTC): data-quality checks, both
   archives; FAIL lines land in the journal with exit 1. It watches
   tradepass through `qa_tape_coverage` (per-market persistence, plus a
