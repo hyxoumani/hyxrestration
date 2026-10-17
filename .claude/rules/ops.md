@@ -443,3 +443,20 @@
   new inode -- `/proc/<pid>/fd/255` then shows `(deleted)` and the old
   copy keeps running), never by truncate-and-write. The Edit/Write tools
   truncate in place; check `pgrep -a -f 'autoloo[p].sh'` first.
+- Two timers that share a RATE BUDGET collide in the seconds, and the
+  hour-reading tests (pin, order, fade window) are blind to it. The
+  tradepass fired `06:35:00 UTC` ON the 5-min collector's `*:0/5` tick for
+  75 days; the hold instrument on the shared FILE read clean (`held 6.5s`,
+  collector `wait_s 0.0`) while the shared API cost the collector 9-15 x
+  429 retries and the band's slowest `fetch_s` six days of six (mistakes
+  #124). Read a victim's cost by the TICK the suspect fires on, never by
+  the day; a short daily unit on a shared budget starts past the periodic
+  writer's p99 wall and ends before its next tick (`AccuracySec=1s`, or
+  systemd's 1-min coalescing slides it back).
+- `daemon-reload` on a `Persistent=true` timer whose OnCalendar moved to a
+  time of day that is already past (but after its last trigger) FIRES the
+  service at reload -- systemd re-derives the schedule and counts the new
+  elapse as missed. Measured 2026-10-17 08:27:58Z at promote: one extra
+  tradepass run. Move such a timer only to a time not yet passed today,
+  or promote before the old time fires; for the 12h sweep or QA an extra
+  run is a surprise hold on the live archives (`scripts/promote.sh`).

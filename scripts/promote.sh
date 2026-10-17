@@ -109,8 +109,16 @@ install_units() {
     # below is where a daemon is deliberately brought up.
     #
     # `enable` is idempotent: on an already-enabled, already-active unit both
-    # halves are no-ops, so this cannot disturb a running schedule or a
-    # `Persistent` catch-up.
+    # halves are no-ops. What is NOT a no-op is the `daemon-reload` above on
+    # a `Persistent=true` timer whose OnCalendar MOVED: systemd re-derives the
+    # schedule, and if the new elapse for today lies between the timer's
+    # stamp (its last trigger) and now, Persistent counts it as missed and
+    # fires the service AT PROMOTE TIME. Measured 2026-10-17 08:27:58Z:
+    # tradepass moved 06:35 -> 06:37Z after its 06:35Z run, stamp 06:35Z <
+    # 06:37Z < now, one extra (empty, 0.6s) run. Harmless for an idempotent
+    # retro-pass; for the 12h sweep or QA it would be a surprise run against
+    # the live archives. Move a Persistent timer's OnCalendar only to a time
+    # that has NOT yet passed today, or promote before the old time fires.
     echo "== enable the repo's installable units (idempotent; a new one is inert until enabled) =="
     local timers=() svcs=()
     for f in "$DEV"/scripts/systemd/hyxlab-*; do
