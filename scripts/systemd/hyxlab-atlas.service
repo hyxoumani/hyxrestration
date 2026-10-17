@@ -1,0 +1,24 @@
+[Unit]
+Description=hyxlab calibration atlas (implied vs realized, settled corpus of the collector's archive)
+After=network-online.target
+[Service]
+Type=oneshot
+# 220: the batch handicap, see hyxlab-divergence.service and
+# tests/test_systemd_units.py for the arithmetic.
+OOMScoreAdjust=220
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+# The report's priors ARE its input: `tier_stability`, `verdict_stability`
+# and `quoted_looks` read every earlier reading from this directory, so a
+# per-tree `reports/` would compare each scheduled reading against half the
+# record. Same value as every other unit (tests/test_shared_reports.py).
+Environment=HYXLAB_REPORTS_DIR=/home/devs/workspace/hyxrestration/reports
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m simulator.atlas
+# MEASURED 2026-10-17 14:16Z, hand-run as a transient unit while BOTH sweeps
+# were writing the same file: 3.8s wall, 30.2s CPU, 2.6G peak, one attach
+# held 3.2s. The attach ladder itself is bounded at ~3.6 min of sleep
+# (`simulator.atlas.ARCHIVE_ATTACH`), so a run that needs more than this
+# has met a holder it should not meet at its hour -- see the timer.
+TimeoutStartSec=15min
+MemoryMax=6G
+# Reports only; never fails the unit (scripts/cgmem.sh).
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh

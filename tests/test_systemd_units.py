@@ -446,3 +446,60 @@ def test_promote_restarts_a_daemon_only_when_its_own_code_moved():
             f"promote.sh's fallback for {unit} is `{paths}`, which misses "
             "the shared kernel every daemon imports"
         )
+
+
+#: Measured wall of the two multi-hour writers of the collector's file, as a
+#: worst case from their own done lines: the Kalshi sweep's QA budget
+#: (`BATCH_RUN_BUDGET_H`, worst 12.49h of 16 runs to 2026-10-17) and the
+#: poly sweep's 930-1042 min band over 17 October done lines (.claude/rules/
+#: ops.md). Both START times are read from their timers, never re-typed.
+POLY_SWEEP_WALL_H = 1042 / 60
+#: Atlas wall measured 2026-10-17 14:16Z as a transient unit with both sweeps
+#: writing: 3.8s. Sixty seconds is a bound with room, not a measurement.
+ATLAS_WALL_S = 60.0
+
+
+def _timer_start_h(timers, name):
+    specs = _field(timers[name], "OnCalendar")
+    assert len(specs) == 1, f"{name}: expected one OnCalendar, got {specs}"
+    h = _utc_hour(specs[0])
+    assert h is not None, f"{name}: OnCalendar {specs[0]!r} is not UTC-pinned"
+    return h, specs[0]
+
+
+def test_the_atlas_runs_while_no_sweep_holds_the_archive():
+    """The weekly atlas must start when neither multi-hour writer of
+    `data/hyxlab.duckdb` can be alive, and off the collector's tick.
+
+    Its attach ladder sleeps ~3.6 min at most (`simulator.atlas.ARCHIVE_ATTACH`)
+    and then exits with "archive busy", so a start inside either sweep's
+    wall is a run that was scheduled to fail. The sweeps' starts are read
+    from their own timers; their walls are the measured worst cases above.
+    """
+    timers = _timers()
+    atlas_h, spec = _timer_start_h(timers, "hyxlab-atlas.timer")
+    sweep_h, _ = _timer_start_h(timers, "hyxlab-sweep.timer")
+    poly_h, _ = _timer_start_h(timers, "hyxlab-poly-sweep.timer")
+    for name, start, wall in (
+        ("hyxlab-sweep.timer", sweep_h, BATCH_RUN_BUDGET_H["hyxlab-sweep.timer"]),
+        ("hyxlab-poly-sweep.timer", poly_h, POLY_SWEEP_WALL_H),
+    ):
+        end = (start + wall) % 24
+        # The writer's busy interval on the 24h circle, start -> end.
+        busy = (atlas_h - start) % 24 < wall
+        assert not busy, (
+            f"atlas at {atlas_h:.2f}h UTC lands inside {name}'s measured wall "
+            f"({start:.2f}h + {wall:.2f}h = {end:.2f}h): its attach ladder would "
+            "wait out ~3.6 min and exit 'archive busy' on schedule"
+        )
+    # The tradepass rule (mistakes #124): seconds, not hours.
+    start_s = _utc_second_of_day(spec)
+    assert start_s is not None, f"OnCalendar {spec!r} is not HH:MM:SS UTC"
+    offset = start_s % COLLECT_TICK_S
+    assert offset >= COLLECT_WALL_P99_S and offset + ATLAS_WALL_S <= COLLECT_TICK_S, (
+        f"atlas starts {offset:.0f}s past the collector's :0/5 tick; it must "
+        f"start after the collector's p99 wall ({COLLECT_WALL_P99_S:g}s) and "
+        f"end ({ATLAS_WALL_S:g}s) before the next tick, or its 3s hold on the "
+        "file lands on the collector's write"
+    )
+    assert _field(timers["hyxlab-atlas.timer"], "AccuracySec") == ["1s"]

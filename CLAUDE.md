@@ -74,7 +74,8 @@ SYSTEMD_UNIT_PATH=$PWD/scripts/systemd:/etc/systemd/user:/usr/lib/systemd/user \
 Scheduled (systemd user units, run from the stable worktree; canonical
 files in `scripts/systemd/`, installed by `scripts/promote.sh`): timers
 `hyxlab-collect` (5 min), `hyxlab-poly-sweep` (04:15 UTC),
-`hyxlab-sweep` (06:10 UTC), `hyxlab-qa` (10:00 UTC); daemons
+`hyxlab-sweep` (06:10 UTC), `hyxlab-qa` (10:00 UTC), `hyxlab-atlas`
+(weekly Mon 02:48 UTC, both sweeps idle); daemons
 `hyxlab-stream` and `hyxlab-shadow`. DuckDB is single-writer — ad-hoc
 runs may need to wait seconds for the collector's flock.
 

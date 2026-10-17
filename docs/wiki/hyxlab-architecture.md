@@ -170,7 +170,11 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   subject.
 - `simulator/queuebounds.py` + `simulator/queuescore.py` — FIFO maker
   queue-position bounds and the crossing-rule calibration bracket.
-- `simulator/atlas.py` — calibration atlas (implied vs realized,
+- `simulator/atlas.py` — calibration atlas (implied vs realized;
+  scheduled weekly by `hyxlab-atlas.timer`, Mon 02:48 UTC, the one
+  hour both sweeps are idle and 180s off the collector's tick; writes
+  through `hyxlab.reportdir.shared_reports` so the scheduled and the
+  hand-run readings share one `reports/atlas/` record;
   Wilson flags; plus a cluster-robust flag tier with n = distinct
   (series, close_time) ladders — the correlation worst case; pre-regs
   size evidence on `clusters`, not n). Consecutive atlas runs are only

@@ -265,6 +265,7 @@ from statistics import NormalDist, median
 
 import duckdb
 
+from hyxlab.reportdir import shared_reports
 from hyxlab.store import (
     attach_budget_s,
     attach_wait_block,
@@ -1353,7 +1354,14 @@ ATTACH_BUDGET_S = attach_budget_s(**ARCHIVE_ATTACH)
 def main() -> None:
     ap = argparse.ArgumentParser(description="calibration atlas: implied vs realized")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
-    ap.add_argument("--out", default="reports/atlas")
+    # Through `shared_reports`, never a cwd-relative literal: the stable
+    # worktree runs `hyxlab-atlas.timer` and the dev tree is where a hand
+    # re-run happens, and each has its OWN real `reports/` directory. The
+    # report's own `tier_stability` / `verdict_stability` / `quoted_looks`
+    # read the priors from this directory, so a split would not just
+    # misfile the report -- it would make every reading compare against
+    # half the record (tests/test_shared_reports.py).
+    ap.add_argument("--out", default=str(shared_reports("atlas")))
     args = ap.parse_args()
 
     reset_attach_waits()

@@ -985,6 +985,20 @@ ingestion behind a `FeatureView` as-of API.
 
 ## Signal feeds & backups (B4, 2026-07-11/12)
 
+- `hyxlab-atlas.timer` (weekly, Mon 02:48 UTC; since 2026-10-17): the
+  calibration atlas (`simulator.atlas`) on the settled corpus of the
+  collector's file. Replaces a ~6-day hand cadence (09-26, 10-07,
+  10-13, 10-17). Weekly, not daily, because every reading is a LOOK at
+  the quoted tier (`quoted_looks`). The hour is the only window in
+  which no multi-hour writer of `data/hyxlab.duckdb` is alive (poly
+  sweep 04:15Z + up to 17.4h, Kalshi sweep 06:10Z + 12.5h), pinned by
+  `tests/test_systemd_units.py::test_the_atlas_runs_while_no_sweep_holds_the_archive`
+  against the sweeps' own timers; the seconds follow the tradepass rule
+  (mistakes #124). Measured: 3.8s wall, 2.6G peak, one 3.2s hold.
+  Reports land in the shared `reports/atlas/` (HYXLAB_REPORTS_DIR); the
+  report's own stability fields read the priors from there, so the
+  decision rule stands: re-ask pre-registration only when
+  `quoted_verdict.family.confirmed_family` is non-empty.
 - `hyxlab-signals.timer` (04:40 UTC): ALFRED econ vintages (7 series,
   value-diffed daily — the keyless endpoint restamps knowable_at each
   fetch day, a naive insert would forge vintages) + GDELT bulk GKG
