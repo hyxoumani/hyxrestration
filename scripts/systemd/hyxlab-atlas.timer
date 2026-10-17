@@ -6,7 +6,7 @@ Description=hyxlab calibration atlas weekly Mon 02:48 UTC (both sweeps idle: pol
 # (09-26, 10-07, 10-13, 10-17). The hour is the one window in which no
 # multi-hour writer holds the collector's file: the poly sweep closes
 # ~20:30-21:40Z and the Kalshi sweep ~18:30Z, and neither starts before
-# 04:15Z. The seconds are the tradepass rule (mistakes #124): 02:48:00 is
+# 04:15Z. The seconds are the tradepass rule (mistakes #125): 02:48:00 is
 # 180s past the :0/5 tick, clear of the collector's p99 wall (117.8s), and
 # a 4s run ends long before 02:50. AccuracySec=1s because systemd's default
 # 1-min coalescing would slide the start back onto the tick's tail.

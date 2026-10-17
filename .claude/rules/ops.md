@@ -449,7 +449,7 @@
   75 days; the hold instrument on the shared FILE read clean (`held 6.5s`,
   collector `wait_s 0.0`) while the shared API cost the collector 9-15 x
   429 retries and the band's slowest `fetch_s` six days of six (mistakes
-  #124). Read a victim's cost by the TICK the suspect fires on, never by
+  #125). Read a victim's cost by the TICK the suspect fires on, never by
   the day; a short daily unit on a shared budget starts past the periodic
   writer's p99 wall and ends before its next tick (`AccuracySec=1s`, or
   systemd's 1-min coalescing slides it back).
@@ -460,3 +460,7 @@
   tradepass run. Move such a timer only to a time not yet passed today,
   or promote before the old time fires; for the 12h sweep or QA an extra
   run is a surprise hold on the live archives (`scripts/promote.sh`).
+  A NEW Persistent timer (no stamp file) does not fire at `enable --now`:
+  measured 2026-10-17 14:30Z on `hyxlab-atlas.timer`, `LastTriggerUSec`
+  empty, next elapse its first slot. The digest reads that as `FIRST-DUE`
+  (ok-class, says when), not NEVER-RAN (mistakes #126).

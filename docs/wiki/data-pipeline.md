@@ -662,7 +662,7 @@ self-match trap the ops rules name for `pkill -f`.
 - `hyxlab-tradepass.timer` (daily 06:37 UTC, `AccuracySec=1s`; 06:35 until
   2026-10-17 -- ON the collector's :0/5 tick, which cost the collector's
   06:35Z cycle 9-15 x 429 retries and the band's slowest fetch six days of
-  six, see mistakes #124): `collector.trades_backfill`
+  six, see mistakes #125): `collector.trades_backfill`
   — retro-pass over the trade tape, catching the gaps `sweep` leaves when
   a per-market fetch raises HTTPError and is swallowed. Since 2026-10-17
   every attach it takes on the collector's file (the flocked schema
@@ -994,7 +994,7 @@ ingestion behind a `FeatureView` as-of API.
   sweep 04:15Z + up to 17.4h, Kalshi sweep 06:10Z + 12.5h), pinned by
   `tests/test_systemd_units.py::test_the_atlas_runs_while_no_sweep_holds_the_archive`
   against the sweeps' own timers; the seconds follow the tradepass rule
-  (mistakes #124). Measured: 3.8s wall, 2.6G peak, one 3.2s hold.
+  (mistakes #125). Measured: 3.8s wall, 2.6G peak, one 3.2s hold.
   Reports land in the shared `reports/atlas/` (HYXLAB_REPORTS_DIR); the
   report's own stability fields read the priors from there, so the
   decision rule stands: re-ask pre-registration only when

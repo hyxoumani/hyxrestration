@@ -492,7 +492,7 @@ def test_the_atlas_runs_while_no_sweep_holds_the_archive():
             f"({start:.2f}h + {wall:.2f}h = {end:.2f}h): its attach ladder would "
             "wait out ~3.6 min and exit 'archive busy' on schedule"
         )
-    # The tradepass rule (mistakes #124): seconds, not hours.
+    # The tradepass rule (mistakes #125): seconds, not hours.
     start_s = _utc_second_of_day(spec)
     assert start_s is not None, f"OnCalendar {spec!r} is not HH:MM:SS UTC"
     offset = start_s % COLLECT_TICK_S

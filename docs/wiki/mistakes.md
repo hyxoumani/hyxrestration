@@ -3262,7 +3262,7 @@ Format: what happened → root cause → error type → prevention tier
     `tests/test_hyxlab_queuescore.py` now pins the bare form (red against
     the bounded mutant).
 
-124. **2026-10-17 08:15Z -- a daily timer was placed ON the 5-minute
+125. **2026-10-17 08:15Z -- a daily timer was placed ON the 5-minute
     collector's tick and paid for by the collector for 75 days.**
     `hyxlab-tradepass.timer` fired `06:35:00 UTC` since the 2026-08-03
     timezone fix; `hyxlab-collect.timer` fires `*:0/5`, so the pass's
@@ -3291,6 +3291,32 @@ Format: what happened → root cause → error type → prevention tier
     day.** Prediction to read on 10-18: the 06:35Z cycle's 429 count and
     fetch_s fall to the neighbours' band and 06:40Z stays flat.
 
+
+126. **2026-10-17 14:48Z -- the digest's NEVER-RAN arm fired on a timer
+    whose own line printed when it would run.** `collector.health.judge`
+    returned `NEVER-RAN timer active but never triggered` (ATTENTION, so
+    it outranks the ladder at every cold start) for any active timer
+    with an empty `LastTriggerUSec`, without reading the
+    `NextElapseUSecRealtime` it fetched two lines later. A freshly
+    enabled unit is exactly that: `hyxlab-atlas.timer`, enabled 14:30Z
+    for a Monday 02:48Z slot, would have been ATTENTION for 36h, and
+    `hyxlab-divergence` sat there across three digests 2026-09-09..10
+    (status 1176/1239/1304, each hand-read as "waiting for its first
+    slot"). The arm was written for #47 -- a timer installed but never
+    enabled -- which the TIMER-OFF arm above it already catches, so this
+    arm's only remaining population was units the manager had scheduled.
+    Fix: no trigger AND a next elapse still ahead reads `FIRST-DUE never
+    triggered; first run due in 36.3h` (ok-class); a slot that has come
+    and gone with no trigger stays NEVER-RAN; both arms tested, red
+    against the old judge. Rule: **a verdict about an ABSENCE must read
+    the field that says whether the absence is scheduled to end**, and a
+    state that is correct on the day a unit ships but wrong for its
+    whole first period is a false alarm with a period, not a verdict.
+    Second: a new `Persistent=true` timer with NO stamp file does not
+    fire at enable (measured: `LastTriggerUSec` empty after
+    `enable --now`, next elapse Mon 10-20) -- the ops rule about a MOVED
+    Persistent timer firing at `daemon-reload` is about a stamp that
+    exists and an elapse that was missed since it.
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
