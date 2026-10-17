@@ -316,6 +316,7 @@ def test_utc_second_of_day_reads_seconds():
 #: the smaller copy pass while reality breached the larger.
 FADE_WINDOW_START_H = float(qa.FADE_WINDOW_START_H)
 BATCH_RUN_BUDGET_H = qa.BATCH_RUN_BUDGET_H
+KALSHI_BATCH_UNITS = qa.KALSHI_BATCH_UNITS
 
 
 def _fade_window_overrun(spec, budget_h, window_start_h=FADE_WINDOW_START_H):
@@ -357,7 +358,9 @@ def test_kalshi_batch_units_finish_before_the_live_fade_window():
     """
     timers = _timers()
     offenders = []
-    for name, budget in sorted(BATCH_RUN_BUDGET_H.items()):
+    assert set(BATCH_RUN_BUDGET_H) >= KALSHI_BATCH_UNITS, "a Kalshi unit with no budget"
+    for name in sorted(KALSHI_BATCH_UNITS):
+        budget = BATCH_RUN_BUDGET_H[name]
         assert name in timers, f"{name} missing from {UNIT_DIR}"
         for spec in _field(timers[name], "OnCalendar"):
             over = _fade_window_overrun(spec, budget)
@@ -448,12 +451,10 @@ def test_promote_restarts_a_daemon_only_when_its_own_code_moved():
         )
 
 
-#: Measured wall of the two multi-hour writers of the collector's file, as a
-#: worst case from their own done lines: the Kalshi sweep's QA budget
-#: (`BATCH_RUN_BUDGET_H`, worst 12.49h of 16 runs to 2026-10-17) and the
-#: poly sweep's 930-1042 min band over 17 October done lines (.claude/rules/
-#: ops.md). Both START times are read from their timers, never re-typed.
-POLY_SWEEP_WALL_H = 1042 / 60
+#: The two multi-hour writers of the collector's file are judged by the
+#: same budgets QA reads their done lines against (`BATCH_RUN_BUDGET_H`:
+#: sweep 12.5h, poly sweep 17.5h), and their START times are read from
+#: their timers -- neither number is re-typed here.
 #: Atlas wall measured 2026-10-17 14:16Z as a transient unit with both sweeps
 #: writing: 3.8s. Sixty seconds is a bound with room, not a measurement.
 ATLAS_WALL_S = 60.0
@@ -482,7 +483,7 @@ def test_the_atlas_runs_while_no_sweep_holds_the_archive():
     poly_h, _ = _timer_start_h(timers, "hyxlab-poly-sweep.timer")
     for name, start, wall in (
         ("hyxlab-sweep.timer", sweep_h, BATCH_RUN_BUDGET_H["hyxlab-sweep.timer"]),
-        ("hyxlab-poly-sweep.timer", poly_h, POLY_SWEEP_WALL_H),
+        ("hyxlab-poly-sweep.timer", poly_h, BATCH_RUN_BUDGET_H["hyxlab-poly-sweep.timer"]),
     ):
         end = (start + wall) % 24
         # The writer's busy interval on the 24h circle, start -> end.

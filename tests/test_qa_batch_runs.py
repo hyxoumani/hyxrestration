@@ -123,6 +123,38 @@ def test_runs_inside_budget_pass():
     assert not failed and not skipped
 
 
+def _poly(end, wall_h):
+    return BatchRun("hyxlab-poly-sweep.timer", end, wall_h)
+
+
+def test_a_poly_sweep_past_its_wall_budget_fails_as_a_stale_budget(capsys):
+    """Added 2026-10-17: the 15.5-17.4h band lived in ops.md prose and no
+    check read a done line against it. 18.0h against 17.5h must FAIL and
+    say so with the budget, exactly as the Kalshi sweep's breach does."""
+    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 4, 22, 15, tzinfo=UTC), 18.0)]}
+    failed, _ = _run(runs)
+    assert failed == {"batch units within measured run budget"}
+    assert "hyxlab-poly-sweep.timer ran 18.00h (budget 17.5h)" in capsys.readouterr().out
+
+
+def test_a_poly_sweep_inside_the_fade_window_spent_no_kalshi_quota():
+    """The 2026-08-21 exemption, kept: a Polymarket run spanning 23:00-04:00Z
+    is not a fade overlap (it spends none of the quota the window protects),
+    so being budgeted must not make it one. 04:15Z -> 01:00Z, 20.75h, is
+    over the wall budget -- the only reason it fails -- and the overlap key
+    must not be recorded for it."""
+    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 5, 1, 0, tzinfo=UTC), 20.75)]}
+    failed, _ = _run(runs)
+    assert failed == {"batch units within measured run budget"}
+    reported = qa._load_state(qa.STATE).get("batch-run-budget", {}).get("reported", [])
+    assert "hyxlab-poly-sweep.timer@2026-08-05T01:00" not in reported, reported
+    # Inside budget and inside the window (08:00Z -> 02:00Z, a DIFFERENT end
+    # so the record cannot excuse it as already reported): nothing at all.
+    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 5, 2, 0, tzinfo=UTC), 18.0 - 1)]}
+    failed, _ = _run(runs)
+    assert not failed
+
+
 def test_the_2026_08_03_sweep_breaches_the_budget_it_was_written_against():
     """The regression proper: 10.11h measured against the 8.0h then on record."""
     runs = {"hyxlab-sweep.timer": [_sweep(datetime(2026, 8, 3, 21, 16, 38, tzinfo=UTC), 10.11)]}

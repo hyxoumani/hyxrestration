@@ -15,7 +15,8 @@ The answer, measured across the repo rather than assumed:
     state exists anywhere in the tree (`test_nothing_outside_qa_reads_qa`
     keeps that true).
   * `read_batch_runs` is the project's only consumer of a unit's journal, and
-    `BATCH_RUN_BUDGET_H` covers `hyxlab-sweep` and `hyxlab-tradepass` only.
+    `BATCH_RUN_BUDGET_H` covers the sweep, the tradepass and (since 10-17) the
+    poly sweep only.
   * `scripts/autoloop.sh` runs the agent loop; it never invokes qa.
 
 So `sys.exit(1)` set the unit to `failed` where nothing queried it, and the

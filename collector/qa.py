@@ -431,18 +431,35 @@ FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
 #:   hyxlab-tradepass  up to 2h51m (see QA_CLEARANCE_H in the unit tests);
 #:                     4.0h allowed.
 #:
-#: DELIBERATELY ABSENT: hyxlab-poly-sweep. It is measured at 13h41m-17h11m
-#: wall clock, and 2026-07-29 ran 1d 0h21m -- fully spanning that night's
-#: fade window. It is exempt because it talks to POLYMARKET, so it spends no
-#: Kalshi quota; its rivalry with the collector is `data/writer.lock` only,
-#: and collector/poly_sweep.py already touches the DB in short bursts. It is
-#: also unfixable by scheduling: a 14-24h job on a 24h cadence has a 57-100%
-#: duty cycle, so no start time clears a 5h window. Its lever is wall clock,
-#: not OnCalendar. Do NOT "fix" this by adding it here and moving its timer.
+#:   hyxlab-poly-sweep 930.2-1042.1 min over the 11 done lines 10-06..10-16
+#:                     (995/971/1028/930/989/998/958/1014/989/991; median
+#:                     ~990), 15.5-17.4h; 17.5h allowed, the max rounded up
+#:                     to the half hour as the sweep's is. Added 2026-10-17:
+#:                     until then the band lived in prose (.claude/rules/
+#:                     ops.md) and NOTHING read a done line against it -- a
+#:                     17h unit with no TimeoutStartSec, whose growth is
+#:                     owned by Polymarket's listing count and the tail
+#:                     cadence, had no drift detector at all. Its wall is a
+#:                     claim about the box exactly as the sweep's is.
+#:
+#: The FADE arm is a different set. Only Kalshi-facing units spend the
+#: quota the fade window protects (EXP-958), so overlap is judged for
+#: KALSHI_BATCH_UNITS alone and the poly sweep is DELIBERATELY ABSENT from
+#: it: it talks to POLYMARKET, its rivalry with the collector is
+#: `data/writer.lock` only, and it is unfixable by scheduling anyway (a
+#: 14-24h job on a 24h cadence has a 57-100% duty cycle, so no start time
+#: clears a 5h window -- 2026-07-29 ran 1d 0h21m, fully spanning that
+#: night's window). Its lever is wall clock, not OnCalendar: do NOT "fix"
+#: an overlap by moving its timer. Being in the budget dict and out of this
+#: set is the whole point of there being two names.
 BATCH_RUN_BUDGET_H = {
     "hyxlab-sweep.timer": 12.5,
     "hyxlab-tradepass.timer": 4.0,
+    "hyxlab-poly-sweep.timer": 17.5,
 }
+KALSHI_BATCH_UNITS: frozenset[str] = frozenset(
+    {"hyxlab-sweep.timer", "hyxlab-tradepass.timer"}
+)
 #: Journald on this box holds ~16M / ~2 days, so this is a ceiling on the
 #: lookback, not a promise of one. Unreachable days read UNMEASURED.
 BATCH_RUN_LOOKBACK_DAYS = 7
@@ -3653,7 +3670,7 @@ def qa_batch_run_budget(
     runs: dict[str, list[BatchRun] | None] | None = None,
     now: datetime | None = None,
 ) -> None:
-    """Fail when a Kalshi batch unit outruns the budget its schedule assumes.
+    """Fail when a batch unit outruns the budget its schedule assumes.
 
     EXP-961. `test_kalshi_batch_units_finish_before_the_live_fade_window`
     asserts `OnCalendar + BATCH_RUN_BUDGET_H <= 23:00Z`. That is an invariant
@@ -3752,10 +3769,13 @@ def qa_batch_run_budget(
 
     stale_budget = [r for r in over if id(r) not in catch_up]
     # Overlap, unlike the budget, is about quota actually spent — a run that
-    # died inside the fade window still spent it, so this reads every run.
+    # died inside the fade window still spent it, so this reads every run of
+    # every unit that SPENDS that quota; a Polymarket run inside the window
+    # spent none (KALSHI_BATCH_UNITS).
     overlaps = [
         (r, _fade_overlap_h(r.start, r.end))
-        for rs in measured.values()
+        for unit, rs in measured.items()
+        if unit in KALSHI_BATCH_UNITS
         for r in rs
         if _fade_overlap_h(r.start, r.end) > 0
     ]

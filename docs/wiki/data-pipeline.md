@@ -156,7 +156,8 @@ Measured across the tree, the answer was nothing: `hyxlab-qa.service` is
 and no notifier; there is no `systemctl is-failed`, no `--failed` and no
 other reader of a unit's state anywhere; `read_batch_runs` is the only
 journal consumer in the project and `BATCH_RUN_BUDGET_H` covers
-`hyxlab-sweep` and `hyxlab-tradepass` only; `autoloop.sh` never invokes
+`hyxlab-sweep`, `hyxlab-tradepass` and (since 2026-10-17) `hyxlab-poly-sweep`
+only (the fade arm reads `KALSHI_BATCH_UNITS`, which excludes poly); `autoloop.sh` never invokes
 qa. So `sys.exit(1)` set a `failed` state nothing queried, and the `NOT a
 full pass` line exits 0 — for that one even systemd's own state read
 clean. `test_nothing_outside_qa_reads_qa` keeps the premise honest: if a
