@@ -102,6 +102,27 @@ def _flush(db: str, batch: dict) -> None:
     batch["tail_stops"] = []
 
 
+#: Markets between progress lines; also the window the trailing rate is read over.
+PROGRESS_EVERY = 200
+
+
+def eta_minutes(done: int, total: int, elapsed_s: float, window_s: float) -> tuple[float, float]:
+    """`(mean-rate ETA, window-rate ETA)` in minutes for the markets left.
+
+    The mean rate since the start carries the run's slow opening to its
+    last line: on 2026-10-17 it read `~404 min left` at 11,600/18,497 for
+    328 actual and `~60` at 17,400 for 48, and three passes pre-registered
+    a budget FAIL off it. The trailing rate -- the last `PROGRESS_EVERY`
+    markets over the seconds since the previous line -- is the other
+    estimate; the line prints both and names them, so a reader projecting
+    a done time knows which one is the bias. Both are advisory.
+    """
+    left = max(total - done, 0)
+    mean = left * elapsed_s / done / 60 if done > 0 and elapsed_s > 0 else 0.0
+    window = left * window_s / PROGRESS_EVERY / 60 if window_s > 0 else mean
+    return mean, window
+
+
 def sweep(
     db: str,
     min_volume: float,
@@ -151,6 +172,7 @@ def sweep(
     # rising total is actionable without a journal scrape.
     error_classes: dict[str, int] = {}
     t0 = time.monotonic()
+    t_line = t0
 
     for i, m in enumerate(markets):
         cond = m.get("conditionId")
@@ -194,12 +216,14 @@ def sweep(
                 totals["errors"] += 1
                 error_classes["flush"] = error_classes.get("flush", 0) + 1
                 print(f"[poly] flush failed, batch held: {str(exc)[:80]}", flush=True)
-        if (i + 1) % 200 == 0:
-            rate = (i + 1) / (time.monotonic() - t0)
-            eta = (len(markets) - i - 1) / rate / 60
+        if (i + 1) % PROGRESS_EVERY == 0:
+            now_m = time.monotonic()
+            eta, eta_w = eta_minutes(i + 1, len(markets), now_m - t0, now_m - t_line)
+            t_line = now_m
             print(
                 f"[poly] {i + 1}/{len(markets)} | {batch['n_prices']} prices,"
-                f" {batch['n_trades']} trades | ~{eta:.0f} min left",
+                f" {batch['n_trades']} trades | ~{eta:.0f} min left (mean rate;"
+                f" ~{eta_w:.0f} at the last {PROGRESS_EVERY}'s rate)",
                 flush=True,
             )
     _flush(db, batch)

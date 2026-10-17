@@ -911,6 +911,17 @@ self-match trap the ops rules name for `pkill -f`.
   KXSILVER15M, KXUSDJPY15M all 0; 10-17: 14-36; Sunday 10-12: 56-75)
   while the crypto 15M series hold ~92-97 every day -- market hours,
   not a capture hole.
+- **The poly sweep's `~N min left` prints two named estimates**
+  (2026-10-17, `collector.poly_sweep.eta_minutes`; first production line
+  at the 10-18 04:15Z run): `~404 min left (mean rate; ~330 at the last
+  200's rate)`. The mean rate since the start carries the run's slow
+  opening to its last line -- 10-17 read `~404` at 11,600/18,497 for 328
+  actual and `~60` at 17,400 for 48 -- and three passes pre-registered a
+  17.5h budget FAIL off it (the run closed at 1007.2 min, 16.8h). The
+  second number prices the remainder at the trailing window's rate;
+  neither is weighted by a prior run (the poly loop has no per-series
+  `swept_at` to difference), so a reader projecting a done time should
+  bracket it between the two and name which one they used.
 
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.
