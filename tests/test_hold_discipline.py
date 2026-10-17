@@ -62,6 +62,7 @@ which are the sites that actually hold the file.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -99,6 +100,23 @@ ALLOWED: dict[str, str] = {
     # measured, and the companion test forbids every section from taking this
     # one directly.
     "collector/qa.py::_connect_ro": "duck_connect",
+    # The third wrapper case (2026-10-17): `_open` is `open_retry` plus the
+    # DuckDB thread pin, handed to `_flush`, whose body is the hold -- one
+    # write burst per batch on the 5-minute collector's file across a
+    # 15-17h run. `_flush` wraps that body in `charge_hold`, and the
+    # companion test forbids any other function from taking `_open`.
+    "collector/poly_sweep.py::_open": "open_retry",
+}
+
+#: unit ExecStart modules that attach a live DuckDB file and are NOT
+#: publishers, each with the argument -- the rule below is what stopped
+#: `signals` (2026-10-16) and `tradepass` (2026-10-17) from being the next
+#: timer unit found by a hand scan a fortnight after it mattered.
+UNIT_NON_PUBLISHERS: dict[str, str] = {
+    # The 5-minute writer itself: every hold on `hyxlab.duckdb` in this repo
+    # is measured as this unit's victim, and its own burst (`write_cycle`,
+    # under the flock, after all HTTP) is clocked on its per-cycle line.
+    "collector.collect": "the collector is the writer the holds are measured against",
 }
 
 
@@ -241,6 +259,11 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # the closing census, the prefix resolve -- is what this closes.
         "collector/backfill.py",
         "collector/poly_tail_backfill.py",
+        # The Polymarket archival sweep (2026-10-17): the longest-running
+        # writer of the collector's file (15.5-17.4h a day), one flocked
+        # burst per batch through the `_open` wrapper, never summed. The
+        # done line was JSON totals with no hold in them.
+        "collector/poly_sweep.py",
         "collector/qa.py",
         # The archive reconciliation (2026-10-16): hand-run, but its census
         # holds the collector's file twice and the daemon-owned stream
@@ -334,3 +357,77 @@ def test_the_hold_helpers_are_exported_where_the_callers_look():
 
     for name in HELD:
         assert callable(getattr(store, name)), name
+
+
+def test_poly_sweep_writes_the_archive_only_through_the_charged_burst():
+    """What `ALLOWED`'s `collector/poly_sweep.py::_open` entry does NOT
+    excuse: the exemption says the hold belongs to the caller's body, so
+    the only functions allowed to name `_open` are `_flush` and `sweep`
+    (the watermark read), each of which wraps the body in `charge_hold`."""
+    src = (ROOT / "collector/poly_sweep.py").read_text()
+    tree = ast.parse(src)
+    owners = _qualnames(tree)
+    callers = {
+        owners.get(node, "<module>")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_open"
+    }
+    assert callers == {"_flush", "sweep"}, sorted(callers)
+    for name in callers:
+        fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+        assert any(
+            isinstance(n, ast.Call) and getattr(n.func, "id", "") == "charge_hold"
+            for n in ast.walk(fn)
+        ), f"{name} took _open without charging the hold"
+
+
+def _unit_modules() -> dict[str, str]:
+    """unit file -> the `-m module` its ExecStart runs (ExecStartPre excluded)."""
+    out: dict[str, str] = {}
+    for unit in sorted((ROOT / "scripts/systemd").glob("*.service")):
+        for line in unit.read_text().splitlines():
+            if line.startswith("ExecStart=") and " -m " in line:
+                out[unit.name] = line.split(" -m ", 1)[1].split()[0]
+    return out
+
+
+def _module_files(module: str) -> list[Path]:
+    rel = module.replace(".", "/")
+    if (ROOT / f"{rel}.py").exists():
+        return [ROOT / f"{rel}.py"]
+    return sorted((ROOT / rel).rglob("*.py"))
+
+
+def test_every_unit_that_attaches_a_live_archive_publishes_its_holds():
+    """THE RULE, ONE LEVEL UP (2026-10-17). `test_a_publisher_measures_every_
+    hold_it_takes` reaches modules that already publish a block; the two
+    timer units found bare in October -- `collector.signals` on 10-16 and
+    `collector.trades_backfill` on 10-17, each holding the 5-minute
+    collector's file daily with a hand-written line as its whole reading
+    -- were found by a hand scan of unit ExecStart lines against bare
+    attaches. This is that scan as an assertion: a unit whose code attaches
+    through any helper in BARE or HELD must publish `attach_wait_block`, or
+    be named in UNIT_NON_PUBLISHERS with the argument."""
+    units = _unit_modules()
+    assert len(units) >= 12, units  # non-vacuity: the repo's real unit set
+    attachers = tuple(BARE) + tuple(HELD)
+    bare_units = {}
+    for unit, module in units.items():
+        files = _module_files(module)
+        assert files, f"{unit}: {module} resolves to no file"
+        texts = [f.read_text() for f in files]
+        # word-bounded: `StreamStore(` is the stream daemon OWNING its file,
+        # not an attach of someone else's
+        if not any(re.search(rf"\b{name}\(", t) for t in texts for name in attachers):
+            continue
+        if any("attach_wait_block(" in t for t in texts):
+            continue
+        if module in UNIT_NON_PUBLISHERS:
+            continue
+        bare_units[unit] = module
+    assert not bare_units, (
+        f"units whose code holds a live archive and publishes no hold: {bare_units}"
+        " -- route the attaches through held_open/held_attach/charge_hold and print"
+        " attach_wait_line(attach_wait_block(db=...)), or add to UNIT_NON_PUBLISHERS"
+    )
+    assert set(UNIT_NON_PUBLISHERS) <= set(units.values()), "a stale exemption"

@@ -639,6 +639,15 @@ self-match trap the ops rules name for `pkill -f`.
 - `hyxlab-poly-sweep.timer` (daily 05:00 UTC): `poly_sweep` —
   Polymarket metadata + volume/liquidity series + watermarked price
   capture (~60d retention) + trade tails, volume-desc to $10k.
+  Since 2026-10-17 every attach it takes on the collector's file (the
+  watermark read and one `_flush` burst per batch, both through the
+  `_open` wrapper under `charge_hold`) is summed on one `[poly]
+  attach_wait: on hyxlab.duckdb N attaches ... held N for Xs` line after
+  `done:`; first production line at the 10-18 04:15Z run (the 10-17 run
+  started before the promote). `tests/test_hold_discipline.py` now also
+  asserts the rule one level up: any unit whose ExecStart module attaches
+  a live archive must publish `attach_wait_block` or be named in
+  `UNIT_NON_PUBLISHERS` with its argument (only `collector.collect`).
 - `hyxlab-breadth.timer` (5 min, offset to :02,:07,... so it does not
   contend with the collector for `data/writer.lock` on the same minute):
   `collector.breadth --once` — one paginated `/markets?status=open` pass

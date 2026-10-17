@@ -32,7 +32,13 @@ import requests
 
 from collector.venues import polymarket as poly
 from hyxlab.lockid import instance_lock_or_reason, note_holder
-from hyxlab.store import open_retry
+from hyxlab.store import (
+    attach_wait_block,
+    attach_wait_line,
+    charge_hold,
+    open_retry,
+    reset_attach_waits,
+)
 
 FLUSH_MARKETS = 25
 LOCK_FILE = "data/writer.lock"
@@ -68,23 +74,29 @@ def _flush(db: str, batch: dict) -> None:
         note_holder(LOCK_FILE)
         store = _open(db)
         try:
-            if batch["infos"]:
-                store.upsert_markets(batch["infos"])
-            if batch["stats"]:
-                store.insert_poly_stats(batch["stats"])
-            if batch["prices"]:
-                batch["n_prices"] += store.insert_poly_prices(batch["prices"])
-            if batch["trades"]:
-                batch["n_trades"] += store.insert_trades(batch["trades"])
-            # Carried in the batch, not drained from the client here: a
-            # failed flush holds the batch and retries it, and a stop drained
-            # inside the failing burst would be the one row the retry no
-            # longer has -- archiving a short tail with no record that it was
-            # short, which is precisely the blindness this table removes.
-            if batch["tail_stops"]:
-                batch["n_tail_stops"] += store.insert_poly_tail_stops(batch["tail_stops"])
+            # `charge_hold`: `_open` is a wrapper (open + thread pin) that
+            # hands the connection here, so THIS body is the hold -- on the
+            # 5-minute collector's file, one burst per batch across a 15-17h
+            # run, summed on the `[poly] attach_wait:` line after `done:`.
+            # It closes the store in its own `finally` (close, THEN clock).
+            with charge_hold(store.close):
+                if batch["infos"]:
+                    store.upsert_markets(batch["infos"])
+                if batch["stats"]:
+                    store.insert_poly_stats(batch["stats"])
+                if batch["prices"]:
+                    batch["n_prices"] += store.insert_poly_prices(batch["prices"])
+                if batch["trades"]:
+                    batch["n_trades"] += store.insert_trades(batch["trades"])
+                # Carried in the batch, not drained from the client here: a
+                # failed flush holds the batch and retries it, and a stop
+                # drained inside the failing burst would be the one row the
+                # retry no longer has -- archiving a short tail with no record
+                # that it was short, which is precisely the blindness this
+                # table removes.
+                if batch["tail_stops"]:
+                    batch["n_tail_stops"] += store.insert_poly_tail_stops(batch["tail_stops"])
         finally:
-            store.close()
             fcntl.flock(lock, fcntl.LOCK_UN)
     batch["infos"], batch["stats"], batch["prices"], batch["trades"] = [], [], [], []
     batch["tail_stops"] = []
@@ -117,9 +129,11 @@ def sweep(
         fcntl.flock(lock, fcntl.LOCK_EX)
         note_holder(LOCK_FILE)
         store = _open(db)
-        watermarks = store.poly_price_watermarks()
-        store.close()
-        fcntl.flock(lock, fcntl.LOCK_UN)
+        try:
+            with charge_hold(store.close):  # the watermark read is a hold too
+                watermarks = store.poly_price_watermarks()
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
     batch: dict = {
         "infos": [],
@@ -219,11 +233,15 @@ def main() -> None:
     if lock is None:
         print(f"[poly] {why}; aborting", flush=True)
         sys.exit(75)  # EX_TEMPFAIL — the next timer firing resumes
+    reset_attach_waits()
     try:
         totals = sweep(args.db, args.min_volume, args.limit, args.closed_days)
     finally:
         lock.close()
     print(f"[poly] done: {json.dumps(totals)}", flush=True)
+    # The run's whole exclusion of the collector's file -- every `_flush`
+    # burst -- through the one renderer (#95), db-scoped.
+    print(attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[poly]"), flush=True)
 
 
 if __name__ == "__main__":
