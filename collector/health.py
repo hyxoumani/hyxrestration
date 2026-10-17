@@ -265,7 +265,7 @@ class UnitHealth:
 
     @property
     def ok(self) -> bool:
-        return self.state in ("OK", "RUNNING")
+        return self.state in ("OK", "RUNNING", "FIRST-DUE")
 
 
 def discover_units() -> list[tuple[str, bool]]:
@@ -311,6 +311,12 @@ def show(unit: str) -> dict[str, str]:
 
 def _with_oom(detail: str, note: str) -> str:
     return f"{detail} — {note}" if note else detail
+
+
+def _until(ts: float, now: float) -> str:
+    """`_age` for a future instant: how long until it, in the same units."""
+    h = (ts - now) / 3600.0
+    return f"{h:.1f}h" if h >= 1 else f"{(ts - now) / 60.0:.0f}m"
 
 
 def _age(ts: float | None, now: float) -> str:
@@ -684,10 +690,21 @@ def judge(
         )
 
     last = _epoch(timer.get("LastTriggerUSec", ""))
+    nxt = _epoch(timer.get("NextElapseUSecRealtime", ""))
     if last is None and exited is None:
+        # A timer the manager has SCHEDULED and simply not reached is a new
+        # unit waiting for its first slot, not a fault: `hyxlab-divergence`
+        # sat in NEVER-RAN across three digests (2026-09-09..10) and
+        # `hyxlab-atlas` would have sat there for a week, each read outranking
+        # the ladder for a unit whose next elapse was printed right there.
+        # The #47 shape -- installed but never enabled -- is TIMER-OFF above;
+        # a first slot that has come and gone without a trigger stays here.
+        if nxt is not None and nxt > now:
+            return UnitHealth(
+                unit, "FIRST-DUE", f"never triggered; first run due in {_until(nxt, now)}"
+            )
         return UnitHealth(unit, "NEVER-RAN", "timer active but never triggered")
 
-    nxt = _epoch(timer.get("NextElapseUSecRealtime", ""))
     if nxt is None:
         # (3) says an empty next elapse is normal WHILE RUNNING. This unit is idle,
         # so the manager has an active timer it has scheduled nothing for.

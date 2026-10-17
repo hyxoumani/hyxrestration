@@ -117,6 +117,35 @@ def test_exit_status_is_only_read_once_the_unit_has_exited() -> None:
     assert h.state == "NEVER-RAN", f"a unit with no trigger and no exit is not a pass: {h}"
 
 
+def test_a_scheduled_first_run_is_not_a_fault() -> None:
+    """A timer with no trigger and a next elapse still AHEAD is a new unit
+    waiting for its first slot -- `hyxlab-atlas.timer` on 2026-10-17, enabled
+    38h before its Monday 02:48Z slot, and `hyxlab-divergence` across three
+    digests in 2026-09. Printing those as ATTENTION outranks the ladder for
+    a unit whose schedule is on the same line; the manager has it covered,
+    and the LATE arm catches the slot going by. The verdict says WHEN."""
+    never = svc(ExecMainExitTimestamp="", ExecMainStatus="0", ActiveState="inactive")
+    h = health.judge(
+        "hyxlab-atlas.service",
+        never,
+        timer(LastTriggerUSec="", NextElapseUSecRealtime=f"@{int(NOW) + 38 * 3600}"),
+        NOW,
+    )
+    assert h.state == "FIRST-DUE", h
+    assert h.ok, "a scheduled first run must not be counted against the box"
+    assert "38.0h" in h.detail, h.detail
+    # The slot already passed without a trigger: that is the fault the arm
+    # exists for, and a next elapse in the past must not excuse it.
+    h = health.judge(
+        "hyxlab-atlas.service",
+        never,
+        timer(LastTriggerUSec="", NextElapseUSecRealtime=f"@{int(NOW) - 3600}"),
+        NOW,
+    )
+    assert h.state == "NEVER-RAN", h
+    assert not h.ok
+
+
 def test_a_nonzero_status_on_a_unit_that_never_exited_is_not_a_failure() -> None:
     """The gate itself, exercised. Without it the reported failure would rest on
     a field that was never written by a run -- ExecMainStatus carries whatever
