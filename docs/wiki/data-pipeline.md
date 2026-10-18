@@ -921,7 +921,19 @@ self-match trap the ops rules name for `pkill -f`.
   second number prices the remainder at the trailing window's rate;
   neither is weighted by a prior run (the poly loop has no per-series
   `swept_at` to difference), so a reader projecting a done time should
-  bracket it between the two and name which one they used.
+  bracket it between the two and name which one they used. **First
+  production read (10-18 04:15Z run): the two converge by market 4,800
+  (`~675 / ~681`) and are both ~100 min LOW there**, because the
+  trade-heavy markets sit mid-rank (10-17: trades 91k at 4,800 -> 770k
+  at 14,200, 10-13 min per 200 through 9,000-14,000 vs 7 at 4,000), so
+  the remainder's per-market cost is not the window's. The pair is a
+  pace instrument; the done-time projection is yesterday's wall from
+  the same index. **And the per-200 wall rises ~30-40% for ~45 min in
+  the kalshi sweep's `KXBTC15M mid-series flush` window** (10-17
+  07:57-08:42Z, 10-18 from 07:39Z: ~280k-trade flushes every 3.5 min on
+  the same `hyxlab.duckdb`), with flat content per leg and the
+  collector's `wait_s` on that file rising in the same minutes -- lock
+  contention, not drift; ~12-15 min per poly run, bounded by the leg.
 
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.
