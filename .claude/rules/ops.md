@@ -464,3 +464,12 @@
   measured 2026-10-17 14:30Z on `hyxlab-atlas.timer`, `LastTriggerUSec`
   empty, next elapse its first slot. The digest reads that as `FIRST-DUE`
   (ok-class, says when), not NEVER-RAN (mistakes #126).
+- `journalctl --since/--until` parse a BARE timestamp in the box's LOCAL
+  zone (CDT here, UTC-5); `--utc` changes only the OUTPUT. Measured
+  2026-10-18: `--since "2026-10-18 06:00"` returned lines from 11:00Z,
+  which read the 06:10Z kalshi sweep's 07:38-08:45Z `KXBTC15M mid-series
+  flush` leg as ZERO flushes on six consecutive days against the 12-14 the
+  same query finds with `--since "2026-10-18 06:00 UTC"`. Always suffix
+  ` UTC` on a literal bound (relative bounds like `-2h` are safe), and
+  prove a window once by printing its first line's timestamp before
+  counting anything inside it.
