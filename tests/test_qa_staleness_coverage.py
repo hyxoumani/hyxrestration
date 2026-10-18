@@ -69,6 +69,7 @@ STAMP: dict[str, str | None] = {
     "poly_prices": "ts",
     "poly_market_stats": "ts",
     "poly_tail_stops": "stopped_at",
+    "poly_sweep_log": "swept_at",
     "series": "updated_at",
     "sweep_log": "swept_at",
     "watermarks": None,  # last_close_ts is the swept market's close, not ingest
@@ -147,6 +148,14 @@ WITNESS: dict[str, str] = {
         "prices fresh (< 30h old)' over the same sweep's poly_prices rows, "
         "and the table's CONTENT is judged by 'polymarket truncated tails "
         "absorbed by a later sweep', which reads it every run."
+    ),
+    "poly_sweep_log": (
+        "Written inside the SAME `_flush` burst as the poly sweep's poly_prices "
+        "and poly_market_stats rows (collector/poly_sweep.py: one flock, one "
+        "attach, every table or none), so it cannot go stale while 'poly prices "
+        "fresh (< 30h old)' passes over the same run's rows. Its CONTENT is an "
+        "advisory prior for the next run's `~N min left` line and nothing reads "
+        "it for a verdict; a missing or empty table costs an ETA tag, not data."
     ),
     "series": (
         "Upserted whole by the 06:10Z sweep; its liveness IS the sweep's, "
@@ -314,7 +323,7 @@ def test_a_join_does_not_lend_one_table_anothers_stamp():
     hole this whole file exists for reads as covered."""
     joined = _staleness_readers(
         source='q = "SELECT max(s.swept_at) FROM markets m JOIN trades_swept s'
-        " ON s.market_id = m.market_id\""
+        ' ON s.market_id = m.market_id"'
     )
     assert ("trades_swept", "swept_at") in joined
     assert ("markets", "swept_at") not in joined, (

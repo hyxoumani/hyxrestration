@@ -64,6 +64,14 @@ UNREAD: dict[str, str] = {
         "Same witness as `series`: it is written by, and only by, the run "
         "that 'sweep ran in last 36h' already watches."
     ),
+    "poly_sweep_log": (
+        "ADVISORY INSTRUMENT, not data: one (market_id, swept_at, wall_s) per "
+        "market per poly run, read only by the NEXT run's `~N min left` line "
+        "(collector/poly_sweep.py prior_market_wall). Written inside the same "
+        "`_flush` burst as poly_prices, so 'poly prices fresh (< 30h old)' is "
+        "its liveness witness; a missing or empty table costs an ETA tag, "
+        "never a row of archive, so there is no verdict for QA to reach."
+    ),
     "observations": (
         "NO LIVE WRITER. Only collector/backfill.py writes it and that is a "
         "hand-run tool; measured 2026-09-04 the newest row is 2026-07-06 "
@@ -90,9 +98,7 @@ def _sql_strings(tree: ast.AST) -> list[str]:
             out.append(node.value)
         elif isinstance(node, ast.JoinedStr):
             out.append(
-                "".join(
-                    p.value if isinstance(p, ast.Constant) else " ? " for p in node.values
-                )
+                "".join(p.value if isinstance(p, ast.Constant) else " ? " for p in node.values)
             )
     return out
 

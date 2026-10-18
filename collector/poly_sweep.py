@@ -28,6 +28,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import duckdb
 import requests
 
 from collector.venues import polymarket as poly
@@ -96,14 +97,66 @@ def _flush(db: str, batch: dict) -> None:
                 # table removes.
                 if batch["tail_stops"]:
                     batch["n_tail_stops"] += store.insert_poly_tail_stops(batch["tail_stops"])
+                if batch.get("swept"):
+                    store.insert_poly_sweep_log(batch["swept"])
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
     batch["infos"], batch["stats"], batch["prices"], batch["trades"] = [], [], [], []
-    batch["tail_stops"] = []
+    batch["tail_stops"], batch["swept"] = [], []
 
 
 #: Markets between progress lines; also the window the trailing rate is read over.
 PROGRESS_EVERY = 200
+#: `poly_sweep_log` rows this far back are the previous daily run (04:15Z,
+#: ~17h) and nothing older; a market's LATEST wall in the window is its prior.
+ETA_PRIOR_LOOKBACK_H = 30
+
+
+def prior_market_wall(store, now: datetime | None = None) -> dict[str, float]:
+    """`market_id -> wall seconds` from the previous run's `poly_sweep_log`.
+
+    Advisory: a wrong prior costs an ETA, nothing else, so a store with no
+    archive behind it or any read failure returns {} and the line falls back
+    to the mean rate, tagged.
+    """
+    conn = getattr(store, "conn", None)
+    if conn is None:
+        return {}
+    now = now or datetime.now(UTC).replace(tzinfo=None)
+    since = now - timedelta(hours=ETA_PRIOR_LOOKBACK_H)
+    try:
+        rows = conn.execute(
+            "SELECT market_id, arg_max(wall_s, swept_at) FROM poly_sweep_log"
+            " WHERE swept_at >= ? GROUP BY market_id",
+            [since],
+        ).fetchall()
+    except duckdb.Error:
+        return {}
+    return {m: float(w) for m, w in rows}
+
+
+def eta_weighted(
+    done: list[str], remaining: list[str], elapsed_s: float, prior: dict[str, float]
+) -> tuple[float, str]:
+    """ETA in minutes for `remaining` plus a tag naming the estimate it is.
+
+    With a prior: each remaining market costs its previous-run wall (the
+    median prior for one without), scaled by today's pace -- elapsed over the
+    prior cost of the markets already done, which absorbs the flushes and
+    the day's rate limit. Without one: the mean rate since the start, tagged
+    `mean rate` so a reader knows it carries the opening (2026-10-17: `~404`
+    at 11,600 for 328 actual) and, past the trade-heavy mid-rank, the other
+    way (2026-10-18: `~509` at 10,000 for ~425).
+    """
+    if not prior or not done or elapsed_s <= 0:
+        mean = len(remaining) * elapsed_s / len(done) / 60 if done and elapsed_s > 0 else 0.0
+        return mean, "mean rate"
+    med = sorted(prior.values())[len(prior) // 2]
+    prior_done = sum(prior.get(m, med) for m in done)
+    scale = elapsed_s / prior_done if prior_done > 0 else 1.0
+    unpriced = sum(1 for m in remaining if m not in prior)
+    eta = sum(prior.get(m, med) for m in remaining) * scale / 60
+    return eta, f"prior-run weighted x{scale:.2f}, {unpriced} unpriced"
 
 
 def eta_minutes(done: int, total: int, elapsed_s: float, window_s: float) -> tuple[float, float]:
@@ -153,6 +206,7 @@ def sweep(
         try:
             with charge_hold(store.close):  # the watermark read is a hold too
                 watermarks = store.poly_price_watermarks()
+                prior = prior_market_wall(store)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -162,6 +216,7 @@ def sweep(
         "prices": [],
         "trades": [],
         "tail_stops": [],
+        "swept": [],
         "n_prices": 0,
         "n_trades": 0,
         "n_tail_stops": 0,
@@ -173,12 +228,14 @@ def sweep(
     error_classes: dict[str, int] = {}
     t0 = time.monotonic()
     t_line = t0
+    ids = [m.get("conditionId") or "" for m in markets]
 
     for i, m in enumerate(markets):
         cond = m.get("conditionId")
         pair = poly.token_pair(m)
         if not cond or pair is None:
             continue
+        t_m = time.monotonic()
         try:
             batch["infos"].append(poly.gamma_market_info(m))
             batch["stats"].append(
@@ -209,6 +266,9 @@ def sweep(
             print(f"[poly] {name} at {cond[:16]}: {str(exc)[:80]}", flush=True)
             time.sleep(2)
         totals["markets"] += 1
+        # The market's own wall, before the flush it may trigger: tomorrow's
+        # prior for this market. The flush cost lands in the pace scale.
+        batch["swept"].append((cond, datetime.now(UTC), time.monotonic() - t_m))
         if len(batch["infos"]) >= FLUSH_MARKETS or i == len(markets) - 1:
             try:
                 _flush(db, batch)
@@ -218,11 +278,12 @@ def sweep(
                 print(f"[poly] flush failed, batch held: {str(exc)[:80]}", flush=True)
         if (i + 1) % PROGRESS_EVERY == 0:
             now_m = time.monotonic()
-            eta, eta_w = eta_minutes(i + 1, len(markets), now_m - t0, now_m - t_line)
+            _, eta_w = eta_minutes(i + 1, len(markets), now_m - t0, now_m - t_line)
+            eta, tag = eta_weighted(ids[: i + 1], ids[i + 1 :], now_m - t0, prior)
             t_line = now_m
             print(
                 f"[poly] {i + 1}/{len(markets)} | {batch['n_prices']} prices,"
-                f" {batch['n_trades']} trades | ~{eta:.0f} min left (mean rate;"
+                f" {batch['n_trades']} trades | ~{eta:.0f} min left ({tag};"
                 f" ~{eta_w:.0f} at the last {PROGRESS_EVERY}'s rate)",
                 flush=True,
             )

@@ -918,17 +918,32 @@ self-match trap the ops rules name for `pkill -f`.
   opening to its last line -- 10-17 read `~404` at 11,600/18,497 for 328
   actual and `~60` at 17,400 for 48 -- and three passes pre-registered a
   17.5h budget FAIL off it (the run closed at 1007.2 min, 16.8h). The
-  second number prices the remainder at the trailing window's rate;
-  neither is weighted by a prior run (the poly loop has no per-series
-  `swept_at` to difference), so a reader projecting a done time should
-  bracket it between the two and name which one they used. **First
-  production read (10-18 04:15Z run): the two converge by market 4,800
-  (`~675 / ~681`) and are both ~100 min LOW there**, because the
-  trade-heavy markets sit mid-rank (10-17: trades 91k at 4,800 -> 770k
-  at 14,200, 10-13 min per 200 through 9,000-14,000 vs 7 at 4,000), so
-  the remainder's per-market cost is not the window's. The pair is a
-  pace instrument; the done-time projection is yesterday's wall from
-  the same index. **And the per-200 wall rises ~30-40% for ~45 min in
+  second number prices the remainder at the trailing window's rate.
+  **First production read (10-18 04:15Z run): the two converge by
+  market 4,800 (`~675 / ~681`) and are both ~100 min LOW there**,
+  because the trade-heavy markets sit mid-rank (10-17: trades 91k at
+  4,800 -> 770k at 14,200, 10-13 min per 200 through 9,000-14,000 vs 7
+  at 4,000; 10-18: 18-24 min per 200 through 6,000-7,200), and by
+  10,000 the mean has carried those legs past the point they are done
+  and both read ~85 min HIGH (`~509 / ~506` at 14:09:55Z against
+  yesterday's 423 min from the same index). A rate from either end of
+  the run is wrong in the direction of whatever it has or has not yet
+  seen. **Fixed the way the kalshi sweep was (2026-10-18,
+  `collector.poly_sweep.prior_market_wall` / `eta_weighted`,
+  `poly_sweep_log`; first rows written by the 10-19 04:15Z run, first
+  weighted line the 10-20 run):** the loop now records each market's
+  own wall -- `(market_id, swept_at, wall_s)`, one row per market per
+  run, written in the same `_flush` burst as its prices, keyed so a
+  re-flushed batch dedups -- and the next run prices every remaining
+  market at its own latest wall within 30h (median for a new one),
+  scaled by today's pace over the markets done. The line is TAGGED
+  `(prior-run weighted x1.05, 12 unpriced; ~M at the last 200's rate)`
+  or, with no prior, `(mean rate; ...)` -- the window estimate stays as
+  the pace reading. Per-market, not positional: Gamma's volume-desc
+  order moves between runs (10-17's trade-heavy block sat at
+  10,200-11,200, 10-18's at 6,200-7,000) and the prior follows the
+  market. Until the first weighted line, the done-time projection is
+  yesterday's wall from the same index. **And the per-200 wall rises ~30-40% for ~45 min in
   the kalshi sweep's `KXBTC15M mid-series flush` window** (10-17
   07:57-08:42Z, 10-18 from 07:39Z: ~280k-trade flushes every 3.5 min on
   the same `hyxlab.duckdb`), with flat content per leg and the

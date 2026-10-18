@@ -155,6 +155,12 @@ CREATE TABLE IF NOT EXISTS poly_market_stats (
     volume    DOUBLE,
     liquidity DOUBLE
 );
+CREATE TABLE IF NOT EXISTS poly_sweep_log (
+    market_id VARCHAR NOT NULL,
+    swept_at  TIMESTAMP NOT NULL,  -- when this market's fetches finished
+    wall_s    DOUBLE NOT NULL,     -- seconds the market cost the sweep loop
+    PRIMARY KEY (market_id, swept_at)
+);
 CREATE TABLE IF NOT EXISTS series (
     venue          VARCHAR NOT NULL,
     ticker         VARCHAR NOT NULL,
@@ -1289,7 +1295,9 @@ class Store:
         on = " AND ".join(f"t.{k} IS NOT DISTINCT FROM s.{k}" for k in key_cols)
         existing, params = table, []
         if scope is not None:
-            params = list(self.conn.execute(f"SELECT min({scope}), max({scope}) FROM _staging").fetchone())
+            params = list(
+                self.conn.execute(f"SELECT min({scope}), max({scope}) FROM _staging").fetchone()
+            )
             existing = (
                 f"(SELECT * FROM {table} WHERE {scope} BETWEEN ? AND ?"
                 f" AND {scope} IN (SELECT {scope} FROM _staging))"
@@ -1556,6 +1564,19 @@ class Store:
         that stops early on several days keeps one row per day."""
         rows = [(r[0], _naive_utc(r[1]), *r[2:]) for r in rows]
         return self.insert_new("poly_tail_stops", rows, ["market_id", "stopped_at"])
+
+    def insert_poly_sweep_log(self, rows: list[tuple]) -> int:
+        """(market_id, swept_at, wall_s) — one row per market per sweep run,
+        the market's own wall in the loop (fetches + pacing, not the flush).
+
+        The kalshi sweep's ETA is weighted by the previous run's per-series
+        wall because `sweep_log` recorded one; the poly loop recorded nothing
+        per market, so its line could only be a rate, and both rates it
+        printed were wrong by ~100 min in opposite directions on 2026-10-18
+        (trade-heavy markets sit mid-rank). This is that record. Keyed
+        (market_id, swept_at) so a re-flushed batch dedups."""
+        rows = [(r[0], _naive_utc(r[1]), r[2]) for r in rows]
+        return self.insert_new("poly_sweep_log", rows, ["market_id", "swept_at"])
 
     def poly_price_watermarks(self) -> dict[str, datetime]:
         """token_id -> latest captured price ts (for incremental backfill)."""
