@@ -176,6 +176,39 @@ def eta_minutes(done: int, total: int, elapsed_s: float, window_s: float) -> tup
     return mean, window
 
 
+def _fetch_market(sess, m, cond, pair, watermarks, now, batch) -> None:
+    """The two paced fetches for one market: each token's price history from
+    its watermark (chunked; the API rejects spans over ~30d) and the trade
+    tail from offset 0, with the tail stops the client recorded."""
+    for token, outcome in zip(pair, ("yes", "no"), strict=True):
+        wm = watermarks.get(token)
+        # First capture reaches the full ~60d retention window; later
+        # sweeps resume from the watermark.
+        start = (
+            int(wm.replace(tzinfo=UTC).timestamp()) + 1
+            if wm
+            else int((now - timedelta(days=62)).timestamp())
+        )
+        hist = poly.prices_history_range(token, start, session=sess)
+        batch["prices"].extend(poly.price_rows(token, cond, outcome, hist))
+        time.sleep(REQUEST_PAUSE_S)
+    batch["trades"].extend(poly.poly_trade_row(t) for t in poly.trades_tail(cond, session=sess))
+    batch["tail_stops"].extend(poly.take_tail_stops())
+    time.sleep(REQUEST_PAUSE_S)
+
+
+def resolved_complete(store) -> set[str]:
+    """`Store.poly_resolved_complete`, or the empty set with a line when the
+    archive cannot answer: the fallback is the old behaviour (fetch every
+    market), which is slow and lossless -- a skip set from a failed read
+    would be neither."""
+    try:
+        return store.poly_resolved_complete()
+    except (duckdb.Error, AttributeError) as exc:
+        print(f"[poly] resolved set unreadable, fetching every market: {exc}", flush=True)
+        return set()
+
+
 def sweep(
     db: str,
     min_volume: float,
@@ -207,6 +240,7 @@ def sweep(
             with charge_hold(store.close):  # the watermark read is a hold too
                 watermarks = store.poly_price_watermarks()
                 prior = prior_market_wall(store)
+                resolved = resolved_complete(store)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -221,7 +255,7 @@ def sweep(
         "n_trades": 0,
         "n_tail_stops": 0,
     }
-    totals: dict = {"markets": 0, "errors": 0}
+    totals: dict = {"markets": 0, "errors": 0, "skipped_resolved": 0}
     # `errors` alone cannot say WHAT failed: 23 days of journal carry 107
     # HTTPError and 4 ConnectionError under one integer. Keyed by class, a
     # rising total is actionable without a journal scrape.
@@ -236,29 +270,24 @@ def sweep(
         if not cond or pair is None:
             continue
         t_m = time.monotonic()
+        # A market a PRIOR run archived as resolved, owing no tail, gets its
+        # Gamma row (info + stats, free with the enumeration) and neither
+        # fetch: nothing trades on a closed market, and the run that first
+        # saw it closed already fetched to that instant. Gamma's flag alone
+        # is not enough -- the final prints land in the run that sees the
+        # close (see `Store.poly_resolved_complete`). 12,458 of 18,496
+        # markets were resolved on 2026-10-17 and cost 74% of the run's
+        # ~93k requests (plus their pacing), for 0 new rows.
+        skip = bool(m.get("closed")) and cond in resolved
         try:
             batch["infos"].append(poly.gamma_market_info(m))
             batch["stats"].append(
                 (cond, now, float(m.get("volumeNum") or 0), float(m.get("liquidityNum") or 0))
             )
-            for token, outcome in zip(pair, ("yes", "no"), strict=True):
-                wm = watermarks.get(token)
-                # First capture reaches the full ~60d retention window;
-                # later sweeps resume from the watermark. Ranges are
-                # chunked (API rejects spans over ~30d).
-                start = (
-                    int(wm.replace(tzinfo=UTC).timestamp()) + 1
-                    if wm
-                    else int((now - timedelta(days=62)).timestamp())
-                )
-                hist = poly.prices_history_range(token, start, session=sess)
-                batch["prices"].extend(poly.price_rows(token, cond, outcome, hist))
-                time.sleep(REQUEST_PAUSE_S)
-            batch["trades"].extend(
-                poly.poly_trade_row(t) for t in poly.trades_tail(cond, session=sess)
-            )
-            batch["tail_stops"].extend(poly.take_tail_stops())
-            time.sleep(REQUEST_PAUSE_S)
+            if skip:
+                totals["skipped_resolved"] += 1
+            else:
+                _fetch_market(sess, m, cond, pair, watermarks, now, batch)
         except Exception as exc:
             totals["errors"] += 1
             name = type(exc).__name__

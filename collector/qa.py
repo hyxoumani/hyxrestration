@@ -441,6 +441,15 @@ FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
 #:                     owned by Polymarket's listing count and the tail
 #:                     cadence, had no drift detector at all. Its wall is a
 #:                     claim about the box exactly as the sweep's is.
+#:                     10-18 ran 1,049.8 min / 17.57h unit wall (FAIL, as
+#:                     pre-registered). 2026-10-19: the sweep now skips the
+#:                     two fetches for a market a PRIOR run archived as
+#:                     resolved (`Store.poly_resolved_complete`; 12,458 of
+#:                     18,496 markets, 74% of the run's ~93k requests, 0
+#:                     new rows) -- the budget is NOT re-measured on that
+#:                     change until its done lines exist; a FAIL on the
+#:                     10-18 run's line is the reading, not a reason to
+#:                     bump.
 #:
 #: The FADE arm is a different set. Only Kalshi-facing units spend the
 #: quota the fade window protects (EXP-958), so overlap is judged for

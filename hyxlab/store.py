@@ -1578,6 +1578,43 @@ class Store:
         rows = [(r[0], _naive_utc(r[1]), r[2]) for r in rows]
         return self.insert_new("poly_sweep_log", rows, ["market_id", "swept_at"])
 
+    def poly_resolved_complete(self) -> set[str]:
+        """Polymarket markets a prior sweep archived AS RESOLVED and whose
+        trade tail no later run still owes -- the set the sweep may skip the
+        two fetches for (2026-10-19).
+
+        `markets.result` is set only from a Gamma row with `closed` true
+        (`gamma_market_info`), so a non-empty result means a previous run
+        saw the market closed and fetched its prices to that instant and its
+        tail from offset 0. Nothing trades on a closed market: measured on
+        the 2026-10-18 backup, 10,179 resolved markets whose last price was
+        2+ days old carried 0 new prints in the 41h window (1 outlier). The
+        1,334 resolved markets under 2 days old carried 716,835 -- the final
+        prints BEFORE the close -- which is why the condition is a PRIOR run's
+        result, never Gamma's flag alone: the run that first sees `closed`
+        still fetches.
+
+        The second clause keeps `qa.qa_poly_tail_absorbed` honest. Its
+        re-visit oracle is "a `poly_market_stats` row later than the market's
+        last tail stop", and the sweep writes that row for every enumerated
+        market, skipped or not (the universe-shrink tripwire reads the same
+        table). A skipped market must therefore owe no tail: any stop that no
+        later run has out-fetched excludes it from the set, so the first
+        stats row after a stop is always a run that fetched."""
+        rows = self.conn.execute(
+            """
+            SELECT m.market_id FROM markets m
+            WHERE m.venue = 'polymarket' AND m.result <> ''
+              AND NOT EXISTS (
+                SELECT 1 FROM poly_tail_stops s
+                WHERE s.market_id = m.market_id
+                  AND NOT EXISTS (
+                    SELECT 1 FROM poly_market_stats p
+                    WHERE p.market_id = s.market_id AND p.ts > s.stopped_at))
+            """
+        ).fetchall()
+        return {r[0] for r in rows}
+
     def poly_price_watermarks(self) -> dict[str, datetime]:
         """token_id -> latest captured price ts (for incremental backfill)."""
         rows = self.conn.execute(

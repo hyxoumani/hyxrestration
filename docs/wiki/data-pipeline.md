@@ -911,6 +911,44 @@ self-match trap the ops rules name for `pkill -f`.
   KXSILVER15M, KXUSDJPY15M all 0; 10-17: 14-36; Sunday 10-12: 56-75)
   while the crypto 15M series hold ~92-97 every day -- market hours,
   not a capture hole.
+- **The poly sweep skips the two fetches for a market a PRIOR run
+  archived as resolved** (2026-10-19, `Store.poly_resolved_complete` /
+  `collector.poly_sweep._fetch_market`; first production run 10-19
+  04:15Z; `"skipped_resolved": N` on the done line). Why: the 10-18 run
+  took 1,049.8 min (17.57h unit wall, over the 17.5h budget, FAIL as
+  pre-registered) and the per-leg regression of its journal (93 progress
+  lines, 10-17 and 10-18) put ~80% of the wall in a FIXED per-market
+  term (2.7-2.8 s/market), not in content: tail stops cost one request
+  each (`trades_tail` has no retry), prices explained nothing, and the
+  slow 6,000-7,800 block (5-8 s/market both days, 09:00-11:45Z) matched
+  no content term -- time of day, not index. The 10-18 03:30Z backup
+  (`data/backups/hyxlab.Sun.duckdb`, read without touching any live
+  file) then showed the structure: the enumeration is `closed=false`
+  (6,038 open) PLUS `closed=true` with `end_date_min` = now - 7d, and
+  Gamma's `endDate` is the NOMINAL end (resolved markets average 17
+  days of future endDate), so 12,458 of 18,496 markets (67%) were
+  resolved, costing 45,140 of 57,224 price chunks and 23,875 of 35,805
+  tail pages (74% of ~93k requests, plus ~0.25 s pacing each; pacing
+  alone was ~315 min of the 1,003) for 0 new rows: the 10,179 resolved
+  markets dormant 2+ days carried 0 new prints in a 41h window (1
+  outlier of 10,179). Also measured and NOT used: 946 markets have no
+  price watermark at all (10 empty chunks + 2 s of pauses daily); 2,221
+  tokens have watermarks older than 7 days (multi-chunk empty walks);
+  Gamma `volumeNum` is unchanged for 12,703 markets but drifts on 695
+  resolved ones with no trades, so it is not a trade signal. The skip
+  needs BOTH Gamma's `closed` AND `markets.result` set by a prior run:
+  the 1,334 markets closed under 2 days carried 716,835 prints -- the
+  final tape lands in the run that first sees the close -- and a
+  resolved market with a tail stop no later run has out-fetched is
+  excluded (`qa.qa_poly_tail_absorbed`'s re-visit oracle is a later
+  `poly_market_stats` row, which a skipped market still writes so the
+  universe-shrink tripwire stays flat). Expected: ~11,100 markets
+  skipped, wall ~7-8h from 17.5h; the ETA line on the first run is
+  priced by yesterday's full walls at a tiny pace scale and reads LOW
+  for the open markets, then corrects from 10-20. Tail-side levers
+  measured for later: newest-first paging confirmed live (page 0 vs
+  offset 500), so a watermark stop would cut the open markets' 12,474
+  tail pages to 6,833; `REQUEST_PAUSE_S` 0.25 x 3-11 pauses per market.
 - **The poly sweep's `~N min left` prints two named estimates**
   (2026-10-17, `collector.poly_sweep.eta_minutes`; first production line
   at the 10-18 04:15Z run): `~404 min left (mean rate; ~330 at the last
