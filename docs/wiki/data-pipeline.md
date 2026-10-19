@@ -949,6 +949,46 @@ self-match trap the ops rules name for `pkill -f`.
   measured for later: newest-first paging confirmed live (page 0 vs
   offset 500), so a watermark stop would cut the open markets' 12,474
   tail pages to 6,833; `REQUEST_PAUSE_S` 0.25 x 3-11 pauses per market.
+  **First skip run, read (10-19 04:15Z -> 12:02Z):** `elapsed_min`
+  463.1 (7.72h; unit wall 7h47m against 17h34m on 10-18, -56%),
+  `skipped_resolved` 10,798 of 12,370 closed (1,572 closed markets still
+  fetched: first seen closed today, or owing a tail stop), `n_prices`
+  1,015,149 vs 1,002,505 on 10-18 (the skipped markets contributed ~0
+  price rows, as the backup measure said), `n_trades` 809,606 vs
+  901,182 / 847,020 / 941,184 on 10-18/17/16 (the low end of the band,
+  Sunday->Monday; not attributable without the 10-20 backup diff),
+  `n_tail_stops` 8 vs 49, errors 6 (4 clob HTTP 500 in one 05:36Z
+  minute, 2 ReadTimeouts), CPU 2h34m vs 3h45m. Hold on the collector's
+  file: 741 attaches held 6,088.7s total (vs 9,090.6 / 8,998.8), worst
+  29.4s, 53 contended / 106.0s slept (vs 32 / 64.0s -- the run now sits
+  entirely inside the kalshi sweep's window, 06:10Z on, so more of its
+  flushes meet one). PSI 56.8s = 0.20% of 7.78h (vs 0.10-0.11% on
+  16-17h runs: same absolute stall, half the wall), peak 6G == cap with
+  8.7M reclaim events, oom_kill 0 -- immaterial. **The progress trace
+  across the boundary:** trades 91,758 at index 6,000 (the 6,105 open
+  markets) and 809,606 at done, so ~718k of the run's trade rows -- 89%
+  -- came from the ~1,570 closed-but-fetched markets, the final prints
+  before a close, at ~6.7 s/market (190 min over indices 6,000-18,475,
+  of which the 10,798 skipped cost ~0) against 2.7 s/market for the
+  open segment (275 min / 6,105). Hand-differenced; **so the done line
+  now carries `"segments"`** (shipped 10-19 ~14:40Z, first production
+  line 10-20 04:15Z): `open` / `closed_fetched` / `closed_skipped`, each
+  with `markets`, FETCHED `prices` / `trades` (pre-dedup, counted at the
+  fetch, so the skipped segment is 0 by construction; `n_prices` /
+  `n_trades` stay the post-dedup insert counts) and `wall_min` (loop
+  wall per segment), plus `flush_min` beside them so the four walls sum
+  to `elapsed_min` less the enumeration. Read on 10-20: closed_fetched
+  markets (expect ~1,300-1,800) and its trades share (expect the
+  majority), closed_skipped wall (expect ~0), open s/market vs 2.7.
+  The ETA pair on this run, mean HIGH / window LOW from 7,200 on (at
+  12,000: `~190 / ~129` for 112 actual; 14,400: `~112 / ~61` for 69;
+  16,800: `~43 / ~21` for 29): the pre-registered bracket, held;
+  from 10-20 the prior-weighted line prices each market at today's wall.
+  QA: the batch-budget check reads the worst completed run in 7d, so
+  `hyxlab-poly-sweep.timer 17.57h/17.5h` (the 10-18 run) stays FAIL and
+  the digest ATTENTION until that run ages out on 10-25, unless the band
+  is re-measured first -- the rule keeps 17.5h until 3+ done lines on
+  the skip exist (10-21 earliest).
 - **The poly sweep's `~N min left` prints two named estimates**
   (2026-10-17, `collector.poly_sweep.eta_minutes`; first production line
   at the 10-18 04:15Z run): `~404 min left (mean rate; ~330 at the last

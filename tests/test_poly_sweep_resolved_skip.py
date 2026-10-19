@@ -184,3 +184,71 @@ def test_the_progress_line_carries_the_skip_count_and_the_enumeration_its_split(
     assert len(lines) == 2
     assert f"{n}/{2 * n} | 0 prices, 0 trades, 0 skipped |" in lines[0]
     assert f"{2 * n}/{2 * n} | 0 prices, 0 trades, {n // 2} skipped |" in lines[1]
+
+
+def test_the_done_line_splits_markets_rows_and_wall_by_segment(monkeypatch, tmp_path):
+    """Open, closed-fetched and closed-skipped are three populations with
+    different yields: on the first skip run (2026-10-19) the 1,572
+    closed-fetched markets carried ~718k of 810k trades at 6.7 s/market
+    against 2.7 for the 6,105 open ones, readable only by hand-differencing
+    progress lines across the boundary. The done line carries the split:
+    FETCHED rows per segment (pre-dedup, so the skipped segment is 0 by
+    construction) and each segment's loop wall, with the flushes' wall
+    beside them."""
+    monkeypatch.setattr(ps.time, "sleep", lambda s: None)
+    open_m = [{"conditionId": f"o{i}", "closed": False} for i in range(3)]
+    closed_m = [{"conditionId": f"c{i}", "closed": True} for i in range(4)]
+    resolved = {"c0", "c2", "c3"}  # c1 is first seen closed: fetched
+
+    class _Store:
+        def poly_price_watermarks(self):
+            return {}
+
+        def poly_resolved_complete(self):
+            return resolved
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        ps.poly,
+        "iter_markets_by_volume",
+        lambda *a, **k: list(closed_m) if k.get("closed") else list(open_m),
+    )
+    monkeypatch.setattr(ps.poly, "token_pair", lambda m: ("y", "n"))
+    monkeypatch.setattr(ps.poly, "gamma_market_info", lambda m: (m["conditionId"],))
+    monkeypatch.setattr(ps.poly, "prices_history_range", lambda tok, *a, **k: [tok])
+    # two price rows per token for an open market, one for a closed one
+    monkeypatch.setattr(
+        ps.poly, "price_rows", lambda tok, cond, *a, **k: [cond] * (2 if cond[0] == "o" else 1)
+    )
+    # the closed tail is the heavy one: 10 prints vs 1
+    monkeypatch.setattr(
+        ps.poly, "trades_tail", lambda cond, session=None: [cond] * (10 if cond[0] == "c" else 1)
+    )
+    monkeypatch.setattr(ps.poly, "poly_trade_row", lambda t: t)
+    monkeypatch.setattr(ps.poly, "take_tail_stops", lambda: [])
+    monkeypatch.setattr(ps, "_flush", lambda db, batch: None)
+    monkeypatch.setattr(ps, "_open", lambda db: _Store())
+    monkeypatch.setattr(ps, "note_holder", lambda path: None)
+    monkeypatch.setattr(ps, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    totals = ps.sweep("unused.duckdb", min_volume=0.0)
+    seg = totals["segments"]
+    assert {k: v["markets"] for k, v in seg.items()} == {
+        "open": 3,
+        "closed_fetched": 1,
+        "closed_skipped": 3,
+    }
+    assert {k: v["prices"] for k, v in seg.items()} == {
+        "open": 12,  # 3 markets x 2 tokens x 2 rows
+        "closed_fetched": 2,
+        "closed_skipped": 0,
+    }
+    assert {k: v["trades"] for k, v in seg.items()} == {
+        "open": 3,
+        "closed_fetched": 10,
+        "closed_skipped": 0,
+    }
+    assert sum(v["markets"] for v in seg.values()) == totals["markets"] == 7
+    assert all(v["wall_min"] >= 0.0 and "wall_s" not in v for v in seg.values())
+    assert totals["flush_min"] >= 0.0

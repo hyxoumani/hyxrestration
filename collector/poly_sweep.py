@@ -267,6 +267,20 @@ def sweep(
         "n_tail_stops": 0,
     }
     totals: dict = {"markets": 0, "errors": 0, "skipped_resolved": 0}
+    # The three populations the walk is made of, each with the rows it
+    # FETCHED (pre-dedup, counted at the fetch; `n_prices`/`n_trades` are
+    # the archive's post-dedup insert counts) and its loop wall. On the
+    # first skip run (2026-10-19) the closed-fetched 1,572 markets carried
+    # ~718k of the run's 810k trades -- the final prints before a close --
+    # and 6.7 s/market against 2.7 for the open ones; readable until now
+    # only by hand-differencing the progress lines across the open/closed
+    # boundary. `flush_min` is the rest of the loop, so the four walls sum
+    # to `elapsed_min` less the enumeration.
+    segments: dict[str, dict] = {
+        k: {"markets": 0, "prices": 0, "trades": 0, "wall_s": 0.0}
+        for k in ("open", "closed_fetched", "closed_skipped")
+    }
+    flush_s = 0.0
     # `errors` alone cannot say WHAT failed: 23 days of journal carry 107
     # HTTPError and 4 ConnectionError under one integer. Keyed by class, a
     # rising total is actionable without a journal scrape.
@@ -290,6 +304,8 @@ def sweep(
         # markets were resolved on 2026-10-17 and cost 74% of the run's
         # ~93k requests (plus their pacing), for 0 new rows.
         skip = bool(m.get("closed")) and cond in resolved
+        seg = segments["open" if i < n_open else "closed_skipped" if skip else "closed_fetched"]
+        n_p, n_t = len(batch["prices"]), len(batch["trades"])
         try:
             batch["infos"].append(poly.gamma_market_info(m))
             batch["stats"].append(
@@ -308,14 +324,23 @@ def sweep(
         totals["markets"] += 1
         # The market's own wall, before the flush it may trigger: tomorrow's
         # prior for this market. The flush cost lands in the pace scale.
-        batch["swept"].append((cond, datetime.now(UTC), time.monotonic() - t_m))
+        wall_m = time.monotonic() - t_m
+        batch["swept"].append((cond, datetime.now(UTC), wall_m))
+        # Counted after the fetch, so a market that raised mid-way still
+        # owns the rows it put in the batch (they are flushed with it).
+        seg["markets"] += 1
+        seg["prices"] += len(batch["prices"]) - n_p
+        seg["trades"] += len(batch["trades"]) - n_t
+        seg["wall_s"] += wall_m
         if len(batch["infos"]) >= FLUSH_MARKETS or i == len(markets) - 1:
+            t_f = time.monotonic()
             try:
                 _flush(db, batch)
             except Exception as exc:  # batch is cleared only on success
                 totals["errors"] += 1
                 error_classes["flush"] = error_classes.get("flush", 0) + 1
                 print(f"[poly] flush failed, batch held: {str(exc)[:80]}", flush=True)
+            flush_s += time.monotonic() - t_f
         if (i + 1) % PROGRESS_EVERY == 0:
             now_m = time.monotonic()
             _, eta_w = eta_minutes(i + 1, len(markets), now_m - t0, now_m - t_line)
@@ -328,8 +353,15 @@ def sweep(
                 f" ~{eta_w:.0f} at the last {PROGRESS_EVERY}'s rate)",
                 flush=True,
             )
+    t_f = time.monotonic()
     _flush(db, batch)
+    flush_s += time.monotonic() - t_f
     totals["n_prices"], totals["n_trades"] = batch["n_prices"], batch["n_trades"]
+    totals["segments"] = {
+        k: {**{f: v for f, v in d.items() if f != "wall_s"}, "wall_min": round(d["wall_s"] / 60, 1)}
+        for k, d in segments.items()
+    }
+    totals["flush_min"] = round(flush_s / 60, 1)
     totals["n_tail_stops"] = batch["n_tail_stops"]
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["error_classes"] = error_classes
