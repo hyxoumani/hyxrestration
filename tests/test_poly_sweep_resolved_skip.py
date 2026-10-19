@@ -135,3 +135,52 @@ def test_gammas_flag_alone_never_skips(closed):
     m = {"conditionId": "x", "closed": closed}
     assert (bool(m.get("closed")) and "x" in set()) is False
     assert (bool(m.get("closed")) and "x" in {"x"}) is closed
+
+
+def test_the_progress_line_carries_the_skip_count_and_the_enumeration_its_split(
+    monkeypatch, capsys, tmp_path
+):
+    """The enumeration is every open market first, then the closed ones, so
+    the skip cannot land before the boundary -- the 2026-10-19 first skip run
+    was read at index 2,000-5,000 against the prior day and showed ~13 min,
+    all of it open-market noise. The enumeration line names the split and
+    each progress line the skips so far, so the lever is read in-flight."""
+    monkeypatch.setattr(ps.time, "sleep", lambda s: None)
+    n = ps.PROGRESS_EVERY
+    open_m = [{"conditionId": f"o{i:04d}", "closed": False} for i in range(n)]
+    closed_m = [{"conditionId": f"c{i:04d}", "closed": True} for i in range(n)]
+    resolved = {m["conditionId"] for m in closed_m[: n // 2]}
+
+    class _Store:
+        def poly_price_watermarks(self):
+            return {}
+
+        def poly_resolved_complete(self):
+            return resolved
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        ps.poly,
+        "iter_markets_by_volume",
+        lambda *a, **k: list(closed_m) if k.get("closed") else list(open_m),
+    )
+    monkeypatch.setattr(ps.poly, "token_pair", lambda m: ("y", "n"))
+    monkeypatch.setattr(ps.poly, "gamma_market_info", lambda m: (m["conditionId"],))
+    monkeypatch.setattr(ps.poly, "prices_history_range", lambda *a, **k: [])
+    monkeypatch.setattr(ps.poly, "price_rows", lambda *a, **k: [])
+    monkeypatch.setattr(ps.poly, "trades_tail", lambda cond, session=None: [])
+    monkeypatch.setattr(ps.poly, "take_tail_stops", lambda: [])
+    monkeypatch.setattr(ps, "_flush", lambda db, batch: None)
+    monkeypatch.setattr(ps, "_open", lambda db: _Store())
+    monkeypatch.setattr(ps, "note_holder", lambda path: None)
+    monkeypatch.setattr(ps, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    totals = ps.sweep("unused.duckdb", min_volume=0.0)
+    assert totals["skipped_resolved"] == n // 2
+    out = capsys.readouterr().out.splitlines()
+    assert any(ln.endswith(f"volume ({n} open, {n} closed)") for ln in out), out
+    lines = [ln for ln in out if "min left" in ln]
+    assert len(lines) == 2
+    assert f"{n}/{2 * n} | 0 prices, 0 trades, 0 skipped |" in lines[0]
+    assert f"{2 * n}/{2 * n} | 0 prices, 0 trades, {n // 2} skipped |" in lines[1]

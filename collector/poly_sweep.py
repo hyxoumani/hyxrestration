@@ -224,13 +224,24 @@ def sweep(
     now = datetime.now(UTC)
     print("[poly] enumerating markets via Gamma (volume-desc)...", flush=True)
     markets = poly.iter_markets_by_volume(min_volume, closed=False, session=sess)
+    n_open = len(markets)
     closed_floor = (now - timedelta(days=include_closed_days)).strftime("%Y-%m-%d")
     markets += poly.iter_markets_by_volume(
         min_volume, closed=True, session=sess, end_date_min=closed_floor
     )
     if limit:
         markets = markets[:limit]
-    print(f"[poly] {len(markets)} markets >= ${min_volume:g} volume", flush=True)
+        n_open = min(n_open, limit)
+    # The order IS the pace profile: every open market first, volume-desc,
+    # then the closed ones -- so the resolved skip cannot land before index
+    # `n_open`. The 2026-10-19 reading of the first skip run compared leg
+    # walls at index 2,000-5,000 against the prior day and found ~13 min,
+    # because all 6,105 of those were open; name the boundary.
+    print(
+        f"[poly] {len(markets)} markets >= ${min_volume:g} volume"
+        f" ({n_open} open, {len(markets) - n_open} closed)",
+        flush=True,
+    )
 
     with open(LOCK_FILE, "a") as lock:  # ensure schema + read watermarks
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -312,7 +323,8 @@ def sweep(
             t_line = now_m
             print(
                 f"[poly] {i + 1}/{len(markets)} | {batch['n_prices']} prices,"
-                f" {batch['n_trades']} trades | ~{eta:.0f} min left ({tag};"
+                f" {batch['n_trades']} trades, {totals['skipped_resolved']} skipped"
+                f" | ~{eta:.0f} min left ({tag};"
                 f" ~{eta_w:.0f} at the last {PROGRESS_EVERY}'s rate)",
                 flush=True,
             )
