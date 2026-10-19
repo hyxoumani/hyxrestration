@@ -111,6 +111,7 @@ import os
 import sys
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import duckdb
 import requests
@@ -118,7 +119,7 @@ import requests
 from collector.sweep import MARKETS_PAUSE_S, writer_burst
 from collector.venues import kalshi
 from hyxlab.models import Snapshot
-from hyxlab.store import lock_holder
+from hyxlab.store import attach_wait_block, attach_wait_line, lock_holder, reset_attach_waits
 
 __all__ = [
     "CLOSE_WINDOW_H",
@@ -370,8 +371,12 @@ def collect_breadth_once(
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab exchange-wide breadth collector")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
-    ap.add_argument("--top-n", type=int, default=None, help=f"default {DEFAULT_TOP_N} / ${TOP_N_ENV}")
-    ap.add_argument("--interval", type=int, default=None, help=f"seconds between cycles (${INTERVAL_ENV})")
+    ap.add_argument(
+        "--top-n", type=int, default=None, help=f"default {DEFAULT_TOP_N} / ${TOP_N_ENV}"
+    )
+    ap.add_argument(
+        "--interval", type=int, default=None, help=f"seconds between cycles (${INTERVAL_ENV})"
+    )
     ap.add_argument("--once", action="store_true", help="one cycle, then exit")
     ap.add_argument(
         "--enable",
@@ -394,7 +399,9 @@ def main() -> None:
         sys.exit(0)
 
     n = args.top_n if args.top_n is not None else _env_int(TOP_N_ENV, DEFAULT_TOP_N)
-    interval = args.interval if args.interval is not None else _env_int(INTERVAL_ENV, DEFAULT_INTERVAL_S)
+    interval = (
+        args.interval if args.interval is not None else _env_int(INTERVAL_ENV, DEFAULT_INTERVAL_S)
+    )
     window = (
         args.close_window_h
         if args.close_window_h is not None
@@ -403,25 +410,43 @@ def main() -> None:
 
     sess = requests.Session()
     while True:
+        # Reset per cycle so the line describes THIS cycle's burst, and
+        # printed from a `finally` so a cycle that died still says what it
+        # held (#102). This unit held `hyxlab.duckdb` every 5 minutes for
+        # ten weeks through `collector.sweep.writer_burst` with no hold
+        # line -- the one periodic writer on the collector's file the
+        # unit-scan in `tests/test_hold_discipline.py` could not see,
+        # because the attach name lives in another module (2026-10-19).
+        reset_attach_waits()
         try:
-            counts = collect_breadth_once(
-                args.db, n=n, session=sess, pause_s=args.pause, close_window_h=window
+            try:
+                counts = collect_breadth_once(
+                    args.db, n=n, session=sess, pause_s=args.pause, close_window_h=window
+                )
+                print(f"[breadth] {datetime.now(UTC).isoformat()} {counts}", flush=True)
+            except Exception as e:  # one bad cycle must not kill a long-running loop
+                print(f"[breadth] cycle failed: {type(e).__name__}: {e}", flush=True)
+                if args.once:
+                    # A LIVE holder outside the flock (an ad-hoc reader, a
+                    # sibling project) is contention: exit 75 naming it, as
+                    # `collector.collect` does, so the digest's failure
+                    # history does not file it beside a crash. 2026-10-07
+                    # 15:37Z/16:07Z were exit 1 + traceback while collect,
+                    # refused by the same reader, exited 75. No live holder
+                    # is an incident: raise.
+                    named = lock_holder(e) if isinstance(e, duckdb.Error) else None
+                    if named is not None:
+                        print(f"[breadth] skipped: archive attach refused by {named}", flush=True)
+                        sys.exit(75)  # EX_TEMPFAIL
+                    raise
+        finally:
+            # The cycle's whole exclusion of the collector's file, through
+            # the one renderer (#95); db-scoped so a stray attach elsewhere
+            # cannot fold in. `None` (nothing attached) prints as such.
+            print(
+                attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[breadth]"),
+                flush=True,
             )
-            print(f"[breadth] {datetime.now(UTC).isoformat()} {counts}", flush=True)
-        except Exception as e:  # one bad cycle must not kill a long-running loop
-            print(f"[breadth] cycle failed: {type(e).__name__}: {e}", flush=True)
-            if args.once:
-                # A LIVE holder outside the flock (an ad-hoc reader, a sibling
-                # project) is contention: exit 75 naming it, as
-                # `collector.collect` does, so the digest's failure history
-                # does not file it beside a crash. 2026-10-07 15:37Z/16:07Z
-                # were exit 1 + traceback while collect, refused by the same
-                # reader, exited 75. No live holder is an incident: raise.
-                named = lock_holder(e) if isinstance(e, duckdb.Error) else None
-                if named is not None:
-                    print(f"[breadth] skipped: archive attach refused by {named}", flush=True)
-                    sys.exit(75)  # EX_TEMPFAIL
-                raise
         if args.once:
             break
         time.sleep(interval)

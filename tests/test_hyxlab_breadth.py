@@ -296,7 +296,9 @@ def test_breadth_enumeration_goes_through_the_429_retry_path(monkeypatch):
     sweep defect, where 4,947 markets went unarchived)."""
     seen = []
     real = kalshi._get_with_429_retry
-    monkeypatch.setattr(kalshi, "_get_with_429_retry", lambda *a, **k: seen.append(1) or real(*a, **k))
+    monkeypatch.setattr(
+        kalshi, "_get_with_429_retry", lambda *a, **k: seen.append(1) or real(*a, **k)
+    )
     sess = _PagedSession([{"markets": [_mkt("A", 1)], "cursor": ""}])
 
     breadth.fetch_universe(session=sess, pause_s=0.0)
@@ -427,9 +429,7 @@ def test_close_window_default_is_24h_and_is_configurable(monkeypatch):
     sess = _PagedSession([{"markets": [], "cursor": ""}])
     now = datetime(2026, 8, 3, 2, 0, tzinfo=UTC)
     breadth.fetch_universe(session=sess, pause_s=0.0, close_window_h=6, now=now)
-    assert sess.calls[0]["max_close_ts"] == int(
-        datetime(2026, 8, 3, 8, 0, tzinfo=UTC).timestamp()
-    )
+    assert sess.calls[0]["max_close_ts"] == int(datetime(2026, 8, 3, 8, 0, tzinfo=UTC).timestamp())
 
 
 def test_max_pages_stays_a_loud_truncation_guard():
@@ -473,8 +473,7 @@ def test_no_http_happens_while_the_writer_lock_is_held(tmp_path):
 
     assert sess.held_during_http, "fixture made no HTTP calls"
     assert not any(sess.held_during_http), (
-        "the writer lock was held across a REST call — that is the hold that "
-        "starves hyxlab-collect"
+        "the writer lock was held across a REST call — that is the hold that starves hyxlab-collect"
     )
     assert counts["universe"] == 3 and counts["picked"] == 2
 
@@ -520,11 +519,16 @@ def test_every_row_in_a_cycle_shares_one_timestamp(tmp_path):
     tape unjoinable across markets (and every re-run would duplicate)."""
     lock_path = str(tmp_path / "writer.lock")
     db = str(tmp_path / "t.duckdb")
-    sess = _PagedSession([{"markets": [_mkt(t, 10 - i) for i, t in enumerate("ABCDE")], "cursor": ""}])
+    sess = _PagedSession(
+        [{"markets": [_mkt(t, 10 - i) for i, t in enumerate("ABCDE")], "cursor": ""}]
+    )
     breadth.collect_breadth_once(db, n=5, session=sess, lock_file=lock_path, pause_s=0.0)
     store = Store(db)
     try:
-        assert store.conn.execute("SELECT count(DISTINCT ts) FROM breadth_snapshots").fetchone()[0] == 1
+        assert (
+            store.conn.execute("SELECT count(DISTINCT ts) FROM breadth_snapshots").fetchone()[0]
+            == 1
+        )
     finally:
         store.close()
 
@@ -1171,14 +1175,16 @@ def test_the_rate_limit_fraction_is_the_worst_request_not_the_mean(monkeypatch):
     import time as _t
 
     monkeypatch.setattr(_t, "sleep", lambda s: None)
-    seq = [
-        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
-        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
-        _FakeResp({}, status=429, headers={"Retry-After": "1"}),
-        _FakeResp({"markets": [_mkt("A", 1)], "cursor": "c"}),
-    ] + [_FakeResp({"markets": [_mkt(f"P{i}", 1)], "cursor": "c"}) for i in range(7)] + [
-        _FakeResp({"markets": [_mkt("Z", 1)], "cursor": ""})
-    ]
+    seq = (
+        [
+            _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+            _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+            _FakeResp({}, status=429, headers={"Retry-After": "1"}),
+            _FakeResp({"markets": [_mkt("A", 1)], "cursor": "c"}),
+        ]
+        + [_FakeResp({"markets": [_mkt(f"P{i}", 1)], "cursor": "c"}) for i in range(7)]
+        + [_FakeResp({"markets": [_mkt("Z", 1)], "cursor": ""})]
+    )
 
     class S:
         def get(self, url, params=None, timeout=None):
@@ -1438,3 +1444,58 @@ def test_a_refusal_naming_no_live_holder_stays_loud(monkeypatch):
     monkeypatch.setattr(breadth, "collect_breadth_once", _refused_by(2**22 + 7))
     with pytest.raises(breadth.duckdb.IOException):
         breadth.main()
+
+
+# ---------------------------------------------------------------------------
+# 6. the hold line (2026-10-19)
+# ---------------------------------------------------------------------------
+
+
+def _run_main_once(monkeypatch, tmp_path, cycle):
+    """`main --once` against a tmp archive, with `cycle` standing in for
+    `collect_breadth_once` (no network, no live lock)."""
+    import sys as _sys
+
+    db = tmp_path / "t.duckdb"
+    monkeypatch.setattr(breadth, "collect_breadth_once", cycle)
+    monkeypatch.setattr(_sys, "argv", ["breadth", "--once", "--enable", "--db", str(db)])
+    breadth.main()
+    return db
+
+
+def test_a_cycle_publishes_the_hold_it_took_on_the_archive(monkeypatch, tmp_path, capsys):
+    """The writer burst is this unit's whole exclusion of the 5-minute
+    collector's file, and for ten weeks nothing printed it: the burst
+    lives in `collector.sweep.writer_burst`, so the unit-scan in
+    `tests/test_hold_discipline.py` saw no attach name in this module.
+    The line is db-scoped and rendered by the one renderer (#95)."""
+    lock_path = str(tmp_path / "writer.lock")
+
+    def cycle(db, **kw):
+        with sweep.writer_burst(db, lock_file=lock_path):
+            pass
+        return {"universe": 0}
+
+    _run_main_once(monkeypatch, tmp_path, cycle)
+    out = capsys.readouterr().out
+    line = [ln for ln in out.splitlines() if ln.startswith("[breadth] attach_wait:")]
+    assert len(line) == 1, out
+    assert "on t.duckdb 1 attaches" in line[0] and "held 1 for" in line[0], line[0]
+
+
+def test_the_hold_line_is_printed_even_when_the_cycle_dies(monkeypatch, tmp_path, capsys):
+    """#102: publish from a `finally`, so a cycle that held the file and
+    then raised still says what it held. The raise still propagates
+    (`--once` re-raises a non-contention failure)."""
+    lock_path = str(tmp_path / "writer.lock")
+
+    def cycle(db, **kw):
+        with sweep.writer_burst(db, lock_file=lock_path):
+            pass
+        raise RuntimeError("after the burst")
+
+    with pytest.raises(RuntimeError):
+        _run_main_once(monkeypatch, tmp_path, cycle)
+    out = capsys.readouterr().out
+    assert "[breadth] cycle failed: RuntimeError" in out
+    assert sum(ln.startswith("[breadth] attach_wait:") for ln in out.splitlines()) == 1, out

@@ -78,6 +78,14 @@ BARE = ("connect_retry", "open_retry", "Store", "duck_connect")
 #: wrapper that owns its connection between the open and its caller
 #: (`simulator.shadow.stream_conn` re-tunes the engine first).
 HELD = ("held_attach", "held_open", "held_duck", "held_store", "charge_hold")
+#: Helpers in one module that take a HELD attach and hand the connection
+#: to a caller in ANOTHER module -- the attach the unit scan below cannot
+#: see by name. `collector.breadth` held `hyxlab.duckdb` every 5 minutes
+#: through `collector.sweep.writer_burst` for ten weeks (EXP-928) with no
+#: hold line; the scan read its source, found neither a BARE nor a HELD
+#: name, and skipped it (2026-10-19). A wrapper counts as an attach at
+#: every call site, so a unit that calls one publishes or is exempted.
+WRAPPERS = ("writer_burst",)
 
 #: site -> why a publisher may attach without measuring the hold. Keys are
 #: `relpath::qualname`. EMPTY ON PURPOSE: the four publishers all measure
@@ -254,6 +262,12 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # started after the open and read before the release, and silent on
         # a raise; now the ledger's reading, db-scoped, after each file.
         "collector/backup.py",
+        # The 5-minute exchange-wide breadth collector (2026-10-19): one
+        # `writer_burst` on the collector's file per cycle, 288 a day for
+        # ten weeks, published nowhere -- the hold lives in another
+        # module's wrapper, so the unit scan read this source as bare of
+        # attaches and never asked. Now WRAPPERS names it.
+        "collector/breadth.py",
         # The two hand-run backfills (2026-10-16): every write already went
         # through `writer_burst` (`held_open`), and the one bare read each --
         # the closing census, the prefix resolve -- is what this closes.
@@ -406,11 +420,15 @@ def test_every_unit_that_attaches_a_live_archive_publishes_its_holds():
     collector's file daily with a hand-written line as its whole reading
     -- were found by a hand scan of unit ExecStart lines against bare
     attaches. This is that scan as an assertion: a unit whose code attaches
-    through any helper in BARE or HELD must publish `attach_wait_block`, or
-    be named in UNIT_NON_PUBLISHERS with the argument."""
+    through any helper in BARE, HELD or WRAPPERS must publish
+    `attach_wait_block`, or be named in UNIT_NON_PUBLISHERS with the
+    argument. WRAPPERS is the 2026-10-19 lesson: the scan reads the unit's
+    OWN source, and a hold taken through another module's wrapper has no
+    attach name in it -- `collector.breadth` was bare for ten weeks that
+    way, one line below the two units this test was written for."""
     units = _unit_modules()
     assert len(units) >= 12, units  # non-vacuity: the repo's real unit set
-    attachers = tuple(BARE) + tuple(HELD)
+    attachers = tuple(BARE) + tuple(HELD) + tuple(WRAPPERS)
     bare_units = {}
     for unit, module in units.items():
         files = _module_files(module)

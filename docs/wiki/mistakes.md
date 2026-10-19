@@ -3317,6 +3317,37 @@ Format: what happened → root cause → error type → prevention tier
     `enable --now`, next elapse Mon 10-20) -- the ops rule about a MOVED
     Persistent timer firing at `daemon-reload` is about a stamp that
     exists and an elapse that was missed since it.
+127. **2026-10-19 21:00Z -- the unit scan that enforces "publish your
+    holds" read each unit's OWN source for an attach name, and a hold
+    taken through another module's wrapper has none in it.**
+    `tests/test_hold_discipline.py::test_every_unit_that_attaches_a_live_
+    archive_publishes_its_holds` (10-17) exists because two timer units
+    had been found bare by a hand scan a fortnight late; it scans every
+    unit's ExecStart module for a BARE or HELD helper name and demands an
+    `attach_wait_block` or an exemption. `collector.breadth` -- one
+    `writer_burst` on `hyxlab.duckdb`, the 5-minute collector's file,
+    every 5 minutes, 288 a day since EXP-928 (ten weeks) -- imports the
+    burst from `collector.sweep`, so its source contains neither name,
+    the scan `continue`d, and the unit was never asked. Found from the
+    victim's side: the 10-19 kalshi sweep's worst attach wait rose 2.0s
+    -> 10.0s and the attribution needed a hold line from every periodic
+    writer on the file; tradepass had one (8.4s at 06:37Z, the answer),
+    breadth did not. Fix: `WRAPPERS = ("writer_burst",)` joins the scan's
+    attacher names (red: names breadth alone), breadth resets the ledger
+    per cycle and prints the db-scoped line from a `finally` (#102: a
+    cycle that died still says what it held), and joins the publisher
+    set. 2 tests, both red with breadth reverted. Rule: **a source scan
+    for a helper NAME is blind to every call that reaches the helper
+    through a wrapper in another module, and a wrapper is where a
+    repo's "one place this is right" helpers go to live; enumerate the
+    wrappers as attachers, or walk the import graph (as
+    `tests/test_unit_memory_caps.py` does) -- never scan the leaf's text
+    alone.** Second: the scan's blind spot was the one direction its
+    docstring said it was written to close ("found by a hand scan ...
+    this is that scan as an assertion"); an assertion that encodes a
+    hand scan inherits the hand scan's method, and the method was the
+    gap.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
