@@ -891,6 +891,13 @@ self-match trap the ops rules name for `pkill -f`.
   window would have been worse (2500 -> 3100 ran x1.45). The error is
   inside the 5-14% replay band -- read the line with that band, and
   never pre-register a band narrower than it.
+  **The progress line carries the by-class terms of the series done so
+  far** (2026-10-20, `collector.sweep.class_terms_tag`; first production
+  line at the 10-21 06:10Z run): `| done: ladders 25/59244 mkts 0.473
+  s/mkt, small 141 min, dense 44 min`. Read against yesterday's line at
+  the same index: ladder markets up at the same s/mkt is LISTINGS (the
+  ETA's scale over-reads the tail), the same markets at a higher s/mkt
+  is PACE (429s, a hold). The scale alone cannot tell the two apart.
 - **The sweep prints its wall in the three terms the budget model is
   written in** (2026-10-17, `collector.sweep.wall_by_class` /
   `wall_class_line`, `totals['by_class']`; first production line at the

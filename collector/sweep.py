@@ -731,6 +731,7 @@ def run_sweep(
                 f"{totals['markets']} markets, {totals['candles']} candles, "
                 f"{totals['errors']} errors, {totals['truncated']} truncated"
                 f" | ~{eta_min:.0f} min left ({eta_tag})"
+                f" | {class_terms_tag(wall_by_class(series_wall))}"
             )
     totals["tapes_skipped"] = _TAPES_SKIPPED
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
@@ -846,6 +847,24 @@ def wall_class_line(by_class: dict[str, dict], elapsed_s: float) -> str:
         f" small {sm['n']} series {sm['wall_s'] / 60:.1f} min/{sm['markets']} mkts"
         f" ({sm['wall_s'] / max(sm['n'], 1):.2f} s/series);"
         f" loop {loop_s / 60:.1f} of {elapsed_s / 60:.1f} min"
+    )
+
+
+def class_terms_tag(by_class: dict[str, dict]) -> str:
+    """The by-class terms of the series DONE so far, for the progress line.
+
+    The `~N min left` ETA prices the remainder at yesterday's walls scaled
+    by today's pace, so a day with more LISTINGS reads as a slower day
+    (2026-10-20: x1.19 at 3100 while the tail ran 10-19's pace to the
+    minute; mistakes #130). The scale cannot say which; this can, read
+    against yesterday's line at the same index: ladder markets up at the
+    same s/mkt is listings, the same markets at a higher s/mkt is pace.
+    """
+    lad, den, sm = by_class["ladder"], by_class["dense"], by_class["small"]
+    return (
+        f"done: ladders {lad['n']}/{lad['markets']} mkts"
+        f" {lad['wall_s'] / max(lad['markets'], 1):.3f} s/mkt,"
+        f" small {sm['wall_s'] / 60:.0f} min, dense {den['wall_s'] / 60:.0f} min"
     )
 
 

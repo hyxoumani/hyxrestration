@@ -97,7 +97,32 @@ def test_the_progress_line_carries_the_weighted_eta_and_its_tag(monkeypatch, cap
     assert lines[0] == (
         "[sweep] 2/7 series | 2 markets, 0 candles, 0 errors, 0 truncated"
         " | ~12 min left (prior-run weighted x0.50, 0 unpriced)"
+        " | done: ladders 0/0 mkts 0.000 s/mkt, small 0 min, dense 0 min"
     )
+
+
+def test_the_progress_line_carries_the_class_terms_of_the_series_done_so_far():
+    """Read against yesterday's line at the same index, the tag separates
+    LISTINGS (more ladder markets at the same s/mkt) from PACE (the same
+    markets at a higher s/mkt) -- the ETA's scale cannot (mistakes #130).
+    Each term perturbs the tag, so none can be read into a local and dropped."""
+    base = {
+        "ladder": {"n": 2, "wall_s": 6000.0, "markets": 12000},
+        "dense": {"n": 1, "wall_s": 2700.0, "markets": 96, "tickers": ["KXBTC15M"]},
+        "small": {"n": 500, "wall_s": 1200.0, "markets": 600},
+    }
+    tag = sweep_mod.class_terms_tag(base)
+    assert tag == "done: ladders 2/12000 mkts 0.500 s/mkt, small 20 min, dense 45 min"
+    for cls, key, bump in (
+        ("ladder", "markets", 3000),  # listings grew
+        ("ladder", "wall_s", 600.0),  # pace fell
+        ("ladder", "n", 1),
+        ("small", "wall_s", 600.0),
+        ("dense", "wall_s", 600.0),
+    ):
+        mutant = {k: dict(v) for k, v in base.items()}
+        mutant[cls][key] += bump
+        assert sweep_mod.class_terms_tag(mutant) != tag, (cls, key)
 
 
 def test_the_progress_line_names_the_series_rate_when_there_is_no_prior(monkeypatch, capsys):
@@ -107,4 +132,4 @@ def test_the_progress_line_names_the_series_rate_when_there_is_no_prior(monkeypa
     monkeypatch.setattr(sweep_mod, "PROGRESS_EVERY", 2)
     sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
     lines = [ln for ln in capsys.readouterr().out.splitlines() if "min left" in ln]
-    assert lines and all(ln.endswith("min left (series-rate)") for ln in lines)
+    assert lines and all("min left (series-rate) | done: ladders" in ln for ln in lines)
