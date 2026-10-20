@@ -146,6 +146,19 @@ def test_a_market_without_a_prior_costs_the_median_and_is_counted():
     assert tag == "prior-run weighted x1.00, 1 unpriced"
 
 
+def test_an_unpriced_market_costs_the_median_of_the_markets_the_run_fetches():
+    """A market with no prior is new to the enumeration, so the run fetches
+    it; priced at the median over ALL priors it cost ~0 on 2026-10-20 --
+    12,475 of 18,458 priors were skips at microseconds -- and 1,151 new
+    markets dropped ~40 min out of the first line. The skip set is excluded
+    from the fallback population."""
+    prior = {"s1": 0.0, "s2": 0.0, "s3": 0.0, "f1": 10.0, "f2": 20.0, "f3": 30.0}
+    skip = {"s1", "s2", "s3"}
+    eta, tag = ps.eta_weighted(["f1"], ["new", "s1"], elapsed_s=10.0, prior=prior, skip=skip)
+    assert eta == (20.0 + 0.0) * 1.0 / 60  # new at the fetched median, s1 at its own
+    assert tag == "prior-run weighted x1.00, 1 unpriced"
+
+
 def test_without_a_prior_the_estimate_is_the_mean_rate_and_says_so():
     assert ps.eta_weighted(["a", "b"], ["c"], elapsed_s=120.0, prior={}) == (1.0, "mean rate")
     assert ps.eta_weighted([], ["c"], elapsed_s=0.0, prior={"c": 1.0}) == (0.0, "mean rate")

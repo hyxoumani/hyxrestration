@@ -136,22 +136,36 @@ def prior_market_wall(store, now: datetime | None = None) -> dict[str, float]:
 
 
 def eta_weighted(
-    done: list[str], remaining: list[str], elapsed_s: float, prior: dict[str, float]
+    done: list[str],
+    remaining: list[str],
+    elapsed_s: float,
+    prior: dict[str, float],
+    skip: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[float, str]:
     """ETA in minutes for `remaining` plus a tag naming the estimate it is.
 
-    With a prior: each remaining market costs its previous-run wall (the
-    median prior for one without), scaled by today's pace -- elapsed over the
-    prior cost of the markets already done, which absorbs the flushes and
-    the day's rate limit. Without one: the mean rate since the start, tagged
-    `mean rate` so a reader knows it carries the opening (2026-10-17: `~404`
-    at 11,600 for 328 actual) and, past the trade-heavy mid-rank, the other
-    way (2026-10-18: `~509` at 10,000 for ~425).
+    With a prior: each remaining market costs its previous-run wall, scaled
+    by today's pace -- elapsed over the prior cost of the markets already
+    done, which absorbs the flushes and the day's rate limit (a flat x1.37
+    across the 2026-10-20 run: the per-market wall is 73% of the loop).
+    Without one: the mean rate since the start, tagged `mean rate` so a
+    reader knows it carries the opening (2026-10-17: `~404` at 11,600 for
+    328 actual) and, past the trade-heavy mid-rank, the other way
+    (2026-10-18: `~509` at 10,000 for ~425).
+
+    A market WITHOUT a prior is new to the enumeration, so no prior run set
+    its result and today's run fetches it. It costs the median prior of the
+    markets today FETCHES -- `skip`, the markets this run skips, is excluded
+    from that population, because a skip's prior is the microseconds the
+    skip branch took (median 1.8e-5 s over 18,458 priors on the 2026-10-20
+    backup, 12,475 of them skips) and prices 1,151 new markets at nothing:
+    ~40 min of a 478-min line (median fetched prior 1.56 s, x1.37).
     """
     if not prior or not done or elapsed_s <= 0:
         mean = len(remaining) * elapsed_s / len(done) / 60 if done and elapsed_s > 0 else 0.0
         return mean, "mean rate"
-    med = sorted(prior.values())[len(prior) // 2]
+    fetched = sorted(w for m, w in prior.items() if m not in skip) or sorted(prior.values())
+    med = fetched[len(fetched) // 2]
     prior_done = sum(prior.get(m, med) for m in done)
     scale = elapsed_s / prior_done if prior_done > 0 else 1.0
     unpriced = sum(1 for m in remaining if m not in prior)
@@ -288,6 +302,12 @@ def sweep(
     t0 = time.monotonic()
     t_line = t0
     ids = [m.get("conditionId") or "" for m in markets]
+    # The markets this run skips (the loop's `skip`, decided up front): the
+    # ETA's fallback price for a market with no prior is the median of the
+    # OTHER population, the markets it fetches.
+    skipped_ids = {
+        c for m, c in zip(markets, ids, strict=True) if m.get("closed") and c in resolved
+    }
 
     for i, m in enumerate(markets):
         cond = m.get("conditionId")
@@ -344,7 +364,7 @@ def sweep(
         if (i + 1) % PROGRESS_EVERY == 0:
             now_m = time.monotonic()
             _, eta_w = eta_minutes(i + 1, len(markets), now_m - t0, now_m - t_line)
-            eta, tag = eta_weighted(ids[: i + 1], ids[i + 1 :], now_m - t0, prior)
+            eta, tag = eta_weighted(ids[: i + 1], ids[i + 1 :], now_m - t0, prior, skipped_ids)
             t_line = now_m
             print(
                 f"[poly] {i + 1}/{len(markets)} | {batch['n_prices']} prices,"
