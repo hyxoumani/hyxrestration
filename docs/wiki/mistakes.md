@@ -3348,6 +3348,29 @@ Format: what happened → root cause → error type → prevention tier
     hand scan inherits the hand scan's method, and the method was the
     gap.
 
+128. **2026-10-20 08:40Z -- the poly ETA priced a market with no prior at
+    "the median prior", and 68% of the priors were SKIPS.**
+    `collector.poly_sweep.eta_weighted` (10-18) costs an unpriced market
+    at `sorted(prior.values())[n // 2]`; the 10-19 lever (f5c7ffb) made
+    the sweep LOG a `wall_s` for every market it skips -- the microseconds
+    of the skip branch -- so on the 10-20 backup 12,475 of 18,458 priors
+    are ~1.8e-5 s and the median is a skip. A market without a prior is
+    NEW to the enumeration, so no prior run set its result and today's
+    run fetches it: 1,151 such markets on 10-20, priced at nothing,
+    against a fetched median of 1.56 s x the x1.37 pace = ~40 min
+    missing from a 478-min first line. The x1.37 itself is not drift:
+    it is 1 / 0.73, the share of the loop the per-market wall covers
+    (03:35Z entry), and it sat 1.35-1.40 across 24 lines while the 04:38Z
+    entry predicted it would contract. #94's rule, one instrument over:
+    a median over a UNIONED population is the median of the bigger kind,
+    and the kind that is bigger was created by the previous pass's fix.
+    Fix: the fallback is the median over priors NOT in today's skip set
+    (`skipped_ids`, decided up front from the same predicate the loop
+    uses), +1 test red-verified. First corrected line: the 10-21 04:15Z
+    run. Rule: **when a fix adds a new KIND of row to a table, re-read
+    every aggregate over that table -- a median, a mean, a count -- and
+    ask which kind now dominates it.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
