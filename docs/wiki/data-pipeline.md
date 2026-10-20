@@ -880,6 +880,17 @@ self-match trap the ops rules name for `pkill -f`.
   at yesterday's listings until the ladders themselves are done. Read
   the line as an upper bound while the ladders are ahead (indices
   ~700-3200), and as the ETA after.
+  **10-20 run (done 18:35Z, 744.4 min; mistakes #130):** the scale read
+  x1.16-1.19 from 2700 on and every tail line over-read ~15% (`~244` at
+  3100 vs 213 actual, `~103` at 3200 vs 88, `~52` at 3700 vs 38) while
+  the 3200 -> done tail ran 88 min = 10-19's 88 to the minute. The pace
+  was learned on the first 3100 series, which carried the day's growth
+  (KXNASDAQ100U 0 -> 2,800 markets in one 29-min leg against a ~2 s
+  "no settled markets" prior; the index/rate ladders settle nothing
+  into a Monday run), and applied to a tail that had none. A trailing
+  window would have been worse (2500 -> 3100 ran x1.45). The error is
+  inside the 5-14% replay band -- read the line with that band, and
+  never pre-register a band narrower than it.
 - **The sweep prints its wall in the three terms the budget model is
   written in** (2026-10-17, `collector.sweep.wall_by_class` /
   `wall_class_line`, `totals['by_class']`; first production line at the
@@ -911,6 +922,17 @@ self-match trap the ops rules name for `pkill -f`.
   KXSILVER15M, KXUSDJPY15M all 0; 10-17: 14-36; Sunday 10-12: 56-75)
   while the crypto 15M series hold ~92-97 every day -- market hours,
   not a capture hole.
+  **Six-run check, 10-15..10-20:** markets 64.0k/73.2k/65.4k/53.0k/
+  62.6k/71.6k against elapsed 655.7/740.5/677.8/551.7/652.5/744.4 --
+  ~10.4 min per 1k markets, residuals -10/-21/-2/0/+2/0 -- while
+  candles ran 322k/208k/249k/90k/126k/311k, uncorrelated. The market
+  count is the venue's SETTLEMENTS in (watermark, now]: the crypto
+  ladders a flat ~7.2-7.6k each, the index (KXNASDAQ100U ~2,800,
+  KXINXU ~420, KXDJI ~400), rate (KX7YRRATEH / KX10YRRATEH ~250) and
+  metals/WTI hourly ladders (+330..+610 on a weekday) absent from the
+  run that covers a Sunday. The small class is not a flat block either:
+  1.79/2.16/2.55 s/series on 2,125/3,217/4,594 markets (10-18/19/20) =
+  ~1.2 s/series + ~1.1 s/mkt, within 4 min on all three.
 - **The poly sweep skips the two fetches for a market a PRIOR run
   archived as resolved** (2026-10-19, `Store.poly_resolved_complete` /
   `collector.poly_sweep._fetch_market`; first production run 10-19

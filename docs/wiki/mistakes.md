@@ -3402,6 +3402,41 @@ Format: what happened → root cause → error type → prevention tier
     and a pre-registration that misses in the GOOD direction is still a
     miss to be attributed before the instrument is trusted again.**
 
+130. **2026-10-20 20:35Z -- a pre-registration band was tightened BELOW the
+    instrument's documented error, and the drift it bracketed was
+    attributed to the most visible counter instead of the model term
+    that moved.** The kalshi sweep's 14:40Z pre-registration said
+    `elapsed_min` 740-790 (band width ~7%); the 15:05Z pass read
+    `~252 min left (x1.18)` at 3000 and tightened it to 760-790 / done
+    18:50-19:15Z, plus `candles` ~275-295k and `slowest[0]` = "the
+    ~3,000-market ladder from the 2400 -> 2500 leg". The run finished
+    18:35:08Z at 744.4 min: the wide band held, the tightened one missed
+    by 16 min, candles landed 311k, and `slowest[0]` was KXSOLE at 7,575
+    markets -- `slowest` ranks by WALL and a 3k-market ladder at 0.48
+    s/mkt cannot out-wall a 7.5k one. The ETA's own wiki entry says it
+    replays within 5-14%; 14% of 213 min IS the 31-min over-read at
+    3100, so a band narrower than that was never calibrated, and a
+    trailing-window scale (the obvious "fix") would have read x1.45 at
+    3100, worse. Second half: two passes attributed the day's +92 min to
+    "a ladder series' candle tape catching up" because `candles` was the
+    counter that jumped (264k vs 80k at 3100). Six done lines put
+    elapsed on MARKETS at ~10.4 min per 1k with residuals within +-21
+    min while candles ran 90k-322k uncorrelated (10-15: 322k candles in
+    656 min; 10-18: 90k in 552); the by-class line already said so
+    (ladders +7,665 markets at a flat 0.477 vs 0.473 s/mkt), and one
+    0.010s `sweep_log` read named it: KXNASDAQ100U 0 -> 2,800 markets,
+    KXINXU/KXDJI/two rate ladders 0 -> 250-420 each, the metals hourly
+    ladders +330..+610 -- weekday settlements into a Tuesday run that a
+    Monday run (covering Sunday) never sees. Fix: docs only -- (23) is
+    pre-registered as the MODEL (`elapsed - (small + dense) =
+    ladder_mkts x 0.47-0.48 s`), with the number as its consequence.
+    Rule: **a pre-registration band is never narrower than the error
+    band of the instrument it is read from, and a drift is attributed to
+    the term of the model that moved -- read the decomposition line
+    before the counter that jumped.** See [[prediction-thresholds-need-a-model]]:
+    the arithmetic behind a threshold has to include the instrument's
+    error, not just its reading.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
