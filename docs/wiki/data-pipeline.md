@@ -1021,7 +1021,21 @@ self-match trap the ops rules name for `pkill -f`.
   order moves between runs (10-17's trade-heavy block sat at
   10,200-11,200, 10-18's at 6,200-7,000) and the prior follows the
   market. Until the first weighted line, the done-time projection is
-  yesterday's wall from the same index. **And the per-200 wall rises ~30-40% for ~45 min in
+  yesterday's wall from the same index. **Two prices corrected after the
+  first weighted run (2026-10-20, mistakes #128/#129):** a market the run
+  SKIPS (`skipped_ids`, decided up front) costs 0.0 on both sides of the
+  scale whatever its prior says -- a market resolved between the two runs
+  was FETCHED yesterday and is skipped today, and 1,671 of those (median
+  5.3 s, 132 min unscaled) read `~125 min left` at 11,600 for 75 actual
+  while walking the scale 1.44 -> 1.24; and an unpriced CLOSED market is a
+  first-seen-closed fetch (1,056 ran 5.0 s each on 10-20, 88.8 min) and
+  costs the median prior of yesterday's first-seen-closed set -- today's
+  skip members whose prior is above `SKIP_WALL_MAX_S` (0.01 s; the skip
+  branch is microseconds, a fetch is a round trip) -- not the open-
+  dominated 1.56 s fetched median. Replayed on the 10-20 backup against
+  the 10-20 journal the corrected line is within ~10 min through 11,600
+  (old: +42; skip-fix alone: -75). First production line: the 10-21
+  04:15Z run. **And the per-200 wall rises ~30-40% for ~45 min in
   the kalshi sweep's `KXBTC15M mid-series flush` window** (10-17
   07:57-08:42Z, 10-18 from 07:39Z: ~280k-trade flushes every 3.5 min on
   the same `hyxlab.duckdb`), with flat content per leg and the

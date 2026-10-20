@@ -3371,6 +3371,37 @@ Format: what happened → root cause → error type → prevention tier
     every aggregate over that table -- a median, a mean, a count -- and
     ask which kind now dominates it.**
 
+129. **2026-10-20 14:30Z -- the poly ETA charged a SKIPPED market its
+    prior run's FETCH wall, and the pre-registered done time missed by
+    50 min in the fast direction.** The 10-20 poly done line landed
+    11:19:05Z (`elapsed_min` 419.9) against a band of 12:05-12:25Z
+    pre-registered off `~125 min left` at 11,600 (10:04Z); 75 min was
+    the truth. `eta_weighted` priced every remaining market at
+    `prior.get(m, med)`, and a market that RESOLVED between the two runs
+    was fetched by 10-19 (prior = a 1-30 s fetch wall) and skipped by
+    10-20 (cost = microseconds): on the 10-20 backup 1,671 of today's
+    skip set carry a fetch prior, median 5.27 s, 132 min unscaled, 1,055
+    of them past index 11,600 (85 min x1.38 = the whole over-read). The
+    same priors on the DONE side inflated the pace denominator, so the
+    scale walked 1.44 -> 1.24 through the closed segment -- the 10:10Z
+    pass read that fall as "the overhead share being the loop's", a
+    story for a number that was an artifact. And the fix's first draft
+    (skip = 0.0 alone) over-corrected to `~0 min left` from index 6,000
+    in replay, because the 1,056 first-seen-closed markets (unpriced,
+    88.8 min, 5.0 s each) were priced at the OPEN-dominated 1.56 s
+    fetched median. #128 was this same table one day earlier: the skip
+    lever (10-19) created a second KIND of row, and every pass since has
+    found one more aggregate that unions the two kinds. Fix: a skipped
+    market costs 0.0 on both sides; an unpriced closed market costs the
+    median of yesterday's first-seen-closed fetches (skip members with
+    prior > `SKIP_WALL_MAX_S`); +2 tests red-verified; replay on the
+    backup within ~10 min of the journal through 11,600. Rule: **a
+    per-item prior is valid only while the item runs the same BRANCH it
+    ran when the prior was recorded; when a run decides branches up
+    front, the ETA must price by today's branch, not yesterday's wall --
+    and a pre-registration that misses in the GOOD direction is still a
+    miss to be attributed before the instrument is trusted again.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -226,3 +226,54 @@ def test_the_line_carries_the_weighted_tag_and_the_batch_carries_each_markets_wa
     assert [r[0] for r in flushed[:2]] == ["0x0000", "0x0001"]
     assert all(r[2] == 2.0 for r in flushed[: ps.PROGRESS_EVERY])
     assert all(r[2] == 1.0 for r in flushed[ps.PROGRESS_EVERY :])
+
+
+def test_a_market_the_run_skips_costs_nothing_whatever_its_prior_says():
+    """A market resolved between the two runs was FETCHED by the prior run
+    (its prior is a 1-30 s fetch wall) and is SKIPPED by this one (it costs
+    the microseconds of the skip branch). Priced at its prior it charges a
+    fetch that never happens: on 2026-10-20, 1,671 such markets (median
+    5.3 s, 132 min unscaled), 1,055 of them past index 11,600, and the
+    line read `~125 min left` for 75 actual; on the done side the same
+    priors inflate the pace denominator and read the scale LOW
+    (x1.39 -> x1.24 across the closed segment). A skipped market costs
+    0.0 on both sides; the skip legs' flush time rides in the scale."""
+    prior = {"f1": 10.0, "f2": 10.0, "s_done": 10.0, "s_left": 100.0, "f3": 20.0}
+    skip = {"s_done", "s_left"}
+    # f1, f2 and s_done are done in 30 s: the scale is 30 / (10 + 10 + 0) = x1.50,
+    # not 30 / 30 = x1.00 -- s_done's 10 s was a fetch yesterday and a skip today
+    eta, tag = ps.eta_weighted(
+        ["f1", "f2", "s_done"], ["s_left", "f3"], elapsed_s=30.0, prior=prior, skip=skip
+    )
+    # s_left's 100 s prior is a fetch that will not happen; only f3 is owed
+    assert eta == 20.0 * 1.5 / 60
+    assert tag == "prior-run weighted x1.50, 0 unpriced"
+
+
+def test_an_unpriced_closed_market_costs_a_first_seen_closed_fetch():
+    """New to the enumeration AND closed means the run fetches prices to the
+    close and the whole tail from offset 0: 1,056 such markets ran 5.0 s
+    each on 2026-10-20 against the 1.56 s fetched median. The price is the
+    median prior of today's skip members whose prior is a fetch wall --
+    yesterday's first-seen-closed set -- told from the skip branch's
+    microseconds by `SKIP_WALL_MAX_S`."""
+    prior = {
+        "o1": 1.0,
+        "o2": 2.0,
+        "o3": 3.0,  # open, fetched both days: median 2.0
+        "s_skip": 1e-5,  # skipped both days
+        "c1": 4.0,
+        "c2": 6.0,
+        "c3": 8.0,  # fetched closed yesterday, skipped today: median 6.0
+    }
+    skip = {"s_skip", "c1", "c2", "c3"}
+    closed = skip | {"new_closed"}
+    eta, tag = ps.eta_weighted(
+        ["o1", "o2", "o3"], ["new_closed", "new_open", "c1"], 6.0, prior, skip, closed
+    )
+    assert eta == (6.0 + 2.0 + 0.0) * 1.0 / 60
+    assert tag == "prior-run weighted x1.00, 2 unpriced"
+    # no closed-fetched pool (the first run that skips): a new closed market
+    # costs the fetched median like any other
+    eta, _ = ps.eta_weighted(["o1"], ["new_closed"], 1.0, {"o1": 1.0, "o2": 3.0}, set(), closed)
+    assert eta == 3.0 / 60
