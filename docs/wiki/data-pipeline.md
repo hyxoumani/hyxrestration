@@ -898,6 +898,29 @@ self-match trap the ops rules name for `pkill -f`.
   the same index: ladder markets up at the same s/mkt is LISTINGS (the
   ETA's scale over-reads the tail), the same markets at a higher s/mkt
   is PACE (429s, a hold). The scale alone cannot tell the two apart.
+  **The run names its listings delta on its first line and in the done
+  dict** (2026-10-21, `collector.sweep._prior_run` / `listings_delta` /
+  `listings_line`, `totals['new_series']` / `['dropped_series']`; first
+  production line at the 10-22 06:10Z run): `[sweep] listings: 4031
+  targets vs 3963 swept last run | +84 new (KXBEAVERSNOW, ... +72) | -0
+  dropped`. The delta is against the prior run's SERIES SET (the wall
+  dict drops the run's first series, which would read as new daily);
+  no prior run is `None` / "no prior run in the lookback", never
+  "everything is new". Why: the 10-21 run's 4,031 targets vs 10-20's
+  3,963 were legible only as `68 unpriced` on the ETA tag, and naming
+  them cost a contended 8.2s read-only attach on the live archive
+  mid-run (held 0.0s). What they were: 84 series the 10-20 run never
+  swept -- 54 Financials = nine international index families (FTSE 100,
+  Hang Seng, Ibovespa, KOSPI 200, Nikkei 225, Nifty 50, Russell 2000,
+  Shanghai Composite, EURO STOXX 50) x six variants (annual close/high/
+  low, daily, weekly, monthly close); 14 MVE exotics (KXMVE*); 13 ski-
+  resort openings/snowfall; KXBRENT15M (fifteen_min, 0 markets at its
+  07:22Z sweep); 2 MVE mentions. Sized against the existing families
+  on 10-20: the big index ladders are the HOURLY ones (KXNASDAQ100U
+  2,800 / KXINXU 420 / KXDJI 399 markets); the daily range series are
+  ~30 (KXINX 30, KXNASDAQ100 30) and weekly/monthly/annual 0-6. So the
+  nine new daily-close series are ~30 each at most, ~270 ladder-class
+  markets, inside the ETA's 5-14% band, NOT a new 2,800 term.
 - **The sweep prints its wall in the three terms the budget model is
   written in** (2026-10-17, `collector.sweep.wall_by_class` /
   `wall_class_line`, `totals['by_class']`; first production line at the
