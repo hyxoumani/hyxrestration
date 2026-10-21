@@ -3437,6 +3437,33 @@ Format: what happened → root cause → error type → prevention tier
     the arithmetic behind a threshold has to include the instrument's
     error, not just its reading.
 
+131. **2026-10-21 09:25Z -- a skip predicate's premise ("a prior run
+    FETCHED this market") was recorded by a row written BEFORE the fetch
+    and kept when the fetch raised.** `collector.poly_sweep` appended the
+    Gamma info row (which sets `markets.result` for a closed market) and
+    the stats row (the tail oracle's evidence that a run fetched after the
+    stop) ahead of the two paced fetches, and its except branch -- "a
+    market that raised mid-way still owns the rows it put in the batch" --
+    kept both. `Store.poly_resolved_complete` (10-19) then reads that
+    result as "fetched to the close" and skips the market forever: prices
+    are a ~60-day rolling window and the tail is capped at 3,000, so the
+    hole is permanent for every market FIRST seen closed on an incident
+    day. Found by reading the journal, not the archive: 87 CLOB `500
+    Server Error` on prices-history from 09:04Z (10-18: 0, 10-19: 4,
+    10-20: 0), 1-7 a minute, still landing as the loop crossed the open/
+    closed boundary at 09:17Z; `prices_history` has no 5xx retry. Class:
+    wrong-assumption (the skip was built on 10-19 against a clean
+    journal, and the "owns its rows" comment two lines below the except
+    was read as a feature). Fix: the except branch truncates `infos` and
+    `stats` back to the market's entry (sweep-log and partial prices stay;
+    +1 test, red-verified). Residual: the 10-21 run ran the old code, so
+    its closed-segment markets that 500'd after 09:17Z are archived
+    resolved and owe a targeted re-fetch (next-run item). Rule: a
+    predicate that reads "X happened" from a persisted row must be
+    written by the code path AFTER X, and the except branch is a code
+    path -- list what each row CLAIMS before deciding which survive an
+    exception.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

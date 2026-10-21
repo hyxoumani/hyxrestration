@@ -1041,6 +1041,27 @@ self-match trap the ops rules name for `pkill -f`.
   the digest ATTENTION until that run ages out on 10-25, unless the band
   is re-measured first -- the rule keeps 17.5h until 3+ done lines on
   the skip exist (10-21 earliest).
+  **A market whose fetch RAISED keeps neither its Gamma row nor its
+  stats row** (2026-10-21, `collector.poly_sweep.sweep` except branch;
+  first production run 10-22 04:15Z). The skip's premise is "a prior
+  run saw the market closed AND fetched to that instant", but the loop
+  appended the Gamma row (which sets `markets.result` for a closed
+  market) and the stats row (the tail oracle's "a run fetched after
+  the stop") BEFORE the two fetches and kept both when the fetch raised
+  -- so a market first seen closed on an incident day was archived as
+  resolved with no prices and no tail, and the next run skipped it for
+  good (prices are a ~60-day rolling window, the tail capped at 3,000).
+  Measured 2026-10-21: 87 CLOB `500 Server Error` on prices-history
+  from 09:04Z (10-18: 0, 10-19: 4, 10-20: 0), 1-7 a minute, still
+  landing as the loop crossed the open/closed boundary at 09:17Z;
+  `prices_history` has no 5xx retry, so one 500 ends the market's day.
+  Now the except branch truncates `infos`/`stats` back to the market's
+  entry; the sweep-log row (the ETA's prior) and whatever prices the
+  first token put in the batch still land (the watermark is max(ts), so
+  a partial token re-reads tomorrow). The 10-21 run itself ran the OLD
+  code: its closed-segment markets that 500'd after 09:17Z ARE archived
+  resolved and need a targeted re-fetch (journal `HTTPError at <cond16>`
+  lines -> `markets.result <> ''` with no `poly_prices` row that day).
 - **The poly sweep's `~N min left` prints two named estimates**
   (2026-10-17, `collector.poly_sweep.eta_minutes`; first production line
   at the 10-18 04:15Z run): `~404 min left (mean rate; ~330 at the last

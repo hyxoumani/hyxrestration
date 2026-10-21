@@ -361,6 +361,7 @@ def sweep(
         skip = bool(m.get("closed")) and cond in resolved
         seg = segments["open" if i < n_open else "closed_skipped" if skip else "closed_fetched"]
         n_p, n_t = len(batch["prices"]), len(batch["trades"])
+        n_i, n_s = len(batch["infos"]), len(batch["stats"])
         try:
             batch["infos"].append(poly.gamma_market_info(m))
             batch["stats"].append(
@@ -375,6 +376,21 @@ def sweep(
             name = type(exc).__name__
             error_classes[name] = error_classes.get(name, 0) + 1
             print(f"[poly] {name} at {cond[:16]}: {str(exc)[:80]}", flush=True)
+            # A market whose fetch raised is NOT one this run fetched, so it
+            # keeps neither row that says so. Its Gamma row sets
+            # `markets.result` for a closed market, and the stats row is
+            # the tail-absorption oracle's "a run fetched after the stop";
+            # with both archived, tomorrow's `poly_resolved_complete` skips
+            # the market's two fetches for good -- prices from a ~60-day
+            # rolling window, tail capped at 3,000 -- a permanent hole for
+            # every market FIRST seen closed on an incident day. Measured
+            # 2026-10-21: 87 CLOB `500 Server Error` on prices-history from
+            # 09:04Z, still landing as the loop crossed the open/closed
+            # boundary at 09:17Z (`prices_history` has no 5xx retry). The
+            # prices/trades it put in the batch before raising stay (the
+            # watermark is max(ts), so a partial token is re-read tomorrow).
+            del batch["infos"][n_i:]
+            del batch["stats"][n_s:]
             time.sleep(2)
         totals["markets"] += 1
         # The market's own wall, before the flush it may trigger: tomorrow's
