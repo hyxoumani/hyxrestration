@@ -1038,9 +1038,11 @@ self-match trap the ops rules name for `pkill -f`.
   from 10-20 the prior-weighted line prices each market at today's wall.
   QA: the batch-budget check reads the worst completed run in 7d, so
   `hyxlab-poly-sweep.timer 17.57h/17.5h` (the 10-18 run) stays FAIL and
-  the digest ATTENTION until that run ages out on 10-25, unless the band
-  is re-measured first -- the rule keeps 17.5h until 3+ done lines on
-  the skip exist (10-21 earliest).
+  the digest ATTENTION until that run ages out on 10-25. Re-measured
+  2026-10-21 on the first three skip-era done lines (10-19 463.1 min /
+  10-20 419.9 / 10-21 452.2; unit walls 7.72 / 7.00 / 7.61h, the last
+  carrying 393 fetch errors from the CLOB 500 incident): the budget is
+  **8.0h**, the max rounded up to the half hour, the sweep's convention.
   **A market whose fetch RAISED keeps neither its Gamma row nor its
   stats row** (2026-10-21, `collector.poly_sweep.sweep` except branch;
   first production run 10-22 04:15Z). The skip's premise is "a prior
@@ -1059,9 +1061,26 @@ self-match trap the ops rules name for `pkill -f`.
   entry; the sweep-log row (the ETA's prior) and whatever prices the
   first token put in the batch still land (the watermark is max(ts), so
   a partial token re-reads tomorrow). The 10-21 run itself ran the OLD
-  code: its closed-segment markets that 500'd after 09:17Z ARE archived
-  resolved and need a targeted re-fetch (journal `HTTPError at <cond16>`
-  lines -> `markets.result <> ''` with no `poly_prices` row that day).
+  code, and its done line (11:51Z) carried `errors 393` (`HTTPError`
+  377, `ReadTimeout` 15, `ConnectionError` 1), 330 of them after the
+  09:17Z boundary; 322 of those markets were archived with `result`
+  set (306 first seen that day, 24 with any trades). Repaired the same
+  day with `collector.poly_unmark_errors` (dry run by default; `--since
+  "2026-10-21 09:17" --until "2026-10-21 12:00" --commit`): it parses
+  the sweep's `[poly] <Class> at <cond16>:` lines in a UTC window,
+  resolves the prefixes exactly as `poly_tail_backfill` does (zero or
+  many matches dropped, never guessed; 330/330 unique), and clears
+  `result` through one `writer_burst` (`Store.poly_unset_results`; held
+  0.2s over two attaches, 0 contended) -- so the 10-22 04:15Z run, the
+  first on the fixed code, sees them as unresolved and fetches prices
+  from the watermark and the tail from offset 0, and its Gamma row sets
+  `result` again. The stats rows stay (no tail stop exists for them to
+  absorb, and deleting them would move the universe tripwire). The
+  before-values are in `data/poly_unmark_2026-10-21.tsv` (gitignored).
+  Not a direct re-fetch: nothing trades on a closed market, their
+  `endDate` keeps them in the 7-day closed enumeration window, and the
+  API was still returning 500s at the done line. The 63 pre-boundary
+  errors were open-segment markets, re-fetched tomorrow by construction.
 - **The poly sweep's `~N min left` prints two named estimates**
   (2026-10-17, `collector.poly_sweep.eta_minutes`; first production line
   at the 10-18 04:15Z run): `~404 min left (mean rate; ~330 at the last

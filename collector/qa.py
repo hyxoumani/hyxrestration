@@ -446,10 +446,19 @@ FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
 #:                     two fetches for a market a PRIOR run archived as
 #:                     resolved (`Store.poly_resolved_complete`; 12,458 of
 #:                     18,496 markets, 74% of the run's ~93k requests, 0
-#:                     new rows) -- the budget is NOT re-measured on that
-#:                     change until its done lines exist; a FAIL on the
-#:                     10-18 run's line is the reading, not a reason to
-#:                     bump.
+#:                     new rows) -- the budget was NOT re-measured on that
+#:                     change until its done lines existed. 2026-10-21:
+#:                     three skip-era done lines -- 10-19 463.1 min, 10-20
+#:                     419.9, 10-21 452.2 (unit walls 7.72 / 7.00 / 7.61h;
+#:                     the 10-21 line carries 393 fetch errors from a CLOB
+#:                     500 incident, each a wasted request plus a 2s
+#:                     sleep) -- so 8.0h, the max rounded up to the half
+#:                     hour. The 10-18 17.57h line keeps FAILING until it
+#:                     ages out on 10-25; that is the same reading it gave
+#:                     against 17.5h, not a regression of this constant.
+#:                     The open segment (6,168 markets, ~228 min) is the
+#:                     part that grows with Polymarket's listings; a
+#:                     healthy breach reads as the sweep's does.
 #:
 #: The FADE arm is a different set. Only Kalshi-facing units spend the
 #: quota the fade window protects (EXP-958), so overlap is judged for
@@ -464,11 +473,9 @@ FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
 BATCH_RUN_BUDGET_H = {
     "hyxlab-sweep.timer": 12.5,
     "hyxlab-tradepass.timer": 4.0,
-    "hyxlab-poly-sweep.timer": 17.5,
+    "hyxlab-poly-sweep.timer": 8.0,
 }
-KALSHI_BATCH_UNITS: frozenset[str] = frozenset(
-    {"hyxlab-sweep.timer", "hyxlab-tradepass.timer"}
-)
+KALSHI_BATCH_UNITS: frozenset[str] = frozenset({"hyxlab-sweep.timer", "hyxlab-tradepass.timer"})
 #: Journald on this box holds ~16M / ~2 days, so this is a ceiling on the
 #: lookback, not a promise of one. Unreachable days read UNMEASURED.
 BATCH_RUN_LOOKBACK_DAYS = 7

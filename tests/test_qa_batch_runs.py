@@ -129,12 +129,14 @@ def _poly(end, wall_h):
 
 def test_a_poly_sweep_past_its_wall_budget_fails_as_a_stale_budget(capsys):
     """Added 2026-10-17: the 15.5-17.4h band lived in ops.md prose and no
-    check read a done line against it. 18.0h against 17.5h must FAIL and
-    say so with the budget, exactly as the Kalshi sweep's breach does."""
-    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 4, 22, 15, tzinfo=UTC), 18.0)]}
+    check read a done line against it. A run past the budget (8.0h since
+    2026-10-21, from 17.5h: three skip-era done lines at 7.00-7.72h) must
+    FAIL and say so with the budget, exactly as the Kalshi sweep's breach
+    does."""
+    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 4, 22, 15, tzinfo=UTC), 9.0)]}
     failed, _ = _run(runs)
     assert failed == {"batch units within measured run budget"}
-    assert "hyxlab-poly-sweep.timer ran 18.00h (budget 17.5h)" in capsys.readouterr().out
+    assert "hyxlab-poly-sweep.timer ran 9.00h (budget 8h)" in capsys.readouterr().out
 
 
 def test_a_poly_sweep_inside_the_fade_window_spent_no_kalshi_quota():
@@ -148,9 +150,9 @@ def test_a_poly_sweep_inside_the_fade_window_spent_no_kalshi_quota():
     assert failed == {"batch units within measured run budget"}
     reported = qa._load_state(qa.STATE).get("batch-run-budget", {}).get("reported", [])
     assert "hyxlab-poly-sweep.timer@2026-08-05T01:00" not in reported, reported
-    # Inside budget and inside the window (08:00Z -> 02:00Z, a DIFFERENT end
+    # Inside budget and inside the window (18:30Z -> 02:00Z, a DIFFERENT end
     # so the record cannot excuse it as already reported): nothing at all.
-    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 5, 2, 0, tzinfo=UTC), 18.0 - 1)]}
+    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 5, 2, 0, tzinfo=UTC), 8.0 - 0.5)]}
     failed, _ = _run(runs)
     assert not failed
 

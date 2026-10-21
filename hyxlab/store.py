@@ -1615,6 +1615,26 @@ class Store:
         ).fetchall()
         return {r[0] for r in rows}
 
+    def poly_unset_results(self, market_ids: list[str]) -> int:
+        """Clear `result` on these polymarket markets, so the next sweep
+        treats them as not yet resolved and fetches them -- the one-shot
+        repair for rows a pre-86a4414 sweep archived resolved on a fetch
+        that raised (`collector.poly_unmark_errors`, mistakes #131). Returns
+        the number of rows that carried a result."""
+        if not market_ids:
+            return 0
+        self.conn.execute("CREATE OR REPLACE TEMP TABLE _unset(m VARCHAR)")
+        self.conn.executemany("INSERT INTO _unset VALUES (?)", [(m,) for m in market_ids])
+        n = self.conn.execute(
+            """SELECT count(*) FROM markets m JOIN _unset u ON u.m = m.market_id
+               WHERE m.venue = 'polymarket' AND m.result <> ''"""
+        ).fetchone()[0]
+        self.conn.execute(
+            """UPDATE markets SET result = '' WHERE venue = 'polymarket'
+               AND result <> '' AND market_id IN (SELECT m FROM _unset)"""
+        )
+        return int(n)
+
     def poly_price_watermarks(self) -> dict[str, datetime]:
         """token_id -> latest captured price ts (for incremental backfill)."""
         rows = self.conn.execute(

@@ -3458,7 +3458,10 @@ Format: what happened → root cause → error type → prevention tier
     `stats` back to the market's entry (sweep-log and partial prices stay;
     +1 test, red-verified). Residual: the 10-21 run ran the old code, so
     its closed-segment markets that 500'd after 09:17Z are archived
-    resolved and owe a targeted re-fetch (next-run item). Rule: a
+    resolved and owe a targeted re-fetch -- repaired 14:21Z the same day:
+    `collector.poly_unmark_errors` cleared `result` on the 322 of them
+    (330 closed-segment errors on the done line; 306 first seen that
+    day), so the 10-22 run on the fixed code fetches them. Rule: a
     predicate that reads "X happened" from a persisted row must be
     written by the code path AFTER X, and the except branch is a code
     path -- list what each row CLAIMS before deciding which survive an
