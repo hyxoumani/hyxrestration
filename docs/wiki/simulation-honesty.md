@@ -174,11 +174,29 @@ about the window either way, which is itself worth knowing).
 
   * `hyxlab-divergence.timer` (daily 01:20Z) runs
     `simulator.divergence --if-new`, which exits 0 in under a second when
-    the selected run is already reported. The subject is
-    `latest_complete_run`, which advances only when the shadow daemon
-    restarts, so the expensive path runs about as often as the daemon
-    does. Cost of the expensive path, MEASURED on the 08-29 run: 30min
-    06s wall, 30min 20s CPU, 4G peak.
+    the selected run is already reported BY THIS CODE. The subject is
+    (`latest_complete_run`, `report_code.sha`) -- mistakes #76 -- so the
+    expensive path runs when the shadow daemon restarts OR any of the
+    ~30 files in `simulator.divergence`'s import closure moves, and the
+    second is the common trigger: 10-17, 10-19 and 10-20 01:20Z all
+    re-derived run 20261005T091924 (a strategy registration promoted,
+    then `hyxlab/store.py` twice for collector-only poly-sweep features).
+    Cost of the expensive path, MEASURED on that run (52,887 fills,
+    8.7 days): 20min 07-38s wall, ~22 min CPU, 8G peak == the unit's
+    cap (reclaim, `max` 1302, PSI 0.11s), and `hyxstream.duckdb` held
+    8.1-8.4s (one single-sample streamd stall episode at most). The
+    08-29 run measured 30min 06s / 4G. All three re-derives reproduced
+    the prior body byte for byte over its 41 subject fields -- the
+    report is deterministic under code change -- and since 2026-10-21
+    the report says so itself: `rederive` carries `prior_sha`,
+    `identical` (None on a first derivation, never True) and the
+    `changed` / `added` / `removed` field names, excluding the
+    per-derivation stamp fields (`generated_at`, `report_code`,
+    `attach_wait`, `rederive`); the journal line is
+    `[divergence] re-derive vs prior sha ...: identical over N field(s)`.
+    The closure is deliberately NOT narrowed to "files that could change
+    the numbers" -- that judgment is the hand-bumped version constant
+    #76 replaced; one honest re-derive per change is the price.
   * `qa_divergence` (in the daily 10:00Z run, 8h40m after the timer)
     asserts three things: the newest FINISHED run has been measured
     within `DIVERGENCE_GAP_BUDGET_H` = 36h of becoming measurable, the

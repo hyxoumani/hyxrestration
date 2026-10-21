@@ -160,8 +160,11 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
 - `simulator/divergence.py` — shadow-vs-replay report (exact
   convergence proven post-fixes; qty-weighted v2 matching). Scheduled
   daily by `hyxlab-divergence.timer` as `--if-new`, which no-ops unless
-  the shadow daemon has restarted; `collector.qa`'s `divergence` section
-  is the reader that makes the result an alarm rather than a file.
+  the shadow daemon has restarted or the report's import closure has
+  moved (then it re-derives, ~20 min / 8G, and the report's `rederive`
+  field says what the new code reproduced of the old body);
+  `collector.qa`'s `divergence` section is the reader that makes the
+  result an alarm rather than a file.
 - `hyxlab/shadowruns.py` — which shadow run a report should measure
   (`latest_complete_run`) and when it became measurable
   (`run_completed_at`). In the kernel because the report and its QA

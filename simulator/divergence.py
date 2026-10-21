@@ -576,6 +576,88 @@ def reported_code_sha(path: Path) -> str | None:
     return stamp.get("sha") if isinstance(stamp, dict) else None
 
 
+#: Fields that describe a DERIVATION of this report, not its subject. Every
+#: one of them moves on every run (`rederive` names the prior's sha), so a
+#: field-by-field comparison of two derivations has to leave them out or it
+#: can never answer "identical".
+RUN_STAMP_FIELDS: frozenset[str] = frozenset(
+    {"generated_at", "report_code", "attach_wait", "rederive"}
+)
+
+
+def load_report(path: Path) -> dict | None:
+    """The on-disk report as a dict, or None (missing, unreadable, not an object)."""
+    try:
+        body = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def rederive_delta(prior: dict | None, report: dict) -> dict:
+    """What this derivation reproduced of the prior report, field by field.
+
+    A re-derive costs ~20 min wall, an 8G peak at the unit's cap and ~8s of
+    exclusion on `hyxstream.duckdb` (journal, 10-17/10-19/10-20 01:20Z), and
+    it fires whenever ANY of the ~30 closure files moves -- `hyxlab/store.py`
+    twice in three nights for collector-only features. The product of that
+    spend is the answer "did the subject change under new code", and until
+    now it lived only in two journal blocks a reader had to diff by hand.
+    This puts the answer in the artifact: `identical` over the subject
+    fields, or the names of the fields that `changed` / were `added` /
+    `removed`. With no prior report the answer is UNKNOWN (`identical`
+    None), never True -- a first derivation reproduced nothing.
+    """
+    if prior is None:
+        return {
+            "prior_sha": None,
+            "identical": None,
+            "fields": 0,
+            "changed": [],
+            "added": [],
+            "removed": [],
+        }
+    # The prior went through json.dumps(default=str); normalise the new
+    # body the same way so a datetime compares to the string it was saved as.
+    fresh = json.loads(json.dumps(report, default=str))
+    new = {k: v for k, v in fresh.items() if k not in RUN_STAMP_FIELDS}
+    old = {k: v for k, v in prior.items() if k not in RUN_STAMP_FIELDS}
+    both = new.keys() & old.keys()
+    changed = sorted(k for k in both if new[k] != old[k])
+    added = sorted(new.keys() - old.keys())
+    removed = sorted(old.keys() - new.keys())
+    stamp = prior.get("report_code")
+    return {
+        "prior_sha": stamp.get("sha") if isinstance(stamp, dict) else None,
+        "identical": not (changed or added or removed),
+        "fields": len(both),
+        "changed": changed,
+        "added": added,
+        "removed": removed,
+    }
+
+
+def rederive_line(delta: dict) -> str:
+    """The ONE renderer of `rederive_delta` for the journal (mistakes #95)."""
+    sha = delta.get("prior_sha")
+    prior = f"prior sha {sha[:12]}.." if sha else "unstamped prior"
+    if delta.get("identical") is None:
+        return "[divergence] re-derive: no prior report -- nothing to compare against"
+    if delta["identical"]:
+        return f"[divergence] re-derive vs {prior}: identical over {delta['fields']} field(s)"
+    parts = []
+    if delta["changed"]:
+        parts.append(f"changed {len(delta['changed'])}: {', '.join(delta['changed'])}")
+    if delta["added"]:
+        parts.append(f"added {len(delta['added'])}: {', '.join(delta['added'])}")
+    if delta["removed"]:
+        parts.append(f"removed {len(delta['removed'])}: {', '.join(delta['removed'])}")
+    return (
+        f"[divergence] re-derive vs {prior}: DIFFERS over {delta['fields']} compared"
+        f" field(s) -- {'; '.join(parts)}"
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="shadow-vs-replay divergence report")
     ap.add_argument(
@@ -633,6 +715,10 @@ def main() -> None:
         # restart, and a nonzero exit there would train the operator to
         # ignore this unit's failures.
         existing = Path(args.out) / f"{run_id}.json"
+        # Read BEFORE the replay and the overwrite: this is the only copy of
+        # what the previous derivation said, and `rederive` below is its
+        # comparison against today's.
+        prior = load_report(existing) if existing.exists() else None
         if args.if_new and existing.exists():
             # THE SUBJECT IS (RUN, CODE), NOT THE RUN (mistakes #76). Keyed
             # on run_id alone this branch printed "nothing to do" on ten
@@ -710,12 +796,17 @@ def main() -> None:
             gaps=gaps,
         ),
     }
+    # What this derivation reproduced of the one it replaces (identical, or
+    # which fields moved) -- in the artifact, because the journal that held
+    # both blocks rotates in ~2 days and nobody diffs two 41-line blocks.
+    report["rederive"] = rederive_delta(prior, report)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{run_id}.json"
     out.write_text(json.dumps(report, indent=2, default=str) + "\n")
     for k, v in report.items():
         print(f"  {k}: {v}")
+    print(rederive_line(report["rederive"]))
     print(f"[divergence] written to {out}")
 
 

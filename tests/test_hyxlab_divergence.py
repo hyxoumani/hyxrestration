@@ -932,6 +932,91 @@ def test_without_if_new_the_report_is_recomputed(tmp_path, monkeypatch):
     assert json.loads((out / "done.json").read_text())["run_id"] == "done"
 
 
+def test_a_re_derive_records_what_it_reproduced_of_the_prior_report(tmp_path, monkeypatch):
+    """Three re-derives of run 20261005T091924 (10-17, 10-19, 10-20 01:20Z)
+    each cost ~20 min at the 8G cap and ~8s of exclusion on the stream
+    archive, and all three reproduced the prior body byte for byte -- a fact
+    that lived only in journal blocks a reader had to diff by hand. The
+    report now carries it: the prior's sha, and identical / changed /
+    added / removed over the subject fields."""
+    db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
+    out = tmp_path / "reports"
+    out.mkdir()
+    (out / "done.json").write_text(_stamped("0" * 64))
+    _main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])
+    delta = json.loads((out / "done.json").read_text())["rederive"]
+    assert delta["prior_sha"] == "0" * 64
+    assert delta["identical"] is False  # the stamped stub had run_id alone
+    assert delta["changed"] == [] and "matched" in delta["added"] and delta["removed"] == []
+
+
+def test_rederive_delta_is_identical_when_only_the_run_stamp_moved():
+    """`generated_at`, `report_code`, `attach_wait` and `rederive` itself move
+    on EVERY derivation; a comparison that counted them could never say
+    identical, and the 20-minute spend would have no legible product."""
+    prior = {
+        "run_id": "r",
+        "matched": 52887,
+        "generated_at": "2026-10-19 01:40:25",
+        "report_code": {"sha": "a" * 64},
+        "attach_wait": {"n": 4},
+        "rederive": {"prior_sha": "b" * 64, "identical": False},
+    }
+    fresh = {
+        "run_id": "r",
+        "matched": 52887,
+        "generated_at": datetime(2026, 10, 20, 1, 40, 25),
+        "report_code": {"sha": "c" * 64},
+        "attach_wait": {"n": 3},
+    }
+    delta = mod.rederive_delta(prior, fresh)
+    assert delta["identical"] is True and delta["fields"] == 2
+    assert delta["prior_sha"] == "a" * 64
+
+
+def test_rederive_delta_names_changed_added_and_removed_fields():
+    prior = {"run_id": "r", "matched": 1, "gone": 0, "report_code": {"sha": "a" * 64}}
+    fresh = {"run_id": "r", "matched": 2, "new": 0}
+    delta = mod.rederive_delta(prior, fresh)
+    assert delta["identical"] is False
+    assert (delta["changed"], delta["added"], delta["removed"]) == (["matched"], ["new"], ["gone"])
+
+
+def test_rederive_delta_with_no_prior_is_unknown_not_identical():
+    """A first derivation reproduced nothing (mistakes #74: an unknown is
+    never reported as the cheap answer)."""
+    delta = mod.rederive_delta(None, {"run_id": "r", "matched": 1})
+    assert delta["identical"] is None and delta["prior_sha"] is None
+
+
+def test_rederive_line_changes_when_any_field_of_the_delta_changes():
+    """Perturbation (mistakes #95): a renderer is complete only if bumping
+    each field of a real block changes the line it prints."""
+    base = {
+        "prior_sha": "a" * 64,
+        "identical": False,
+        "fields": 41,
+        "changed": ["matched"],
+        "added": ["x"],
+        "removed": ["y"],
+    }
+    line = mod.rederive_line(base)
+    bumps = {
+        "prior_sha": "b" * 64,
+        "identical": True,
+        "fields": 40,
+        "changed": ["replay_fills"],
+        "added": ["z"],
+        "removed": [],
+    }
+    for key, value in bumps.items():
+        assert mod.rederive_line({**base, key: value}) != line, key
+    assert "identical" in mod.rederive_line(
+        {**base, "identical": True, "changed": [], "added": [], "removed": []}
+    )
+    assert "no prior" in mod.rederive_line(mod.rederive_delta(None, {}))
+
+
 def test_unpaired_dt_census_reports_a_counterpart_beyond_the_nearest_window():
     """The window's own evidence must be able to fail. `nearest_dt_abs_mean_s`
     is averaged over pairs the window already admitted, so its maximum IS the
