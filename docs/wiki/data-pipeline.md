@@ -963,6 +963,21 @@ self-match trap the ops rules name for `pkill -f`.
   run that covers a Sunday. The small class is not a flat block either:
   1.79/2.16/2.55 s/series on 2,125/3,217/4,594 markets (10-18/19/20) =
   ~1.2 s/series + ~1.1 s/mkt, within 4 min on all three.
+  **Candles are a close-WEEKDAY term, not a drift (measured 10-21 from
+  `sweep_log`, 16 runs 10-06..10-21):** a market's candle count is the
+  span from its open to its close, and the index ladders close daily at
+  20:00Z, so the Monday-close markets (swept by the TUESDAY run) carry
+  the weekend: KXNASDAQ100U 110,662 / 116,724 on the 10-20 / 10-13
+  Tuesday runs vs 42,690-45,906 on every Wed-Sat run (same 2,800
+  markets); KXINXU 26,194-26,411 vs 8,019-8,397 (420); KXGOLDD 2,510-
+  2,824 vs 1,209-1,373 (40). The two index ladders alone are ~137-143k
+  on a Tuesday, ~39-54k Wed-Sat, 0 Sun/Mon. So the 10-21 done line's
+  195,594 vs 10-20's 311,207 (-115,613, 86k of it those two series,
+  the rest series that settled nothing into a Wednesday: the weekly
+  gas/diesel series, the one-day KX*SHARE/VREQ AI family) is the
+  calendar, and `tapes_skipped` FELL 58,851 -> 56,326, so the 10-19
+  resolved-tape skip pruned nothing. Compare a run's candles to the
+  SAME WEEKDAY of the prior week, never to the prior day.
 - **The poly sweep skips the two fetches for a market a PRIOR run
   archived as resolved** (2026-10-19, `Store.poly_resolved_complete` /
   `collector.poly_sweep._fetch_market`; first production run 10-19
