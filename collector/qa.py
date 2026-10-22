@@ -13,6 +13,7 @@ failure mode that has either happened or provably can.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -3553,6 +3554,10 @@ _STARTING_RE = re.compile(r"\ssystemd\[\d+\]: Starting ")
 #: what separates universe growth (open), backlog or repair (closed_fetched)
 #: and archive contention (flush), and it has to ride the breach line
 #: itself, or every reader re-derives it from the journal by hand.
+#: The Kalshi sweep prints the same line as a Python dict repr (single
+#: quotes, tuples in `slowest`), decomposed by `by_class` with `wall_s`
+#: rather than `segments` with `wall_min`; both shapes are read, so the
+#: 12.5h budget's breach line carries ladder / dense / small the same way.
 _DONE_RE = re.compile(r"\]: \[\w+\] done: (\{.*\})\s*$")
 
 
@@ -3609,7 +3614,25 @@ def _segments_clause(done: dict) -> str:
     flush = done.get("flush_min")
     if isinstance(flush, int | float):
         parts.append(f"flush {flush:.1f} min")
+    for name, cls in (done.get("by_class") or {}).items():
+        if not isinstance(cls, dict):
+            continue
+        n, mk, wall = cls.get("n"), cls.get("markets"), cls.get("wall_s")
+        if all(isinstance(v, int | float) for v in (n, mk, wall)):
+            parts.append(f"{name} {int(n):,} series/{int(mk):,} mkts {wall / 60:.1f} min")
     return f" [{'; '.join(parts)}]" if parts else ""
+
+
+def _parse_done(text: str) -> dict | None:
+    """The done line's mapping, whichever of the two sweeps printed it."""
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        try:
+            obj = ast.literal_eval(text)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _fade_overlap_h(start: datetime, end: datetime) -> float:
@@ -3686,10 +3709,8 @@ def read_batch_runs(
                 failed_at = failed_at or line.split(maxsplit=1)[0]
             d = _DONE_RE.search(line)
             if d:
-                try:
-                    segments = _segments_clause(json.loads(d.group(1)))
-                except (ValueError, AttributeError):
-                    segments = ""
+                done = _parse_done(d.group(1))
+                segments = _segments_clause(done) if done else ""
                 continue
             m = _CONSUMED_RE.match(line)
             if not m or m.group(2) != service:

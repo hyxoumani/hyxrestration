@@ -1075,7 +1075,9 @@ self-match trap the ops rules name for `pkill -f`.
   112.2). 486 - 27 = 459, inside the 420-463 band: **the 8.0h constant
   stands**, the 10-22 line FAILs until it ages out on 10-29, and from
   10-23 the QA breach line carries the segments so the reading is on
-  the line (`BatchRun.segments`, mistakes #132). The 10-23 line is the
+  the line (`BatchRun.segments`, mistakes #132). The Kalshi sweep's
+  `by_class` dict-repr done line is read the same way (ladder / dense /
+  small, `wall_s` rendered as min). The 10-23 line is the
   first clean read on the fixed code: expect closed_fetched ~1,200-1,350
   and elapsed ~455-470 -- note the band's ceiling (463) is now within
   ~5 days of the universe trend's reach of 480 even with nothing

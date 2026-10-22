@@ -713,3 +713,38 @@ def test_an_unparseable_done_line_reads_as_no_segments(monkeypatch):
     monkeypatch.setattr(qa, "_journal", _poly_journal(bad))
     (run,) = qa.read_batch_runs(now=QA_10_23)["hyxlab-poly-sweep.timer"]
     assert run.ok and run.segments == ""
+
+
+# The Kalshi sweep's done line is a dict REPR (single quotes, tuples), not
+# JSON, decomposed by `by_class` with `wall_s`. Verbatim from 10-20 20:31Z.
+KALSHI_10_20_LINES = (
+    "2026-10-20T20:31:25+00:00 hyz python[1500000]: [sweep] done: {'series': 4031, "
+    "'markets': 68689, 'candles': 195594, 'errors': 0, 'lock_skips': 0, 'truncated': 2, "
+    "'aborted': False, 'tapes_skipped': 56326, 'elapsed_min': 696.8, 'slowest': "
+    "[('KXETHD', 3061.7, 6940), ('KXETH', 3001.4, 6940), ('KXBTC15M', 2862.6, 96)], "
+    "'by_class': {'ladder': {'n': 33, 'wall_s': 29728.4, 'markets': 64175}, 'dense': "
+    "{'n': 1, 'wall_s': 2862.6, 'markets': 96, 'tickers': ['KXBTC15M']}, 'small': "
+    "{'n': 3997, 'wall_s': 9218.7, 'markets': 4418}}}\n"
+    "2026-10-20T20:31:26+00:00 hyz systemd[758]: hyxlab-sweep.service: Consumed 1h 50min "
+    "CPU time over 12h 50min 12.000s wall clock time, 6G memory peak.\n"
+)
+
+
+def test_the_kalshi_sweeps_dict_repr_done_line_is_read_too(monkeypatch, capsys):
+    monkeypatch.setattr(qa, "_journal", _sweep_journal(KALSHI_10_20_LINES))
+    now = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    (run,) = qa.read_batch_runs(now=now)["hyxlab-sweep.timer"]
+    assert run.segments == (
+        " [ladder 33 series/64,175 mkts 495.5 min; dense 1 series/96 mkts 47.7 min; "
+        "small 3,997 series/4,418 mkts 153.6 min]"
+    )
+    failed, _ = _run(None, now=now)
+    assert failed == {"batch units within measured run budget"}
+    assert "10-20 07:41Z -> 10-20 20:31Z" + run.segments in capsys.readouterr().out
+
+
+def test_a_done_line_that_is_neither_json_nor_a_literal_reads_as_no_segments(monkeypatch):
+    bad = KALSHI_10_20_LINES.replace("'aborted': False", "'aborted': os.system('x')")
+    monkeypatch.setattr(qa, "_journal", _sweep_journal(bad))
+    (run,) = qa.read_batch_runs(now=datetime(2026, 10, 21, 10, 0, tzinfo=UTC))["hyxlab-sweep.timer"]
+    assert run.segments == ""

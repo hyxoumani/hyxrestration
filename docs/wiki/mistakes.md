@@ -3501,6 +3501,13 @@ Format: what happened → root cause → error type → prevention tier
     the repair a breach calls for depends on which term moved -- universe
     (open), backlog or repair (closed_fetched), archive contention
     (flush) -- and the reader of a FAIL months later has only the line.
+    Fix-the-class, same pass (reports.md): the Kalshi sweep prints its
+    done line as a dict REPR (`by_class` ladder/dense/small with `wall_s`),
+    which the JSON parser silently read as nothing; both forms are read
+    now (`_parse_done`, `ast.literal_eval` fallback, +2 tests), so the
+    12.5h budget's breach renders `[ladder 33 series/64,175 mkts 495.5
+    min; dense 1 series/96 mkts 47.7 min; small 3,997 series/4,418 mkts
+    153.6 min]` on 10-20's verbatim line.
 
 ## Pattern analysis (Step 5)
 
