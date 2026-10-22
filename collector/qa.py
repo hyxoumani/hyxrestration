@@ -269,6 +269,16 @@ _SIGNALS_FETCH_SECTION = "signals-fetch"
 # contents of a list nobody could see change. One definition, so a rename cannot
 # desync the producer from its reader.
 COLLECT_SKIP_SECTION = "collect-skips"
+#: Section name for `qa_collect_source_errors` (mistakes #133).
+COLLECT_SOURCE_ERR_SECTION = "collect-source-errors"
+#: How many of a day's ~288 cycles ONE source (a Kalshi series, an NWS
+#: station, the Polymarket book pull) may fail before QA fails. Measured
+#: 2026-10-14..10-22 on the live journal: the benign band is ONE line per
+#: source per day (a ReadTimeout, a ConnectionError); the two episodes it
+#: exists to catch were 9 per series (the 10-22 Thursday-closure 503 storm,
+#: 07:12-08:00Z) and 21 (NWS AUS null temperature, 18:45-20:35Z). 5 sits 5x
+#: above benign and under both.
+COLLECT_SOURCE_ERR_MAX_24H = 5
 STANDING_SKIPS: frozenset[str] = frozenset({COLLECT_SKIP_SECTION})
 
 # The RECOVERY half of the same hole. A skipped cycle stopped being an
@@ -2890,6 +2900,77 @@ def qa_collect_skips(
         _record_ok(COLLECT_SKIP_SECTION, now)
 
 
+#: `collect.py`'s three per-source except branches print exactly these:
+#: `[collect] kalshi {series}: {Exc}: ...`, `[collect] nws {station}: ...`,
+#: `[collect] polymarket books: ...`. The source is the key; the exception
+#: class is kept so the FAIL line says WHAT failed, not only how often.
+_COLLECT_SOURCE_ERR_RE = re.compile(
+    r"\[collect\] (kalshi \S+|nws \S+|polymarket books): ([A-Za-z_]\w*):"
+)
+
+
+def read_collect_source_errors(
+    since: datetime, until: datetime
+) -> dict[str, dict[str, int]] | None:
+    """{source: {exception class: cycles}} from the collector's journal over
+    [since, until), or None when the journal could not be read."""
+    text = _journal(COLLECT_UNIT, since, until)
+    if text is None:
+        return None
+    out: dict[str, dict[str, int]] = {}
+    for ln in _journal_records(text):
+        m = _COLLECT_SOURCE_ERR_RE.search(ln)
+        if m:
+            per = out.setdefault(m.group(1), {})
+            per[m.group(2)] = per.get(m.group(2), 0) + 1
+    return out
+
+
+def qa_collect_source_errors(
+    hours: float = 24.0,
+    now: datetime | None = None,
+    errors: dict[str, dict[str, int]] | None = None,
+) -> None:
+    """One source of the collect cycle failing on every tick is invisible to
+    every archive check (mistakes #133, 2026-10-22): the cycle fetches each
+    Kalshi series, each NWS station and the Polymarket books under its OWN
+    except, exits 0, and the tables stay fresh off the sources that worked.
+    NWS AUS pulled nothing for 21 consecutive ticks and the only witness was
+    `'errors': 1` on the cycle line, read by hand. The per-station NWS check
+    in `_archive_checks` closes that one table; this closes the CLASS, for
+    every source the except branches name, from the lines they print.
+
+    Journal-only, so it is never gated by the archive lock; an unreadable
+    journal is a SKIP, never a pass (`read_batch_runs`' rule).
+    """
+    now = now or datetime.now(UTC)
+    name = f"collect sources each failing <= {COLLECT_SOURCE_ERR_MAX_24H} cycles in {hours:g}h"
+    if errors is None:
+        errors = read_collect_source_errors(now - timedelta(hours=hours), now)
+    if errors is None:
+        _skipped.append(COLLECT_SOURCE_ERR_SECTION)
+        print(f"SKIP  {name} — {COLLECT_UNIT} journal unreadable", flush=True)
+        return
+    totals = {src: sum(per.values()) for src, per in errors.items()}
+    over = sorted(
+        (src for src, n in totals.items() if n > COLLECT_SOURCE_ERR_MAX_24H),
+        key=lambda src: -totals[src],
+    )
+    if over:
+        detail = "FAILING " + ", ".join(
+            f"{src} {totals[src]} cycle(s) ({'/'.join(sorted(errors[src]))})" for src in over
+        )
+    else:
+        detail = (
+            f"{len(totals)} source(s) errored at all, worst {max(totals.values())} cycle(s)"
+            if totals
+            else "no source error line"
+        )
+    check(name, not over, detail)
+    if not over:
+        _record_ok(COLLECT_SOURCE_ERR_SECTION, now)
+
+
 def journal_stream_flush_fails(
     since: datetime,
     now: datetime,
@@ -4269,6 +4350,7 @@ def main() -> None:
         qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
         qa_collect_skips()  # sidecar journal; never gated by the archive lock
         qa_collect_spool()  # the recovery half of the same hole; also sidecar-only
+        qa_collect_source_errors()  # journal-only: one source failing every tick exits 0
         qa_stream_stalls()  # ledger + journal witness; a stall IS the archive unwritable
         qa_fade_window_capture()  # journal-only, for the same reason
         qa_batch_run_budget()  # journal-only, for the same reason

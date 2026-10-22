@@ -715,6 +715,15 @@ self-match trap the ops rules name for `pkill -f`.
   running period at times) and prints `[nws] {station}: {period} {date}
   temperature null, skipped` — the journal is the only witness that
   today's high was not pulled, since the archive records no absences.
+  **The class, all three per-source loops (Kalshi series / NWS stations /
+  Polymarket books):** `qa_collect_source_errors` (section
+  `collect-source-errors`, journal-only) reads the day's `[collect]
+  {source}: {Exc}:` lines and FAILs any source past
+  `COLLECT_SOURCE_ERR_MAX_24H` = 5 cycles, named with its exception
+  class. Benign band 1 line/source/day; the 10-22 503 storm printed 9 per
+  series and the AUS episode 21, so the 10-23 10:00Z QA FAILs this line
+  on both until they age out (AUS 20:35Z 10-23). A series with no open
+  market prints nothing and is not a failure here.
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide

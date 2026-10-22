@@ -3544,6 +3544,19 @@ Format: what happened → root cause → error type → prevention tier
     null into the loss of everything after it. And when a writer runs
     N independent sub-pulls under N excepts, the freshness check has N
     subjects: a table-wide `max()` is a check on the LUCKIEST sub-pull.
+    Fix-the-class, same run (21:30Z): the cycle has THREE such loops
+    (32 Kalshi series, 5 NWS stations, the Polymarket books), each
+    printing `[collect] {source}: {Exc}: ...` from its except and nothing
+    else, and the archive cannot tell a series with no open market from
+    one whose fetch fails -- so the class is closed from the lines
+    themselves: `qa.qa_collect_source_errors` (journal-only, section
+    `collect-source-errors`) groups a day's lines by source and
+    exception class and FAILs any source past `COLLECT_SOURCE_ERR_MAX_24H`
+    = 5 cycles, naming each (`FAILING nws AUS 21 cycle(s) (TypeError),
+    kalshi KXLOWTNYC 9 cycle(s) (HTTPError), ...` -- its first live read,
+    both of the day's episodes and nothing else; benign band measured at
+    ONE line per source per day over 10-14..10-22). Unreadable journal =
+    SKIP, `-- No entries --` = zero (#99). +5 tests on verbatim lines.
 
 ## Pattern analysis (Step 5)
 
