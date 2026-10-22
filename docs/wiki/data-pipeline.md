@@ -702,6 +702,19 @@ self-match trap the ops rules name for `pkill -f`.
   runs inside the collect cycle under a per-station try/except, so an NWS
   outage, a DNS failure or a station rename drops forecasts silently
   while snapshots keep flowing and every other archive check reads green.
+  **And the table-wide pair is a check on the luckiest station**: the
+  pull is five independent sub-pulls under five excepts, so one station
+  failing on every tick leaves `max(fetched_at)` fresh off the other
+  four (measured 2026-10-22: AUS pulled nothing for 19 ticks on a
+  null-temperature period, mistakes #133). Since 2026-10-22 QA also
+  runs `nws stations each fresh (< 20 min old)` — per-station
+  `max(fetched_at)` over the stations that pulled inside 24h, stale ones
+  named with their age; a station removed from the watchlist ages out of
+  the owed set after a day. The parser side: `nws.get_daily_highs` skips
+  a daytime period whose `temperature` is null (NWS serves one for the
+  running period at times) and prints `[nws] {station}: {period} {date}
+  temperature null, skipped` — the journal is the only witness that
+  today's high was not pulled, since the archive records no absences.
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide

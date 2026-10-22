@@ -56,6 +56,19 @@ def get_daily_highs(station: str, session: requests.Session | None = None) -> li
         if not period.get("isDaytime"):
             continue
         target = date.fromisoformat(period["startTime"][:10])
+        if period.get("temperature") is None:
+            # NWS publishes a daytime period with `temperature: null` --
+            # measured 2026-10-22 18:45-20:15Z on AUS, period 1 "This
+            # Afternoon" (the running period, after its hourly grid data
+            # thinned). `int(None)` here raised out of the whole pull, so
+            # the station's six OTHER days were lost on every 5-min tick
+            # (`forecasts` 35 -> 28) while QA's table-wide freshness stayed
+            # green. A null high is not a forecast (`high_f INTEGER NOT
+            # NULL`): skip the period, keep the rest, and say so -- the
+            # journal line is the only witness that today's high was not
+            # pulled, since nothing else in the archive records an absence.
+            print(f"[nws] {station}: {period.get('name', '?')} {target} temperature null, skipped")
+            continue
         out.append(
             Forecast(
                 station=station,

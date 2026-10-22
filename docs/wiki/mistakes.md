@@ -3509,6 +3509,42 @@ Format: what happened → root cause → error type → prevention tier
     min; dense 1 series/96 mkts 47.7 min; small 3,997 series/4,418 mkts
     153.6 min]` on 10-20's verbatim line.
 
+133. **2026-10-22 20:25Z -- a per-item parser that raises on one item's
+    one null field costs the whole pull, and the checks on the table read
+    the OTHER items as the pull being fine.** From 18:45Z NWS served AUS's
+    running daytime period ("This Afternoon", 13:00 CDT) with
+    `temperature: null`; `nws.get_daily_highs` did `int(period[
+    "temperature"])`, the TypeError escaped the loop, and the collector's
+    per-station except logged `[collect] nws AUS: TypeError ... NoneType`
+    and moved on -- 19 consecutive ticks, 1.5h+, `forecasts` 35 -> 28 per
+    tick, seven AUS days unpulled each time while six of them sat well-
+    formed in the same response (verified live at 20:16Z: period 1 None,
+    periods 3-13 86/87/83/81/78/80 F). Unrecoverable by design (NWS
+    publishes only the CURRENT forecast). The digest read it as exit 0,
+    and QA's two NWS checks (`nws forecasts fresh` / `continuous`,
+    2026-09-04) read `max(fetched_at)` over ALL stations, so the four
+    healthy stations kept them green: the 09-04 pair was written against
+    "an NWS outage, a DNS failure or a station rename" -- ALL stations
+    down -- and never asked whether ONE station could stop. Found only by
+    reading the collector's error counter in the journal (`'errors': 1`
+    on 19 of 99 ticks since 12:00Z). Class: per-item blast radius (one
+    item's defect handled at the pull's granularity) + the #100 shape
+    (a detector whose aggregate is satisfied by the survivors). Fix:
+    `get_daily_highs` skips a daytime period whose temperature is null,
+    keeps the rest, and prints `[nws] AUS: This Afternoon 2026-10-22
+    temperature null, skipped` (+3 tests on the verbatim shape, red-
+    verified); QA gains `nws stations each fresh (< 20 min old)` --
+    per-station `max(fetched_at)` over the stations that pulled inside
+    24h, every stale one named with its age (`STALE AUS 95 min`), the
+    owed set aging a removed station out after a day rather than failing
+    forever (+3 tests, the trip red-verified; the table-wide check's
+    blindness is pinned in the same test). Rule: when a loop's items are
+    independent and the store keeps them independently, handle a bad
+    item at the ITEM -- a raise out of the loop converts one provider
+    null into the loss of everything after it. And when a writer runs
+    N independent sub-pulls under N excepts, the freshness check has N
+    subjects: a table-wide `max()` is a check on the LUCKIEST sub-pull.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

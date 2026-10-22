@@ -1587,6 +1587,47 @@ def _check_freshness(conn, name: str, table: str, col: str, now: datetime, noun:
     )
 
 
+def _check_nws_stations(conn, now: datetime) -> None:
+    """Per-station freshness for the NWS pull: the two table-wide checks
+    above read `max(fetched_at)` over ALL stations, and the collector pulls
+    each station under its own try/except (`collect.py`, `[collect] nws
+    {station}: ...`), so ONE station failing on every tick leaves the table
+    fresh and continuous. Measured 2026-10-22 (mistakes #133): NWS served
+    AUS's running period with `temperature: null`, the parser raised on it,
+    and AUS pulled nothing for 19 consecutive ticks (`forecasts` 35 -> 28,
+    1.5h+) while both table-wide checks would have read green.
+
+    The owed set is the stations that pulled inside the last 24h -- QA does
+    not load the watchlist, and a station REMOVED from it is a deliberate
+    act that ages out of this check after a day rather than failing it
+    forever. The blind spot that leaves (mistakes #98's shape) is a station
+    silent for longer than 24h, which the table-wide checks are equally
+    blind to; a station added and never pulled is unowed here. Every stale
+    station is named with its age, so the line says which pull to read in
+    the journal.
+    """
+    rows = conn.execute(
+        "SELECT station, epoch(? - max(fetched_at)) FROM nws_forecasts"
+        " WHERE fetched_at > ? - INTERVAL 24 HOUR GROUP BY station ORDER BY station",
+        [now, now],
+    ).fetchall()
+    stale = [(st, age) for st, age in rows if age >= CYCLE_FRESH_S]
+    check(
+        "nws stations each fresh (< 20 min old)",
+        not stale and bool(rows),
+        (
+            f"{len(rows)} station(s) pulled in 24h, "
+            + (
+                "all fresh"
+                if not stale
+                else "STALE " + ", ".join(f"{st} {age / 60.0:.0f} min" for st, age in stale)
+            )
+        )
+        if rows
+        else "no station pulled in 24h",
+    )
+
+
 def _downtime_phrase(gap_s: float, cadence_s: float) -> str:
     """`downtime >= N min` for a gap of `gap_s`, or the reason there is no such
     number.
@@ -1821,6 +1862,7 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
             "nws pull",
             CYCLE_CADENCE_S,
         )
+        _check_nws_stations(conn, now)
 
     ok_sweeps = conn.execute(
         "SELECT count(*) FROM sweep_log WHERE status='ok' AND swept_at > ? - INTERVAL 36 HOUR",
