@@ -387,6 +387,29 @@ structure — see [venues](venues.md)).
    the same pass (`20261015T212439.json`, 8 markets / 4 underlyings,
    market tier `significant_under`, underlying tier `underpowered`) is
    archived and structurally uninformative, per the 07-14 note.
+   **Econ width-24 re-run 2026-10-22 (`20261022T021937.json`, transient
+   unit, held 101.2s; same arguments as 09-16/10-07/10-15): the fourth
+   consecutive econ null, on the same events.** 5,788 orders / 24
+   markets / 8 underlyings (KXCPI 2,685, KXPAYROLLS 946, KXU3 908,
+   KXCPIYOY 660, KXFED 589). All four readings `not_significant` and
+   powered (floor 4 over / 4 under, `underlying_sign_p` 0.637, `min`
+   0.0039; market tier 12/10, p 0.416; ceiling 4/4 and 12/11). Crossing
+   282 vs queue-pess 268 / opt 328; `crossing_but_not_pess` 182 vs
+   `pess_but_not_crossing` 168, `inside_bracket` 4. Floor
+   `net_disagreement` +14 on `abs_net_by_underlying` 110: the 10-15
+   pattern again, SEP events under (KXCPIYOY-26SEP -16, KXCPI-26SEP
+   -14, KXFED-26DEC -16) and OCT events over (KXCPI-26OCT +35 from +10,
+   KXFED-26OCT +9, KXPAYROLLS-26OCT +9, KXCPI-26NOV +9 new), with the
+   aggregate crossing -41 -> +14 only because the OCT share of the
+   window grew; one sign flip (KXU3-26OCT +2 -> -2). `independence`:
+   7 of 8 underlyings shared with 10-15 (6 kept sign), **0 of 8 new
+   against all priors** -- the same events re-measured with another
+   week of their own tape, not a replication. The clean rollover is a
+   window holding no SEP event, ~336h after the last SEP settlement:
+   read again ~10-29 or later. Victim side: one streamd episode, 120.2s
+   span / 6 fails / `hold_lower_s` 75 / 60,029 pending / 0 spilled,
+   holder named -- the per-run cost is now ~100s of stream exclusion
+   (62.7s on 10-15; the window is entirely post-flood book_events).
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer (SHIPPED 07-11; gate open).
    **Coverage probe (2026-10-14, read on the 10-13 backup; no edge was
