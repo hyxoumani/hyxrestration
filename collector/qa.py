@@ -3543,6 +3543,17 @@ _FAILED_RE = re.compile(r"Failed with result|Main process exited, code=\w+, stat
 #: name, so it is only meaningful inside a `-u <unit>` read -- which is the
 #: only read `read_batch_runs` makes.
 _STARTING_RE = re.compile(r"\ssystemd\[\d+\]: Starting ")
+#: The sweep's own done line, a JSON object after `done: `. Its `segments`
+#: say WHICH part of the wall grew, which the `Consumed` line cannot: the
+#: 2026-10-22 poly run breached 8.0h by 10 min and the breach lived entirely
+#: in `closed_fetched` (1,604 markets vs 1,056-1,225 on the three prior
+#: lines: 322 of them a one-day repair re-fetch, mistakes #131), with the
+#: open segment and the flush on their bands. Read bare, the breach line
+#: says "stale budget" for a day the budget was right; the decomposition is
+#: what separates universe growth (open), backlog or repair (closed_fetched)
+#: and archive contention (flush), and it has to ride the breach line
+#: itself, or every reader re-derives it from the journal by hand.
+_DONE_RE = re.compile(r"\]: \[\w+\] done: (\{.*\})\s*$")
 
 
 def parse_systemd_duration(text: str) -> float | None:
@@ -3568,10 +3579,37 @@ class BatchRun:
     end: datetime  # UTC instant the cgroup was released
     wall_h: float
     ok: bool = True  # exited 0; False for any of systemd's failure results
+    #: The run's own `done:` decomposition as a rendered clause, "" when the
+    #: unit prints none (the Kalshi sweep, the tradepass) or the line was
+    #: unreadable. Carried as text so the dataclass stays hashable/frozen and
+    #: an archived journal line renders the same way forever.
+    segments: str = ""
 
     @property
     def start(self) -> datetime:
         return self.end - timedelta(hours=self.wall_h)
+
+
+def _segments_clause(done: dict) -> str:
+    """`segments`/`flush_min` of a sweep's done line as one bracketed clause.
+
+    Each segment is `<name> <markets> mkts <wall> min`; the flush, which has
+    no market count, is `flush <wall> min`. Any segment whose fields are
+    missing or non-numeric is left out rather than guessed, and a done line
+    with nothing renderable yields "", so a breach line never carries an
+    empty pair of brackets.
+    """
+    parts = []
+    for name, seg in (done.get("segments") or {}).items():
+        if not isinstance(seg, dict):
+            continue
+        n, wall = seg.get("markets"), seg.get("wall_min")
+        if isinstance(n, int | float) and isinstance(wall, int | float):
+            parts.append(f"{name} {int(n):,} mkts {wall:.1f} min")
+    flush = done.get("flush_min")
+    if isinstance(flush, int | float):
+        parts.append(f"flush {flush:.1f} min")
+    return f" [{'; '.join(parts)}]" if parts else ""
 
 
 def _fade_overlap_h(start: datetime, end: datetime) -> float:
@@ -3629,6 +3667,11 @@ def read_batch_runs(
         runs = []
         # Timestamp of a failure line whose `Consumed` line has not arrived.
         failed_at: str | None = None
+        # The run's own done line, printed before systemd's `Consumed` and
+        # attached to it there. It is reset at every run boundary and at
+        # every `Consumed`, so a done line can only ever describe the run
+        # whose cgroup accounting follows it -- never ride on to the next.
+        segments = ""
 
         for line in text.splitlines():
             # Failure is announced BEFORE the cgroup accounting, so the flag is
@@ -3637,14 +3680,22 @@ def read_batch_runs(
             # the flag still set means that `Consumed` line never came.
             if line.startswith("-- Boot") or _STARTING_RE.search(line):
                 runs += _cgroupless_abort(timer, failed_at)
-                failed_at = None
+                failed_at, segments = None, ""
                 continue
             if _FAILED_RE.search(line) and f"{service}:" in line:
                 failed_at = failed_at or line.split(maxsplit=1)[0]
+            d = _DONE_RE.search(line)
+            if d:
+                try:
+                    segments = _segments_clause(json.loads(d.group(1)))
+                except (ValueError, AttributeError):
+                    segments = ""
+                continue
             m = _CONSUMED_RE.match(line)
             if not m or m.group(2) != service:
                 continue
             ok, failed_at = failed_at is None, None
+            run_segments, segments = segments, ""
             try:
                 end = datetime.fromisoformat(m.group(1)).astimezone(UTC)
             except ValueError:
@@ -3652,7 +3703,7 @@ def read_batch_runs(
             secs = parse_systemd_duration(m.group(3))
             if secs is None:
                 continue
-            runs.append(BatchRun(timer, end, secs / 3600.0, ok=ok))
+            runs.append(BatchRun(timer, end, secs / 3600.0, ok=ok, segments=run_segments))
         runs += _cgroupless_abort(timer, failed_at)
         out[timer] = runs
     return out
@@ -3846,7 +3897,7 @@ def qa_batch_run_budget(
         reasons = (
             [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
-                f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z" + clause(r)
+                f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z{r.segments}" + clause(r)
                 for r in sorted(stale_budget + fresh_catch_up, key=lambda r: r.end)
             ]
             + [
@@ -3878,7 +3929,7 @@ def qa_batch_run_budget(
             ]
             + [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h) "
-                f"ending {r.end:%m-%d %H:%M}Z" + clause(r)
+                f"ending {r.end:%m-%d %H:%M}Z{r.segments}" + clause(r)
                 for r in sorted((r for r in over if id(r) in catch_up), key=lambda r: r.end)
             ]
         )

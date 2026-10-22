@@ -1065,6 +1065,22 @@ self-match trap the ops rules name for `pkill -f`.
   10-20 419.9 / 10-21 452.2; unit walls 7.72 / 7.00 / 7.61h, the last
   carrying 393 fetch errors from the CLOB 500 incident): the budget is
   **8.0h**, the max rounded up to the half hour, the sweep's convention.
+  **10-22 (first run on the fixed code, with the 322 unmarked markets
+  back in the fetch path): 486.3 min / 8.17h unit wall = FAIL by 10
+  min, and the whole excess is in `closed_fetched`** -- 1,604 markets /
+  134.0 min vs 1,056 / 88.8 (10-20) and 1,225 / 112.2 (10-21), i.e.
+  ~5.0 s per closed market fetched, so the repair cost 322 x 5.0 s =
+  27 min; `open` 6,289 / 236.4 min (6,081 / 222.3, 6,168 / 227.8: +~7
+  min/day with the universe, ~2.26 s/market), `flush` 115.8 (108.7,
+  112.2). 486 - 27 = 459, inside the 420-463 band: **the 8.0h constant
+  stands**, the 10-22 line FAILs until it ages out on 10-29, and from
+  10-23 the QA breach line carries the segments so the reading is on
+  the line (`BatchRun.segments`, mistakes #132). The 10-23 line is the
+  first clean read on the fixed code: expect closed_fetched ~1,200-1,350
+  and elapsed ~455-470 -- note the band's ceiling (463) is now within
+  ~5 days of the universe trend's reach of 480 even with nothing
+  wrong, which is the drift the check exists to show, not a reason to
+  pre-raise it.
   **A market whose fetch RAISED keeps neither its Gamma row nor its
   stats row** (2026-10-21, `collector.poly_sweep.sweep` except branch;
   first production run 10-22 04:15Z). The skip's premise is "a prior

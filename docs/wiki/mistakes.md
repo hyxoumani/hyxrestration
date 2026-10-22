@@ -3467,6 +3467,41 @@ Format: what happened → root cause → error type → prevention tier
     path -- list what each row CLAIMS before deciding which survive an
     exception.
 
+132. **2026-10-22 14:35Z -- a budget check whose breach line is one SCALAR
+    calls every breach "stale budget", including the one it was told was
+    coming.** The 10-22 04:15Z poly run closed at 486.3 min / 8h10m unit
+    wall against `qa.BATCH_RUN_BUDGET_H` 8.0h (re-measured the day before
+    from three skip-era lines, 420-463 min). The prior pass pre-registered
+    the excess: the #131 repair put 322 closed markets back in the fetch
+    path for one day, "+~30 min on the band". The done line proves it --
+    `closed_fetched` 1,604 markets / 134.0 min (1,056 / 88.8 and 1,225 /
+    112.2 on the two lines before; 5.0 s/market, so 322 x 5.0 s = 27 min),
+    `open` 6,289 / 236.4 min on its +~7/day trend, `flush` 115.8 on its
+    109-116 band -- 486 - 27 = 459, INSIDE the band. But `qa_batch_run_
+    budget` reads only systemd's `Consumed ... over ...` line, so tomorrow's
+    10:00Z QA would print `hyxlab-poly-sweep.timer ran 8.17h (budget 8h)`
+    and nothing else: the two repairs that line names (re-measure the
+    constant, or make the unit faster) are both WRONG for this breach, and
+    the catch-up clause (`_catch_up_abort`) covers only a breach after an
+    ABORT. Class: unobservable-cause (the decomposition existed, 30 lines
+    above the `Consumed` line in the same journal, and the check that
+    verdicts on the wall did not read it). Fix: `read_batch_runs` carries
+    the `[poly] done:` JSON's `segments`/`flush_min` onto the run
+    (`BatchRun.segments`, reset at every run boundary and every `Consumed`
+    so a done line never rides on to the next run) and the breach line
+    renders it (`[open 6,289 mkts 236.4 min; closed_fetched 1,604 mkts
+    134.0 min; ...; flush 115.8 min]`, FAIL and WATCH forms; +7 tests on
+    the verbatim 10-22 quartet, the FAIL-line one red-verified by a
+    mutant). The constant stays 8.0h: it was measured on healthy lines and
+    the 10-22 line is a healthy run plus a named one-off, so it FAILs
+    until it ages out on 10-29 with its cause on the line -- raising the
+    budget to fit it would bake the repair in (the catch-up docstring's
+    rule, applied). Rule: a verdict on a scalar must carry the scalar's
+    decomposition on the SAME line when the unit publishes one, because
+    the repair a breach calls for depends on which term moved -- universe
+    (open), backlog or repair (closed_fetched), archive contention
+    (flush) -- and the reader of a FAIL months later has only the line.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
