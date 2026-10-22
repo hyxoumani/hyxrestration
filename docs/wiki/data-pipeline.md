@@ -275,7 +275,14 @@ why it must be EXCLUDED rather than read as illiquidity. The record-derived
 ET, so **after DST ends (2026-11-01) the closure sits at 08:00-10:00Z** and
 its reopen bleed (~5-6 min of reconnect gaps) lands in the first minutes of
 the NEXT 10:00Z QA slot, outside the excuse and against the 30-min budget.
-First Thursday to read: 2026-11-05. The streamd journal under
+First Thursday to read: 2026-11-05. **2026-10-22 (Thursday) added a second failure mode inside the
+closure:** REST `/markets` returned `HTTP 503` on every walk from 07:12:00Z
+to 08:00:15Z (0 x 503 in the same window on 10-08 and 10-15), which aborted
+the 06:10Z kalshi sweep at 07:14Z (designed exit 75, 714/4042 series,
+watermarks intact, 10-23 is the catch-up) and failed breadth 10x; the
+collector completed every tick with 4 errors / ~530 of 597 snaps. One
+observation; if it recurs on 10-29 the Thursday sweep needs a closure-aware
+pause rather than the abort. The streamd journal under
 `--since "7 days ago"` starts mid-storm on the matching weekday, so a
 per-day gap count over that range under-counts the oldest Thursday -- the
 10-15 pass nearly chased a 100-vs-8 "drift" that was this truncation.
