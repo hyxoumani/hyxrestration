@@ -199,3 +199,58 @@ def test_the_daemon_runs_on_the_watchlist_kalshi_series(monkeypatch):
     with contextlib.suppress(Stop):
         shadow_mod.main()
     assert seen["series"] == wl["kalshi_series"]
+
+
+# -- divergence replays the same universe ------------------------------------
+
+
+def _divergence_fills(tmp_path, *, extras: bool, series):
+    from simulator.divergence import replay_run
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    archive = Store(tmp_path / "archive.duckdb")
+    archive.upsert_markets([MarketInfo(venue="kalshi", market_id=m) for m in (U1, U2, X1, X2)])
+    archive.close()
+    st = StreamStore(tmp_path / "stream.duckdb")
+    st.append_events(_snap(U1, 1, 40, 59, T0))  # history: seeded, never traded
+    if extras:
+        st.append_events(_snap(X1, 1, 40, 59, T0, sid=1_000_001))
+    for k, (bid, ask_no, minutes) in enumerate([(44, 55, 11), (30, 60, 17), (45, 54, 22)]):
+        ts = T0 + timedelta(minutes=minutes)
+        st.append_events(_snap(U1, k + 2, bid, ask_no, ts))
+        st.append_events(_snap(U2, k + 2, bid, ask_no, ts + timedelta(seconds=1)))
+        if extras:  # tight books a probe WOULD trade, if it could see them
+            st.append_events(_snap(X1, k + 2, 44, 55, ts + timedelta(seconds=2), sid=1_000_001))
+            st.append_events(_snap(X2, k + 2, 44, 55, ts + timedelta(seconds=3), sid=1_000_001))
+    st.flush()
+    fills, gaps = replay_run(
+        "r1",
+        T0.replace(tzinfo=None),
+        (T0 + timedelta(hours=1)).replace(tzinfo=None),
+        latency=0.0,
+        strategy_names=["probe"],
+        stream_db=str(tmp_path / "stream.duckdb"),
+        archive_db=str(tmp_path / "archive.duckdb"),
+        return_gaps=True,
+        series=series,
+    )
+    return [(f.market_id, f.side, f.qty, f.price, f.ts) for f in fills], gaps
+
+
+def test_divergence_replay_ignores_planted_extra_series_rows(tmp_path):
+    universe = ["KXHIGHNY", "KXLOWTNYC"]
+    before = _divergence_fills(tmp_path / "a", extras=False, series=universe)
+    after = _divergence_fills(tmp_path / "b", extras=True, series=universe)
+    assert before[0]  # non-vacuous: the probe traded the universe
+    assert after == before
+    unscoped = _divergence_fills(tmp_path / "c", extras=True, series=None)
+    assert {f[0] for f in unscoped[0]} > {f[0] for f in before[0]}  # control
+
+
+def test_divergence_main_replays_the_shadow_universe():
+    import inspect
+
+    from simulator import divergence
+
+    src = inspect.getsource(divergence.main)
+    assert "series=shadow_universe()" in src

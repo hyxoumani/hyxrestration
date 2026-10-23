@@ -39,12 +39,13 @@ from hyxlab.shadowruns import latest_complete_run
 from hyxlab.store import attach_wait_block, held_attach, held_open, reset_attach_waits
 from simulator.bookreplay import (
     BOOK_GAPS,
+    SERIES_PREDICATE,
     export_events,
     replay_snapshots,
     stream_exported,
 )
 from simulator.registry import STRATEGIES
-from simulator.shadow import SHADOW_DB, STREAM_DB
+from simulator.shadow import SHADOW_DB, STREAM_DB, shadow_universe
 from simulator.sim import Simulator
 
 MATCH_TOLERANCE = timedelta(seconds=60)
@@ -68,8 +69,17 @@ def replay_run(
     stream_db: str = STREAM_DB,
     archive_db: str = "data/hyxlab.duckdb",
     return_gaps: bool = False,
+    series: list[str] | None = None,
 ) -> list:
     """Reproduce a shadow run offline; returns the replay's fills.
+
+    `series` scopes every book_events read (market ids, seed, window) to
+    markets of those Kalshi series, in SQL -- pass the shadow daemon's own
+    universe (`shadow_universe()`, as `main` does) so the replay trades the
+    markets the run could see and nothing else. Since the 2026-10-20
+    coverage expansion the archive also carries books-only series; an
+    unscoped replay would trade those, report every such fill as
+    divergence, and copy out ~20x today's scratch. None reads every series.
 
     With `return_gaps=True` returns `(fills, gaps)` so the caller can
     classify unmatched fills against the same coverage breaks the replay
@@ -102,12 +112,13 @@ def replay_run(
             # is (`lo_inclusive`): the reconnect image at a gap end is a real
             # market of this replay. `end`, not `anchor`, is the upper bound
             # — the traded window runs past the seed.
+            only = f" AND {SERIES_PREDICATE}" if series is not None else ""
             ids = [
                 r[0]
                 for r in conn.execute(
                     "SELECT DISTINCT market_id FROM book_events"
-                    " WHERE venue='kalshi' AND recv_ts >= ? AND recv_ts <= ?",
-                    [floor or datetime.min, end],
+                    f" WHERE venue='kalshi' AND recv_ts >= ? AND recv_ts <= ?{only}",
+                    [floor or datetime.min, end] + ([sorted(series)] if series is not None else []),
                 ).fetchall()
             ]
             # Gap rows are read BEFORE the release, not after: they are the
@@ -124,9 +135,14 @@ def replay_run(
             # gap ends AT the reconnect image that re-seeds books — excluding
             # it made this report replay a hole the daemon never had.
             seed_dir = export_events(
-                conn, floor or datetime.min, anchor, scratch / "seed", lo_inclusive=True
+                conn,
+                floor or datetime.min,
+                anchor,
+                scratch / "seed",
+                series=series,
+                lo_inclusive=True,
             )
-            window_dir = export_events(conn, anchor, end, scratch / "window")
+            window_dir = export_events(conn, anchor, end, scratch / "window", series=series)
         # --- the stream archive is released HERE, and streamd can flush ---
 
         # `open_retry`, not a bare `Store`: this attaches the LIVE
@@ -772,6 +788,7 @@ def main() -> None:
         stream_db=args.stream_db,
         archive_db=args.archive_db,
         return_gaps=True,
+        series=shadow_universe(),
     )
     report = {
         "run_id": run_id,
