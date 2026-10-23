@@ -186,7 +186,20 @@ BURST_OPEN_DELAY_S = 2.0
 # (at 3100: 164 vs 190 actual; at 1600: 379 vs 378). Rows this far back
 # cover the previous daily run and nothing older; the largest run in the
 # window is taken so a hand `--series` repair cannot stand in for the day.
-ETA_PRIOR_LOOKBACK_H = 30
+# Measured 2026-10-23 (mistakes #135): a 30h window after an ABORTED day
+# holds only the abort. The 10-22 run died at 07:14Z with 715 of 4,031
+# series swept and the 10-21 complete run ended 17:47Z, 36h before the
+# 10-23 start, so the prior was the 715-series stub: the listings line read
+# `+3328 new`, the tag `3328 unpriced`, and the median those were priced at
+# was the median of the alphabetically FIRST 715 series -- the cheap ones --
+# so the line said `~113 min left` at 100/4043 and `~80 min left` at 3100
+# with 3h+ really left, on a 16h+ catch-up run. The window is now three
+# days, and the pick is the LATEST run that is at least
+# `ETA_PRIOR_COMPLETE_FRAC` of the largest one in it (an abort, a hand
+# repair and a tradepass are all far smaller than a day; two complete days
+# differ by ~2%), falling back to the largest when no run qualifies.
+ETA_PRIOR_LOOKBACK_H = 78
+ETA_PRIOR_COMPLETE_FRAC = 0.8
 # A gap this long between consecutive `sweep_log` rows is a run boundary; a
 # single series never takes this long (the slowest, KXBTC15M, is ~50 min).
 ETA_RUN_GAP_S = 2 * 3600.0
@@ -195,10 +208,11 @@ PROGRESS_EVERY = 100
 
 
 def _prior_run(store, now: datetime | None = None) -> list[tuple[str, datetime]]:
-    """`(series, swept_at)` rows of the previous run: the largest run of
-    `sweep_log` rows in the lookback, split at `ETA_RUN_GAP_S`. Advisory:
-    any read failure returns [], and both readers below treat [] as "no
-    prior" rather than as a run that swept nothing."""
+    """`(series, swept_at)` rows of the previous COMPLETE run: the latest run
+    of `sweep_log` rows in the lookback (split at `ETA_RUN_GAP_S`) that is at
+    least `ETA_PRIOR_COMPLETE_FRAC` of the largest run there, else the
+    largest. Advisory: any read failure returns [], and the readers below
+    treat [] as "no prior" rather than as a run that swept nothing."""
     conn = getattr(store, "conn", None)
     if conn is None:  # a store-like stub with no archive behind it
         return []
@@ -222,7 +236,9 @@ def _prior_run(store, now: datetime | None = None) -> list[tuple[str, datetime]]
         runs.append(cur)
     if not runs:
         return []
-    return max(runs, key=len)
+    floor = ETA_PRIOR_COMPLETE_FRAC * max(len(r) for r in runs)
+    complete = [r for r in runs if len(r) >= floor]
+    return complete[-1] if complete else max(runs, key=len)
 
 
 def prior_series_wall(
@@ -261,6 +277,10 @@ def listings_delta(targets: list[str], prior_run: list[tuple[str, datetime]]) ->
     return {
         "targets": len(targets),
         "prior": len(prior),
+        # When the prior run's last series was swept: the reader's one
+        # chance to see that "last run" is yesterday's abort, or three days
+        # old, rather than the complete run before this one (mistakes #135).
+        "prior_end": max(at for _, at in prior_run),
         "new": sorted(want - prior),
         "dropped": sorted(prior - want),
     }
@@ -285,6 +305,7 @@ def listings_line(delta: dict | None) -> str:
 
     return (
         f"[sweep] listings: {delta['targets']} targets vs {delta['prior']} swept last run"
+        f" (ended {delta['prior_end']:%m-%d %H:%M}Z)"
         f" | +{len(delta['new'])} new{names(delta['new'])}"
         f" | -{len(delta['dropped'])} dropped{names(delta['dropped'])}"
     )

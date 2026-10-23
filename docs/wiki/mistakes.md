@@ -3737,6 +3737,45 @@ same promote does to the consumer's PRODUCER, and a daemon under a cap
 publishes its own anon RSS -- the kernel's one line at death is not a
 trend.** Classification: rule (ops.md). Suite 2186 -> 2193.
 
+135. **2026-10-23 06:10Z -- an instrument whose PRIOR is "the largest run
+in a window" reads the previous ABORT as the prior when the window is one
+day wide and yesterday died.** The kalshi sweep's ETA prices each
+remaining series at its wall in the previous run (`collector.sweep.
+_prior_run`: the largest run of `sweep_log` rows inside
+`ETA_PRIOR_LOOKBACK_H = 30`), and the listings line compares today's
+enumeration against that run's series set. The 10-22 run aborted at
+07:14Z with 715 of 4,031 series swept (Kalshi's Thursday closure, #123's
+designed exit 75), and the 10-21 complete run ended 17:47Z -- 36.4h before
+the 10-23 06:10Z start, outside the window. So the 10-23 prior was the
+715-series stub: the first line read `4043 targets vs 715 swept last run
+| +3328 new (KXBRAINLIVE, ... +3316)` -- 3,328 "new listings" that were
+all a day old -- and the ETA tag `3328 unpriced` priced them at the
+median wall of the alphabetically FIRST 715 series, the cheap ones, then
+scaled by a pace learned on the same cheap ones: `~113 min left` at
+100/4043, `~44` at 700, `~80 min left` at 3100 (19:19Z) with the
+dense crypto leg and ~3h really ahead, on a run that at 3100 had
+72,544 markets / 326,271 candles against 10-21's 47,698 / 150,201 at the
+same index -- the two-day catch-up the abort left, which QA's own
+`_catch_up_abort` names correctly tomorrow. The by-class tag (#130) was
+right all day (`ladders 24/67020 mkts 0.484 s/mkt`): the instrument that
+reads TODAY'S run survived, the one that reads the PRIOR did not. Why
+it was invisible: every prior run since the ETA landed (10-16) was
+complete, so "largest in 30h" and "the previous daily run" were the same
+set, and the one abort in the band (10-22) was the first since. Fix:
+the window is three days (`78h`) and the pick is the LATEST run that is
+at least `ETA_PRIOR_COMPLETE_FRAC = 0.8` of the largest one in it --
+an abort, a hand `--series` repair and a tradepass are all far below
+that, two complete days differ by ~2% -- falling back to the largest when
+nothing qualifies (three aborts in a row), and the listings line now
+stamps `(ended MM-DD HH:MMZ)` on the prior so a reader can see WHICH run
+"last run" is (2 tests red-verified by mutant, 4 line tests extended,
+the stamp in the perturbation set). Rule: **a prior chosen by size inside
+a window is a prior chosen by WHATEVER SURVIVED the window; name the
+population the choice is over, and when the previous instance can fail,
+make the rule reach the instance before it.** First production line at
+the 10-24 06:10Z run. Classification: gotcha (the ETA is advisory; the
+budget check already carried the catch-up clause). Suite 2196 -> 2198.
+
 ---
 
 Recurrence audit (2026-09-08, breadth-floor pass): the 09-06 pass closed

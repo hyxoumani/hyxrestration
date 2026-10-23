@@ -47,6 +47,46 @@ def test_prior_is_the_consecutive_difference_within_the_largest_recent_run(tmp_p
     assert prior == {"B": 60.0, "C": 2700.0, "D": 1.0}
 
 
+def test_prior_is_the_latest_complete_run_not_yesterdays_abort(tmp_path):
+    """Measured 2026-10-23 (mistakes #135): the 10-22 run aborted at 715 of
+    4,031 series and the 10-21 complete run ended 36h before the 10-23
+    start, outside the old 30h window, so the prior was the 715-series stub
+    and the ETA priced 3,328 series at the median of the cheapest ones
+    (`~80 min left` at 3100 with 3h+ really left). The pick is the latest
+    run that is at least `ETA_PRIOR_COMPLETE_FRAC` of the largest."""
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        two_days_ago = T0 - timedelta(hours=24)
+        for s, off in (("A", 0), ("B", 60), ("C", 2760), ("D", 2761), ("E", 2800)):
+            _log(store, s, two_days_ago + timedelta(seconds=off))
+        # yesterday aborted after two series -- the only run inside 30h
+        _log(store, "A", T0)
+        _log(store, "B", T0 + timedelta(seconds=90))
+        now = T0 + timedelta(hours=24)
+        run = sweep_mod._prior_run(store, now=now)
+    finally:
+        store.close()
+    assert [s for s, _ in run] == ["A", "B", "C", "D", "E"]
+    assert run[-1][1] == two_days_ago + timedelta(seconds=2800)
+    assert sweep_mod.ETA_PRIOR_LOOKBACK_H >= 72  # three daily slots, not one
+
+
+def test_prior_falls_back_to_the_largest_run_when_every_run_in_the_window_is_short(tmp_path):
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        # two aborts and a hand repair, nothing complete: the largest wins
+        for s, off in (("A", 0), ("B", 60), ("C", 120)):
+            _log(store, s, T0 - timedelta(hours=24) + timedelta(seconds=off))
+        _log(store, "A", T0)
+        _log(store, "B", T0 + timedelta(seconds=60))
+        _log(store, "C", T0 + timedelta(hours=5))
+        run = sweep_mod._prior_run(store, now=T0 + timedelta(hours=24))
+    finally:
+        store.close()
+    assert [s for s, _ in run] == ["A", "B", "C"]
+    assert run[0][1] == T0 - timedelta(hours=24)
+
+
 def test_prior_is_empty_when_sweep_log_has_no_recent_rows_or_cannot_be_read(tmp_path):
     store = Store(str(tmp_path / "t.duckdb"))
     try:
@@ -149,7 +189,13 @@ def test_the_listings_delta_is_against_the_prior_runs_series_set_not_its_wall_di
         delta = sweep_mod.listings_delta(["A", "B", "KXNEW", "KXNEW2"], run)
     finally:
         store.close()
-    assert delta == {"targets": 4, "prior": 3, "new": ["KXNEW", "KXNEW2"], "dropped": ["C"]}
+    assert delta == {
+        "targets": 4,
+        "prior": 3,
+        "prior_end": T0 + timedelta(seconds=2760),
+        "new": ["KXNEW", "KXNEW2"],
+        "dropped": ["C"],
+    }
 
 
 def test_no_prior_run_is_no_delta_never_everything_new(tmp_path):
@@ -163,15 +209,22 @@ def test_no_prior_run_is_no_delta_never_everything_new(tmp_path):
 
 
 def test_the_listings_line_names_the_delta_and_every_field_perturbs_it():
-    base = {"targets": 4031, "prior": 3963, "new": ["KXFTSED", "KXHSID"], "dropped": []}
+    base = {
+        "targets": 4031,
+        "prior": 3963,
+        "prior_end": datetime(2026, 10, 20, 18, 35),
+        "new": ["KXFTSED", "KXHSID"],
+        "dropped": [],
+    }
     line = sweep_mod.listings_line(base)
     assert line == (
-        "[sweep] listings: 4031 targets vs 3963 swept last run"
+        "[sweep] listings: 4031 targets vs 3963 swept last run (ended 10-20 18:35Z)"
         " | +2 new (KXFTSED, KXHSID) | -0 dropped"
     )
     for key, val in (
         ("targets", 4032),
         ("prior", 3962),
+        ("prior_end", datetime(2026, 10, 19, 7, 14)),
         ("new", ["KXFTSED"]),
         ("dropped", ["KXGONE"]),
     ):
@@ -193,7 +246,8 @@ def test_the_run_prints_the_listings_line_first_and_the_done_dict_carries_the_co
     totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
     out = capsys.readouterr().out.splitlines()
     assert out[0] == (
-        "[sweep] listings: 7 targets vs 7 swept last run | +1 new (LADDER) | -1 dropped (ZZOLD)"
+        "[sweep] listings: 7 targets vs 7 swept last run (ended 10-15 06:11Z)"
+        " | +1 new (LADDER) | -1 dropped (ZZOLD)"
     )
     assert (totals["new_series"], totals["dropped_series"]) == (1, 1)
 

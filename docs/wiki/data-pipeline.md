@@ -1018,6 +1018,19 @@ self-match trap the ops rules name for `pkill -f`.
   ~30 (KXINX 30, KXNASDAQ100 30) and weekly/monthly/annual 0-6. So the
   nine new daily-close series are ~30 each at most, ~270 ladder-class
   markets, inside the ETA's 5-14% band, NOT a new 2,800 term.
+  **The prior is the latest COMPLETE run in a three-day window**
+  (2026-10-23, `ETA_PRIOR_LOOKBACK_H` 30 -> 78, `ETA_PRIOR_COMPLETE_FRAC`
+  = 0.8; mistakes #135; first production line at the 10-24 06:10Z run):
+  after the 10-22 abort (715 of 4,031 series) the 30h window held only
+  the abort, so the 10-23 line read `4043 targets vs 715 swept last run
+  | +3328 new` and the tag `3328 unpriced`, priced at the median of the
+  cheapest 715 series -- `~80 min left` at 3100 with ~3h ahead. The pick
+  is now the latest run at least 80% the size of the largest in the
+  window (an abort, a `--series` repair or a tradepass never is; two
+  complete days differ ~2%), else the largest, and the listings line
+  stamps the prior's end: `... vs 4031 swept last run (ended 10-21
+  17:47Z) | ...`. A reader who sees a stamp a day older than yesterday,
+  or a `vs N` far below the targets, is looking at the abort.
 - **The sweep prints its wall in the three terms the budget model is
   written in** (2026-10-17, `collector.sweep.wall_by_class` /
   `wall_class_line`, `totals['by_class']`; first production line at the
