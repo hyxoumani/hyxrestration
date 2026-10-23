@@ -717,13 +717,33 @@ self-match trap the ops rules name for `pkill -f`.
   today's high was not pulled, since the archive records no absences.
   **The class, all three per-source loops (Kalshi series / NWS stations /
   Polymarket books):** `qa_collect_source_errors` (section
-  `collect-source-errors`, journal-only) reads the day's `[collect]
-  {source}: {Exc}:` lines and FAILs any source past
-  `COLLECT_SOURCE_ERR_MAX_24H` = 5 cycles, named with its exception
-  class. Benign band 1 line/source/day; the 10-22 503 storm printed 9 per
-  series and the AUS episode 21, so the 10-23 10:00Z QA FAILs this line
-  on both until they age out (AUS 20:35Z 10-23). A series with no open
-  market prints nothing and is not a failure here.
+  `collect-source-errors`) FAILs any source past
+  `COLLECT_SOURCE_ERR_MAX_24H` = 5 cycles in 24h, named with its
+  exception class. Benign band 1 error/source/day; the 10-22 503 storm
+  printed 9 per series and the AUS episode 21, so the 10-23 10:00Z QA
+  FAILs this line on both until they age out (AUS 20:25Z 10-23). **Since
+  2026-10-23 the archive is the witness:** `collect_cycles` holds one
+  row per (cycle, source) -- `ts, source, name, n_rows, wall_s, error`
+  (exception class, NULL when the fetch returned) -- written by
+  `Store.insert_collect_cycle` INSIDE `write_cycle`'s one transaction
+  (both the snapshots and the account, or neither; pinned by
+  `tests/test_collect_cycles.py`, the arm that is red against a
+  post-commit mutant being "a failing record rolls the snapshots back",
+  NOT "a failing snapshot write leaves no record"), and carried through
+  the spool (`spool.ROW_MODELS["sources"]`, `hyxlab.models.SourceResult`).
+  So a Kalshi series with no open market is `n_rows 0, error NULL` --
+  a quiet source, absent from the error map -- and one whose fetch failed
+  is `n_rows 0, error 'HTTPError'`. `_archive_checks` reads the map under
+  its hold (`read_archive_collect_source_errors`, keyed `nws AUS` /
+  `kalshi KXLOWTNYC` / `polymarket books` exactly as the journal reader
+  keys it) and the check prefers it, printing `[archive]` -- but ONLY
+  when the table's first row predates the window, since a map over part
+  of a window read as the whole passes the transition day over an episode
+  the journal still holds (10-23 would have read the AUS 21 as clean);
+  otherwise the journal scrape judges (`[journal]`), and an unreadable
+  journal there is a SKIP. First `[archive]` read: 10-24 10:00Z. ~38 rows per cycle, ~11k/day.
+  Not yet judged: a source quiet for a whole day (a watchlist series with
+  no open market for 24h) -- the data to judge it now exists.
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide

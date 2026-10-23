@@ -400,6 +400,7 @@ def test_the_mutator_set_is_derived_and_complete():
         "insert_breadth_cycle",
         "insert_breadth_snapshots",
         "insert_candles",
+        "insert_collect_cycle",
         "insert_forecasts",
         "insert_new",
         "insert_news",

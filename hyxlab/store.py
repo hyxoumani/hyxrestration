@@ -24,7 +24,7 @@ from pathlib import Path
 import duckdb
 
 from hyxlab.memcap import duck_memory_limit
-from hyxlab.models import EconVintage, Forecast, MarketInfo, NewsItem, Snapshot
+from hyxlab.models import EconVintage, Forecast, MarketInfo, NewsItem, Snapshot, SourceResult
 from hyxlab.scratch import duck_scratch_dir
 from hyxlab.spillcap import duck_spill_limit, parse_size
 
@@ -94,6 +94,23 @@ CREATE TABLE IF NOT EXISTS breadth_cycles (
     inserted   INTEGER NOT NULL,
     truncated  BOOLEAN NOT NULL,  -- page budget exhausted, cursor still live
     cutoff_volume_24h DOUBLE
+);
+-- One row per (cycle, source): what each source of the collect cycle
+-- returned, next to WHY it returned nothing. `snapshots` / `nws_forecasts`
+-- cannot distinguish a Kalshi series with no open market (0 rows, no
+-- error) from one whose fetch failed (0 rows, an exception): the cycle's
+-- three per-source excepts print the class and exit 0, and on 2026-10-22
+-- NWS AUS pulled nothing for 21 consecutive ticks with every table fresh
+-- off the other four stations (mistakes #133). The discriminator existed
+-- only as a journald print. It lives here now, written inside the cycle's
+-- one transaction (write_cycle: these rows and the snapshots, or neither).
+CREATE TABLE IF NOT EXISTS collect_cycles (
+    ts       TIMESTAMP NOT NULL,  -- the cycle's fetch stamp (Cycle.ts)
+    source   VARCHAR NOT NULL,    -- 'kalshi' | 'polymarket' | 'nws'
+    name     VARCHAR NOT NULL,    -- series ticker / 'books' / station
+    n_rows   INTEGER NOT NULL,    -- rows this source contributed (0 on error)
+    wall_s   DOUBLE NOT NULL,     -- the fetch's wall, errors included
+    error    VARCHAR              -- exception class; NULL when the fetch returned
 );
 CREATE TABLE IF NOT EXISTS nws_forecasts (
     station     VARCHAR NOT NULL,
@@ -1415,6 +1432,21 @@ class Store:
         self.conn.execute(
             "INSERT INTO breadth_cycles VALUES (?,?,?,?,?,?)",
             [_naive_utc(ts), universe, picked, inserted, truncated, cutoff_volume_24h],
+        )
+
+    def insert_collect_cycle(self, ts: datetime, results: list[SourceResult]) -> None:
+        """One collect cycle's per-source account (see _SCHEMA).
+
+        Called INSIDE `collect.write_cycle`'s transaction, so a cycle has
+        these rows exactly when it has its snapshots. A source that pulled
+        nothing is written with `n_rows` 0 -- that is the row the table
+        exists for. `ts` is normalised as `insert_breadth_cycle` does.
+        """
+        if not results:
+            return
+        self.conn.executemany(
+            "INSERT INTO collect_cycles VALUES (?,?,?,?,?,?)",
+            [(_naive_utc(ts), r.source, r.name, r.n_rows, r.wall_s, r.error) for r in results],
         )
 
     def upsert_series(self, rows: list[tuple]) -> None:

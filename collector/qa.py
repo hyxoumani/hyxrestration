@@ -279,6 +279,13 @@ COLLECT_SOURCE_ERR_SECTION = "collect-source-errors"
 #: 07:12-08:00Z) and 21 (NWS AUS null temperature, 18:45-20:35Z). 5 sits 5x
 #: above benign and under both.
 COLLECT_SOURCE_ERR_MAX_24H = 5
+#: Set by `_archive_checks` on every run: the per-source error map read from
+#: `collect_cycles` (`read_archive_collect_source_errors`), or None when the
+#: table is younger than the window -- an archive from before the table
+#: shipped (2026-10-23) or its first day -- in which case the journal scrape
+#: stays the witness. Reset at the top of `qa_archive`, so a run whose
+#: archive attach failed falls back to the journal rather than a stale map.
+_archive_source_errors: dict[str, dict[str, int]] | None = None
 STANDING_SKIPS: frozenset[str] = frozenset({COLLECT_SKIP_SECTION})
 
 # The RECOVERY half of the same hole. A skipped cycle stopped being an
@@ -1750,6 +1757,8 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     """Returns the econ pull's age in days (see `qa_econ_pull_live`), or
     None when the archive was unreachable or has never been pulled — the
     witness `qa_signals_fetch` needs, and None means "cannot decide"."""
+    global _archive_source_errors
+    _archive_source_errors = None
     with _held_ro(path) as conn:
         now = datetime.now(UTC).replace(tzinfo=None)
         if not _reachable(conn, "main archive reachable", "archive", now):
@@ -1784,6 +1793,12 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
         "collector",
         CYCLE_CADENCE_S,
     )
+
+    # The collect cycle's own per-source account (mistakes #133). Read here,
+    # inside the one hold, and JUDGED later by `qa_collect_source_errors`,
+    # which runs journal-side and takes this map in preference to the scrape.
+    global _archive_source_errors
+    _archive_source_errors = read_archive_collect_source_errors(conn, now)
 
     # EXP-928 breadth is the FOURTH writer of this archive (measured
     # 2026-09-03) and the only exchange-wide quote history: the 5-min collect
@@ -2926,6 +2941,38 @@ def read_collect_source_errors(
     return out
 
 
+def read_archive_collect_source_errors(
+    conn, now: datetime, hours: float = 24.0
+) -> dict[str, dict[str, int]] | None:
+    """{source: {exception class: cycles}} from `collect_cycles` over the last
+    `hours`, keyed exactly as the journal reader keys it (`nws AUS`,
+    `kalshi KXLOWTNYC`, `polymarket books`) so the two are interchangeable.
+
+    None unless the table is OLDER than the window (its first row at or
+    before `since`) -- not an empty dict, because a table born inside the
+    window covers only part of it, and a map over part of a window read as
+    the whole would pass the day the table shipped over an episode the
+    journal still holds (the 10-22 AUS 21 would have read as PASS on 10-23).
+    The witness has to cover the window it is asked about; until it does,
+    the journal stays the witness. A source with rows and no error is a
+    quiet source and is absent from the map; that absence is the whole
+    reason the table exists (a series with no open market is NOT a failure).
+    """
+    since = now - timedelta(hours=hours)
+    first = conn.execute("SELECT min(ts) FROM collect_cycles").fetchone()[0]
+    if first is None or first > since:
+        return None
+    rows = conn.execute(
+        "SELECT source || ' ' || name, error, count(*) FROM collect_cycles"
+        " WHERE ts >= ? AND error IS NOT NULL GROUP BY 1, 2 ORDER BY 1, 2",
+        [since],
+    ).fetchall()
+    out: dict[str, dict[str, int]] = {}
+    for src, exc, c in rows:
+        out.setdefault(src, {})[exc] = c
+    return out
+
+
 def qa_collect_source_errors(
     hours: float = 24.0,
     now: datetime | None = None,
@@ -2940,13 +2987,24 @@ def qa_collect_source_errors(
     in `_archive_checks` closes that one table; this closes the CLASS, for
     every source the except branches name, from the lines they print.
 
-    Journal-only, so it is never gated by the archive lock; an unreadable
-    journal is a SKIP, never a pass (`read_batch_runs`' rule).
+    Since 2026-10-23 the cycle writes its own account to `collect_cycles`
+    (one row per source per cycle, the exception class on failure), read by
+    `_archive_checks` into `_archive_source_errors`; this check prefers that
+    map and falls back to the journal scrape only for a window the table
+    does not cover. An unreadable journal on the fallback path is a SKIP,
+    never a pass (`read_batch_runs`' rule).
     """
     now = now or datetime.now(UTC)
     name = f"collect sources each failing <= {COLLECT_SOURCE_ERR_MAX_24H} cycles in {hours:g}h"
+    # The archive's own account first (`collect_cycles`, read by
+    # `_archive_checks` under its hold); the journal scrape only for a
+    # window the table does not cover. The line names which one it read.
+    witness = "given"
+    if errors is None and _archive_source_errors is not None:
+        errors, witness = _archive_source_errors, "archive"
     if errors is None:
         errors = read_collect_source_errors(now - timedelta(hours=hours), now)
+        witness = "journal"
     if errors is None:
         _skipped.append(COLLECT_SOURCE_ERR_SECTION)
         print(f"SKIP  {name} — {COLLECT_UNIT} journal unreadable", flush=True)
@@ -2966,7 +3024,7 @@ def qa_collect_source_errors(
             if totals
             else "no source error line"
         )
-    check(name, not over, detail)
+    check(name, not over, f"{detail} [{witness}]")
     if not over:
         _record_ok(COLLECT_SOURCE_ERR_SECTION, now)
 
@@ -4350,7 +4408,7 @@ def main() -> None:
         qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
         qa_collect_skips()  # sidecar journal; never gated by the archive lock
         qa_collect_spool()  # the recovery half of the same hole; also sidecar-only
-        qa_collect_source_errors()  # journal-only: one source failing every tick exits 0
+        qa_collect_source_errors()  # collect_cycles, else journal: a source failing every tick exits 0
         qa_stream_stalls()  # ledger + journal witness; a stall IS the archive unwritable
         qa_fade_window_capture()  # journal-only, for the same reason
         qa_batch_run_budget()  # journal-only, for the same reason

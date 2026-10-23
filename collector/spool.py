@@ -53,7 +53,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, get_args, get_type_hints
 
-from hyxlab.models import Forecast, MarketInfo, Snapshot
+from hyxlab.models import Forecast, MarketInfo, Snapshot, SourceResult
 
 __all__ = [
     "DRAIN_BUDGET_S",
@@ -96,6 +96,7 @@ ROW_MODELS: dict[str, type] = {
     "kalshi_snaps": Snapshot,
     "poly_snaps": Snapshot,
     "forecasts": Forecast,
+    "sources": SourceResult,
 }
 
 FORMAT_VERSION = 1

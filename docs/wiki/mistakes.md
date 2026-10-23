@@ -3557,6 +3557,19 @@ Format: what happened → root cause → error type → prevention tier
     both of the day's episodes and nothing else; benign band measured at
     ONE line per source per day over 10-14..10-22). Unreadable journal =
     SKIP, `-- No entries --` = zero (#99). +5 tests on verbatim lines.
+    Archive witness, next run (10-23 02:40Z): `collect_cycles`, one row
+    per (cycle, source) with `n_rows` and the exception class, written
+    inside `write_cycle`'s transaction and spooled with the cycle; QA
+    reads it under the archive hold and the journal scrape is the
+    fallback for a window the table does not cover. The archive can now
+    tell a quiet series (0 rows, no error) from a dead one. Note on the
+    test: the obvious "same transaction" arm -- a failing snapshot write
+    leaves no record -- stayed GREEN against a mutant that writes the
+    record after COMMIT, because the except returns before reaching it;
+    the arm that is red is the record itself failing and the snapshots
+    rolling back. A transaction claim has two directions and only the
+    one where the NEW statement fails exercises its membership (the
+    perturbation rule above: watch the mutant land, then watch it fail).
 
 ## Pattern analysis (Step 5)
 
