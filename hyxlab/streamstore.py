@@ -526,32 +526,42 @@ class StreamStore:
     #:      SPILL_CAP at 1756s and 1801s, i.e. 400_000/1756 = 228/s.
     #: Trades outnumber book events here, so the channel most likely to be
     #: quoted alone is also the one that is not the majority of the buffer.
-    BUFFER_ROWS_PER_S = 250
+    #:
+    #: RE-MEASURED 2026-10-23 for the coverage expansion: a 10-minute staging
+    #: run of the branch (Fri 11:52Z, scratch DB) archived ~3,400 book rows/s
+    #: (per-minute range ~1,400-5,000; the 15-minute series roll at :00/:15
+    #: moves it most) and ~650 ticker rows/s; trades stay ~136/s and
+    #: lifecycle is ~7/s. Sum ~4,200/s -- 17x the 250 above, which is kept
+    #: in this history, not in the constant. One 10-minute window: re-measure
+    #: from a day of production once promoted.
+    BUFFER_ROWS_PER_S = 4_200
 
-    # ~13 min of firehose at the measured BUFFER_ROWS_PER_S (~8 min in the
-    # busiest observed hour) -- NOT the ~30 min this once claimed off the
-    # trade-channel rate. Exceeding this means a reader has wedged the file
-    # far beyond a flush burst — the flusher escalates its log so the
-    # journal shows it clearly before memory pressure ever could (review
-    # M3). Memory is the loose bound of the two: a buffered row costs ~256 B
-    # resident (measured 2026-09-18, tracemalloc: 264 B/BookEvent,
-    # 248 B/StreamTrade), so even a buffer pinned at SPILL_CAP is ~102 MB
-    # against the unit's 2G cgroup cap. The rows leaving memory, not the
-    # memory itself, is what the cap below is protecting against.
-    PENDING_ALARM = 200_000
+    # ~4 min of firehose at the measured BUFFER_ROWS_PER_S. Exceeding this
+    # means a reader has wedged the file far beyond a flush burst — the
+    # flusher escalates its log so the journal shows it clearly (review M3).
+    # Until 2026-10-23 this was 200,000 rows = ~13 min at 250/s, and memory
+    # was the loose bound. It no longer is: a buffered row is MEASURED
+    # (2026-10-23, tracemalloc, one market string per row as on the wire) at
+    # ~425 B/BookEvent and ~613 B/StreamTicker, ~460 B at the expansion's
+    # mix, so minutes of buffer now cost real fractions of the 4G unit cap.
+    # The two constants are therefore sized by MEMORY and their minutes
+    # follow; at the old 13/27 min they would have been ~1.5/3.1 GB.
+    PENDING_ALARM = 1_000_000
 
-    # 2x the alarm: ~27 min of firehose at BUFFER_ROWS_PER_S, and ~15 min in
-    # the busiest observed hour. It was documented as "~1 h" while the real
-    # rate made it half an hour, which is why `streamd._final_drain` could
-    # carry the flatly false "a sub-hour stall never reaches SPILL_CAP" --
-    # refuted, in the same commit, by the measurement in `streamd.STALL_LOG`
-    # recording two ~30 min episodes that DID reach it. Past this, a failed
+    # 2x the alarm: ~8 min of firehose at BUFFER_ROWS_PER_S, ~0.9 GB
+    # resident -- under a quarter of the unit's 4G cap, leaving the rest to
+    # DuckDB's flush (hyxlab.memcap), the raw-frame queue and page cache.
+    # (It was 400,000 = ~27 min at the pre-expansion 250/s; it once claimed
+    # "~1 h" off the trade-channel rate, which let `streamd._final_drain`
+    # carry the false "a sub-hour stall never reaches SPILL_CAP".) A stall
+    # past ~8 min now reaches the sidecar, which is lossless and drains at
+    # FLUSH_ROWS_PER_S. Past this, a failed
     # flush moves the OLDEST pending rows to a JSONL sidecar next to the DB,
     # so a multi-hour reader wedge (poly sweep runs ~7 h) bounds daemon
     # memory instead of growing without limit. The sidecar is drained
     # ahead of the in-memory buffer on the next good flush — recv order
     # preserved — and survives a daemon restart.
-    SPILL_CAP = 400_000
+    SPILL_CAP = 2_000_000
 
     #: Rows/s one `flush()` sustains end to end — sidecar parse, the insert
     #: into every table, commit. This is the rate a SHUTDOWN drain is

@@ -33,9 +33,11 @@ from __future__ import annotations
 
 import collections
 import gzip
+import re
+import shutil
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -48,6 +50,13 @@ QUEUE_BYTES = 64 * 1024 * 1024
 #: How often open files are flushed to a decodable boundary. Bounds what a
 #: SIGKILL or power loss can take from the tail of each open file.
 FLUSH_SECS = 5.0
+#: Days of raw frames kept on disk. MEASURED 2026-10-23 (10-minute staging
+#: run of the coverage expansion): ~58 MB per 10 min compressed, ~8 GB/day,
+#: so 14 days is ~120 GB. The parsed archive is the primary record; this is
+#: the window in which a parser defect can still be repaired from the wire.
+RETAIN_DAYS = 14
+#: How often the writer thread prunes day directories past RETAIN_DAYS.
+PRUNE_SECS = 3600.0
 
 
 def _codec() -> tuple[str, Any]:
@@ -92,11 +101,14 @@ class RawFrameWriter:
         queue_bytes: int = QUEUE_BYTES,
         flush_secs: float = FLUSH_SECS,
         codec: tuple[str, Any] | None = None,
+        retain_days: int | None = RETAIN_DAYS,
     ) -> None:
         self.root = Path(root)
         self.ext, self._open = codec or _codec()
         self.queue_bytes = queue_bytes
         self.flush_secs = flush_secs
+        self.retain_days = retain_days  # None keeps everything
+        self.pruned = 0  # day directories removed
         self._q: collections.deque[tuple[str, str, datetime, str]] = collections.deque()
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -132,7 +144,35 @@ class RawFrameWriter:
             "raw_dropped": self.dropped,
             "raw_errors": self.errors,
             "raw_queued_bytes": self._queued,
+            "raw_pruned_days": self.pruned,
         }
+
+    # -- retention -----------------------------------------------------------
+
+    _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+    def prune(self, now: datetime | None = None) -> list[str]:
+        """Remove `<root>/<YYYY-MM-DD>` directories dated more than
+        `retain_days` before `now` (UTC). Anything else under the root is
+        left alone. Returns the names removed; errors are counted, never
+        raised -- this runs on the writer thread."""
+        if self.retain_days is None or not self.root.is_dir():
+            return []
+        cutoff = ((now or datetime.now(UTC)) - timedelta(days=self.retain_days)).strftime(
+            "%Y-%m-%d"
+        )
+        gone = []
+        for d in sorted(self.root.iterdir()):
+            if d.is_dir() and self._DAY.match(d.name) and d.name < cutoff:
+                try:
+                    shutil.rmtree(d)
+                except OSError as exc:
+                    self.errors += 1
+                    self.last_error = f"prune: {type(exc).__name__}: {exc}"[:200]
+                    continue
+                gone.append(d.name)
+        self.pruned += len(gone)
+        return gone
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -157,6 +197,8 @@ class RawFrameWriter:
 
     def _run(self) -> None:
         last_flush = time.monotonic()
+        self.prune()
+        last_prune = last_flush
         while True:
             self._wake.wait(self.flush_secs)
             self._wake.clear()
@@ -165,6 +207,9 @@ class RawFrameWriter:
             if now - last_flush >= self.flush_secs:
                 self._flush_all()
                 last_flush = now
+            if now - last_prune >= PRUNE_SECS:
+                self.prune()
+                last_prune = now
             if self._stop.is_set():
                 self._drain()
                 self._close_all()

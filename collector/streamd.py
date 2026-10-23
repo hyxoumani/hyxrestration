@@ -56,6 +56,7 @@ from pathlib import Path
 import websockets
 
 from collector.bookcov import SHARD_MAX, BookCoverage, Shard
+from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.rawframes import RawFrameWriter
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
 from hyxlab.lockid import db_owner_lock_or_reason
@@ -105,7 +106,22 @@ DEAD_AIR_SECS = 300.0
 # than given a longer timeout -- see PROBE_WAIT_S.)
 DEAD_AIR_BY_CHANNEL = {"lifecycle": 1200.0}
 # Space the per-series ticker-refresh calls apart (see open_tickers).
-SERIES_PAUSE_S = float(os.environ.get("HYXLAB_SERIES_PAUSE_S", "0.35"))
+# 1.0s since 2026-10-23 (was 0.35): the book walk grew from 32 to 76 series
+# and a staging boot at 0.35s drew six 429s in ~30s on a key the live
+# trader and the hylshi collector share. The same pause now spaces PAGES
+# within a series too (KXNCAAFSPREAD alone lists >2,000 open markets).
+SERIES_PAUSE_S = float(os.environ.get("HYXLAB_SERIES_PAUSE_S", "1.0"))
+# One series' open-market walk: Kalshi's largest /markets page, and enough
+# pages that no series this daemon books comes near the end. The old walk
+# took get_markets' default 10 x 200 and silently kept the first 2,000.
+OPEN_TICKERS_PAGE = 1000
+OPEN_TICKERS_MAX_PAGES = 100
+# A restart boots the book set from the last reconciliation's result when it
+# is at most this old, so a restart costs no REST burst at all; the first
+# reconciliation then runs when the cached one would have been due (but not
+# sooner than BOOT_RECONCILE_MIN_S, so a crash loop cannot become a walk loop).
+TICKER_CACHE_MAX_AGE_S = 3600.0
+BOOT_RECONCILE_MIN_S = 120.0
 # Retry waits when a book task's subscription set comes back EMPTY (venue
 # REST down at boot); the last rung repeats until the set is non-empty.
 # Subscribing empty captures nothing — and the hourly in-loop refresh may
@@ -177,8 +193,8 @@ STALL_HEARTBEAT_S = 300.0
 #
 # 2026-10-23, coverage expansion: the figures above are the `executemany`
 # era. The staged-CSV insert raised FLUSH_ROWS_PER_S to 100,000 (half the
-# slowest temp-DB reading; see its comment), so a SPILL_CAP buffer now
-# flushes in ~4s and 90s buys ~9M rows. The budget is deliberately NOT cut
+# slowest temp-DB reading; see its comment), so a SPILL_CAP buffer (2M
+# rows since the same date) flushes in ~20s and 90s buys ~9M rows. The budget is deliberately NOT cut
 # to match: the new rate is a temp-database measurement until it is
 # re-measured on the live file, and an over-generous budget only means a
 # drain is attempted that would have been declined -- inside a
@@ -205,8 +221,8 @@ DRAIN_BUDGET_S = 90.0
 # The wait is charged against DRAIN_BUDGET_S rather than added to it: a
 # drain that waited 30s has 30s less to write in, since the deadline runs
 # from SIGTERM. 30s leaves 60s = 6,000,000 rows at the post-2026-10-23
-# rate (426,000 at the old one), still over the SPILL_CAP buffer (4s; 56.3s
-# then) the drain is REQUIRED to flush, so waiting never turns an
+# rate (426,000 at the old one), still over the SPILL_CAP buffer (20s at
+# 2M rows; 56.3s at 400k then) the drain is REQUIRED to flush, so waiting never turns an
 # ordinary restart into a sidecar handoff. `tests/test_flush_concurrency.py`
 # pins that composition and the unit's `TimeoutStopSec` covers the sum.
 DRAIN_LOCK_WAIT_S = 30.0
@@ -318,28 +334,50 @@ async def _fetch_until_nonempty(fetch, channel: str, what: str):
     return items
 
 
-def open_tickers(series_list: list[str], pause_s: float = SERIES_PAUSE_S) -> set[str]:
-    """Open market tickers for the watchlist series (REST, one call per
-    series per hour).
+def open_tickers_detail(
+    series_list: list[str], pause_s: float = SERIES_PAUSE_S
+) -> tuple[set[str], set[str]]:
+    """Open market tickers for the given series (REST), and the series whose
+    walk did NOT complete -- raised, or ran out of pages with the cursor
+    still live. A reconciliation must not read an incomplete series as
+    "these markets closed": that is how a 429 would unsubscribe a series.
 
-    `pause_s` spaces the calls APART. get_markets' own `pause_s` paces
-    between PAGES within one series, which does nothing for a burst of
-    N single-page series calls — and the watchlist is now 31 series, so
-    the burst is what matters. Measured 2026-08-02 at 23 series: the
-    refresh drew 429s from /markets (KXPAYROLLS, KXU3) even though each
-    series is cheap on its own. kalshi._get_with_429_retry now recovers
-    from those, but recovering from a burst we chose to send is worse
-    than not sending it: retries land in the same window and the whole
-    refresh stretches out anyway."""
+    `pause_s` spaces the calls APART and, passed through to get_markets,
+    the pages within one series. The burst is what matters: measured
+    2026-08-02 at 23 series the refresh drew 429s from /markets
+    (KXPAYROLLS, KXU3), and on 2026-10-23 a 76-series staging boot at
+    0.35s drew six in ~30s. kalshi._get_with_429_retry recovers from
+    those, but recovering from a burst we chose to send is worse than not
+    sending it: retries land in the same window and the walk stretches out
+    anyway, on a key other processes are trading on."""
     out: set[str] = set()
+    incomplete: set[str] = set()
     for i, s in enumerate(series_list):
         if i and pause_s:
             _time.sleep(pause_s)
         try:
-            out.update(m["ticker"] for m in kalshi.get_markets(series_ticker=s, status="open"))
+            markets, truncated = kalshi.get_markets(
+                series_ticker=s,
+                status="open",
+                limit=OPEN_TICKERS_PAGE,
+                max_pages=OPEN_TICKERS_MAX_PAGES,
+                pause_s=pause_s,
+                with_truncated=True,
+            )
         except Exception as exc:  # one bad series must not sink the refresh
             _log(f"kalshi-books: ticker refresh failed for {s}: {exc}")
-    return out
+            incomplete.add(s)
+            continue
+        out.update(m["ticker"] for m in markets)
+        if truncated:
+            _log(f"kalshi-books: {s} walk TRUNCATED at {len(markets)} markets")
+            incomplete.add(s)
+    return out, incomplete
+
+
+def open_tickers(series_list: list[str], pause_s: float = SERIES_PAUSE_S) -> set[str]:
+    """`open_tickers_detail` without the completeness half."""
+    return open_tickers_detail(series_list, pause_s)[0]
 
 
 class FlushStalls:
@@ -698,9 +736,18 @@ class Daemon:
             return
         # An empty INITIAL set (REST down at boot) would leave books dark
         # until the next reconciliation — keep retrying until tickers exist.
-        tickers = await _fetch_until_nonempty(
-            lambda: open_tickers(series), "kalshi-books", "initial ticker set"
-        )
+        mono = asyncio.get_event_loop().time
+        cached, age = self._read_ticker_cache(series)
+        if cached:
+            tickers = cached
+            next_reconcile = mono() + max(BOOT_RECONCILE_MIN_S, RECONCILE_SECS - age)
+            _log(f"kalshi-books: booting from the {age:.0f}s-old open-ticker cache")
+        else:
+            tickers = await _fetch_until_nonempty(
+                lambda: open_tickers(series), "kalshi-books", "initial ticker set"
+            )
+            next_reconcile = mono() + RECONCILE_SECS
+            self._write_ticker_cache(series, set(tickers))
         cov = BookCoverage(set(series), int(self.watchlist.get("kalshi_book_shard_max", SHARD_MAX)))
         self.books = cov
         self._book_wake = asyncio.Event()
@@ -711,8 +758,6 @@ class Daemon:
             f"kalshi-books: {len(tickers)} open tickers across {len(series)} series"
             f" on {len(cov.shards)} connection(s) (<= {cov.shard_max} each)"
         )
-        mono = asyncio.get_event_loop().time
-        next_reconcile = mono() + RECONCILE_SECS
         while True:
             live = [t for t in self._book_tasks.values() if not t.done()]
             if self._book_tasks and not live:
@@ -732,12 +777,46 @@ class Daemon:
             if mono() >= next_reconcile or self._reconcile_now:
                 self._reconcile_now = False
                 next_reconcile = mono() + RECONCILE_SECS
-                rest = await asyncio.to_thread(open_tickers, series)
+                rest, incomplete = await asyncio.to_thread(open_tickers_detail, series)
                 if rest:
-                    cov.reconcile(set(rest), _time.monotonic())
+                    cov.reconcile(set(rest), _time.monotonic(), incomplete)
                 else:
                     _log("kalshi-books: reconciliation read nothing; keeping the held set")
+                await self._apply_books()
+                if rest and not incomplete:
+                    self._write_ticker_cache(series, cov.held)
+                continue
             await self._apply_books()
+
+    def _ticker_cache_path(self) -> Path:
+        return Path(f"{self.store.path}.book_tickers.json")
+
+    def _read_ticker_cache(self, series: list[str]) -> tuple[set[str], float]:
+        """(tickers, age_s) from the last complete walk, or (empty, 0) when
+        there is none, it is older than TICKER_CACHE_MAX_AGE_S, or it was
+        written for a different series list. Never raises."""
+        try:
+            rec = json.loads(self._ticker_cache_path().read_text())
+            age = (datetime.now(UTC) - datetime.fromisoformat(rec["at"])).total_seconds()
+            if rec.get("series") == sorted(series) and 0 <= age <= TICKER_CACHE_MAX_AGE_S:
+                return set(rec["tickers"]), age
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return set(), 0.0
+
+    def _write_ticker_cache(self, series: list[str], tickers: set[str]) -> None:
+        path = self._ticker_cache_path()
+        rec = {
+            "at": datetime.now(UTC).isoformat(),
+            "series": sorted(series),
+            "tickers": sorted(tickers),
+        }
+        try:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(rec))
+            os.replace(tmp, path)
+        except OSError as exc:
+            _log(f"kalshi-books: open-ticker cache unwritable ({exc})")
 
     def _start_shard(self, sh: Shard) -> None:
         self._book_tasks[sh.idx] = asyncio.create_task(
@@ -1239,7 +1318,7 @@ class Daemon:
         memory. (This once justified itself with "a sub-hour stall never
         reaches SPILL_CAP" — false, and refuted by the measurement recorded
         beside STALL_LOG above: two of the three ~30 min episodes DID reach
-        the cap. The cap is ~27 min of firehose, not the ~1 h it was
+        the cap. The cap was ~27 min of firehose then (~8 min since 2026-10-23), not the ~1 h it was
         documented as; see `StreamStore.BUFFER_ROWS_PER_S`. The spill-all is
         right for the reason stated here, which does not depend on it.) (c) The
         drain is a race against the unit's `TimeoutStopSec` at a measured
@@ -1452,6 +1531,12 @@ def main() -> None:
         default="data/raw_frames",
         help="root for the raw Kalshi frame files; '' keeps none",
     )
+    ap.add_argument(
+        "--raw-retain-days",
+        type=int,
+        default=RAW_RETAIN_DAYS,
+        help="raw-frame day directories kept (pruned hourly by the writer)",
+    )
     ap.add_argument("--env", default=".env", help="KEY=VALUE file for the Kalshi credentials")
     args = ap.parse_args()
 
@@ -1472,7 +1557,11 @@ def main() -> None:
 
     watchlist = load_watchlist(args.watchlist or str(DEFAULT_WATCHLIST))
     store = StreamStore(args.db)
-    raw = RawFrameWriter(args.raw_frames) if args.raw_frames else None
+    raw = (
+        RawFrameWriter(args.raw_frames, retain_days=args.raw_retain_days)
+        if args.raw_frames
+        else None
+    )
     if raw is not None:
         raw.start()
     daemon = Daemon(store, watchlist, raw)
