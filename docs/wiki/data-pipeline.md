@@ -822,8 +822,10 @@ self-match trap the ops rules name for `pkill -f`.
   `data/raw_frames/<date>/<HH>-<channel>.jsonl.zst` (`recv_ts\tconn\tframe`
   per line, stdlib zstd). The insert path is now a staged CSV + `read_csv`
   (the stable venv has no pandas/pyarrow): FLUSH_ROWS_PER_S 7,100 -> 100,000.
-  `BUFFER_ROWS_PER_S`/`PENDING_ALARM`/`SPILL_CAP` still describe the
-  pre-expansion mix and must be re-measured after promotion.
+  Buffer constants re-sized from a 10-min staging run (~4,200 rows/s):
+  SPILL_CAP 2M (~8 min, memory-bound). Raw frames kept 14 days. Measured
+  growth ~8.6 GB/day DuckDB (~19 B/book row, ~48 B/ticker row) + ~8 GB/day
+  raw -- the full-file hyxstream backup is unbounded at that rate.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,
   2.6M candles. `python -m hyxlab.sweep --doctor` = health check for
   BOTH archives (includes mirror tripwire + stream counts/size).
