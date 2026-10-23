@@ -71,7 +71,16 @@ def _open(db: str):
 
 def _flush(db: str, batch: dict) -> None:
     with open(LOCK_FILE, "a") as lock:
+        # The flock is a SECOND lock in front of the attach, shared with the
+        # 5-min collector, the kalshi sweep, signals, migrate -- and the
+        # attach ledger (`[poly] attach_wait:`) starts its clock AFTER it:
+        # 2026-10-23's done line carried `flush 157.6 min` with the ledger
+        # explaining 2 min of waiting and 110 min of holding, ~45 min of
+        # flush wall spent in neither (10-22: ~1 min). Timed here so the
+        # done line can say whether that gap is this queue.
+        t_l = time.monotonic()
         fcntl.flock(lock, fcntl.LOCK_EX)
+        batch["lock_wait_s"] = batch.get("lock_wait_s", 0.0) + (time.monotonic() - t_l)
         note_holder(LOCK_FILE)
         store = _open(db)
         try:
@@ -315,6 +324,7 @@ def sweep(
         "n_prices": 0,
         "n_trades": 0,
         "n_tail_stops": 0,
+        "lock_wait_s": 0.0,
     }
     totals: dict = {"markets": 0, "errors": 0, "skipped_resolved": 0}
     # The three populations the walk is made of, each with the rows it
@@ -435,6 +445,9 @@ def sweep(
         for k, d in segments.items()
     }
     totals["flush_min"] = round(flush_s / 60, 1)
+    # The part of `flush_min` spent queued on `data/writer.lock` before the
+    # attach; the ledger line after `done:` has the rest (sleep + hold).
+    totals["flush_lock_min"] = round(batch.get("lock_wait_s", 0.0) / 60, 1)
     totals["n_tail_stops"] = batch["n_tail_stops"]
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["error_classes"] = error_classes

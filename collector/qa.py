@@ -3896,7 +3896,9 @@ def _segments_clause(done: dict) -> str:
             parts.append(f"{name} {int(n):,} mkts {wall:.1f} min")
     flush = done.get("flush_min")
     if isinstance(flush, int | float):
-        parts.append(f"flush {flush:.1f} min")
+        lock = done.get("flush_lock_min")
+        queued = f" (lock {lock:.1f} min)" if isinstance(lock, int | float) else ""
+        parts.append(f"flush {flush:.1f} min{queued}")
     for name, cls in (done.get("by_class") or {}).items():
         if not isinstance(cls, dict):
             continue

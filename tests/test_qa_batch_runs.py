@@ -697,6 +697,8 @@ def test_a_unit_with_no_done_line_renders_no_brackets(monkeypatch, capsys):
         ({}, ""),
         ({"segments": {}}, ""),
         ({"flush_min": 12.34}, " [flush 12.3 min]"),
+        ({"flush_min": 12.34, "flush_lock_min": 3.21}, " [flush 12.3 min (lock 3.2 min)]"),
+        ({"flush_min": 12.34, "flush_lock_min": "x"}, " [flush 12.3 min]"),
         ({"segments": {"open": {"markets": "x", "wall_min": 1.0}}}, ""),
         (
             {"segments": {"open": {"markets": 10, "wall_min": 2.0}}, "flush_min": None},
