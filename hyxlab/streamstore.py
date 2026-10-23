@@ -33,6 +33,27 @@ over convenience — replay logic interprets):
 - stream_gaps: closed intervals where coverage is broken (reconnects,
   seq gaps, daemon downtime). Replay must treat books as unknown inside
   a gap until the next snapshot re-seeds them.
+- kalshi book `sid` is the WIRE sid PLUS `shard * SHARD_SID_STRIDE` since the
+  2026-10-20 coverage expansion: the books channel is sharded across several
+  connections, and Kalshi numbers each connection's subscriptions from 1, so
+  without the offset two shards' (sid, seq) streams interleave into one and
+  QA's seq-hole check (partitioned by sid) reads every row as a hole. Shard 0
+  keeps the raw wire sid, so every row written before the expansion and every
+  row from the first shard after it read exactly as they always did. Gap rows
+  from every shard still say channel='books': an outage on one shard marks the
+  whole channel blind, which over-excuses (books unknown where they were in
+  fact known) and never under-excuses.
+- stream_ticker (since 2026-10-20): the exchange-wide `ticker` channel -- top
+  of book, last price, volume and open interest per market, one row per
+  frame, prices in dollars. KXMVE* combos are excluded at the daemon unless
+  the watchlist opts in. The channel carries no `seq` (documented: type, sid,
+  msg), so its only detectable gaps are reconnects and dead air.
+- stream_lifecycle (since 2026-10-20): every SEQUENCED frame of the
+  exchange-wide `market_lifecycle_v2` channel -- market created / activated /
+  deactivated / close_date_updated / determined / settled / metadata, plus
+  `event_lifecycle` and `event_fee_update` -- with the parsed fields AND the
+  frame's raw JSON, so a field this schema does not name is still on disk.
+  `market_id` is the market ticker, or the EVENT ticker for event-level types.
 """
 
 from __future__ import annotations
@@ -41,11 +62,13 @@ import contextlib
 import json
 import os
 import threading
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import astuple, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 
 from hyxlab.store import duck_connect
 
@@ -79,7 +102,127 @@ CREATE TABLE IF NOT EXISTS stream_gaps (
     ended_at   TIMESTAMP NOT NULL,
     reason     VARCHAR
 );
+CREATE TABLE IF NOT EXISTS stream_ticker (
+    venue                VARCHAR NOT NULL,
+    market_id            VARCHAR NOT NULL,
+    recv_ts              TIMESTAMP NOT NULL,
+    src_ts               TIMESTAMP,
+    sid                  BIGINT,
+    seq                  BIGINT,
+    price                DOUBLE,
+    yes_bid              DOUBLE,
+    yes_ask              DOUBLE,
+    yes_bid_size         DOUBLE,
+    yes_ask_size         DOUBLE,
+    last_trade_size      DOUBLE,
+    volume               DOUBLE,
+    open_interest        DOUBLE,
+    dollar_volume        BIGINT,
+    dollar_open_interest BIGINT
+);
+CREATE TABLE IF NOT EXISTS stream_lifecycle (
+    venue            VARCHAR NOT NULL,
+    market_id        VARCHAR NOT NULL,
+    recv_ts          TIMESTAMP NOT NULL,
+    src_ts           TIMESTAMP,
+    sid              BIGINT,
+    seq              BIGINT,
+    msg_type         VARCHAR NOT NULL,
+    event_type       VARCHAR,
+    event_ticker     VARCHAR,
+    series_ticker    VARCHAR,
+    open_ts          TIMESTAMP,
+    close_ts         TIMESTAMP,
+    determination_ts TIMESTAMP,
+    settled_ts       TIMESTAMP,
+    result           VARCHAR,
+    settlement_value DOUBLE,
+    is_deactivated   BOOLEAN,
+    raw              VARCHAR NOT NULL
+);
 """
+
+#: Added to a kalshi books shard's wire sid before it is stored (see the
+#: module docstring). A connection opens ONE subscription, so its wire sids
+#: stay single-digit; the stride only has to clear that by a wide margin.
+SHARD_SID_STRIDE = 1_000_000
+
+# Column order of every table, as `_insert` writes it. The pandas dtype is
+# what makes a Python None land as SQL NULL: a nullable extension dtype
+# (`Int64`, `Float64`, `string`, `boolean`) carries pd.NA, where plain
+# float64 would carry NaN -- a VALUE in DuckDB, not a NULL.
+_COLS = {
+    "book_events": (
+        ("venue", "string"),
+        ("market_id", "string"),
+        ("recv_ts", "datetime64[us]"),
+        ("src_ts", "datetime64[us]"),
+        ("sid", "Int64"),
+        ("seq", "Int64"),
+        ("kind", "string"),
+        ("side", "string"),
+        ("price", "float64"),
+        ("qty", "float64"),
+    ),
+    "stream_trades": (
+        ("venue", "string"),
+        ("market_id", "string"),
+        ("recv_ts", "datetime64[us]"),
+        ("src_ts", "datetime64[us]"),
+        ("price", "float64"),
+        ("qty", "float64"),
+        ("taker_side", "string"),
+        ("seq", "Int64"),
+    ),
+    "stream_gaps": (
+        ("venue", "string"),
+        ("channel", "string"),
+        ("started_at", "datetime64[us]"),
+        ("ended_at", "datetime64[us]"),
+        ("reason", "string"),
+    ),
+    "stream_ticker": (
+        ("venue", "string"),
+        ("market_id", "string"),
+        ("recv_ts", "datetime64[us]"),
+        ("src_ts", "datetime64[us]"),
+        ("sid", "Int64"),
+        ("seq", "Int64"),
+        ("price", "Float64"),
+        ("yes_bid", "Float64"),
+        ("yes_ask", "Float64"),
+        ("yes_bid_size", "Float64"),
+        ("yes_ask_size", "Float64"),
+        ("last_trade_size", "Float64"),
+        ("volume", "Float64"),
+        ("open_interest", "Float64"),
+        ("dollar_volume", "Int64"),
+        ("dollar_open_interest", "Int64"),
+    ),
+    "stream_lifecycle": (
+        ("venue", "string"),
+        ("market_id", "string"),
+        ("recv_ts", "datetime64[us]"),
+        ("src_ts", "datetime64[us]"),
+        ("sid", "Int64"),
+        ("seq", "Int64"),
+        ("msg_type", "string"),
+        ("event_type", "string"),
+        ("event_ticker", "string"),
+        ("series_ticker", "string"),
+        ("open_ts", "datetime64[us]"),
+        ("close_ts", "datetime64[us]"),
+        ("determination_ts", "datetime64[us]"),
+        ("settled_ts", "datetime64[us]"),
+        ("result", "string"),
+        ("settlement_value", "Float64"),
+        ("is_deactivated", "boolean"),
+        ("raw", "string"),
+    ),
+}
+
+#: Every table the archive holds, in the order `counts()` reports them.
+TABLES = tuple(_COLS)
 
 
 def _naive_utc(dt: datetime | None) -> datetime | None:
@@ -135,6 +278,53 @@ def _enc_gap(g: tuple) -> str:
     return json.dumps({"t": "g", "r": [g[0], g[1], _iso(g[2]), _iso(g[3]), g[4]]}) + "\n"
 
 
+def _ts_cols(table: str) -> frozenset[int]:
+    return frozenset(i for i, (_, dt) in enumerate(_COLS[table]) if dt.startswith("datetime"))
+
+
+def _enc_generic(tag: str, table: str, row) -> str:
+    """The two 2026-10-20 tables, one encoder: every timestamp column to ISO
+    (tz-awareness round-trips, as for the original three), everything else
+    as-is."""
+    ts = _ts_cols(table)
+    vals = [_iso(v) if i in ts else v for i, v in enumerate(astuple(row))]
+    return json.dumps({"t": tag, "r": vals}) + "\n"
+
+
+def _dec_generic(cls, table: str, r: list):
+    ts = _ts_cols(table)
+    if len(r) != len(_COLS[table]):
+        raise ValueError(f"{table} sidecar row has {len(r)} fields")
+    return cls(*[_from_iso(v) if i in ts else v for i, v in enumerate(r)])
+
+
+def _insert_frame(conn: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
+    """Insert `rows` (tuples in `_COLS[table]` order, timestamps already naive
+    UTC) as one registered frame. A no-op for an empty batch."""
+    if not rows:
+        return
+    cols = _COLS[table]
+    data = {
+        name: pd.Series(vals, dtype=dtype)
+        for (name, dtype), vals in zip(cols, zip(*rows, strict=True), strict=True)
+    }
+    view = f"_ins_{table}"
+    conn.register(view, pd.DataFrame(data))
+    try:
+        names = ", ".join(n for n, _ in cols)
+        conn.execute(f"INSERT INTO {table} ({names}) SELECT {names} FROM {view}")
+    finally:
+        conn.unregister(view)
+
+
+def _enc_ticker(t: StreamTicker) -> str:
+    return _enc_generic("k", "stream_ticker", t)
+
+
+def _enc_lifecycle(lc: StreamLifecycle) -> str:
+    return _enc_generic("l", "stream_lifecycle", lc)
+
+
 @dataclass
 class BookEvent:
     venue: str
@@ -161,6 +351,54 @@ class StreamTrade:
     seq: int | None
 
 
+@dataclass
+class StreamTicker:
+    """One `ticker` frame. Fields follow `_COLS['stream_ticker']` exactly
+    (the sidecar codec and `_insert` both rely on that order)."""
+
+    venue: str
+    market_id: str
+    recv_ts: datetime
+    src_ts: datetime | None
+    sid: int | None
+    seq: int | None
+    price: float | None
+    yes_bid: float | None
+    yes_ask: float | None
+    yes_bid_size: float | None
+    yes_ask_size: float | None
+    last_trade_size: float | None
+    volume: float | None
+    open_interest: float | None
+    dollar_volume: int | None
+    dollar_open_interest: int | None
+
+
+@dataclass
+class StreamLifecycle:
+    """One sequenced `market_lifecycle_v2`-channel frame. Field order is
+    `_COLS['stream_lifecycle']`."""
+
+    venue: str
+    market_id: str
+    recv_ts: datetime
+    src_ts: datetime | None
+    sid: int | None
+    seq: int | None
+    msg_type: str
+    event_type: str | None
+    event_ticker: str | None
+    series_ticker: str | None
+    open_ts: datetime | None
+    close_ts: datetime | None
+    determination_ts: datetime | None
+    settled_ts: datetime | None
+    result: str | None
+    settlement_value: float | None
+    is_deactivated: bool | None
+    raw: str
+
+
 @dataclass(frozen=True)
 class FlushOutcome:
     """What one `StreamStore.flush_outcome` did.
@@ -184,6 +422,8 @@ class StreamStore:
         self._events: list[BookEvent] = []
         self._trades: list[StreamTrade] = []
         self._gaps: list[tuple] = []
+        self._tickers: list[StreamTicker] = []
+        self._lifecycles: list[StreamLifecycle] = []
         # Rows moved to the sidecar by _spill_overflow since the last good
         # flush — observability only (`pending` plateaus at SPILL_CAP during
         # a wedge). Approximate across restarts: starts at 0 even if a
@@ -223,6 +463,12 @@ class StreamStore:
 
     def append_trades(self, trades: list[StreamTrade]) -> None:
         self._trades.extend(trades)
+
+    def append_tickers(self, tickers: list[StreamTicker]) -> None:
+        self._tickers.extend(tickers)
+
+    def append_lifecycles(self, rows: list[StreamLifecycle]) -> None:
+        self._lifecycles.extend(rows)
 
     def append_gap(
         self,
@@ -318,7 +564,25 @@ class StreamStore:
 
     @property
     def pending(self) -> int:
-        return len(self._events) + len(self._trades) + len(self._gaps)
+        return (
+            len(self._events)
+            + len(self._trades)
+            + len(self._gaps)
+            + len(self._tickers)
+            + len(self._lifecycles)
+        )
+
+    def _buffers(self) -> tuple[tuple[list, Callable[[object], str]], ...]:
+        """Every buffer with its sidecar encoder, OLDEST-TABLE-FIRST in the
+        fixed order the sidecar has always been written in (events, trades,
+        gaps), the two 2026-10-20 tables after them."""
+        return (
+            (self._events, _enc_event),
+            (self._trades, _enc_trade),
+            (self._gaps, _enc_gap),
+            (self._tickers, _enc_ticker),
+            (self._lifecycles, _enc_lifecycle),
+        )
 
     @contextlib.contextmanager
     def exclusive(self, timeout: float):
@@ -399,11 +663,13 @@ class StreamStore:
         leaves the committed chunks committed and the rest for next time."""
         offset, drained = self._spill_done(), 0
         while True:
-            events, trades, gaps, end = self._read_spill(offset, self.DRAIN_CHUNK_ROWS)
+            events, trades, gaps, tickers, lifecycles, end = self._read_spill(
+                offset, self.DRAIN_CHUNK_ROWS
+            )
             if end == offset:
                 return drained
-            self._insert(conn, events, trades, gaps)
-            drained += len(events) + len(trades) + len(gaps)
+            self._insert(conn, events, trades, gaps, tickers, lifecycles)
+            drained += len(events) + len(trades) + len(gaps) + len(tickers) + len(lifecycles)
             offset = end
             self._mark_spill_done(offset)
 
@@ -444,6 +710,8 @@ class StreamStore:
             events, self._events = self._events, []
             trades, self._trades = self._trades, []
             gaps, self._gaps = self._gaps, []
+            tickers, self._tickers = self._tickers, []
+            lifecycles, self._lifecycles = self._lifecycles, []
             try:
                 with duck_connect(str(self.path)) as conn:
                     # Parse the sidecar only once the write lock is held: in
@@ -452,11 +720,13 @@ class StreamStore:
                     # drains in its own chunked transactions, ahead of the
                     # buffer -- recv order kept, memory bounded by a chunk.
                     n += self._drain_spill(conn)
-                    self._insert(conn, events, trades, gaps)
+                    self._insert(conn, events, trades, gaps, tickers, lifecycles)
             except BaseException:
                 self._events[:0] = events
                 self._trades[:0] = trades
                 self._gaps[:0] = gaps
+                self._tickers[:0] = tickers
+                self._lifecycles[:0] = lifecycles
                 self._spill_overflow()
                 raise
             self._spill_done_path.unlink(missing_ok=True)
@@ -511,16 +781,15 @@ class StreamStore:
         never half of it. All-or-nothing on disk: a partial file is removed
         rather than left for the next boot to parse a torn tail from.
         """
-        events, trades, gaps = list(self._events), list(self._trades), list(self._gaps)
-        n = len(events) + len(trades) + len(gaps)
+        copies = [(list(buf), enc) for buf, enc in self._buffers()]
+        n = sum(len(rows) for rows, _ in copies)
         if n == 0:
             return 0, None
         path = self._snapshot_path(now)
         try:
             with path.open("x", encoding="utf-8") as f:
-                f.writelines(_enc_event(e) for e in events)
-                f.writelines(_enc_trade(t) for t in trades)
-                f.writelines(_enc_gap(g) for g in gaps)
+                for rows, enc in copies:
+                    f.writelines(enc(r) for r in rows)
                 f.flush()
                 os.fsync(f.fileno())
         except BaseException:
@@ -571,11 +840,7 @@ class StreamStore:
             return 0
         lines: list[str] = []
         takes: list[tuple[list, int]] = []
-        for buf, enc in (
-            (self._events, _enc_event),
-            (self._trades, _enc_trade),
-            (self._gaps, _enc_gap),
-        ):
+        for buf, enc in self._buffers():
             take = min(over, len(buf))
             lines.extend(enc(row) for row in buf[:take])
             takes.append((buf, take))
@@ -613,7 +878,14 @@ class StreamStore:
 
     def _read_spill(
         self, start: int = 0, limit: int | None = None
-    ) -> tuple[list[BookEvent], list[StreamTrade], list[tuple], int]:
+    ) -> tuple[
+        list[BookEvent],
+        list[StreamTrade],
+        list[tuple],
+        list[StreamTicker],
+        list[StreamLifecycle],
+        int,
+    ]:
         """Decode up to `limit` sidecar records from byte `start`, skipping
         records it cannot parse; returns them and the byte offset reached.
 
@@ -627,8 +899,10 @@ class StreamStore:
         events: list[BookEvent] = []
         trades: list[StreamTrade] = []
         gaps: list[tuple] = []
+        tickers: list[StreamTicker] = []
+        lifecycles: list[StreamLifecycle] = []
         if not self._spill_path.exists():
-            return events, trades, gaps, start
+            return events, trades, gaps, tickers, lifecycles, start
         offset, taken = start, 0
         with self._spill_path.open("rb") as f:
             f.seek(start)
@@ -664,12 +938,16 @@ class StreamStore:
                                 r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4], r[5], r[6], r[7]
                             )
                         )
+                    elif rec["t"] == "k":
+                        tickers.append(_dec_generic(StreamTicker, "stream_ticker", r))
+                    elif rec["t"] == "l":
+                        lifecycles.append(_dec_generic(StreamLifecycle, "stream_lifecycle", r))
                     else:
                         gaps.append((r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4]))
                 except (ValueError, KeyError, TypeError, IndexError):
                     self.spill_corrupt += 1
                     continue
-        return events, trades, gaps, offset
+        return events, trades, gaps, tickers, lifecycles, offset
 
     def _insert(
         self,
@@ -677,46 +955,70 @@ class StreamStore:
         events: list[BookEvent],
         trades: list[StreamTrade],
         gaps: list[tuple],
+        tickers: list[StreamTicker] = (),  # type: ignore[assignment]
+        lifecycles: list[StreamLifecycle] = (),  # type: ignore[assignment]
     ) -> None:
+        """All five tables in ONE transaction, each as a columnar frame.
+
+        Until 2026-10-20 this was `executemany`, which DuckDB runs as one
+        prepared INSERT per row: measured 6,743 rows/s on a temp database
+        (the box's 7,100/s `FLUSH_ROWS_PER_S` is the same path end to end).
+        The coverage expansion multiplies the arrival rate several-fold, and
+        at that path a 15 s flush of a busy minute would have needed most of
+        the 15 s. A registered pandas frame inserts the same rows in one
+        vectorised scan -- measured 1.25M rows/s for the identical 200k-row
+        book batch. Values are unchanged: the nullable dtypes in `_COLS` map
+        None to NULL exactly as the bound parameters did, and
+        `tests/test_stream_coverage.py` pins the round trip against the old
+        `executemany` as an oracle."""
         conn.execute("BEGIN")
-        if events:
-            conn.executemany(
-                "INSERT INTO book_events VALUES (?,?,?,?,?,?,?,?,?,?)",
+        _insert_frame(
+            conn,
+            "book_events",
+            [
+                (
+                    e.venue,
+                    e.market_id,
+                    _naive_utc(e.recv_ts),
+                    _naive_utc(e.src_ts),
+                    e.sid,
+                    e.seq,
+                    e.kind,
+                    e.side,
+                    e.price,
+                    e.qty,
+                )
+                for e in events
+            ],
+        )
+        _insert_frame(
+            conn,
+            "stream_trades",
+            [
+                (
+                    t.venue,
+                    t.market_id,
+                    _naive_utc(t.recv_ts),
+                    _naive_utc(t.src_ts),
+                    t.price,
+                    t.qty,
+                    t.taker_side,
+                    t.seq,
+                )
+                for t in trades
+            ],
+        )
+        _insert_frame(conn, "stream_gaps", gaps)
+        for table, rows in (("stream_ticker", tickers), ("stream_lifecycle", lifecycles)):
+            ts = _ts_cols(table)
+            _insert_frame(
+                conn,
+                table,
                 [
-                    (
-                        e.venue,
-                        e.market_id,
-                        _naive_utc(e.recv_ts),
-                        _naive_utc(e.src_ts),
-                        e.sid,
-                        e.seq,
-                        e.kind,
-                        e.side,
-                        e.price,
-                        e.qty,
-                    )
-                    for e in events
+                    tuple(_naive_utc(v) if i in ts else v for i, v in enumerate(astuple(r)))
+                    for r in rows
                 ],
             )
-        if trades:
-            conn.executemany(
-                "INSERT INTO stream_trades VALUES (?,?,?,?,?,?,?,?)",
-                [
-                    (
-                        t.venue,
-                        t.market_id,
-                        _naive_utc(t.recv_ts),
-                        _naive_utc(t.src_ts),
-                        t.price,
-                        t.qty,
-                        t.taker_side,
-                        t.seq,
-                    )
-                    for t in trades
-                ],
-            )
-        if gaps:
-            conn.executemany("INSERT INTO stream_gaps VALUES (?,?,?,?,?)", gaps)
         conn.execute("COMMIT")
 
     def last_recv_ts(self, venue: str, channel: str) -> datetime | None:
@@ -726,8 +1028,16 @@ class StreamStore:
         its in-process `last_recv` is gone (fresh process): the
         venue='*' daemon_start row starts at the max across BOTH tables,
         so the channel that died earlier keeps an uncovered tail without
-        this (S-188 loss class 3). Returns naive UTC (as stored)."""
-        table = "stream_trades" if channel == "trades" else "book_events"
+        this (S-188 loss class 3). Returns naive UTC (as stored). The
+        2026-10-20 channels read their own tables: `ticker` from
+        stream_ticker, `lifecycle` from stream_lifecycle -- reading
+        book_events for them would bound their seq_reset row by the BOOK
+        channel's last frame, a different stream entirely."""
+        table = {
+            "trades": "stream_trades",
+            "ticker": "stream_ticker",
+            "lifecycle": "stream_lifecycle",
+        }.get(channel, "book_events")
         with duck_connect(str(self.path)) as conn:
             return conn.execute(
                 f"SELECT max(recv_ts) FROM {table} WHERE venue = ?", [venue]
@@ -741,7 +1051,9 @@ class StreamStore:
         with duck_connect(str(self.path)) as conn:
             last = conn.execute(
                 "SELECT max(ts) FROM (SELECT max(recv_ts) AS ts FROM book_events"
-                " UNION ALL SELECT max(recv_ts) FROM stream_trades)"
+                " UNION ALL SELECT max(recv_ts) FROM stream_trades"
+                " UNION ALL SELECT max(recv_ts) FROM stream_ticker"
+                " UNION ALL SELECT max(recv_ts) FROM stream_lifecycle)"
             ).fetchone()[0]
         if last is None:
             return
@@ -751,5 +1063,5 @@ class StreamStore:
         with duck_connect(str(self.path), read_only=True) as conn:
             return {
                 t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
-                for t in ("book_events", "stream_trades", "stream_gaps")
+                for t in TABLES
             }

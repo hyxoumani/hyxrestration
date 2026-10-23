@@ -16,6 +16,18 @@ STRING DOLLARS (`yes_price_dollars`, `count_fp`, `price_dollars`,
 `delta_fp`, `yes_dollars_fp`/`no_dollars_fp` level pairs), timestamps as
 `ts_ms` epoch millis (trades also carry `ts` epoch seconds, deltas an ISO
 `ts`).
+
+2026-10-20 coverage expansion, shapes read from docs.kalshi.com (websockets
+pages) the same day and NOT yet probed live -- the #9 lesson is that a doc
+shape is a premise until a frame confirms it, so every parser below treats a
+missing field as NULL rather than raising:
+- `update_subscription` edits an existing subscription in place:
+  {"cmd": "update_subscription", "params": {"sid": N, "market_tickers": [...],
+  "action": "add_markets" | "delete_markets"}}; the reply is `ok` (or
+  `error`, code 26 = "subscription market limit exceeded").
+- `market_lifecycle_v2` is exchange-wide and takes NO market filter; frames
+  carry sid AND seq. `ticker` is exchange-wide when no market is named; its
+  frames carry sid but NO seq.
 """
 
 from __future__ import annotations
@@ -28,7 +40,7 @@ from typing import Any
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from hyxlab.streamstore import BookEvent, StreamTrade
+from hyxlab.streamstore import BookEvent, StreamLifecycle, StreamTicker, StreamTrade
 
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 WS_PATH = "/trade-api/ws/v2"
@@ -74,6 +86,38 @@ def subscribe_books(tickers: list[str], cmd_id: int = 1) -> str:
             "params": {"channels": ["orderbook_delta"], "market_tickers": sorted(tickers)},
         }
     )
+
+
+def subscribe_ticker(cmd_id: int = 1) -> str:
+    """Exchange-wide `ticker` (no market filter = every market)."""
+    return json.dumps({"id": cmd_id, "cmd": "subscribe", "params": {"channels": ["ticker"]}})
+
+
+def subscribe_lifecycle(cmd_id: int = 1) -> str:
+    """Exchange-wide `market_lifecycle_v2` (the channel takes no filter)."""
+    return json.dumps(
+        {"id": cmd_id, "cmd": "subscribe", "params": {"channels": ["market_lifecycle_v2"]}}
+    )
+
+
+def update_subscription(sid: int, tickers: list[str], action: str, cmd_id: int) -> str:
+    """Add or delete markets on an EXISTING subscription -- the in-place edit
+    that replaces the reconnect a ticker-set change used to cost. `add_markets`
+    asks for the added markets' initial snapshots explicitly: without one an
+    added book cannot be reconstructed, and the docs list the flag without
+    stating its default."""
+    if action not in ("add_markets", "delete_markets"):
+        raise ValueError(f"unsupported update_subscription action {action!r}")
+    params: dict[str, Any] = {"sid": sid, "market_tickers": sorted(tickers), "action": action}
+    if action == "add_markets":
+        params["send_initial_snapshot"] = True
+    return json.dumps({"id": cmd_id, "cmd": "update_subscription", "params": params})
+
+
+def series_of(ticker: str) -> str:
+    """`KXBTC15M-26OCT201215-15` -> `KXBTC15M`. Kalshi's series ticker is the
+    market ticker's first dash-separated field."""
+    return ticker.split("-", 1)[0]
 
 
 # -- message parsing --------------------------------------------------------
@@ -191,6 +235,108 @@ def parse_message(
         ], []
 
     return _void()  # subscribed/ok/error/heartbeat frames
+
+
+def _f(v: Any) -> float | None:
+    """A doc-shaped numeric field (string dollars / fixed-point counts) to
+    float; absent or unparseable is NULL, never an exception."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _i(v: Any) -> int | None:
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_s(v: Any) -> datetime | None:
+    n = _i(v)
+    return None if n is None else datetime.fromtimestamp(n, tz=UTC)
+
+
+def parse_ticker(frame: dict[str, Any], recv_ts: datetime) -> StreamTicker | None:
+    """One `ticker` frame -> a row; None for anything else."""
+    if frame.get("type") != "ticker":
+        return None
+    msg = frame.get("msg") or {}
+    ticker = msg.get("market_ticker")
+    if not ticker:
+        return None
+    return StreamTicker(
+        venue=VENUE,
+        market_id=ticker,
+        recv_ts=recv_ts,
+        src_ts=_src_ts(msg),
+        sid=frame.get("sid"),
+        seq=frame.get("seq"),
+        price=_f(msg.get("price_dollars")),
+        yes_bid=_f(msg.get("yes_bid_dollars")),
+        yes_ask=_f(msg.get("yes_ask_dollars")),
+        yes_bid_size=_f(msg.get("yes_bid_size_fp")),
+        yes_ask_size=_f(msg.get("yes_ask_size_fp")),
+        last_trade_size=_f(msg.get("last_trade_size_fp")),
+        volume=_f(msg.get("volume_fp")),
+        open_interest=_f(msg.get("open_interest_fp")),
+        dollar_volume=_i(msg.get("dollar_volume")),
+        dollar_open_interest=_i(msg.get("dollar_open_interest")),
+    )
+
+
+#: Frame types on the lifecycle connection that are protocol, not data.
+CONTROL_TYPES = frozenset({"subscribed", "unsubscribed", "ok", "error", "heartbeat", "pong"})
+
+
+def parse_lifecycle(frame: dict[str, Any], recv_ts: datetime, raw: str) -> StreamLifecycle | None:
+    """One lifecycle-channel frame -> a row, for EVERY sequenced data frame.
+
+    Market-level types (`market_lifecycle_v2`, incl. `metadata_updated`)
+    key on the market ticker; event-level types (`event_lifecycle`,
+    `event_fee_update`) on the event ticker. A sequenced frame of a type
+    this function has never heard of is still a row (`msg_type` = its type,
+    raw JSON kept): it consumed a seq, and dropping it would leave a hole
+    indistinguishable from loss -- the void-row rule, one table over.
+    Control acks (unsequenced, or in CONTROL_TYPES) are None."""
+    typ = frame.get("type")
+    if not typ or typ in CONTROL_TYPES:
+        return None
+    msg = frame.get("msg") or {}
+    meta = msg.get("additional_metadata") or {}
+    event_ticker = msg.get("event_ticker") or meta.get("event_ticker")
+    market = msg.get("market_ticker") or event_ticker or ""
+    sending = frame.get("sending_ts_ms")
+    deact = msg.get("is_deactivated")
+    return StreamLifecycle(
+        venue=VENUE,
+        market_id=market,
+        recv_ts=recv_ts,
+        src_ts=(
+            datetime.fromtimestamp(int(sending) / 1000.0, tz=UTC)
+            if _i(sending) is not None
+            else None
+        ),
+        sid=frame.get("sid"),
+        seq=frame.get("seq"),
+        msg_type=str(typ),
+        event_type=msg.get("event_type"),
+        event_ticker=event_ticker,
+        series_ticker=msg.get("series_ticker") or (series_of(market) if market else None),
+        open_ts=_epoch_s(msg.get("open_ts")),
+        close_ts=_epoch_s(msg.get("close_ts")),
+        determination_ts=_epoch_s(msg.get("determination_ts")),
+        settled_ts=_epoch_s(msg.get("settled_ts")),
+        result=msg.get("result") or None,
+        settlement_value=_f(msg.get("settlement_value")),
+        is_deactivated=deact if isinstance(deact, bool) else None,
+        raw=raw,
+    )
 
 
 class SeqTracker:
