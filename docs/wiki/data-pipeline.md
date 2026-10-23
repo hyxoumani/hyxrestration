@@ -809,6 +809,21 @@ self-match trap the ops rules name for `pkill -f`.
   a token pair snapshotting its full book every ~1s, ~580k snap rows/h
   against ~8k/h before. The buffer fill rate is ~2x `BUFFER_ROWS_PER_S`
   while it stays in the top-50, so SPILL_CAP is ~12 min of firehose, not ~27.
+- **Stream coverage expansion (branch `coverage-expansion`, 2026-10-23,
+  NOT yet promoted).** Books for `kalshi_book_series` (books-only: the REST
+  collector never reads the key) beside `kalshi_series`, sharded at
+  `kalshi_book_shard_max` markets per connection (`collector/bookcov.py`;
+  shards > 0 store `sid + idx * SHARD_SID_STRIDE`); the set follows
+  `market_lifecycle_v2` and is edited in place with `update_subscription`,
+  so a set change no longer reconnects (REST reconciliation every 15 min is
+  the backstop). New exchange-wide tables `stream_ticker` and
+  `stream_lifecycle` (KXMVE dropped unless `kalshi_{ticker,lifecycle}_include_mve`),
+  gap channels `ticker`/`lifecycle`. Every Kalshi frame is also kept raw in
+  `data/raw_frames/<date>/<HH>-<channel>.jsonl.zst` (`recv_ts\tconn\tframe`
+  per line, stdlib zstd). The insert path is now a staged CSV + `read_csv`
+  (the stable venv has no pandas/pyarrow): FLUSH_ROWS_PER_S 7,100 -> 100,000.
+  `BUFFER_ROWS_PER_S`/`PENDING_ALARM`/`SPILL_CAP` still describe the
+  pre-expansion mix and must be re-measured after promotion.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,
   2.6M candles. `python -m hyxlab.sweep --doctor` = health check for
   BOTH archives (includes mirror tripwire + stream counts/size).
