@@ -208,3 +208,34 @@ unit_age_s() {
     now=$(date +%s)
     echo $(( now - started ))
 }
+
+# Bound 14c (mistakes #134). The two guards above reason about the
+# CONSUMER: did its code move, what does the run it would kill still owe.
+# Neither looks at its INPUT. On 2026-10-23 12:45Z a promote restarted
+# hyxlab-stream (the coverage expansion: 4,502 tickers / 76 series, ~20x
+# the book events) and left the 9-day shadow run on its OLD, unfiltered
+# reader; the run the deferral was protecting was OOM-killed at its 1G cap
+# 82 minutes later (anon-rss 1,039,464 kB), and the universe filter that
+# would have saved it was sitting unexecuted in the same promote. Prints
+# the hazard when the deferred unit's producer IS restarting, so the
+# operator reads it in the promote log -- the decision stays theirs
+# (a producer bug fix with identical output is the common case, and
+# restarting an 8-panel-day run for it is the cost the guard exists to
+# avoid). Returns 0 when it printed, 1 otherwise.
+deferred_consumer_hazard() {
+    local unit="$1" defer="$2"; shift 2
+    [[ "$unit" == hyxlab-shadow.service ]] || return 1
+    [[ ",$defer," == *",hyxlab-stream.service,"* ]] && return 1
+    local u
+    for u in "$@"; do
+        [[ "$u" == hyxlab-stream.service ]] || continue
+        echo "   HAZARD: hyxlab-shadow.service is deferred while hyxlab-stream.service, its PRODUCER, restarts."
+        echo "           The old shadow reads whatever the new stream writes. If this promote widened"
+        echo "           the stream's coverage, the shadow's input multiplies under its 1G cap"
+        echo "           (2026-10-23: ~20x book events, OOM-killed 82 min later -- the run was lost anyway)."
+        echo "           Read the shadow's next 300s line (events per poll, rss_anon_mb) and restart"
+        echo "           it with --restart-young before the cap does."
+        return 0
+    done
+    return 1
+}

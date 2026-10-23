@@ -442,8 +442,10 @@ def test_the_cap_keeps_a_stalled_panel_from_deferring_forever():
     # requirement is 10 panel days and the measured wall-to-panel lag is
     # 1.0-1.6 days, so ~12 days is the worst honest case.
     assert guard(str(12 * 86400), panel="panel_shortfall RID 9 10").strip().endswith("DEFER")
-    assert guard(str(15 * 86400), panel="panel_shortfall RID 5 10", cap=str(20 * 86400)).strip().endswith(
-        "DEFER"
+    assert (
+        guard(str(15 * 86400), panel="panel_shortfall RID 5 10", cap=str(20 * 86400))
+        .strip()
+        .endswith("DEFER")
     )
 
 
@@ -545,3 +547,63 @@ def test_intersect_names_the_kalshi_venue_for_streamd_when_actually_fed():
     )
     assert res.returncode == 0
     assert res.stdout.split() == ["collector/venues/kalshi.py"]
+
+
+# Bound 14c (mistakes #134): a deferral reasons about the consumer's code
+# and its run's worth, never about its INPUT. The 2026-10-23 12:45Z
+# promote restarted the stream (coverage ~20x) and deferred the 9-day
+# shadow, which the new input then OOM-killed 82 min later. The hazard is
+# printed when the deferred shadow's producer is really restarting.
+def hazard(unit: str, defer: str, *restart: str) -> tuple[int, str]:
+    script = (
+        f'DEV="{REPO}"; source "{REPO}/scripts/restart_decision.sh"; deferred_consumer_hazard "$@"'
+    )
+    res = subprocess.run(
+        ["bash", "-c", script, "bash", unit, defer, *restart],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return res.returncode, res.stdout
+
+
+def test_shadow_deferred_while_stream_restarts_prints_the_hazard():
+    rc, out = hazard(
+        "hyxlab-shadow.service",
+        "hyxlab-shadow.service",
+        "hyxlab-stream.service",
+        "hyxlab-shadow.service",
+    )
+    assert rc == 0
+    assert "HAZARD" in out and "PRODUCER" in out and "--restart-young" in out
+
+
+def test_no_hazard_when_the_stream_is_not_restarting():
+    rc, out = hazard("hyxlab-shadow.service", "hyxlab-shadow.service", "hyxlab-shadow.service")
+    assert rc == 1 and out == ""
+
+
+def test_no_hazard_when_the_stream_is_deferred_too():
+    rc, out = hazard(
+        "hyxlab-shadow.service",
+        "hyxlab-stream.service,hyxlab-shadow.service",
+        "hyxlab-stream.service",
+        "hyxlab-shadow.service",
+    )
+    assert rc == 1 and out == ""
+
+
+def test_no_hazard_for_a_deferred_unit_that_is_not_the_consumer():
+    rc, out = hazard(
+        "hyxlab-stream.service",
+        "hyxlab-stream.service",
+        "hyxlab-stream.service",
+        "hyxlab-shadow.service",
+    )
+    assert rc == 1 and out == ""
+
+
+def test_promote_sh_asks_the_hazard_inside_its_defer_loop():
+    src = (REPO / "scripts" / "promote.sh").read_text()
+    assert 'deferred_consumer_hazard "$u" "$DEFER" "${RESTART[@]}"' in src
+    subprocess.run(["bash", "-n", str(REPO / "scripts" / "promote.sh")], check=True)

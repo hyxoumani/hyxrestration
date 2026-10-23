@@ -1063,3 +1063,39 @@ def test_a_failed_engine_tune_closes_the_attach_instead_of_leaking_the_lock(tmp_
     # was caught by `stream_conn`'s own handler.
     assert opened == [True]
     assert closed == [True], "the attach was not released before the raise"
+
+
+# 2026-10-23 14:08Z (mistakes #134): the shadow was OOM-killed at its 1G
+# cap with `anon-rss:1039464kB` in the kernel's line and no memory reading
+# in its own journal. The cgroup cannot separate anon from the page cache
+# this daemon's archive reads pull in (ops rule), so the holder samples
+# its own anon RSS on every stats line, through the ONE renderer both
+# publishers use (#95).
+def test_rss_anon_mb_reads_this_process():
+    from simulator.shadow import rss_anon_mb
+
+    rss = rss_anon_mb()
+    assert rss is not None and rss > 0
+
+
+def test_stats_line_carries_anon_rss_and_is_the_only_renderer(monkeypatch):
+    import inspect
+
+    import simulator.shadow as shadow
+
+    holds = {"n": 1, "db": "hyxstream.duckdb"}
+    monkeypatch.setattr(shadow, "rss_anon_mb", lambda: 123.456)
+    line = shadow.stats_line("", {"polls": 2}, 7, holds)
+    assert line.startswith("[shadow] {'polls': 2} fills=7 rss_anon_mb=123.5 ")
+    assert line.endswith(' stream_holds={"n": 1, "db": "hyxstream.duckdb"}')
+    # Perturbation: the reading reaches the line (not read into a local
+    # and dropped, #95).
+    monkeypatch.setattr(shadow, "rss_anon_mb", lambda: 7.0)
+    assert shadow.stats_line("", {"polls": 2}, 7, holds) != line
+    # An unmeasured sample is None, never 0.0 (#91).
+    monkeypatch.setattr(shadow, "rss_anon_mb", lambda: None)
+    assert "rss_anon_mb=None" in shadow.stats_line("done: ", {}, 0, None)
+    # One renderer: no second site may format the holds block into a line.
+    src = inspect.getsource(shadow)
+    assert src.count("stream_holds={json.dumps(") == 1
+    assert src.count("stats_line(") == 3  # the def + the two publishers

@@ -124,6 +124,42 @@ def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
     return conn
 
 
+def rss_anon_mb() -> float | None:
+    """This process's ANONYMOUS resident set in MiB, or None off Linux.
+
+    Measured at the holder, because nothing else can: the cgroup's
+    `memory.current` charges the page cache this daemon's own archive
+    reads pull in, and `MemoryPeak` sits at the cap for any healthy reader
+    (ops rule). The kill that motivated it -- 2026-10-23 14:08Z, mistakes
+    #134 -- left `anon-rss:1039464kB` in the kernel's line and nothing in
+    the daemon's own journal about how fast it got there.
+    """
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("RssAnon:"):
+                    return int(line.split()[1]) / 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def stats_line(prefix: str, stats: dict, fills_n: int, holds: dict | None) -> str:
+    """The daemon's periodic / final journal line, rendered in ONE place.
+
+    Two publishers (the 300s report and `done:`) render the same reading;
+    a field added to one and not the other is a wrong number in the
+    other (#95). `rss_anon_mb` is read at render time -- the line IS the
+    sample.
+    """
+    rss = rss_anon_mb()
+    rss_s = "None" if rss is None else f"{rss:.1f}"
+    return (
+        f"[shadow] {prefix}{stats} fills={fills_n} rss_anon_mb={rss_s}"
+        f" stream_holds={json.dumps(holds)}"
+    )
+
+
 def stream_holds_block() -> dict | None:
     """The reading `shadow_stream_holds` is named after, in ONE place.
 
@@ -610,11 +646,7 @@ def main() -> None:
         runner.poll_once()
         if time.monotonic() - last_report >= 300:
             holds = stream_holds_block()
-            print(
-                f"[shadow] {runner.stats} fills={len(runner.sim.result.fills)}"
-                f" stream_holds={json.dumps(holds)}",
-                flush=True,
-            )
+            print(stats_line("", runner.stats, len(runner.sim.result.fills), holds), flush=True)
             # Journals rotate; a daemon's bill for the archive must outlive
             # that. Declined exactly like `persist` -- an ad-hoc reader
             # writer-locking the ledger must never kill the run (the
@@ -634,10 +666,7 @@ def main() -> None:
         runner.ledger.record_holds(runner.run_id, holds)
     except duckdb.Error as e:
         print(f"[shadow] hold record declined ({e!r})", flush=True)
-    print(
-        f"[shadow] done: {runner.stats} fills={len(result.fills)} stream_holds={json.dumps(holds)}",
-        flush=True,
-    )
+    print(stats_line("done: ", runner.stats, len(result.fills), holds), flush=True)
     print(json.dumps(result.metrics, default=str), flush=True)
 
 

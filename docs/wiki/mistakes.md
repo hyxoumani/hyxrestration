@@ -3692,6 +3692,51 @@ and must NAME a caller that is resolved in the source and shown to hold
 the lock. The mutator set is derived from `hyxlab/store.py`, not
 listed, so a new writing method cannot enter invisible.
 
+134. **2026-10-23 14:08Z -- the deferral that protects a shadow run reasons
+about the run's CODE and WORTH and never about its INPUT, so the promote
+that multiplied the input killed the run the deferral was protecting.**
+At 12:45:42Z a promote outside the autoloop (a `systemctl` from a
+Chromium-scoped session) fast-forwarded stable 081bce7 -> 24da8be: the
+stream coverage expansion (sharded lifecycle-driven books: `4502 open
+tickers across 76 series on 10 connection(s)`) AND `b3ed40a`, the shadow's
+universe filter, in the same promote. It restarted `hyxlab-stream` and
+left `hyxlab-shadow` (PID 797, up since the 10-14 boot, 1w2d) on its OLD
+reader, which walks the whole of `book_events`. Measured from the
+shadow's own 300s lines: events per 5 min went 71-85k (11:44-12:46Z) ->
+1.0-1.7M from 12:51Z, 20x; `market metadata loaded` 46,420 -> 48,200;
+two 1-fail stall episodes on `hyxstream.duckdb` held by the shadow (15.6s
+at 14:02:48Z under the dying process, 16.0s at 14:08:32Z under the new
+one's 1,345,101-event seed). At 14:08:00Z the kernel killed it:
+`constraint=CONSTRAINT_MEMCG ... anon-rss:1039464kB, file-rss:51820kB`
+-- anon, not cache. 82 minutes after the producer restarted. The restart
+(`Restart=always`, counter 1) came up on the NEW code: 4.7k events/poll,
+~117 snapshots/poll, `retained_n == n`, anon 113-129 MB in its first
+10 min. The filter that would have kept the old run alive was in the
+promote that killed it, unexecuted. Root cause: `young_run_guard`
+(bounds 14/14b, #59) answers "did the code move" and "what does the run
+still owe" -- both about the CONSUMER -- and the promote log gave the
+operator nothing about the PRODUCER's output changing underneath it;
+the deferral's own premise ("deferral costs nothing on a promote that
+does not move shadow's code") is false whenever the promote moves what
+shadow READS. Fix: `restart_decision.sh deferred_consumer_hazard` --
+when the deferred unit is the shadow and `hyxlab-stream` is really
+restarting (in the kept list, not itself deferred), promote.sh prints a
+HAZARD naming the mechanism and the measured cost, right under the
+DEFERRED line (5 scratch-bash tests, the stream check red-verified by
+mutant); the decision stays the operator's, because a streamd bug fix
+with identical output is the common case and killing an 8-panel-day run
+for it is the cost the guard exists to avoid. And the holder now
+measures itself: `simulator.shadow.stats_line` is the ONE renderer for
+the 300s and `done:` lines (#95) and carries `rss_anon_mb` from
+`/proc/self/status` `RssAnon` -- the cgroup cannot separate anon from
+the page cache the seed and polls pull in (ops rule on `MemoryPeak`), so
+the next climb is legible in the journal at 5-min resolution and the
+next kill has a slope in front of it (2 tests; the dropped-reading
+mutant red). Rule: **a guard that defers a consumer must say what the
+same promote does to the consumer's PRODUCER, and a daemon under a cap
+publishes its own anon RSS -- the kernel's one line at death is not a
+trend.** Classification: rule (ops.md). Suite 2186 -> 2193.
+
 ---
 
 Recurrence audit (2026-09-08, breadth-floor pass): the 09-06 pass closed

@@ -250,6 +250,7 @@ if [[ -n "$DEFER" ]]; then
         if [[ ",$DEFER," == *",$u,"* ]]; then
             echo "   DEFERRED: $u — its code moved but its restart is deferred;"
             echo "             it runs OLD code until its next restart. Record this."
+            deferred_consumer_hazard "$u" "$DEFER" "${RESTART[@]}" || true
         else
             KEPT+=("$u")
         fi

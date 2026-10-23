@@ -473,3 +473,16 @@
   ` UTC` on a literal bound (relative bounds like `-2h` are safe), and
   prove a window once by printing its first line's timestamp before
   counting anything inside it.
+- A promote that restarts a PRODUCER and defers its CONSUMER has changed
+  the consumer's input without changing its code, and the deferral guard
+  (`young_run_guard`, bounds 14/14b) reasons only about the consumer. The
+  2026-10-23 12:45Z promote shipped the stream coverage expansion (~20x
+  book events) with the shadow's universe filter in the SAME promote,
+  restarted the stream and deferred the 9-day shadow run on its old
+  unfiltered reader; the kernel OOM-killed it at its 1G cap 82 min later,
+  `anon-rss:1039464kB` (mistakes #134). promote.sh now prints a HAZARD
+  under the DEFERRED line when the stream really restarts; read the
+  shadow's next 300s line -- events per poll and `rss_anon_mb` -- and
+  restart it with `--restart-young` before the cap does. A daemon under
+  `MemoryMax` publishes its own anon RSS (`/proc/self/status RssAnon`):
+  the cgroup's numbers include the page cache and cannot show the climb.
