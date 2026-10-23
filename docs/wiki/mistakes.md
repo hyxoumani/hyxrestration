@@ -3437,6 +3437,140 @@ Format: what happened → root cause → error type → prevention tier
     the arithmetic behind a threshold has to include the instrument's
     error, not just its reading.
 
+131. **2026-10-21 09:25Z -- a skip predicate's premise ("a prior run
+    FETCHED this market") was recorded by a row written BEFORE the fetch
+    and kept when the fetch raised.** `collector.poly_sweep` appended the
+    Gamma info row (which sets `markets.result` for a closed market) and
+    the stats row (the tail oracle's evidence that a run fetched after the
+    stop) ahead of the two paced fetches, and its except branch -- "a
+    market that raised mid-way still owns the rows it put in the batch" --
+    kept both. `Store.poly_resolved_complete` (10-19) then reads that
+    result as "fetched to the close" and skips the market forever: prices
+    are a ~60-day rolling window and the tail is capped at 3,000, so the
+    hole is permanent for every market FIRST seen closed on an incident
+    day. Found by reading the journal, not the archive: 87 CLOB `500
+    Server Error` on prices-history from 09:04Z (10-18: 0, 10-19: 4,
+    10-20: 0), 1-7 a minute, still landing as the loop crossed the open/
+    closed boundary at 09:17Z; `prices_history` has no 5xx retry. Class:
+    wrong-assumption (the skip was built on 10-19 against a clean
+    journal, and the "owns its rows" comment two lines below the except
+    was read as a feature). Fix: the except branch truncates `infos` and
+    `stats` back to the market's entry (sweep-log and partial prices stay;
+    +1 test, red-verified). Residual: the 10-21 run ran the old code, so
+    its closed-segment markets that 500'd after 09:17Z are archived
+    resolved and owe a targeted re-fetch -- repaired 14:21Z the same day:
+    `collector.poly_unmark_errors` cleared `result` on the 322 of them
+    (330 closed-segment errors on the done line; 306 first seen that
+    day), so the 10-22 run on the fixed code fetches them. Rule: a
+    predicate that reads "X happened" from a persisted row must be
+    written by the code path AFTER X, and the except branch is a code
+    path -- list what each row CLAIMS before deciding which survive an
+    exception.
+
+132. **2026-10-22 14:35Z -- a budget check whose breach line is one SCALAR
+    calls every breach "stale budget", including the one it was told was
+    coming.** The 10-22 04:15Z poly run closed at 486.3 min / 8h10m unit
+    wall against `qa.BATCH_RUN_BUDGET_H` 8.0h (re-measured the day before
+    from three skip-era lines, 420-463 min). The prior pass pre-registered
+    the excess: the #131 repair put 322 closed markets back in the fetch
+    path for one day, "+~30 min on the band". The done line proves it --
+    `closed_fetched` 1,604 markets / 134.0 min (1,056 / 88.8 and 1,225 /
+    112.2 on the two lines before; 5.0 s/market, so 322 x 5.0 s = 27 min),
+    `open` 6,289 / 236.4 min on its +~7/day trend, `flush` 115.8 on its
+    109-116 band -- 486 - 27 = 459, INSIDE the band. But `qa_batch_run_
+    budget` reads only systemd's `Consumed ... over ...` line, so tomorrow's
+    10:00Z QA would print `hyxlab-poly-sweep.timer ran 8.17h (budget 8h)`
+    and nothing else: the two repairs that line names (re-measure the
+    constant, or make the unit faster) are both WRONG for this breach, and
+    the catch-up clause (`_catch_up_abort`) covers only a breach after an
+    ABORT. Class: unobservable-cause (the decomposition existed, 30 lines
+    above the `Consumed` line in the same journal, and the check that
+    verdicts on the wall did not read it). Fix: `read_batch_runs` carries
+    the `[poly] done:` JSON's `segments`/`flush_min` onto the run
+    (`BatchRun.segments`, reset at every run boundary and every `Consumed`
+    so a done line never rides on to the next run) and the breach line
+    renders it (`[open 6,289 mkts 236.4 min; closed_fetched 1,604 mkts
+    134.0 min; ...; flush 115.8 min]`, FAIL and WATCH forms; +7 tests on
+    the verbatim 10-22 quartet, the FAIL-line one red-verified by a
+    mutant). The constant stays 8.0h: it was measured on healthy lines and
+    the 10-22 line is a healthy run plus a named one-off, so it FAILs
+    until it ages out on 10-29 with its cause on the line -- raising the
+    budget to fit it would bake the repair in (the catch-up docstring's
+    rule, applied). Rule: a verdict on a scalar must carry the scalar's
+    decomposition on the SAME line when the unit publishes one, because
+    the repair a breach calls for depends on which term moved -- universe
+    (open), backlog or repair (closed_fetched), archive contention
+    (flush) -- and the reader of a FAIL months later has only the line.
+    Fix-the-class, same pass (reports.md): the Kalshi sweep prints its
+    done line as a dict REPR (`by_class` ladder/dense/small with `wall_s`),
+    which the JSON parser silently read as nothing; both forms are read
+    now (`_parse_done`, `ast.literal_eval` fallback, +2 tests), so the
+    12.5h budget's breach renders `[ladder 33 series/64,175 mkts 495.5
+    min; dense 1 series/96 mkts 47.7 min; small 3,997 series/4,418 mkts
+    153.6 min]` on 10-20's verbatim line.
+
+133. **2026-10-22 20:25Z -- a per-item parser that raises on one item's
+    one null field costs the whole pull, and the checks on the table read
+    the OTHER items as the pull being fine.** From 18:45Z NWS served AUS's
+    running daytime period ("This Afternoon", 13:00 CDT) with
+    `temperature: null`; `nws.get_daily_highs` did `int(period[
+    "temperature"])`, the TypeError escaped the loop, and the collector's
+    per-station except logged `[collect] nws AUS: TypeError ... NoneType`
+    and moved on -- 19 consecutive ticks, 1.5h+, `forecasts` 35 -> 28 per
+    tick, seven AUS days unpulled each time while six of them sat well-
+    formed in the same response (verified live at 20:16Z: period 1 None,
+    periods 3-13 86/87/83/81/78/80 F). Unrecoverable by design (NWS
+    publishes only the CURRENT forecast). The digest read it as exit 0,
+    and QA's two NWS checks (`nws forecasts fresh` / `continuous`,
+    2026-09-04) read `max(fetched_at)` over ALL stations, so the four
+    healthy stations kept them green: the 09-04 pair was written against
+    "an NWS outage, a DNS failure or a station rename" -- ALL stations
+    down -- and never asked whether ONE station could stop. Found only by
+    reading the collector's error counter in the journal (`'errors': 1`
+    on 19 of 99 ticks since 12:00Z). Class: per-item blast radius (one
+    item's defect handled at the pull's granularity) + the #100 shape
+    (a detector whose aggregate is satisfied by the survivors). Fix:
+    `get_daily_highs` skips a daytime period whose temperature is null,
+    keeps the rest, and prints `[nws] AUS: This Afternoon 2026-10-22
+    temperature null, skipped` (+3 tests on the verbatim shape, red-
+    verified); QA gains `nws stations each fresh (< 20 min old)` --
+    per-station `max(fetched_at)` over the stations that pulled inside
+    24h, every stale one named with its age (`STALE AUS 95 min`), the
+    owed set aging a removed station out after a day rather than failing
+    forever (+3 tests, the trip red-verified; the table-wide check's
+    blindness is pinned in the same test). Rule: when a loop's items are
+    independent and the store keeps them independently, handle a bad
+    item at the ITEM -- a raise out of the loop converts one provider
+    null into the loss of everything after it. And when a writer runs
+    N independent sub-pulls under N excepts, the freshness check has N
+    subjects: a table-wide `max()` is a check on the LUCKIEST sub-pull.
+    Fix-the-class, same run (21:30Z): the cycle has THREE such loops
+    (32 Kalshi series, 5 NWS stations, the Polymarket books), each
+    printing `[collect] {source}: {Exc}: ...` from its except and nothing
+    else, and the archive cannot tell a series with no open market from
+    one whose fetch fails -- so the class is closed from the lines
+    themselves: `qa.qa_collect_source_errors` (journal-only, section
+    `collect-source-errors`) groups a day's lines by source and
+    exception class and FAILs any source past `COLLECT_SOURCE_ERR_MAX_24H`
+    = 5 cycles, naming each (`FAILING nws AUS 21 cycle(s) (TypeError),
+    kalshi KXLOWTNYC 9 cycle(s) (HTTPError), ...` -- its first live read,
+    both of the day's episodes and nothing else; benign band measured at
+    ONE line per source per day over 10-14..10-22). Unreadable journal =
+    SKIP, `-- No entries --` = zero (#99). +5 tests on verbatim lines.
+    Archive witness, next run (10-23 02:40Z): `collect_cycles`, one row
+    per (cycle, source) with `n_rows` and the exception class, written
+    inside `write_cycle`'s transaction and spooled with the cycle; QA
+    reads it under the archive hold and the journal scrape is the
+    fallback for a window the table does not cover. The archive can now
+    tell a quiet series (0 rows, no error) from a dead one. Note on the
+    test: the obvious "same transaction" arm -- a failing snapshot write
+    leaves no record -- stayed GREEN against a mutant that writes the
+    record after COMMIT, because the except returns before reaching it;
+    the arm that is red is the record itself failing and the snapshots
+    rolling back. A transaction claim has two directions and only the
+    one where the NEW statement fails exercises its membership (the
+    perturbation rule above: watch the mutant land, then watch it fail).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

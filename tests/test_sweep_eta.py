@@ -87,7 +87,7 @@ def test_the_progress_line_carries_the_weighted_eta_and_its_tag(monkeypatch, cap
     _wire(monkeypatch)
     names = sorted(COST)  # the loop sorts: A, B, BIG, C, D, E, LADDER
     prior = {t: COST[t] * 2 for t in names}  # yesterday was twice as slow
-    monkeypatch.setattr(sweep_mod, "prior_series_wall", lambda store, now=None: prior)
+    monkeypatch.setattr(sweep_mod, "prior_series_wall", lambda store, now=None, run=None: prior)
     monkeypatch.setattr(sweep_mod, "PROGRESS_EVERY", 2)
     sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
     lines = [ln for ln in capsys.readouterr().out.splitlines() if "min left" in ln]
@@ -133,3 +133,77 @@ def test_the_progress_line_names_the_series_rate_when_there_is_no_prior(monkeypa
     sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
     lines = [ln for ln in capsys.readouterr().out.splitlines() if "min left" in ln]
     assert lines and all("min left (series-rate) | done: ladders" in ln for ln in lines)
+
+
+def test_the_listings_delta_is_against_the_prior_runs_series_set_not_its_wall_dict(tmp_path):
+    """A run's first series has no wall, so a delta taken from the wall dict
+    would name it a new listing every day; the set has it. Measured
+    2026-10-21: 84 series the 10-20 run never swept, legible only as
+    `68 unpriced` until this landed."""
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        for s, off in (("A", 0), ("B", 60), ("C", 2760)):
+            _log(store, s, T0 + timedelta(seconds=off))
+        run = sweep_mod._prior_run(store, now=T0 + timedelta(hours=24))
+        assert sweep_mod.prior_series_wall(store, run=run) == {"B": 60.0, "C": 2700.0}
+        delta = sweep_mod.listings_delta(["A", "B", "KXNEW", "KXNEW2"], run)
+    finally:
+        store.close()
+    assert delta == {"targets": 4, "prior": 3, "new": ["KXNEW", "KXNEW2"], "dropped": ["C"]}
+
+
+def test_no_prior_run_is_no_delta_never_everything_new(tmp_path):
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        assert sweep_mod._prior_run(store) == []
+        assert sweep_mod.listings_delta(["A", "B"], []) is None
+    finally:
+        store.close()
+    assert sweep_mod.listings_line(None) == "[sweep] listings: no prior run in the lookback"
+
+
+def test_the_listings_line_names_the_delta_and_every_field_perturbs_it():
+    base = {"targets": 4031, "prior": 3963, "new": ["KXFTSED", "KXHSID"], "dropped": []}
+    line = sweep_mod.listings_line(base)
+    assert line == (
+        "[sweep] listings: 4031 targets vs 3963 swept last run"
+        " | +2 new (KXFTSED, KXHSID) | -0 dropped"
+    )
+    for key, val in (
+        ("targets", 4032),
+        ("prior", 3962),
+        ("new", ["KXFTSED"]),
+        ("dropped", ["KXGONE"]),
+    ):
+        mutant = dict(base)
+        mutant[key] = val
+        assert sweep_mod.listings_line(mutant) != line, key
+    many = dict(base, new=[f"KX{i:02d}" for i in range(sweep_mod.LISTINGS_NAMED + 3)])
+    assert ", ... +3)" in sweep_mod.listings_line(many)
+
+
+def test_the_run_prints_the_listings_line_first_and_the_done_dict_carries_the_counts(
+    monkeypatch, capsys
+):
+    from tests.test_sweep_wall_attribution import COST, _wire
+
+    _wire(monkeypatch)
+    run = [(t, T0 + timedelta(seconds=i)) for i, t in enumerate(["ZZOLD", *sorted(COST)][:-1])]
+    monkeypatch.setattr(sweep_mod, "_prior_run", lambda store, now=None: run)
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == (
+        "[sweep] listings: 7 targets vs 7 swept last run | +1 new (LADDER) | -1 dropped (ZZOLD)"
+    )
+    assert (totals["new_series"], totals["dropped_series"]) == (1, 1)
+
+
+def test_a_first_run_reports_none_for_the_listings_counts(monkeypatch, capsys):
+    from tests.test_sweep_wall_attribution import _wire
+
+    _wire(monkeypatch)  # its fake store has no archive: no prior run
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+    assert (totals["new_series"], totals["dropped_series"]) == (None, None)
+    assert (
+        capsys.readouterr().out.splitlines()[0] == "[sweep] listings: no prior run in the lookback"
+    )

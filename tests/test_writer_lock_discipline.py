@@ -65,6 +65,11 @@ ALLOWED: dict[str, tuple[str, str]] = {
         " prefix resolution happen on a READ-ONLY store, and the single"
         " writer_burst carries only the finished rows",
     ),
+    "collector/poly_unmark_errors.py::main": (
+        "BURST",
+        "one-shot un-resolve (mistakes #131): journal scrape, parse and prefix"
+        " resolution on a READ-ONLY store, one writer_burst for the UPDATE",
+    ),
     "collector/reconcile.py::reconcile": (
         "BURST",
         "a batch that resolved to nothing takes no lock at all",
@@ -395,6 +400,7 @@ def test_the_mutator_set_is_derived_and_complete():
         "insert_breadth_cycle",
         "insert_breadth_snapshots",
         "insert_candles",
+        "insert_collect_cycle",
         "insert_forecasts",
         "insert_new",
         "insert_news",
@@ -407,6 +413,7 @@ def test_the_mutator_set_is_derived_and_complete():
         "insert_vintages",
         "log_sweep",
         "mark_trades_swept",
+        "poly_unset_results",
         "set_schema_version",
         "set_watermark",
         "upsert_markets",

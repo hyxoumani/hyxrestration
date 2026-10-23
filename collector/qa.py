@@ -13,6 +13,7 @@ failure mode that has either happened or provably can.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -268,6 +269,23 @@ _SIGNALS_FETCH_SECTION = "signals-fetch"
 # contents of a list nobody could see change. One definition, so a rename cannot
 # desync the producer from its reader.
 COLLECT_SKIP_SECTION = "collect-skips"
+#: Section name for `qa_collect_source_errors` (mistakes #133).
+COLLECT_SOURCE_ERR_SECTION = "collect-source-errors"
+#: How many of a day's ~288 cycles ONE source (a Kalshi series, an NWS
+#: station, the Polymarket book pull) may fail before QA fails. Measured
+#: 2026-10-14..10-22 on the live journal: the benign band is ONE line per
+#: source per day (a ReadTimeout, a ConnectionError); the two episodes it
+#: exists to catch were 9 per series (the 10-22 Thursday-closure 503 storm,
+#: 07:12-08:00Z) and 21 (NWS AUS null temperature, 18:45-20:35Z). 5 sits 5x
+#: above benign and under both.
+COLLECT_SOURCE_ERR_MAX_24H = 5
+#: Set by `_archive_checks` on every run: the per-source error map read from
+#: `collect_cycles` (`read_archive_collect_source_errors`), or None when the
+#: table is younger than the window -- an archive from before the table
+#: shipped (2026-10-23) or its first day -- in which case the journal scrape
+#: stays the witness. Reset at the top of `qa_archive`, so a run whose
+#: archive attach failed falls back to the journal rather than a stale map.
+_archive_source_errors: dict[str, dict[str, int]] | None = None
 STANDING_SKIPS: frozenset[str] = frozenset({COLLECT_SKIP_SECTION})
 
 # The RECOVERY half of the same hole. A skipped cycle stopped being an
@@ -446,10 +464,19 @@ FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
 #:                     two fetches for a market a PRIOR run archived as
 #:                     resolved (`Store.poly_resolved_complete`; 12,458 of
 #:                     18,496 markets, 74% of the run's ~93k requests, 0
-#:                     new rows) -- the budget is NOT re-measured on that
-#:                     change until its done lines exist; a FAIL on the
-#:                     10-18 run's line is the reading, not a reason to
-#:                     bump.
+#:                     new rows) -- the budget was NOT re-measured on that
+#:                     change until its done lines existed. 2026-10-21:
+#:                     three skip-era done lines -- 10-19 463.1 min, 10-20
+#:                     419.9, 10-21 452.2 (unit walls 7.72 / 7.00 / 7.61h;
+#:                     the 10-21 line carries 393 fetch errors from a CLOB
+#:                     500 incident, each a wasted request plus a 2s
+#:                     sleep) -- so 8.0h, the max rounded up to the half
+#:                     hour. The 10-18 17.57h line keeps FAILING until it
+#:                     ages out on 10-25; that is the same reading it gave
+#:                     against 17.5h, not a regression of this constant.
+#:                     The open segment (6,168 markets, ~228 min) is the
+#:                     part that grows with Polymarket's listings; a
+#:                     healthy breach reads as the sweep's does.
 #:
 #: The FADE arm is a different set. Only Kalshi-facing units spend the
 #: quota the fade window protects (EXP-958), so overlap is judged for
@@ -464,11 +491,9 @@ FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
 BATCH_RUN_BUDGET_H = {
     "hyxlab-sweep.timer": 12.5,
     "hyxlab-tradepass.timer": 4.0,
-    "hyxlab-poly-sweep.timer": 17.5,
+    "hyxlab-poly-sweep.timer": 8.0,
 }
-KALSHI_BATCH_UNITS: frozenset[str] = frozenset(
-    {"hyxlab-sweep.timer", "hyxlab-tradepass.timer"}
-)
+KALSHI_BATCH_UNITS: frozenset[str] = frozenset({"hyxlab-sweep.timer", "hyxlab-tradepass.timer"})
 #: Journald on this box holds ~16M / ~2 days, so this is a ceiling on the
 #: lookback, not a promise of one. Unreachable days read UNMEASURED.
 BATCH_RUN_LOOKBACK_DAYS = 7
@@ -1579,6 +1604,47 @@ def _check_freshness(conn, name: str, table: str, col: str, now: datetime, noun:
     )
 
 
+def _check_nws_stations(conn, now: datetime) -> None:
+    """Per-station freshness for the NWS pull: the two table-wide checks
+    above read `max(fetched_at)` over ALL stations, and the collector pulls
+    each station under its own try/except (`collect.py`, `[collect] nws
+    {station}: ...`), so ONE station failing on every tick leaves the table
+    fresh and continuous. Measured 2026-10-22 (mistakes #133): NWS served
+    AUS's running period with `temperature: null`, the parser raised on it,
+    and AUS pulled nothing for 19 consecutive ticks (`forecasts` 35 -> 28,
+    1.5h+) while both table-wide checks would have read green.
+
+    The owed set is the stations that pulled inside the last 24h -- QA does
+    not load the watchlist, and a station REMOVED from it is a deliberate
+    act that ages out of this check after a day rather than failing it
+    forever. The blind spot that leaves (mistakes #98's shape) is a station
+    silent for longer than 24h, which the table-wide checks are equally
+    blind to; a station added and never pulled is unowed here. Every stale
+    station is named with its age, so the line says which pull to read in
+    the journal.
+    """
+    rows = conn.execute(
+        "SELECT station, epoch(? - max(fetched_at)) FROM nws_forecasts"
+        " WHERE fetched_at > ? - INTERVAL 24 HOUR GROUP BY station ORDER BY station",
+        [now, now],
+    ).fetchall()
+    stale = [(st, age) for st, age in rows if age >= CYCLE_FRESH_S]
+    check(
+        "nws stations each fresh (< 20 min old)",
+        not stale and bool(rows),
+        (
+            f"{len(rows)} station(s) pulled in 24h, "
+            + (
+                "all fresh"
+                if not stale
+                else "STALE " + ", ".join(f"{st} {age / 60.0:.0f} min" for st, age in stale)
+            )
+        )
+        if rows
+        else "no station pulled in 24h",
+    )
+
+
 def _downtime_phrase(gap_s: float, cadence_s: float) -> str:
     """`downtime >= N min` for a gap of `gap_s`, or the reason there is no such
     number.
@@ -1691,6 +1757,8 @@ def qa_archive(hours: float, path: str = ARCHIVE) -> int | None:
     """Returns the econ pull's age in days (see `qa_econ_pull_live`), or
     None when the archive was unreachable or has never been pulled — the
     witness `qa_signals_fetch` needs, and None means "cannot decide"."""
+    global _archive_source_errors
+    _archive_source_errors = None
     with _held_ro(path) as conn:
         now = datetime.now(UTC).replace(tzinfo=None)
         if not _reachable(conn, "main archive reachable", "archive", now):
@@ -1725,6 +1793,12 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
         "collector",
         CYCLE_CADENCE_S,
     )
+
+    # The collect cycle's own per-source account (mistakes #133). Read here,
+    # inside the one hold, and JUDGED later by `qa_collect_source_errors`,
+    # which runs journal-side and takes this map in preference to the scrape.
+    global _archive_source_errors
+    _archive_source_errors = read_archive_collect_source_errors(conn, now)
 
     # EXP-928 breadth is the FOURTH writer of this archive (measured
     # 2026-09-03) and the only exchange-wide quote history: the 5-min collect
@@ -1813,6 +1887,7 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
             "nws pull",
             CYCLE_CADENCE_S,
         )
+        _check_nws_stations(conn, now)
 
     ok_sweeps = conn.execute(
         "SELECT count(*) FROM sweep_log WHERE status='ok' AND swept_at > ? - INTERVAL 36 HOUR",
@@ -2840,6 +2915,120 @@ def qa_collect_skips(
         _record_ok(COLLECT_SKIP_SECTION, now)
 
 
+#: `collect.py`'s three per-source except branches print exactly these:
+#: `[collect] kalshi {series}: {Exc}: ...`, `[collect] nws {station}: ...`,
+#: `[collect] polymarket books: ...`. The source is the key; the exception
+#: class is kept so the FAIL line says WHAT failed, not only how often.
+_COLLECT_SOURCE_ERR_RE = re.compile(
+    r"\[collect\] (kalshi \S+|nws \S+|polymarket books): ([A-Za-z_]\w*):"
+)
+
+
+def read_collect_source_errors(
+    since: datetime, until: datetime
+) -> dict[str, dict[str, int]] | None:
+    """{source: {exception class: cycles}} from the collector's journal over
+    [since, until), or None when the journal could not be read."""
+    text = _journal(COLLECT_UNIT, since, until)
+    if text is None:
+        return None
+    out: dict[str, dict[str, int]] = {}
+    for ln in _journal_records(text):
+        m = _COLLECT_SOURCE_ERR_RE.search(ln)
+        if m:
+            per = out.setdefault(m.group(1), {})
+            per[m.group(2)] = per.get(m.group(2), 0) + 1
+    return out
+
+
+def read_archive_collect_source_errors(
+    conn, now: datetime, hours: float = 24.0
+) -> dict[str, dict[str, int]] | None:
+    """{source: {exception class: cycles}} from `collect_cycles` over the last
+    `hours`, keyed exactly as the journal reader keys it (`nws AUS`,
+    `kalshi KXLOWTNYC`, `polymarket books`) so the two are interchangeable.
+
+    None unless the table is OLDER than the window (its first row at or
+    before `since`) -- not an empty dict, because a table born inside the
+    window covers only part of it, and a map over part of a window read as
+    the whole would pass the day the table shipped over an episode the
+    journal still holds (the 10-22 AUS 21 would have read as PASS on 10-23).
+    The witness has to cover the window it is asked about; until it does,
+    the journal stays the witness. A source with rows and no error is a
+    quiet source and is absent from the map; that absence is the whole
+    reason the table exists (a series with no open market is NOT a failure).
+    """
+    since = now - timedelta(hours=hours)
+    first = conn.execute("SELECT min(ts) FROM collect_cycles").fetchone()[0]
+    if first is None or first > since:
+        return None
+    rows = conn.execute(
+        "SELECT source || ' ' || name, error, count(*) FROM collect_cycles"
+        " WHERE ts >= ? AND error IS NOT NULL GROUP BY 1, 2 ORDER BY 1, 2",
+        [since],
+    ).fetchall()
+    out: dict[str, dict[str, int]] = {}
+    for src, exc, c in rows:
+        out.setdefault(src, {})[exc] = c
+    return out
+
+
+def qa_collect_source_errors(
+    hours: float = 24.0,
+    now: datetime | None = None,
+    errors: dict[str, dict[str, int]] | None = None,
+) -> None:
+    """One source of the collect cycle failing on every tick is invisible to
+    every archive check (mistakes #133, 2026-10-22): the cycle fetches each
+    Kalshi series, each NWS station and the Polymarket books under its OWN
+    except, exits 0, and the tables stay fresh off the sources that worked.
+    NWS AUS pulled nothing for 21 consecutive ticks and the only witness was
+    `'errors': 1` on the cycle line, read by hand. The per-station NWS check
+    in `_archive_checks` closes that one table; this closes the CLASS, for
+    every source the except branches name, from the lines they print.
+
+    Since 2026-10-23 the cycle writes its own account to `collect_cycles`
+    (one row per source per cycle, the exception class on failure), read by
+    `_archive_checks` into `_archive_source_errors`; this check prefers that
+    map and falls back to the journal scrape only for a window the table
+    does not cover. An unreadable journal on the fallback path is a SKIP,
+    never a pass (`read_batch_runs`' rule).
+    """
+    now = now or datetime.now(UTC)
+    name = f"collect sources each failing <= {COLLECT_SOURCE_ERR_MAX_24H} cycles in {hours:g}h"
+    # The archive's own account first (`collect_cycles`, read by
+    # `_archive_checks` under its hold); the journal scrape only for a
+    # window the table does not cover. The line names which one it read.
+    witness = "given"
+    if errors is None and _archive_source_errors is not None:
+        errors, witness = _archive_source_errors, "archive"
+    if errors is None:
+        errors = read_collect_source_errors(now - timedelta(hours=hours), now)
+        witness = "journal"
+    if errors is None:
+        _skipped.append(COLLECT_SOURCE_ERR_SECTION)
+        print(f"SKIP  {name} — {COLLECT_UNIT} journal unreadable", flush=True)
+        return
+    totals = {src: sum(per.values()) for src, per in errors.items()}
+    over = sorted(
+        (src for src, n in totals.items() if n > COLLECT_SOURCE_ERR_MAX_24H),
+        key=lambda src: -totals[src],
+    )
+    if over:
+        detail = "FAILING " + ", ".join(
+            f"{src} {totals[src]} cycle(s) ({'/'.join(sorted(errors[src]))})" for src in over
+        )
+    else:
+        detail = (
+            f"{len(totals)} source(s) errored at all, worst {max(totals.values())} cycle(s)"
+            if totals
+            else "no source error line"
+        )
+    check(name, not over, f"{detail} [{witness}]")
+    if not over:
+        _record_ok(COLLECT_SOURCE_ERR_SECTION, now)
+
+
 def journal_stream_flush_fails(
     since: datetime,
     now: datetime,
@@ -3536,6 +3725,21 @@ _FAILED_RE = re.compile(r"Failed with result|Main process exited, code=\w+, stat
 #: name, so it is only meaningful inside a `-u <unit>` read -- which is the
 #: only read `read_batch_runs` makes.
 _STARTING_RE = re.compile(r"\ssystemd\[\d+\]: Starting ")
+#: The sweep's own done line, a JSON object after `done: `. Its `segments`
+#: say WHICH part of the wall grew, which the `Consumed` line cannot: the
+#: 2026-10-22 poly run breached 8.0h by 10 min and the breach lived entirely
+#: in `closed_fetched` (1,604 markets vs 1,056-1,225 on the three prior
+#: lines: 322 of them a one-day repair re-fetch, mistakes #131), with the
+#: open segment and the flush on their bands. Read bare, the breach line
+#: says "stale budget" for a day the budget was right; the decomposition is
+#: what separates universe growth (open), backlog or repair (closed_fetched)
+#: and archive contention (flush), and it has to ride the breach line
+#: itself, or every reader re-derives it from the journal by hand.
+#: The Kalshi sweep prints the same line as a Python dict repr (single
+#: quotes, tuples in `slowest`), decomposed by `by_class` with `wall_s`
+#: rather than `segments` with `wall_min`; both shapes are read, so the
+#: 12.5h budget's breach line carries ladder / dense / small the same way.
+_DONE_RE = re.compile(r"\]: \[\w+\] done: (\{.*\})\s*$")
 
 
 def parse_systemd_duration(text: str) -> float | None:
@@ -3561,10 +3765,55 @@ class BatchRun:
     end: datetime  # UTC instant the cgroup was released
     wall_h: float
     ok: bool = True  # exited 0; False for any of systemd's failure results
+    #: The run's own `done:` decomposition as a rendered clause, "" when the
+    #: unit prints none (the Kalshi sweep, the tradepass) or the line was
+    #: unreadable. Carried as text so the dataclass stays hashable/frozen and
+    #: an archived journal line renders the same way forever.
+    segments: str = ""
 
     @property
     def start(self) -> datetime:
         return self.end - timedelta(hours=self.wall_h)
+
+
+def _segments_clause(done: dict) -> str:
+    """`segments`/`flush_min` of a sweep's done line as one bracketed clause.
+
+    Each segment is `<name> <markets> mkts <wall> min`; the flush, which has
+    no market count, is `flush <wall> min`. Any segment whose fields are
+    missing or non-numeric is left out rather than guessed, and a done line
+    with nothing renderable yields "", so a breach line never carries an
+    empty pair of brackets.
+    """
+    parts = []
+    for name, seg in (done.get("segments") or {}).items():
+        if not isinstance(seg, dict):
+            continue
+        n, wall = seg.get("markets"), seg.get("wall_min")
+        if isinstance(n, int | float) and isinstance(wall, int | float):
+            parts.append(f"{name} {int(n):,} mkts {wall:.1f} min")
+    flush = done.get("flush_min")
+    if isinstance(flush, int | float):
+        parts.append(f"flush {flush:.1f} min")
+    for name, cls in (done.get("by_class") or {}).items():
+        if not isinstance(cls, dict):
+            continue
+        n, mk, wall = cls.get("n"), cls.get("markets"), cls.get("wall_s")
+        if all(isinstance(v, int | float) for v in (n, mk, wall)):
+            parts.append(f"{name} {int(n):,} series/{int(mk):,} mkts {wall / 60:.1f} min")
+    return f" [{'; '.join(parts)}]" if parts else ""
+
+
+def _parse_done(text: str) -> dict | None:
+    """The done line's mapping, whichever of the two sweeps printed it."""
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        try:
+            obj = ast.literal_eval(text)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _fade_overlap_h(start: datetime, end: datetime) -> float:
@@ -3622,6 +3871,11 @@ def read_batch_runs(
         runs = []
         # Timestamp of a failure line whose `Consumed` line has not arrived.
         failed_at: str | None = None
+        # The run's own done line, printed before systemd's `Consumed` and
+        # attached to it there. It is reset at every run boundary and at
+        # every `Consumed`, so a done line can only ever describe the run
+        # whose cgroup accounting follows it -- never ride on to the next.
+        segments = ""
 
         for line in text.splitlines():
             # Failure is announced BEFORE the cgroup accounting, so the flag is
@@ -3630,14 +3884,20 @@ def read_batch_runs(
             # the flag still set means that `Consumed` line never came.
             if line.startswith("-- Boot") or _STARTING_RE.search(line):
                 runs += _cgroupless_abort(timer, failed_at)
-                failed_at = None
+                failed_at, segments = None, ""
                 continue
             if _FAILED_RE.search(line) and f"{service}:" in line:
                 failed_at = failed_at or line.split(maxsplit=1)[0]
+            d = _DONE_RE.search(line)
+            if d:
+                done = _parse_done(d.group(1))
+                segments = _segments_clause(done) if done else ""
+                continue
             m = _CONSUMED_RE.match(line)
             if not m or m.group(2) != service:
                 continue
             ok, failed_at = failed_at is None, None
+            run_segments, segments = segments, ""
             try:
                 end = datetime.fromisoformat(m.group(1)).astimezone(UTC)
             except ValueError:
@@ -3645,7 +3905,7 @@ def read_batch_runs(
             secs = parse_systemd_duration(m.group(3))
             if secs is None:
                 continue
-            runs.append(BatchRun(timer, end, secs / 3600.0, ok=ok))
+            runs.append(BatchRun(timer, end, secs / 3600.0, ok=ok, segments=run_segments))
         runs += _cgroupless_abort(timer, failed_at)
         out[timer] = runs
     return out
@@ -3839,7 +4099,7 @@ def qa_batch_run_budget(
         reasons = (
             [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h), "
-                f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z" + clause(r)
+                f"{r.start:%m-%d %H:%M}Z -> {r.end:%m-%d %H:%M}Z{r.segments}" + clause(r)
                 for r in sorted(stale_budget + fresh_catch_up, key=lambda r: r.end)
             ]
             + [
@@ -3871,7 +4131,7 @@ def qa_batch_run_budget(
             ]
             + [
                 f"{r.unit} ran {r.wall_h:.2f}h (budget {BATCH_RUN_BUDGET_H[r.unit]:g}h) "
-                f"ending {r.end:%m-%d %H:%M}Z" + clause(r)
+                f"ending {r.end:%m-%d %H:%M}Z{r.segments}" + clause(r)
                 for r in sorted((r for r in over if id(r) in catch_up), key=lambda r: r.end)
             ]
         )
@@ -4148,6 +4408,7 @@ def main() -> None:
         qa_signals_fetch(pull_age_d)  # sidecar witness; the archive cannot see a dropped series
         qa_collect_skips()  # sidecar journal; never gated by the archive lock
         qa_collect_spool()  # the recovery half of the same hole; also sidecar-only
+        qa_collect_source_errors()  # collect_cycles, else journal: a source failing every tick exits 0
         qa_stream_stalls()  # ledger + journal witness; a stall IS the archive unwritable
         qa_fade_window_capture()  # journal-only, for the same reason
         qa_batch_run_budget()  # journal-only, for the same reason

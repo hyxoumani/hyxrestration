@@ -273,6 +273,9 @@ def test_the_publisher_set_is_the_one_this_rule_was_written_for():
         # the closing census, the prefix resolve -- is what this closes.
         "collector/backfill.py",
         "collector/poly_tail_backfill.py",
+        # The one-shot un-resolve for the 10-21 incident rows (2026-10-21):
+        # the same shape, one read-only resolve and one burst.
+        "collector/poly_unmark_errors.py",
         # The Polymarket archival sweep (2026-10-17): the longest-running
         # writer of the collector's file (15.5-17.4h a day), one flocked
         # burst per batch through the `_open` wrapper, never summed. The

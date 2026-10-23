@@ -275,7 +275,14 @@ why it must be EXCLUDED rather than read as illiquidity. The record-derived
 ET, so **after DST ends (2026-11-01) the closure sits at 08:00-10:00Z** and
 its reopen bleed (~5-6 min of reconnect gaps) lands in the first minutes of
 the NEXT 10:00Z QA slot, outside the excuse and against the 30-min budget.
-First Thursday to read: 2026-11-05. The streamd journal under
+First Thursday to read: 2026-11-05. **2026-10-22 (Thursday) added a second failure mode inside the
+closure:** REST `/markets` returned `HTTP 503` on every walk from 07:12:00Z
+to 08:00:15Z (0 x 503 in the same window on 10-08 and 10-15), which aborted
+the 06:10Z kalshi sweep at 07:14Z (designed exit 75, 714/4042 series,
+watermarks intact, 10-23 is the catch-up) and failed breadth 10x; the
+collector completed every tick with 4 errors / ~530 of 597 snaps. One
+observation; if it recurs on 10-29 the Thursday sweep needs a closure-aware
+pause rather than the abort. The streamd journal under
 `--since "7 days ago"` starts mid-storm on the matching weekday, so a
 per-day gap count over that range under-counts the oldest Thursday -- the
 10-15 pass nearly chased a 100-vs-8 "drift" that was this truncation.
@@ -695,6 +702,79 @@ self-match trap the ops rules name for `pkill -f`.
   runs inside the collect cycle under a per-station try/except, so an NWS
   outage, a DNS failure or a station rename drops forecasts silently
   while snapshots keep flowing and every other archive check reads green.
+  **And the table-wide pair is a check on the luckiest station**: the
+  pull is five independent sub-pulls under five excepts, so one station
+  failing on every tick leaves `max(fetched_at)` fresh off the other
+  four (measured 2026-10-22: AUS pulled nothing for 19 ticks on a
+  null-temperature period, mistakes #133). Since 2026-10-22 QA also
+  runs `nws stations each fresh (< 20 min old)` — per-station
+  `max(fetched_at)` over the stations that pulled inside 24h, stale ones
+  named with their age; a station removed from the watchlist ages out of
+  the owed set after a day. The parser side: `nws.get_daily_highs` skips
+  a daytime period whose `temperature` is null (NWS serves one for the
+  running period at times) and prints `[nws] {station}: {period} {date}
+  temperature null, skipped` — the journal is the only witness that
+  today's high was not pulled, since the archive records no absences.
+  **The class, all three per-source loops (Kalshi series / NWS stations /
+  Polymarket books):** `qa_collect_source_errors` (section
+  `collect-source-errors`) FAILs any source past
+  `COLLECT_SOURCE_ERR_MAX_24H` = 5 cycles in 24h, named with its
+  exception class. Benign band 1 error/source/day; the 10-22 503 storm
+  printed 9 per series and the AUS episode 21, so the 10-23 10:00Z QA
+  FAILs this line on both until they age out (AUS 20:25Z 10-23). **Since
+  2026-10-23 the archive is the witness:** `collect_cycles` holds one
+  row per (cycle, source) -- `ts, source, name, n_rows, wall_s, error`
+  (exception class, NULL when the fetch returned) -- written by
+  `Store.insert_collect_cycle` INSIDE `write_cycle`'s one transaction
+  (both the snapshots and the account, or neither; pinned by
+  `tests/test_collect_cycles.py`, the arm that is red against a
+  post-commit mutant being "a failing record rolls the snapshots back",
+  NOT "a failing snapshot write leaves no record"), and carried through
+  the spool (`spool.ROW_MODELS["sources"]`, `hyxlab.models.SourceResult`).
+  So a Kalshi series with no open market is `n_rows 0, error NULL` --
+  a quiet source, absent from the error map -- and one whose fetch failed
+  is `n_rows 0, error 'HTTPError'`. `_archive_checks` reads the map under
+  its hold (`read_archive_collect_source_errors`, keyed `nws AUS` /
+  `kalshi KXLOWTNYC` / `polymarket books` exactly as the journal reader
+  keys it) and the check prefers it, printing `[archive]` -- but ONLY
+  when the table's first row predates the window, since a map over part
+  of a window read as the whole passes the transition day over an episode
+  the journal still holds (10-23 would have read the AUS 21 as clean);
+  otherwise the journal scrape judges (`[journal]`), and an unreadable
+  journal there is a SKIP. First `[archive]` read: 10-24 10:00Z. ~38 rows per cycle, ~11k/day.
+  Not yet judged: a source quiet for a whole day (a watchlist series with
+  no open market for 24h) -- the data to judge it now exists.
+  **Since 2026-10-23 the Kalshi walk is PACED, not refused:** the
+  collector's ~64 `/markets` requests per cycle (32 series x open+settled)
+  went out back-to-back at ~18 req/s and drew 3-5 x 429 every cycle for
+  48h, the FIRST 429 at 0.84-1.75s into every fetch and each later one
+  5.0-6.4s after the previous -- the ladder's 5s fallback sleep plus
+  ~0.8s of admitted requests, i.e. a ~15-20 request bucket read from the
+  victim's side (#92), so ~85% of a 13.6-34.1s `fetch_s` was back-off
+  (status 2026-10-23 03:15Z / 03:45Z, measured off `collect_cycles.wall_s`
+  and `data/rate_limit_headers.jsonl` against the cycle walls, nothing
+  else walking the key). `kalshi.set_pace(interval_s)` puts a floor
+  between request STARTS, applied by `kalshi._pace()` immediately before
+  EVERY `sess.get` in the module (the 429 ladder's GET, the trade tape's
+  pages, the one-shot `/series`), under one lock so streamd's
+  `to_thread` refreshes serialise; `collect --pace` (default
+  `kalshi.COLLECT_PACE_INTERVAL_S` = 0.125s, 8 req/s, under every
+  documented tier -- Kalshi's public docs say 10-20 read/s and the
+  measured bucket fits 20/s) switches it on, so the walk costs ~8s with
+  nothing refused. OFF by default (0.0), like `transport_budget=` makes a
+  site name its unit: the sweep's 12.5h wall and breadth's 200-page walk
+  keep their shape until the collector reading says what a floor costs.
+  PER PROCESS by construction (#125): it bounds one process's burst, and
+  two paced processes on one tick still sum past the bucket. The cycle
+  line's `timings=` carries `pace_s` (seconds of `fetch_s` slept on the
+  floor, `kalshi.pace_stats()['slept_s']`, reset per cycle) so the price
+  is in the journal, not in the constant. Verification reads: the
+  collector's share of the sink's `/markets` 429s (40-50/h before, with
+  the sweep idle) should go to ~0, `fetch_s` to ~8-10s, and every series'
+  `collect_cycles.wall_s` back to the 0.08-0.15s shape; a tier downgrade
+  would show as 429s RETURNING under the floor, not as a silent change.
+  `tests/test_kalshi_pacer.py` (8; the every-`sess.get` arm red-verified
+  against a tape-site mutant).
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
@@ -898,6 +978,29 @@ self-match trap the ops rules name for `pkill -f`.
   the same index: ladder markets up at the same s/mkt is LISTINGS (the
   ETA's scale over-reads the tail), the same markets at a higher s/mkt
   is PACE (429s, a hold). The scale alone cannot tell the two apart.
+  **The run names its listings delta on its first line and in the done
+  dict** (2026-10-21, `collector.sweep._prior_run` / `listings_delta` /
+  `listings_line`, `totals['new_series']` / `['dropped_series']`; first
+  production line at the 10-22 06:10Z run): `[sweep] listings: 4031
+  targets vs 3963 swept last run | +84 new (KXBEAVERSNOW, ... +72) | -0
+  dropped`. The delta is against the prior run's SERIES SET (the wall
+  dict drops the run's first series, which would read as new daily);
+  no prior run is `None` / "no prior run in the lookback", never
+  "everything is new". Why: the 10-21 run's 4,031 targets vs 10-20's
+  3,963 were legible only as `68 unpriced` on the ETA tag, and naming
+  them cost a contended 8.2s read-only attach on the live archive
+  mid-run (held 0.0s). What they were: 84 series the 10-20 run never
+  swept -- 54 Financials = nine international index families (FTSE 100,
+  Hang Seng, Ibovespa, KOSPI 200, Nikkei 225, Nifty 50, Russell 2000,
+  Shanghai Composite, EURO STOXX 50) x six variants (annual close/high/
+  low, daily, weekly, monthly close); 14 MVE exotics (KXMVE*); 13 ski-
+  resort openings/snowfall; KXBRENT15M (fifteen_min, 0 markets at its
+  07:22Z sweep); 2 MVE mentions. Sized against the existing families
+  on 10-20: the big index ladders are the HOURLY ones (KXNASDAQ100U
+  2,800 / KXINXU 420 / KXDJI 399 markets); the daily range series are
+  ~30 (KXINX 30, KXNASDAQ100 30) and weekly/monthly/annual 0-6. So the
+  nine new daily-close series are ~30 each at most, ~270 ladder-class
+  markets, inside the ETA's 5-14% band, NOT a new 2,800 term.
 - **The sweep prints its wall in the three terms the budget model is
   written in** (2026-10-17, `collector.sweep.wall_by_class` /
   `wall_class_line`, `totals['by_class']`; first production line at the
@@ -940,6 +1043,21 @@ self-match trap the ops rules name for `pkill -f`.
   run that covers a Sunday. The small class is not a flat block either:
   1.79/2.16/2.55 s/series on 2,125/3,217/4,594 markets (10-18/19/20) =
   ~1.2 s/series + ~1.1 s/mkt, within 4 min on all three.
+  **Candles are a close-WEEKDAY term, not a drift (measured 10-21 from
+  `sweep_log`, 16 runs 10-06..10-21):** a market's candle count is the
+  span from its open to its close, and the index ladders close daily at
+  20:00Z, so the Monday-close markets (swept by the TUESDAY run) carry
+  the weekend: KXNASDAQ100U 110,662 / 116,724 on the 10-20 / 10-13
+  Tuesday runs vs 42,690-45,906 on every Wed-Sat run (same 2,800
+  markets); KXINXU 26,194-26,411 vs 8,019-8,397 (420); KXGOLDD 2,510-
+  2,824 vs 1,209-1,373 (40). The two index ladders alone are ~137-143k
+  on a Tuesday, ~39-54k Wed-Sat, 0 Sun/Mon. So the 10-21 done line's
+  195,594 vs 10-20's 311,207 (-115,613, 86k of it those two series,
+  the rest series that settled nothing into a Wednesday: the weekly
+  gas/diesel series, the one-day KX*SHARE/VREQ AI family) is the
+  calendar, and `tapes_skipped` FELL 58,851 -> 56,326, so the 10-19
+  resolved-tape skip pruned nothing. Compare a run's candles to the
+  SAME WEEKDAY of the prior week, never to the prior day.
 - **The poly sweep skips the two fetches for a market a PRIOR run
   archived as resolved** (2026-10-19, `Store.poly_resolved_complete` /
   `collector.poly_sweep._fetch_market`; first production run 10-19
@@ -1015,9 +1133,67 @@ self-match trap the ops rules name for `pkill -f`.
   from 10-20 the prior-weighted line prices each market at today's wall.
   QA: the batch-budget check reads the worst completed run in 7d, so
   `hyxlab-poly-sweep.timer 17.57h/17.5h` (the 10-18 run) stays FAIL and
-  the digest ATTENTION until that run ages out on 10-25, unless the band
-  is re-measured first -- the rule keeps 17.5h until 3+ done lines on
-  the skip exist (10-21 earliest).
+  the digest ATTENTION until that run ages out on 10-25. Re-measured
+  2026-10-21 on the first three skip-era done lines (10-19 463.1 min /
+  10-20 419.9 / 10-21 452.2; unit walls 7.72 / 7.00 / 7.61h, the last
+  carrying 393 fetch errors from the CLOB 500 incident): the budget is
+  **8.0h**, the max rounded up to the half hour, the sweep's convention.
+  **10-22 (first run on the fixed code, with the 322 unmarked markets
+  back in the fetch path): 486.3 min / 8.17h unit wall = FAIL by 10
+  min, and the whole excess is in `closed_fetched`** -- 1,604 markets /
+  134.0 min vs 1,056 / 88.8 (10-20) and 1,225 / 112.2 (10-21), i.e.
+  ~5.0 s per closed market fetched, so the repair cost 322 x 5.0 s =
+  27 min; `open` 6,289 / 236.4 min (6,081 / 222.3, 6,168 / 227.8: +~7
+  min/day with the universe, ~2.26 s/market), `flush` 115.8 (108.7,
+  112.2). 486 - 27 = 459, inside the 420-463 band: **the 8.0h constant
+  stands**, the 10-22 line FAILs until it ages out on 10-29, and from
+  10-23 the QA breach line carries the segments so the reading is on
+  the line (`BatchRun.segments`, mistakes #132). The Kalshi sweep's
+  `by_class` dict-repr done line is read the same way (ladder / dense /
+  small, `wall_s` rendered as min). The 10-23 line is the
+  first clean read on the fixed code: expect closed_fetched ~1,200-1,350
+  and elapsed ~455-470 -- note the band's ceiling (463) is now within
+  ~5 days of the universe trend's reach of 480 even with nothing
+  wrong, which is the drift the check exists to show, not a reason to
+  pre-raise it.
+  **A market whose fetch RAISED keeps neither its Gamma row nor its
+  stats row** (2026-10-21, `collector.poly_sweep.sweep` except branch;
+  first production run 10-22 04:15Z). The skip's premise is "a prior
+  run saw the market closed AND fetched to that instant", but the loop
+  appended the Gamma row (which sets `markets.result` for a closed
+  market) and the stats row (the tail oracle's "a run fetched after
+  the stop") BEFORE the two fetches and kept both when the fetch raised
+  -- so a market first seen closed on an incident day was archived as
+  resolved with no prices and no tail, and the next run skipped it for
+  good (prices are a ~60-day rolling window, the tail capped at 3,000).
+  Measured 2026-10-21: 87 CLOB `500 Server Error` on prices-history
+  from 09:04Z (10-18: 0, 10-19: 4, 10-20: 0), 1-7 a minute, still
+  landing as the loop crossed the open/closed boundary at 09:17Z;
+  `prices_history` has no 5xx retry, so one 500 ends the market's day.
+  Now the except branch truncates `infos`/`stats` back to the market's
+  entry; the sweep-log row (the ETA's prior) and whatever prices the
+  first token put in the batch still land (the watermark is max(ts), so
+  a partial token re-reads tomorrow). The 10-21 run itself ran the OLD
+  code, and its done line (11:51Z) carried `errors 393` (`HTTPError`
+  377, `ReadTimeout` 15, `ConnectionError` 1), 330 of them after the
+  09:17Z boundary; 322 of those markets were archived with `result`
+  set (306 first seen that day, 24 with any trades). Repaired the same
+  day with `collector.poly_unmark_errors` (dry run by default; `--since
+  "2026-10-21 09:17" --until "2026-10-21 12:00" --commit`): it parses
+  the sweep's `[poly] <Class> at <cond16>:` lines in a UTC window,
+  resolves the prefixes exactly as `poly_tail_backfill` does (zero or
+  many matches dropped, never guessed; 330/330 unique), and clears
+  `result` through one `writer_burst` (`Store.poly_unset_results`; held
+  0.2s over two attaches, 0 contended) -- so the 10-22 04:15Z run, the
+  first on the fixed code, sees them as unresolved and fetches prices
+  from the watermark and the tail from offset 0, and its Gamma row sets
+  `result` again. The stats rows stay (no tail stop exists for them to
+  absorb, and deleting them would move the universe tripwire). The
+  before-values are in `data/poly_unmark_2026-10-21.tsv` (gitignored).
+  Not a direct re-fetch: nothing trades on a closed market, their
+  `endDate` keeps them in the 7-day closed enumeration window, and the
+  API was still returning 500s at the done line. The 63 pre-boundary
+  errors were open-segment markets, re-fetched tomorrow by construction.
 - **The poly sweep's `~N min left` prints two named estimates**
   (2026-10-17, `collector.poly_sweep.eta_minutes`; first production line
   at the 10-18 04:15Z run): `~404 min left (mean rate; ~330 at the last

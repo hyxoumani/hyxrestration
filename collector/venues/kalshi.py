@@ -13,6 +13,7 @@ measured local date as e.g. "KXHIGHNY-26JUL07".
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import UTC, date, datetime
 from typing import Any
@@ -215,6 +216,102 @@ _RATE_LIMIT_UNRETRIED = 0
 #: means the next 429 on that request fails the cycle.
 RATE_LIMIT_TRIES = 4
 
+# ---------------------------------------------------------------------------
+# Request PACER -- the 429 ladder's complement. The ladder above is what to
+# do once Kalshi has refused; this is how not to be refused.
+#
+# Measured 2026-10-23 02:35-03:35Z from the 429 sink against the collector's
+# cycle walls (13 cycles, 49 x 429, nothing else walking the key): the walk's
+# ~64 requests (32 series x open+settled) went out back-to-back at ~18 req/s,
+# the FIRST 429 landed 0.84-1.75s (median 1.16s) into every fetch, and each
+# later one followed the previous by 5.0-6.4s (median 5.84s) -- the ladder's
+# 5s fallback sleep plus ~0.8s of admitted requests, then refused again.
+# That is a token bucket of ~15-20 requests read from the victim's side
+# (mistakes #92: the 5.8s is OUR sleep wearing the limit's name), and it
+# made the collector's fetch 13.6-34.1s of which ~85% was back-off, 3-5 x
+# 5.15s per cycle, steady for 48h. Kalshi's public docs put the basic read
+# tier at 10-20 req/s and this module's own header says ~30; the bucket
+# measured above is consistent with 20/s and refuted by 30/s.
+#
+# So the walk is SPACED instead: a floor on the interval between request
+# starts, applied at every `sess.get` in this module so a retry, a tape
+# page and the one-shot /series pull are all paced by the same clock. At
+# 8 req/s (`COLLECT_PACE_INTERVAL_S`) the 64-request walk costs ~8s with
+# nothing refused, against 20-30s with the refusals -- and 8 is under
+# every documented tier, so a tier downgrade would show as 429s returning
+# (the sink and `retry_counts()['rate_limit']`), not as a silent change.
+#
+# PER PROCESS, by construction: module state, and the collector, breadth
+# and the sweep walk the same key on their own timers (mistakes #125), so
+# this bounds one process's burst and nothing more. Two paced processes
+# firing on the same tick still sum to more than the bucket. OFF by
+# default (interval 0.0): a caller that wants pacing names its rate, like
+# `transport_budget=` names its retry unit -- the sweep's 12.5h wall and
+# breadth's 200-page walk are budgeted elsewhere and keep their shape
+# until a reading on the collector says what the floor costs them.
+# The 429 ladder stays as the backstop beneath this.
+#
+# Sleeping UNDER the lock is the point: streamd refreshes its ticker set
+# on `asyncio.to_thread` workers, and two threads that each computed
+# their wait from the same `_PACE_LAST_MONO` would both fire at once.
+_PACE_LOCK = threading.Lock()
+_PACE_INTERVAL_S = 0.0
+_PACE_LAST_MONO: float | None = None
+_PACE_REQUESTS = 0
+_PACE_SLEPT_S = 0.0
+
+#: The collector's floor between request starts: 8 req/s.
+COLLECT_PACE_INTERVAL_S = 0.125
+
+
+def set_pace(interval_s: float) -> None:
+    """Floor, in seconds, between the starts of consecutive requests made by
+    THIS process through this module. 0.0 disables pacing."""
+    global _PACE_INTERVAL_S
+    if interval_s < 0:
+        raise ValueError(f"pace interval must be >= 0, got {interval_s!r}")
+    with _PACE_LOCK:
+        _PACE_INTERVAL_S = float(interval_s)
+
+
+def pace_stats() -> dict[str, float | int]:
+    """Requests made and seconds slept for pacing since the last
+    `reset_pace_stats()`, plus the interval in force. `slept_s` is the walk's
+    pacing cost; a caller publishes it beside its fetch wall so the floor's
+    price is a number in the journal and not a constant agreeing with
+    itself (EXP-963)."""
+    with _PACE_LOCK:
+        return {
+            "interval_s": _PACE_INTERVAL_S,
+            "requests": _PACE_REQUESTS,
+            "slept_s": round(_PACE_SLEPT_S, 3),
+        }
+
+
+def reset_pace_stats() -> None:
+    global _PACE_REQUESTS, _PACE_SLEPT_S
+    with _PACE_LOCK:
+        _PACE_REQUESTS = 0
+        _PACE_SLEPT_S = 0.0
+
+
+def _pace() -> None:
+    """Block until the pacing floor since the previous request has elapsed,
+    then claim this instant as the previous request. Called immediately
+    before EVERY `sess.get` in this module; with pacing off it is a counter
+    increment."""
+    global _PACE_LAST_MONO, _PACE_REQUESTS, _PACE_SLEPT_S
+    with _PACE_LOCK:
+        now = time.monotonic()
+        if _PACE_INTERVAL_S > 0 and _PACE_LAST_MONO is not None:
+            wait = _PACE_LAST_MONO + _PACE_INTERVAL_S - now
+            if wait > 0:
+                time.sleep(wait)
+                _PACE_SLEPT_S += wait
+                now = time.monotonic()
+        _PACE_LAST_MONO = now
+        _PACE_REQUESTS += 1
+
 
 def transport_retries() -> int:
     """Transport retries spent since the last `reset_retry_counts()`."""
@@ -345,6 +442,7 @@ def _get_transport_retrying(
     global _TRANSPORT_RETRIES, _GATEWAY_RETRIES
     while True:
         try:
+            _pace()
             resp = sess.get(url, params=params, timeout=timeout)
         except _TRANSPORT_ERRORS as e:
             wait = budget.take()
@@ -775,6 +873,7 @@ def get_trades(
         # kept, so a tape longer than the bucket advances instead of being
         # restarted into the same refusal (see TAPE_PAGE_429_WAITS).
         for spent in range(len(page_429_waits) + 1):
+            _pace()
             resp = sess.get(f"{BASE}/markets/trades", params=params, timeout=30)
             # getattr: adds NO new happy-path requirement on the response object
             # (a pre-existing test double here has no status_code at all).
@@ -786,9 +885,7 @@ def get_trades(
                 _RATE_LIMIT_UNRETRIED += 1  # the ladder is spent; raised below
                 break
             _RATE_LIMIT_RETRIES += 1
-            _RATE_LIMIT_WORST_FRAC = max(
-                _RATE_LIMIT_WORST_FRAC, (spent + 1) / len(page_429_waits)
-            )
+            _RATE_LIMIT_WORST_FRAC = max(_RATE_LIMIT_WORST_FRAC, (spent + 1) / len(page_429_waits))
             time.sleep(page_429_waits[spent])
         resp.raise_for_status()
         body = resp.json()
@@ -817,6 +914,7 @@ def get_series_list(session: requests.Session | None = None) -> list[dict[str, A
     """All series with category/fee metadata. Verified 2026-07-06: the
     endpoint returns the full set (~11k) in one unpaginated response."""
     sess = session or requests.Session()
+    _pace()
     resp = sess.get(f"{BASE}/series", timeout=60)
     resp.raise_for_status()
     return resp.json().get("series", [])

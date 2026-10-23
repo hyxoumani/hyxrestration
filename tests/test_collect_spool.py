@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from collector import collect, qa, spool
-from hyxlab.models import Forecast, MarketInfo, Snapshot
+from hyxlab.models import Forecast, MarketInfo, Snapshot, SourceResult
 
 TS = datetime(2026, 9, 10, 7, 8, 23, 123456, tzinfo=UTC)
 
@@ -61,6 +61,10 @@ def _cycle_rows() -> dict:
         "poly_snaps": [Snapshot(venue="polymarket", market_id="P", ts=TS, last_price=0.61)],
         "forecasts": [
             Forecast(station="NYC", fetched_at=TS, target_date=date(2026, 9, 11), high_f=71)
+        ],
+        "sources": [
+            SourceResult("kalshi", "KXHIGHNY", 1, 0.412),
+            SourceResult("nws", "AUS", 0, 0.08, error="TypeError"),
         ],
     }
 
@@ -150,6 +154,7 @@ def _spool_at(tmp_path, ts, log=None, **kw):
         kalshi_snaps=[Snapshot(venue="kalshi", market_id="A", ts=ts)],
         poly_snaps=[],
         forecasts=[],
+        sources=[],
         **kw,
     )
 

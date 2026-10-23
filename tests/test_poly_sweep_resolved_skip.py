@@ -252,3 +252,67 @@ def test_the_done_line_splits_markets_rows_and_wall_by_segment(monkeypatch, tmp_
     assert sum(v["markets"] for v in seg.values()) == totals["markets"] == 7
     assert all(v["wall_min"] >= 0.0 and "wall_s" not in v for v in seg.values())
     assert totals["flush_min"] >= 0.0
+
+
+def test_a_market_whose_fetch_raised_keeps_neither_its_gamma_nor_its_stats_row(
+    monkeypatch, tmp_path
+):
+    """Its Gamma row would set `markets.result` for a closed market and the
+    stats row would tell the tail oracle a run fetched after the stop; with
+    both archived, tomorrow's `poly_resolved_complete` skips the market for
+    good. Measured 2026-10-21: 87 CLOB 500s on prices-history across the
+    open/closed boundary. The sweep-log row (the ETA's prior) still lands."""
+    monkeypatch.setattr(ps.time, "sleep", lambda s: None)
+    markets = [
+        {"conditionId": "fine", "closed": True},
+        {"conditionId": "broke", "closed": True},
+        {"conditionId": "after", "closed": False},
+    ]
+    flushed: list[dict] = []
+
+    class _Store:
+        def poly_price_watermarks(self):
+            return {}
+
+        def poly_resolved_complete(self):
+            return set()
+
+        def close(self):
+            pass
+
+    def fake_flush(db, batch):
+        flushed.append({k: list(v) for k, v in batch.items() if isinstance(v, list)})
+        for k in ("infos", "stats", "prices", "trades", "tail_stops", "swept"):
+            batch[k] = []
+
+    def fake_prices(tok, *a, **k):
+        if tok == "broke-n":  # the second token: the first's rows are already in the batch
+            raise ps.requests.HTTPError("500 Server Error: Internal Server Error")
+        return [{"t": 1, "p": 0.5}]
+
+    monkeypatch.setattr(
+        ps.poly, "iter_markets_by_volume", lambda *a, **k: [] if k.get("closed") else list(markets)
+    )
+    monkeypatch.setattr(
+        ps.poly, "token_pair", lambda m: (m["conditionId"] + "-y", m["conditionId"] + "-n")
+    )
+    monkeypatch.setattr(ps.poly, "gamma_market_info", lambda m: (m["conditionId"],))
+    monkeypatch.setattr(ps.poly, "prices_history_range", fake_prices)
+    monkeypatch.setattr(ps.poly, "price_rows", lambda tok, cond, outcome, hist: [(tok, cond)])
+    monkeypatch.setattr(ps.poly, "trades_tail", lambda cond, session=None: [])
+    monkeypatch.setattr(ps.poly, "take_tail_stops", lambda: [])
+    monkeypatch.setattr(ps, "_flush", fake_flush)
+    monkeypatch.setattr(ps, "_open", lambda db: _Store())
+    monkeypatch.setattr(ps, "note_holder", lambda path: None)
+    monkeypatch.setattr(ps, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    totals = ps.sweep("unused.duckdb", min_volume=0.0)
+    assert totals["markets"] == 3
+    assert totals["error_classes"] == {"HTTPError": 1}
+    infos = [i for f in flushed for i in f["infos"]]
+    stats = [s[0] for f in flushed for s in f["stats"]]
+    swept = [s[0] for f in flushed for s in f["swept"]]
+    prices = [p[0] for f in flushed for p in f["prices"]]
+    assert infos == [("fine",), ("after",)]
+    assert stats == ["fine", "after"]
+    assert swept == ["fine", "broke", "after"]
+    assert prices == ["fine-y", "fine-n", "broke-y", "after-y", "after-n"]

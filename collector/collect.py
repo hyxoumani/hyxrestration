@@ -34,7 +34,7 @@ import requests
 from collector import spool
 from collector.venues import kalshi, nws, polymarket
 from hyxlab.lockid import note_holder, read_holder
-from hyxlab.models import Forecast, MarketInfo, Snapshot
+from hyxlab.models import Forecast, MarketInfo, Snapshot, SourceResult
 from hyxlab.store import Store, lock_holder, open_retry
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
@@ -147,6 +147,9 @@ class Cycle:
     kalshi_snaps: list[Snapshot] = field(default_factory=list)
     poly_snaps: list[Snapshot] = field(default_factory=list)
     forecasts: list[Forecast] = field(default_factory=list)
+    #: One `SourceResult` per watchlist source: rows it contributed, its
+    #: wall, and the exception class when it failed (`collect_cycles`).
+    sources: list[SourceResult] = field(default_factory=list)
     errors: int = 0
 
 
@@ -169,7 +172,21 @@ def fetch_cycle(watchlist: dict, session: requests.Session | None = None) -> Cyc
     sess = session or requests.Session()
     cyc = Cycle(ts=datetime.now(UTC))
 
+    def account(source: str, name: str, n_rows: int, t0: float, exc: Exception | None) -> None:
+        # The per-source witness the archive lacked (mistakes #133): a
+        # source with no rows AND no error is a quiet source, not a dead one.
+        cyc.sources.append(
+            SourceResult(
+                source,
+                name,
+                n_rows,
+                round(time.monotonic() - t0, 3),
+                type(exc).__name__ if exc is not None else None,
+            )
+        )
+
     for series in watchlist.get("kalshi_series", []):
+        t0 = time.monotonic()
         try:
             open_markets = kalshi.get_markets(series_ticker=series, status="open", session=sess)
             settled = kalshi.get_markets(
@@ -177,28 +194,38 @@ def fetch_cycle(watchlist: dict, session: requests.Session | None = None) -> Cyc
             )
             cyc.infos.extend(kalshi.to_market_info(m) for m in open_markets + settled)
             cyc.kalshi_snaps.extend(kalshi.to_snapshot(m, cyc.ts) for m in open_markets)
+            account("kalshi", series, len(open_markets), t0, None)
         except Exception as e:  # isolation: one bad source must not kill the cycle
             cyc.errors += 1
+            account("kalshi", series, 0, t0, e)
             print(f"[collect] kalshi {series}: {type(e).__name__}: {e}")
 
     pairs = watchlist.get("polymarket_pairs", [])
     if pairs:
+        t0 = time.monotonic()
         try:
             tokens = [t for _, yes_t, no_t in pairs for t in (yes_t, no_t)]
             books = polymarket.get_books(tokens, session=sess)
-            cyc.poly_snaps.extend(
+            snaps = [
                 polymarket.pair_snapshot(mid, books.get(yes_t), books.get(no_t), cyc.ts)
                 for mid, yes_t, no_t in pairs
-            )
+            ]
+            cyc.poly_snaps.extend(snaps)
+            account("polymarket", "books", len(snaps), t0, None)
         except Exception as e:  # Gamma serves error objects with HTTP 200
             cyc.errors += 1
+            account("polymarket", "books", 0, t0, e)
             print(f"[collect] polymarket books: {type(e).__name__}: {e}")
 
     for station in watchlist.get("nws_stations", []):
+        t0 = time.monotonic()
         try:
-            cyc.forecasts.extend(nws.get_daily_highs(station, session=sess))
+            got = nws.get_daily_highs(station, session=sess)
+            cyc.forecasts.extend(got)
+            account("nws", station, len(got), t0, None)
         except Exception as e:
             cyc.errors += 1
+            account("nws", station, 0, t0, e)
             print(f"[collect] nws {station}: {type(e).__name__}: {e}")
 
     return cyc
@@ -237,6 +264,9 @@ def write_cycle(store: Store, cyc: Cycle) -> dict:
         store.insert_snapshots(cyc.kalshi_snaps)
         store.insert_snapshots(cyc.poly_snaps)
         store.insert_forecasts(cyc.forecasts)
+        # Same transaction as the rows it accounts for: a cycle has its
+        # per-source record exactly when it has its snapshots (#133).
+        store.insert_collect_cycle(cyc.ts, cyc.sources)
         store.conn.execute("COMMIT")
     except Exception as e:
         store.conn.execute("ROLLBACK")
@@ -294,6 +324,7 @@ def _skip_cycle(cyc: Cycle, reason: str, waited: float, holder: dict | None) -> 
             kalshi_snaps=cyc.kalshi_snaps,
             poly_snaps=cyc.poly_snaps,
             forecasts=cyc.forecasts,
+            sources=cyc.sources,
         )
     except (OSError, ValueError) as e:
         print(f"[collect] spool failed, cycle LOST: {type(e).__name__}: {e}")
@@ -318,6 +349,12 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=300, help="seconds between cycles")
     ap.add_argument("--once", action="store_true", help="one cycle, then exit")
     ap.add_argument(
+        "--pace",
+        type=float,
+        default=kalshi.COLLECT_PACE_INTERVAL_S,
+        help="floor in seconds between Kalshi request starts (0 disables; see kalshi.set_pace)",
+    )
+    ap.add_argument(
         "--lock-wait",
         type=float,
         default=LOCK_WAIT_S,
@@ -327,9 +364,15 @@ def main() -> None:
 
     watchlist = load_watchlist(args.watchlist)
     sess = requests.Session()
+    # The walk is paced rather than refused: ~64 requests at ~18 req/s drew
+    # 3-5 x 429 and 13.6-34.1s of fetch every cycle for 48h (status
+    # 2026-10-23 03:45Z); see the pacer block in `collector.venues.kalshi`.
+    kalshi.set_pace(args.pace)
     while True:
         t0 = time.monotonic()
+        kalshi.reset_pace_stats()
         cyc = fetch_cycle(watchlist, session=sess)  # NO lock held here (EXP-957)
+        pace_s = kalshi.pace_stats()["slept_s"]
         fetch_s = time.monotonic() - t0
         # The lock budget is a budget for the CYCLE, not for the wait: the
         # fetch now runs first, and a wait of the full LOCK_WAIT_S on top
@@ -402,6 +445,9 @@ def main() -> None:
             lock.close()
         timings = {
             "fetch_s": round(fetch_s, 1),
+            # Seconds of fetch_s spent on the pacer's floor, so the floor's
+            # price is read off the journal and not off its constant.
+            "pace_s": round(pace_s, 1),
             "wait_s": round(lock_wait_s, 1),
             "open_s": round(open_s, 1),
             "drain_s": round(drain_s, 1),

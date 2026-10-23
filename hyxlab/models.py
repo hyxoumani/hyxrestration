@@ -61,6 +61,24 @@ class Forecast:
 
 
 @dataclass(frozen=True)
+class SourceResult:
+    """One source's account of itself inside one collect cycle.
+
+    The cycle fetches each Kalshi series, each NWS station and the
+    Polymarket books under its own except (collector/collect.py), so the
+    row tables cannot tell a series with no open market (0 rows, no error)
+    from one whose fetch failed (0 rows, an exception) -- mistakes #133.
+    `error` is the exception CLASS name, None when the fetch returned.
+    """
+
+    source: str  # "kalshi" | "polymarket" | "nws"
+    name: str  # series ticker / "books" / station key
+    n_rows: int  # rows this source contributed to the cycle (0 on error)
+    wall_s: float  # the fetch's wall, errors included
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class EconVintage:
     """One observation of an economic series as it existed at a vintage.
 

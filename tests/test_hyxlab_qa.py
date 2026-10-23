@@ -2,6 +2,7 @@
 seeded defect trips its check."""
 
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -2347,3 +2348,56 @@ def test_mirror_violation_trips_the_mirror_invariant(tmp_path):
     store.log_sweep("KXTEST", NOW, NOW, 1, 1, "ok")
     store.close()
     assert "kalshi mirror invariant" in _run(None, tmp_path, archive=db)
+
+
+def _nws_rows(store, ages_min_by_station):
+    """One forecast row per station, fetched `ages_min` minutes ago."""
+    from hyxlab.models import Forecast
+
+    store.insert_forecasts(
+        [
+            Forecast(
+                station=st,
+                fetched_at=NOW - timedelta(minutes=age),
+                target_date=NOW.date(),
+                high_f=70,
+            )
+            for st, age in ages_min_by_station.items()
+        ]
+    )
+
+
+def test_one_stale_nws_station_trips_the_per_station_check(tmp_path, capsys):
+    """Regression class (2026-10-22, mistakes #133): AUS pulled nothing for
+    19 ticks behind a per-station except while the table-wide freshness and
+    continuity checks read green off the other four stations."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _nws_rows(store, {"NYC": 2, "CHI": 3, "AUS": 95})
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    out = capsys.readouterr().out
+    assert "nws stations each fresh (< 20 min old)" in failed
+    assert "nws forecasts fresh (< 20 min old)" not in failed  # the blind spot, pinned
+    # `NOW` is fixed at import; a long suite ages the row a minute or two.
+    assert re.search(r"STALE AUS 9[5-9] min", out), out
+
+
+def test_all_nws_stations_fresh_passes_the_per_station_check(tmp_path):
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _nws_rows(store, {"NYC": 2, "CHI": 3, "AUS": 4})
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "nws stations each fresh (< 20 min old)" not in failed
+
+
+def test_nws_station_removed_a_day_ago_is_not_owed(tmp_path):
+    """A station dropped from the watchlist ages out after 24h rather than
+    failing QA forever; the owed set is the last day's pullers."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    _nws_rows(store, {"NYC": 2, "DEN": 25 * 60})
+    store.close()
+    failed = _run(None, tmp_path, archive=db)
+    assert "nws stations each fresh (< 20 min old)" not in failed

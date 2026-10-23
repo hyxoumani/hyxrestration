@@ -61,6 +61,7 @@ STAMP: dict[str, str | None] = {
     "snapshots": "ts",
     "breadth_snapshots": "ts",
     "breadth_cycles": "ts",
+    "collect_cycles": "ts",
     "nws_forecasts": "fetched_at",
     "candles": None,  # end_ts is the candle's period end, not its ingest
     "observations": None,  # obs_date is the observation's day
@@ -91,6 +92,19 @@ WITNESS: dict[str, str] = {
         "more here than elsewhere because a silently unwritten cycle table would "
         "send the truncation check to WATCH (unmeasured) rather than FAIL, which "
         "is the one way it could go quiet on a real fault."
+    ),
+    "collect_cycles": (
+        "Written inside the SAME transaction as the cycle's snapshots "
+        "(collect.write_cycle: BEGIN, upsert_markets, insert_snapshots, "
+        "insert_forecasts, insert_collect_cycle, COMMIT -- every table or none), "
+        "so it cannot go stale while 'collector fresh (snapshots < 20 min old)' "
+        "passes. Pinned, not assumed: tests/test_collect_cycles.py::"
+        "test_a_failing_source_record_rolls_the_snapshots_back_too fails if the "
+        "record escapes the transaction (the other arm, a failing snapshot write "
+        "leaving no record, is green against that mutant and is not the witness). Its CONTENT is judged every run by 'collect "
+        "sources each failing <= 5 cycles in 24h', which reads it in the "
+        "recency-window shape this derivation does not credit, and that reader "
+        "falls back to the journal -- never to green -- when the window is empty."
     ),
     "markets": (
         "Written in the same transaction, from the same fetch, as the "

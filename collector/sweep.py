@@ -194,16 +194,14 @@ ETA_RUN_GAP_S = 2 * 3600.0
 PROGRESS_EVERY = 100
 
 
-def prior_series_wall(store, now: datetime | None = None) -> dict[str, float]:
-    """`ticker -> wall seconds` from the previous run's `sweep_log` rows.
-
-    The first series of a run has no wall (nothing marks the run's start),
-    so it is absent and falls to the median like a new series. Advisory: a
-    wrong prior costs an ETA, nothing else, so any read failure returns {}.
-    """
+def _prior_run(store, now: datetime | None = None) -> list[tuple[str, datetime]]:
+    """`(series, swept_at)` rows of the previous run: the largest run of
+    `sweep_log` rows in the lookback, split at `ETA_RUN_GAP_S`. Advisory:
+    any read failure returns [], and both readers below treat [] as "no
+    prior" rather than as a run that swept nothing."""
     conn = getattr(store, "conn", None)
     if conn is None:  # a store-like stub with no archive behind it
-        return {}
+        return []
     now = now or datetime.now(UTC).replace(tzinfo=None)
     since = now - timedelta(hours=ETA_PRIOR_LOOKBACK_H)
     try:
@@ -212,7 +210,7 @@ def prior_series_wall(store, now: datetime | None = None) -> dict[str, float]:
             [since],
         ).fetchall()
     except duckdb.Error:
-        return {}
+        return []
     runs: list[list[tuple[str, datetime]]] = []
     cur: list[tuple[str, datetime]] = []
     for series, at in rows:
@@ -223,9 +221,73 @@ def prior_series_wall(store, now: datetime | None = None) -> dict[str, float]:
     if cur:
         runs.append(cur)
     if not runs:
-        return {}
-    run = max(runs, key=len)
+        return []
+    return max(runs, key=len)
+
+
+def prior_series_wall(
+    store, now: datetime | None = None, run: list[tuple[str, datetime]] | None = None
+) -> dict[str, float]:
+    """`ticker -> wall seconds` from the previous run's `sweep_log` rows.
+
+    The first series of a run has no wall (nothing marks the run's start),
+    so it is absent and falls to the median like a new series. Advisory: a
+    wrong prior costs an ETA, nothing else, so any read failure returns {}.
+    `run`: the `_prior_run` rows when the caller already holds them.
+    """
+    run = _prior_run(store, now) if run is None else run
     return {s1: (t1 - t0).total_seconds() for (_, t0), (s1, t1) in zip(run, run[1:], strict=False)}
+
+
+def listings_delta(targets: list[str], prior_run: list[tuple[str, datetime]]) -> dict | None:
+    """What this run's enumeration added to and dropped from the prior run's.
+
+    `None` without a prior run (a first run, or a `sweep_log` that could
+    not be read) -- never a delta of "everything is new". The prior is the
+    run's SERIES SET, not the wall dict: a run's first series has no wall
+    and would otherwise read as a new listing every day.
+
+    Measured 2026-10-21: 4,031 targets against 3,963 swept on 10-20 -- 84
+    series the prior run never saw (54 of them nine international index
+    families x six close/high/low/period variants, 14 MVE exotics, 13 ski-
+    resort openings/snowfall, KXBRENT15M) -- a fact the progress line
+    carried only as `68 unpriced` and that otherwise cost a contended 8s
+    read-only attach on the live archive to recover, mid-run.
+    """
+    if not prior_run:
+        return None
+    prior = {s for s, _ in prior_run}
+    want = set(targets)
+    return {
+        "targets": len(targets),
+        "prior": len(prior),
+        "new": sorted(want - prior),
+        "dropped": sorted(prior - want),
+    }
+
+
+#: How many new/dropped tickers the listings line names before `...`.
+LISTINGS_NAMED = 12
+
+
+def listings_line(delta: dict | None) -> str:
+    """ONE journal line at the start of a run: the enumeration against the
+    prior run's. Every field of the delta perturbs it (mistakes #95)."""
+    if delta is None:
+        return "[sweep] listings: no prior run in the lookback"
+
+    def names(ts: list[str]) -> str:
+        if not ts:
+            return ""
+        shown = ", ".join(ts[:LISTINGS_NAMED])
+        more = f", ... +{len(ts) - LISTINGS_NAMED}" if len(ts) > LISTINGS_NAMED else ""
+        return f" ({shown}{more})"
+
+    return (
+        f"[sweep] listings: {delta['targets']} targets vs {delta['prior']} swept last run"
+        f" | +{len(delta['new'])} new{names(delta['new'])}"
+        f" | -{len(delta['dropped'])} dropped{names(delta['dropped'])}"
+    )
 
 
 def eta_minutes(
@@ -594,7 +656,8 @@ def run_sweep(
     series = kalshi.get_series_list(sess)  # HTTP outside the lock
     with writer_burst(db) as store:
         all_series = refresh_series(store, sess, series=series)
-        eta_prior = prior_series_wall(store)
+        prior_run = _prior_run(store)
+        eta_prior = prior_series_wall(store, run=prior_run)
     targets = [s["ticker"] for s in all_series if s.get("category") in categories]
     if only_series:
         # Targeted repair pass: the alphabetical whole-category order is what
@@ -609,10 +672,17 @@ def run_sweep(
     targets.sort()
     if limit:
         targets = targets[:limit]
+    listings = listings_delta(targets, prior_run)
+    print(listings_line(listings), flush=True)
     global _TAPES_SKIPPED
     _TAPES_SKIPPED = 0
     totals = {
         "series": len(targets),
+        # The enumeration against the prior run's series set, or None on a
+        # first run: the listings term of the (23) by-class model, legible
+        # on the done line instead of behind an attach on the live file.
+        "new_series": None if listings is None else len(listings["new"]),
+        "dropped_series": None if listings is None else len(listings["dropped"]),
         "markets": 0,
         "candles": 0,
         "errors": 0,

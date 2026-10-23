@@ -453,7 +453,7 @@ def test_promote_restarts_a_daemon_only_when_its_own_code_moved():
 
 #: The two multi-hour writers of the collector's file are judged by the
 #: same budgets QA reads their done lines against (`BATCH_RUN_BUDGET_H`:
-#: sweep 12.5h, poly sweep 17.5h), and their START times are read from
+#: sweep 12.5h, poly sweep 8.0h), and their START times are read from
 #: their timers -- neither number is re-typed here.
 #: Atlas wall measured 2026-10-17 14:16Z as a transient unit with both sweeps
 #: writing: 3.8s. Sixty seconds is a bound with room, not a measurement.

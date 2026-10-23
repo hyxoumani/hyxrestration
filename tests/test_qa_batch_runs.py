@@ -129,12 +129,14 @@ def _poly(end, wall_h):
 
 def test_a_poly_sweep_past_its_wall_budget_fails_as_a_stale_budget(capsys):
     """Added 2026-10-17: the 15.5-17.4h band lived in ops.md prose and no
-    check read a done line against it. 18.0h against 17.5h must FAIL and
-    say so with the budget, exactly as the Kalshi sweep's breach does."""
-    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 4, 22, 15, tzinfo=UTC), 18.0)]}
+    check read a done line against it. A run past the budget (8.0h since
+    2026-10-21, from 17.5h: three skip-era done lines at 7.00-7.72h) must
+    FAIL and say so with the budget, exactly as the Kalshi sweep's breach
+    does."""
+    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 4, 22, 15, tzinfo=UTC), 9.0)]}
     failed, _ = _run(runs)
     assert failed == {"batch units within measured run budget"}
-    assert "hyxlab-poly-sweep.timer ran 18.00h (budget 17.5h)" in capsys.readouterr().out
+    assert "hyxlab-poly-sweep.timer ran 9.00h (budget 8h)" in capsys.readouterr().out
 
 
 def test_a_poly_sweep_inside_the_fade_window_spent_no_kalshi_quota():
@@ -148,9 +150,9 @@ def test_a_poly_sweep_inside_the_fade_window_spent_no_kalshi_quota():
     assert failed == {"batch units within measured run budget"}
     reported = qa._load_state(qa.STATE).get("batch-run-budget", {}).get("reported", [])
     assert "hyxlab-poly-sweep.timer@2026-08-05T01:00" not in reported, reported
-    # Inside budget and inside the window (08:00Z -> 02:00Z, a DIFFERENT end
+    # Inside budget and inside the window (18:30Z -> 02:00Z, a DIFFERENT end
     # so the record cannot excuse it as already reported): nothing at all.
-    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 5, 2, 0, tzinfo=UTC), 18.0 - 1)]}
+    runs = {"hyxlab-poly-sweep.timer": [_poly(datetime(2026, 8, 5, 2, 0, tzinfo=UTC), 8.0 - 0.5)]}
     failed, _ = _run(runs)
     assert not failed
 
@@ -611,3 +613,138 @@ def test_a_context_run_is_never_a_verdict(capsys):
     failed, _ = _run({"hyxlab-sweep.timer": [old]}, now=QA_10_12)
     assert "18.00h" not in capsys.readouterr().out
     assert failed == set()
+
+
+# --- the done line's segments ride the breach line ---------------------------
+# The 2026-10-22 poly run breached 8.0h by 10 min, and the whole excess lived
+# in `closed_fetched` (1,604 markets vs 1,056-1,225 on the three prior lines;
+# 322 of them the one-day repair re-fetch of mistakes #131). Read bare, the
+# breach line called the budget stale on a day it was right; the decomposition
+# is what tells universe growth (open), backlog or repair (closed_fetched) and
+# archive contention (flush) apart, and it has to be ON the line.
+
+# Verbatim from the journal, the done + attach_wait + Finished + Consumed quartet.
+POLY_10_22_LINES = (
+    '2026-10-22T12:25:38+00:00 hyz python[1692960]: [poly] done: {"markets": 18789, '
+    '"errors": 9, "skipped_resolved": 10896, "n_prices": 806685, "n_trades": 1285866, '
+    '"segments": {"open": {"markets": 6289, "prices": 475984, "trades": 4626211, '
+    '"wall_min": 236.4}, "closed_fetched": {"markets": 1604, "prices": 330701, '
+    '"trades": 1159628, "wall_min": 134.0}, "closed_skipped": {"markets": 10896, '
+    '"prices": 0, "trades": 0, "wall_min": 0.0}}, "flush_min": 115.8, "n_tail_stops": 16, '
+    '"elapsed_min": 486.3, "error_classes": {"ReadTimeout": 9}, "http_retries": '
+    '{"keyset_page": 0, "keyset_restart": 0, "tail_truncated": 16, "tail_truncated_empty": 7, '
+    '"total": 0}, "keyset_budget_frac": 0.0}\n'
+    "2026-10-22T12:25:38+00:00 hyz python[1692960]: [poly] attach_wait: on hyxlab.duckdb "
+    "754 attaches, 15 contended, worst attach 2.0s of 42.0s elapsed\n"
+    "2026-10-22T12:25:38+00:00 hyz systemd[758]: Finished hyxlab polymarket daily archival sweep.\n"
+    "2026-10-22T12:25:38+00:00 hyz systemd[758]: hyxlab-poly-sweep.service: Consumed 2h 53min "
+    "56.058s CPU time over 8h 10min 25.218s wall clock time, 6G memory peak.\n"
+)
+POLY_10_22_CLAUSE = (
+    " [open 6,289 mkts 236.4 min; closed_fetched 1,604 mkts 134.0 min; "
+    "closed_skipped 10,896 mkts 0.0 min; flush 115.8 min]"
+)
+QA_10_23 = datetime(2026, 10, 23, 10, 0, tzinfo=UTC)
+
+
+def _poly_journal(text):
+    return lambda unit, since, until: text if unit == "hyxlab-poly-sweep.service" else ""
+
+
+def test_the_10_22_poly_done_line_is_read_onto_its_run(monkeypatch):
+    monkeypatch.setattr(qa, "_journal", _poly_journal(POLY_10_22_LINES))
+    (run,) = qa.read_batch_runs(now=QA_10_23)["hyxlab-poly-sweep.timer"]
+    assert run.ok and round(run.wall_h, 2) == 8.17
+    assert run.segments == POLY_10_22_CLAUSE
+
+
+def test_the_10_22_breach_line_carries_the_segments(monkeypatch, capsys):
+    monkeypatch.setattr(qa, "_journal", _poly_journal(POLY_10_22_LINES))
+    failed, _ = _run(None, now=QA_10_23)
+    assert failed == {"batch units within measured run budget"}
+    out = capsys.readouterr().out
+    assert "hyxlab-poly-sweep.timer ran 8.17h (budget 8h), 10-22 04:15Z -> 10-22 12:25Z" in out
+    assert POLY_10_22_CLAUSE in out
+
+
+def test_a_done_line_describes_only_the_consumed_line_that_follows_it(monkeypatch):
+    """Two runs in one read: the first's done line must not ride on to the
+    second (which here printed none -- a boundary or a kill between them)."""
+    second = (
+        "2026-10-23T04:15:00+00:00 hyz systemd[758]: Starting hyxlab polymarket daily "
+        "archival sweep...\n"
+        "2026-10-23T11:00:00+00:00 hyz systemd[758]: hyxlab-poly-sweep.service: Consumed 2h "
+        "CPU time over 6h 45min wall clock time, 6G memory peak.\n"
+    )
+    monkeypatch.setattr(qa, "_journal", _poly_journal(POLY_10_22_LINES + second))
+    first, nxt = qa.read_batch_runs(now=QA_10_23 + timedelta(days=1))["hyxlab-poly-sweep.timer"]
+    assert first.segments == POLY_10_22_CLAUSE
+    assert nxt.segments == ""
+
+
+def test_a_unit_with_no_done_line_renders_no_brackets(monkeypatch, capsys):
+    """The Kalshi sweep prints no `done:` JSON; its breach line is unchanged."""
+    monkeypatch.setattr(qa, "_journal", lambda unit, since, until: REAL_LINE)
+    (run,) = qa.read_batch_runs(now=NOW)["hyxlab-sweep.timer"]
+    assert run.segments == ""
+    _run(None, now=NOW)
+    assert "[" not in capsys.readouterr().out.split("10-03 21:16Z")[0].split("->")[-1]
+
+
+@pytest.mark.parametrize(
+    "done,clause",
+    [
+        ({}, ""),
+        ({"segments": {}}, ""),
+        ({"flush_min": 12.34}, " [flush 12.3 min]"),
+        ({"segments": {"open": {"markets": "x", "wall_min": 1.0}}}, ""),
+        (
+            {"segments": {"open": {"markets": 10, "wall_min": 2.0}}, "flush_min": None},
+            " [open 10 mkts 2.0 min]",
+        ),
+    ],
+)
+def test_segments_clause_leaves_out_what_it_cannot_render(done, clause):
+    assert qa._segments_clause(done) == clause
+
+
+def test_an_unparseable_done_line_reads_as_no_segments(monkeypatch):
+    bad = POLY_10_22_LINES.replace('"flush_min": 115.8', '"flush_min": 115.8 oops')
+    monkeypatch.setattr(qa, "_journal", _poly_journal(bad))
+    (run,) = qa.read_batch_runs(now=QA_10_23)["hyxlab-poly-sweep.timer"]
+    assert run.ok and run.segments == ""
+
+
+# The Kalshi sweep's done line is a dict REPR (single quotes, tuples), not
+# JSON, decomposed by `by_class` with `wall_s`. Verbatim from 10-20 20:31Z.
+KALSHI_10_20_LINES = (
+    "2026-10-20T20:31:25+00:00 hyz python[1500000]: [sweep] done: {'series': 4031, "
+    "'markets': 68689, 'candles': 195594, 'errors': 0, 'lock_skips': 0, 'truncated': 2, "
+    "'aborted': False, 'tapes_skipped': 56326, 'elapsed_min': 696.8, 'slowest': "
+    "[('KXETHD', 3061.7, 6940), ('KXETH', 3001.4, 6940), ('KXBTC15M', 2862.6, 96)], "
+    "'by_class': {'ladder': {'n': 33, 'wall_s': 29728.4, 'markets': 64175}, 'dense': "
+    "{'n': 1, 'wall_s': 2862.6, 'markets': 96, 'tickers': ['KXBTC15M']}, 'small': "
+    "{'n': 3997, 'wall_s': 9218.7, 'markets': 4418}}}\n"
+    "2026-10-20T20:31:26+00:00 hyz systemd[758]: hyxlab-sweep.service: Consumed 1h 50min "
+    "CPU time over 12h 50min 12.000s wall clock time, 6G memory peak.\n"
+)
+
+
+def test_the_kalshi_sweeps_dict_repr_done_line_is_read_too(monkeypatch, capsys):
+    monkeypatch.setattr(qa, "_journal", _sweep_journal(KALSHI_10_20_LINES))
+    now = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    (run,) = qa.read_batch_runs(now=now)["hyxlab-sweep.timer"]
+    assert run.segments == (
+        " [ladder 33 series/64,175 mkts 495.5 min; dense 1 series/96 mkts 47.7 min; "
+        "small 3,997 series/4,418 mkts 153.6 min]"
+    )
+    failed, _ = _run(None, now=now)
+    assert failed == {"batch units within measured run budget"}
+    assert "10-20 07:41Z -> 10-20 20:31Z" + run.segments in capsys.readouterr().out
+
+
+def test_a_done_line_that_is_neither_json_nor_a_literal_reads_as_no_segments(monkeypatch):
+    bad = KALSHI_10_20_LINES.replace("'aborted': False", "'aborted': os.system('x')")
+    monkeypatch.setattr(qa, "_journal", _sweep_journal(bad))
+    (run,) = qa.read_batch_runs(now=datetime(2026, 10, 21, 10, 0, tzinfo=UTC))["hyxlab-sweep.timer"]
+    assert run.segments == ""
