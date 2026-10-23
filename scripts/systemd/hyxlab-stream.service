@@ -14,7 +14,12 @@ Restart=always
 # a declared constant (tests/test_drain_budget.py).
 TimeoutStopSec=180
 RestartSec=10
-MemoryMax=2G
+# 4G since the 2026-10-20 coverage expansion (was 2G, which the daemon sat
+# at under reclaim): books for ~45 more series across several connections,
+# two exchange-wide channels (ticker, lifecycle) and the raw-frame writer's
+# bounded 64 MB queue. DuckDB's memory_limit follows this cap
+# (hyxlab.memcap), so the flush's working memory scales with it too.
+MemoryMax=4G
 # The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
 # cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
 # journal's `memory peak` is total charge including page cache, == the cap

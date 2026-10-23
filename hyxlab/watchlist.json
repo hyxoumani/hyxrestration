@@ -1,5 +1,5 @@
 {
-  "_comment": "Collector watchlist. kalshi_series are polled open+settled each cycle; polymarket_pairs are CLOB token pairs [market_id, yes_token, no_token] added manually when a cross-venue pair is human-verified; nws_stations are keys into hyxlab.venues.nws.STATIONS.",
+  "_comment": "Collector watchlist. kalshi_series are polled open+settled each cycle; polymarket_pairs are CLOB token pairs [market_id, yes_token, no_token] added manually when a cross-venue pair is human-verified; nws_stations are keys into hyxlab.venues.nws.STATIONS. kalshi_book_series (2026-10-20 coverage expansion) are BOOKS ONLY: the stream daemon holds orderbook_delta for their open markets beside kalshi_series', and the REST collector never reads this key -- phase 1 = the top taker-dollar non-combo series on the 10-12..10-18 tape plus every daily-temperature series traded on the 10-16..10-22 tape that kalshi_series lacks. kalshi_book_shard_max = markets per books connection (placeholder until the venue's per-subscription cap is measured). kalshi_{ticker,lifecycle}_include_mve = keep KXMVE combo rows in stream_ticker/stream_lifecycle (default false).",
   "kalshi_series": [
     "KXHIGHNY", "KXHIGHCHI", "KXHIGHMIA", "KXHIGHAUS", "KXHIGHDEN",
     "KXLOWTMIA", "KXLOWTNYC", "KXLOWTATL", "KXLOWTPHX", "KXLOWTPHIL",
@@ -9,6 +9,21 @@
     "KXLOWTDEN", "KXLOWTOKC", "KXLOWTSATX", "KXLOWTLV",
     "KXCPI", "KXCPIYOY", "KXFED", "KXPAYROLLS", "KXJOBLESSCLAIMS", "KXCONTCLAIMS", "KXU3"
   ],
+  "kalshi_book_series": [
+    "KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXGOLD15M", "KXWTI15M", "KXBTCD",
+    "KXNFLGAME", "KXNCAAFGAME", "KXNBAGAME", "KXNHLGAME", "KXMLBGAME", "KXUCLGAME",
+    "KXNFLSPREAD", "KXNCAAFSPREAD",
+    "KXATPMATCH", "KXATPCHALLENGERMATCH", "KXWTAMATCH", "KXWTACHALLENGERMATCH",
+    "KXITFMATCH", "KXITFWMATCH",
+    "KXHIGHLAX", "KXHIGHPHIL",
+    "KXHIGHTATL", "KXHIGHTBOS", "KXHIGHTDAL", "KXHIGHTDC", "KXHIGHTEWR", "KXHIGHTHOU",
+    "KXHIGHTLV", "KXHIGHTMIN", "KXHIGHTNOLA", "KXHIGHTOKC", "KXHIGHTPHX", "KXHIGHTSAN",
+    "KXHIGHTSATX", "KXHIGHTSDF", "KXHIGHTSEA", "KXHIGHTSFO", "KXHIGHTTTN",
+    "KXLOWTEWR", "KXLOWTSAN", "KXLOWTSDF", "KXLOWTTTN"
+  ],
+  "kalshi_book_shard_max": 500,
+  "kalshi_ticker_include_mve": false,
+  "kalshi_lifecycle_include_mve": false,
   "polymarket_pairs": [],
   "cross_venue_pairs": [],
   "nws_stations": ["NYC", "CHI", "MIA", "AUS", "DEN"]

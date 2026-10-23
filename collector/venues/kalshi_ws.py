@@ -18,16 +18,27 @@ STRING DOLLARS (`yes_price_dollars`, `count_fp`, `price_dollars`,
 `ts`).
 
 2026-10-20 coverage expansion, shapes read from docs.kalshi.com (websockets
-pages) the same day and NOT yet probed live -- the #9 lesson is that a doc
-shape is a premise until a frame confirms it, so every parser below treats a
-missing field as NULL rather than raising:
+pages, re-read 2026-10-23) and NOT yet probed live -- the #9 lesson is that a
+doc shape is a premise until a frame confirms it, so every parser below treats
+a missing field as NULL rather than raising:
 - `update_subscription` edits an existing subscription in place:
   {"cmd": "update_subscription", "params": {"sid": N, "market_tickers": [...],
-  "action": "add_markets" | "delete_markets"}}; the reply is `ok` (or
-  `error`, code 26 = "subscription market limit exceeded").
+  "action": "add_markets" | "delete_markets" | "get_snapshot"}}; the reply is
+  `ok` carrying sid, seq and the full post-update market list (or `error`,
+  code 26 = "subscription market limit exceeded", 27 = command rate limit).
+  The per-subscription market limit EXISTS (code 26) but its value is not
+  published. `send_initial_snapshot` is documented for the TICKER channel
+  only, and the orderbook page does not say whether `add_markets` sends the
+  added books' snapshots -- so the daemon waits for one and asks with
+  `get_snapshot` (which leaves the subscription unchanged) if none comes.
 - `market_lifecycle_v2` is exchange-wide and takes NO market filter; frames
-  carry sid AND seq. `ticker` is exchange-wide when no market is named; its
-  frames carry sid but NO seq.
+  carry sid AND seq, and the same subscription delivers `event_lifecycle`
+  and `event_fee_update`. Event types: created, activated, deactivated,
+  close_date_updated, determined, settled, price_level_structure_updated,
+  metadata_updated. There is NO "closed" event: close is a time (`close_ts`).
+- `ticker` is exchange-wide when no market is named ("omit to receive all
+  markets"); "updates sent whenever any ticker field changes"; its frames
+  carry sid, and the page documents NO seq.
 """
 
 from __future__ import annotations
@@ -102,16 +113,33 @@ def subscribe_lifecycle(cmd_id: int = 1) -> str:
 
 def update_subscription(sid: int, tickers: list[str], action: str, cmd_id: int) -> str:
     """Add or delete markets on an EXISTING subscription -- the in-place edit
-    that replaces the reconnect a ticker-set change used to cost. `add_markets`
-    asks for the added markets' initial snapshots explicitly: without one an
-    added book cannot be reconstructed, and the docs list the flag without
-    stating its default."""
-    if action not in ("add_markets", "delete_markets"):
+    that replaces the reconnect a ticker-set change used to cost -- or ask
+    for fresh snapshots of markets already on it (`get_snapshot`).
+
+    No `send_initial_snapshot`: the docs scope that flag to the ticker
+    channel, and the books path does not rely on it (see the module doc)."""
+    if action not in ("add_markets", "delete_markets", "get_snapshot"):
         raise ValueError(f"unsupported update_subscription action {action!r}")
     params: dict[str, Any] = {"sid": sid, "market_tickers": sorted(tickers), "action": action}
-    if action == "add_markets":
-        params["send_initial_snapshot"] = True
     return json.dumps({"id": cmd_id, "cmd": "update_subscription", "params": params})
+
+
+#: Kalshi's error code for "adding markets would exceed the per-subscription
+#: market limit" (docs.kalshi.com, websocket-connection).
+ERR_MARKET_LIMIT = 26
+
+
+def control_info(frame: dict[str, Any]) -> tuple[str | None, int | None, int | None, int | None]:
+    """(type, client cmd id, sid, error code) of a protocol frame.
+
+    `subscribed` names the new sid in `msg.sid`; `ok` carries it at the top
+    level; `error` carries `msg.code`. Any of the four may be None."""
+    msg = frame.get("msg") if isinstance(frame.get("msg"), dict) else {}
+    sid = frame.get("sid")
+    if sid is None:
+        sid = msg.get("sid")
+    code = msg.get("code") if frame.get("type") == "error" else None
+    return frame.get("type"), _i(frame.get("id")), _i(sid), _i(code)
 
 
 def series_of(ticker: str) -> str:
@@ -352,6 +380,10 @@ class SeqTracker:
         last = self._last.get(sid)
         self._last[sid] = seq
         return last is not None and seq != last + 1
+
+    def last(self, sid: int | None) -> int | None:
+        """The last seq seen on `sid` (None if none yet)."""
+        return None if sid is None else self._last.get(sid)
 
     def reset(self, sid: int | None = None) -> None:
         if sid is None:

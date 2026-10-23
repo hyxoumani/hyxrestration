@@ -14,8 +14,8 @@ one file per UTC hour per channel (`trades`, `books`, `ticker`, `lifecycle`),
 each line `<recv_ts ISO>\\t<connection label>\\t<frame text>`. The label
 names the socket (`books-3`), because books shards each number their
 subscription from sid 1 and the frame alone cannot say which one it came
-from. Compression is zstd when it can be had -- the `zstandard` package, else
-Python 3.14's stdlib `compression.zstd` -- and gzip otherwise; both formats
+from. Compression is zstd (Python 3.14's stdlib `compression.zstd`; the
+`zstandard` package is in neither venv) and gzip otherwise; both formats
 are multi-frame, so re-opening an hour's file in append mode after a restart
 leaves one valid file. A crash can leave a truncated final frame: readers
 should read up to the first decode error, and everything before it is whole.
@@ -51,20 +51,13 @@ FLUSH_SECS = 5.0
 
 
 def _codec() -> tuple[str, Any]:
-    """(extension, opener(path) -> binary writable file in APPEND mode)."""
+    """(extension, opener(path) -> binary writable file in APPEND mode).
+
+    Python 3.14's stdlib `compression.zstd` (the stable venv runs 3.14.5 and
+    pins no compression package -- `scripts/requirements-stable.txt`), gzip
+    on an interpreter without it."""
     try:
-        import zstandard  # type: ignore[import-not-found]
-
-        cctx = zstandard.ZstdCompressor(level=3)
-
-        def open_zstandard(path: Path) -> BinaryIO:
-            return cctx.stream_writer(open(path, "ab"), closefd=True)  # noqa: SIM115
-
-        return "zst", open_zstandard
-    except ImportError:
-        pass
-    try:
-        from compression import zstd  # Python 3.14+
+        from compression import zstd
 
         def open_stdlib_zstd(path: Path) -> BinaryIO:
             return zstd.ZstdFile(path, "a", level=3)
@@ -85,14 +78,6 @@ def _flush_block(fh: Any) -> None:
 
         if isinstance(fh, zstd.ZstdFile):
             fh.flush(zstd.ZstdFile.FLUSH_BLOCK)
-            return
-    except ImportError:
-        pass
-    try:
-        import zstandard  # type: ignore[import-not-found]
-
-        if isinstance(fh, zstandard.ZstdCompressionWriter):
-            fh.flush(zstandard.FLUSH_BLOCK)
             return
     except ImportError:
         pass

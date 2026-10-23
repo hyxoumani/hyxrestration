@@ -5,13 +5,25 @@ and mark honestly what it missed (stream_gaps).
 
     python -m collector.streamd [--db data/hyxstream.duckdb]
                              [--watchlist hyxlab/watchlist.json]
+                             [--raw-frames data/raw_frames | --raw-frames '']
+                             [--env .env]
                              [--smoke SECONDS]   # bounded run, then exit
 
 Connections (each an independent task; one failing never stops others):
 - kalshi-trades: exchange-wide trade firehose (~105 ev/s observed).
-- kalshi-books: orderbook_delta for open markets of watchlist series;
-  the open set rolls daily, so it re-resolves hourly and reconnects when
-  it changes (reconnect ⇒ fresh snapshots re-seed every book).
+- kalshi-books-N: orderbook_delta for open markets of the watchlist's
+  `kalshi_series` AND `kalshi_book_series` (books only -- the REST
+  collector polls only the first), sharded across connections of at most
+  `kalshi_book_shard_max` markets (collector/bookcov.py). Since 2026-10-20
+  the set follows market_lifecycle_v2 and is edited in place with
+  `update_subscription`; a ticker-set change no longer reconnects. REST
+  reconciliation every RECONCILE_SECS is the backstop.
+- kalshi-lifecycle: exchange-wide market_lifecycle_v2 (stream_lifecycle).
+- kalshi-ticker: exchange-wide ticker channel (stream_ticker).
+KXMVE* combos are dropped from both tables unless the watchlist opts in
+(`kalshi_ticker_include_mve`, `kalshi_lifecycle_include_mve`). Every Kalshi
+text frame is also kept verbatim in hourly compressed files
+(collector/rawframes.py), off the DuckDB write path.
 - poly-books: market channel for watchlist polymarket_pairs tokens;
   skipped while the pair list is empty (pairs land with B3.5).
 
@@ -43,15 +55,38 @@ from pathlib import Path
 
 import websockets
 
+from collector.bookcov import SHARD_MAX, BookCoverage, Shard
+from collector.rawframes import RawFrameWriter
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
 from hyxlab.lockid import db_owner_lock_or_reason
 from hyxlab.memcap import cgroup_sock_throttled
 from hyxlab.store import lock_holder
-from hyxlab.streamstore import StreamStore
+from hyxlab.streamstore import SHARD_SID_STRIDE, StreamStore
 
 FLUSH_SECS = 15.0
 STATS_SECS = 300.0
-TICKER_REFRESH_SECS = 3600.0
+TICKER_REFRESH_SECS = 3600.0  # poly token-set refresh
+# Kalshi book-set REST reconciliation, the backstop under the lifecycle
+# channel. 15 min, not the old hourly: a 15-minute series lists a market per
+# period, so a missed lifecycle frame costs at most one period's book. One
+# get_markets call per series, paced by SERIES_PAUSE_S like the old refresh.
+RECONCILE_SECS = 900.0
+# An added market's book needs a snapshot. If none arrives this long after
+# `add_markets` (the docs do not say add_markets sends one), ask for it with
+# `get_snapshot`. The counters `books_snap_auto` / `books_snap_requested`
+# say which the venue actually does.
+SNAPSHOT_WAIT_S = 10.0
+# Coalesce lifecycle adds for this long before sending one update command,
+# so a burst of listings is one command, not one per market (code 27 is a
+# per-subscription command rate limit).
+BOOK_BATCH_S = 1.0
+# How long a quiet books shard has to answer its liveness probe (one
+# `get_snapshot`) before it is declared dead air.
+PROBE_WAIT_S = 60.0
+# Combos are ~95% of exchange-wide markets (1,217,514 of 1,259,025 traded on
+# 2026-10-20) and would dominate the ticker and lifecycle tables. Raw frames
+# keep them regardless.
+MVE_PREFIX = "KXMVE"
 POLY_PING_SECS = 10.0
 POLY_TOP_MARKETS = 50  # busiest books streamed even without verified pairs
 BACKOFF_MAX = 60.0
@@ -63,6 +98,12 @@ BACKOFF_MAX = 60.0
 # from a 07:00Z reconnect unsubscribed and archived zero trades for
 # 75+ minutes with no error (2026-08-13).
 DEAD_AIR_SECS = 300.0
+# Channels that are legitimately quieter. The exchange-wide lifecycle stream
+# is driven by listings and determinations; the 15-minute series alone put
+# several on it every 15 minutes, so 20 min of silence is still a dead
+# subscription, but 5 min need not be. (A quiet BOOKS shard is probed rather
+# than given a longer timeout -- see PROBE_WAIT_S.)
+DEAD_AIR_BY_CHANNEL = {"lifecycle": 1200.0}
 # Space the per-series ticker-refresh calls apart (see open_tickers).
 SERIES_PAUSE_S = float(os.environ.get("HYXLAB_SERIES_PAUSE_S", "0.35"))
 # Retry waits when a book task's subscription set comes back EMPTY (venue
@@ -133,6 +174,16 @@ STALL_HEARTBEAT_S = 300.0
 # 2x this, leaving the rest of the stop path -- websocket close, task
 # cancellation, a periodic flush still in flight on its worker thread -- a
 # budget of its own. `tests/test_drain_budget.py` pins both ratios.
+#
+# 2026-10-23, coverage expansion: the figures above are the `executemany`
+# era. The staged-CSV insert raised FLUSH_ROWS_PER_S to 100,000 (half the
+# slowest temp-DB reading; see its comment), so a SPILL_CAP buffer now
+# flushes in ~4s and 90s buys ~9M rows. The budget is deliberately NOT cut
+# to match: the new rate is a temp-database measurement until it is
+# re-measured on the live file, and an over-generous budget only means a
+# drain is attempted that would have been declined -- inside a
+# TimeoutStopSec that still leaves 90s for the rest of the stop path,
+# including the raw-frame writer's close (RAW_CLOSE_S).
 DRAIN_BUDGET_S = 90.0
 
 # How long the shutdown drain will wait for a PERIODIC flush to get out of
@@ -153,11 +204,19 @@ DRAIN_BUDGET_S = 90.0
 #
 # The wait is charged against DRAIN_BUDGET_S rather than added to it: a
 # drain that waited 30s has 30s less to write in, since the deadline runs
-# from SIGTERM. 30s leaves 60s = 426,000 rows, still over the SPILL_CAP
-# buffer (56.3s) the drain is REQUIRED to flush, so waiting never turns an
+# from SIGTERM. 30s leaves 60s = 6,000,000 rows at the post-2026-10-23
+# rate (426,000 at the old one), still over the SPILL_CAP buffer (4s; 56.3s
+# then) the drain is REQUIRED to flush, so waiting never turns an
 # ordinary restart into a sidecar handoff. `tests/test_flush_concurrency.py`
 # pins that composition and the unit's `TimeoutStopSec` covers the sum.
 DRAIN_LOCK_WAIT_S = 30.0
+
+# The raw-frame writer's close on the stop path: drain its queue and close
+# the hour's files. Runs AFTER the final drain, inside the TimeoutStopSec
+# margin over DRAIN_BUDGET_S (180 - 90 s). The queue is bounded at 64 MB of
+# frame text, which zstd compresses in well under a second, so this is a
+# ceiling for a stalled disk, not an expected duration.
+RAW_CLOSE_S = 10.0
 
 
 def load_env(path: str | Path = ".env") -> None:
@@ -563,9 +622,18 @@ def _short_err(exc: BaseException) -> str:
 
 
 class Daemon:
-    def __init__(self, store: StreamStore, watchlist: dict) -> None:
+    def __init__(
+        self, store: StreamStore, watchlist: dict, raw: RawFrameWriter | None = None
+    ) -> None:
         self.store = store
         self.watchlist = watchlist
+        # Raw-frame copy; None (tests, `--raw-frames ''`) keeps nothing.
+        self.raw = raw
+        self.books: BookCoverage | None = None
+        self._book_tasks: dict[int, asyncio.Task] = {}
+        self._book_wake: asyncio.Event | None = None
+        self._reconcile_now = False
+        self._cmd_id = 1  # 1 is every connection's subscribe
         self.key_id = os.environ.get("KALSHI_API_KEY_ID", "")
         pem_path = os.environ.get("KALSHI_PRIVATE_KEY_PATH", "")
         self.pem = Path(pem_path).read_bytes() if pem_path and Path(pem_path).exists() else b""
@@ -596,36 +664,256 @@ class Daemon:
     async def kalshi_trades(self) -> None:
         await self._kalshi_loop("trades", lambda: kalshi_ws.subscribe_trades(), None)
 
+    async def kalshi_lifecycle(self) -> None:
+        await self._kalshi_loop("lifecycle", lambda: kalshi_ws.subscribe_lifecycle(), None)
+
+    async def kalshi_ticker(self) -> None:
+        await self._kalshi_loop("ticker", lambda: kalshi_ws.subscribe_ticker(), None)
+
+    def _book_series(self) -> list[str]:
+        """Books-only series join the REST-polled ones. `kalshi_book_series`
+        exists so the stream can carry a series' books WITHOUT the collector
+        (which reads only `kalshi_series`) starting to poll it."""
+        return sorted(
+            set(self.watchlist.get("kalshi_series", []))
+            | set(self.watchlist.get("kalshi_book_series", []))
+        )
+
+    def _include_mve(self, table: str) -> bool:
+        return bool(self.watchlist.get(f"kalshi_{table}_include_mve", False))
+
+    def _wake_books(self) -> None:
+        if self._book_wake is not None:
+            self._book_wake.set()
+
     async def kalshi_books(self) -> None:
-        series = self.watchlist.get("kalshi_series", [])
+        """Own the book set: boot it from REST, follow the lifecycle channel,
+        reconcile against REST every RECONCILE_SECS, and keep one connection
+        task per shard. Returns only when every shard's loop has returned on
+        its own (missing credentials) -- a shard closed for being empty is
+        not that."""
+        series = self._book_series()
         if not series:
             _log("kalshi-books: no series in watchlist; task idle")
             return
         # An empty INITIAL set (REST down at boot) would leave books dark
-        # until the hourly refresh — keep retrying until tickers exist.
+        # until the next reconciliation — keep retrying until tickers exist.
         tickers = await _fetch_until_nonempty(
             lambda: open_tickers(series), "kalshi-books", "initial ticker set"
         )
-        _log(f"kalshi-books: {len(tickers)} open tickers across {len(series)} series")
+        cov = BookCoverage(set(series), int(self.watchlist.get("kalshi_book_shard_max", SHARD_MAX)))
+        self.books = cov
+        self._book_wake = asyncio.Event()
+        self._reconcile_now = False
+        for sh in cov.boot(set(tickers)):
+            self._start_shard(sh)
+        _log(
+            f"kalshi-books: {len(tickers)} open tickers across {len(series)} series"
+            f" on {len(cov.shards)} connection(s) (<= {cov.shard_max} each)"
+        )
+        mono = asyncio.get_event_loop().time
+        next_reconcile = mono() + RECONCILE_SECS
+        while True:
+            live = [t for t in self._book_tasks.values() if not t.done()]
+            if self._book_tasks and not live:
+                return
+            wait_s = max(0.0, next_reconcile - mono())
+            if cov.pending_open:
+                wait_s = min(wait_s, 1.0)
+            waker = asyncio.ensure_future(self._book_wake.wait())
+            done, _ = await asyncio.wait(
+                [*live, waker], timeout=wait_s, return_when=asyncio.FIRST_COMPLETED
+            )
+            waker.cancel()
+            if waker in done:
+                self._book_wake.clear()
+                await asyncio.sleep(BOOK_BATCH_S)  # coalesce a burst of listings
+            cov.due_opens()
+            if mono() >= next_reconcile or self._reconcile_now:
+                self._reconcile_now = False
+                next_reconcile = mono() + RECONCILE_SECS
+                rest = await asyncio.to_thread(open_tickers, series)
+                if rest:
+                    cov.reconcile(set(rest), _time.monotonic())
+                else:
+                    _log("kalshi-books: reconciliation read nothing; keeping the held set")
+            await self._apply_books()
 
-        async def refresh() -> bool:
-            nonlocal tickers
-            new = await asyncio.to_thread(open_tickers, series)
-            if new and new != tickers:
-                _log(f"kalshi-books: open set changed {len(tickers)} -> {len(new)}; reconnecting")
-                tickers = new
-                return True
-            return False
-
-        await self._kalshi_loop(
-            "books", lambda: kalshi_ws.subscribe_books(sorted(tickers)), refresh
+    def _start_shard(self, sh: Shard) -> None:
+        self._book_tasks[sh.idx] = asyncio.create_task(
+            self._kalshi_loop(
+                "books", lambda sh=sh: kalshi_ws.subscribe_books(sorted(sh.assigned)), sh
+            ),
+            name=f"kalshi-{sh.label}",
         )
 
-    async def _kalshi_loop(self, channel: str, make_subscribe, refresh) -> None:
-        """Shared connect/read/reconnect loop for the two Kalshi channels."""
+    async def _apply_books(self) -> None:
+        cov = self.books
+        if cov is None:
+            return
+        adds, removes = cov.take()
+        if adds or removes:
+            touched, created, emptied = cov.apply(adds, removes)
+            for sh in emptied:
+                # Deliberate close, not a failure: no gap row. Nothing it
+                # carried is wanted any more.
+                task = self._book_tasks.pop(sh.idx, None)
+                if task is not None:
+                    task.cancel()
+                _log(f"kalshi-{sh.label}: no markets left; connection closed")
+            for sh in created:
+                self._start_shard(sh)
+                _log(f"kalshi-{sh.label}: opened for {len(sh.assigned)} market(s)")
+            for idx in touched:
+                sh = cov.find(idx)
+                if sh is not None and sh not in created:
+                    await self._sync_shard(sh)
+        self.stats["books_shards"] = len(cov.shards)
+        self.stats["books_held"] = len(cov.held)
+
+    def _next_cmd(self) -> int:
+        self._cmd_id = getattr(self, "_cmd_id", 1) + 1
+        return self._cmd_id
+
+    async def _sync_shard(self, sh: Shard) -> None:
+        """Send the shard the difference between what it should carry and
+        what the venue was told. Nothing to do until the connection's sid is
+        known: the reconnect path subscribes the whole assigned set."""
+        if sh.ws is None or sh.sid is None:
+            return
+        mono = asyncio.get_event_loop().time
+        for action, tickers in (
+            ("delete_markets", sh.subscribed - sh.assigned),
+            ("add_markets", sh.assigned - sh.subscribed),
+        ):
+            if not tickers:
+                continue
+            cid = self._next_cmd()
+            sh.pending[cid] = (action, set(tickers))
+            try:
+                await sh.ws.send(
+                    kalshi_ws.update_subscription(sh.sid, sorted(tickers), action, cid)
+                )
+            except Exception as exc:  # the recv side fails too and reconnects
+                _log(f"kalshi-{sh.label}: {action} send failed ({_short_err(exc)})")
+                return
+            if action == "add_markets":
+                sh.subscribed |= tickers
+                due = mono() + SNAPSHOT_WAIT_S
+                sh.awaiting.update(dict.fromkeys(tickers, due))
+                self._count("books_added", len(tickers))
+            else:
+                sh.subscribed -= tickers
+                for t in tickers:
+                    sh.awaiting.pop(t, None)
+                self._count("books_removed", len(tickers))
+
+    async def _request_snapshots(self, sh: Shard, now: float) -> None:
+        late = sorted(t for t, due in sh.awaiting.items() if due <= now)
+        if not late or sh.ws is None or sh.sid is None:
+            return
+        for t in late:
+            del sh.awaiting[t]
+        cid = self._next_cmd()
+        sh.pending[cid] = ("get_snapshot", set(late))
+        with contextlib.suppress(Exception):
+            await sh.ws.send(kalshi_ws.update_subscription(sh.sid, late, "get_snapshot", cid))
+            self._count("books_snap_requested", len(late))
+
+    async def _on_control(self, channel: str, sh: Shard | None, frame: dict) -> None:
+        """React to a protocol frame: learn a shard's sid, retire acknowledged
+        commands, and handle rejections. Errors are logged on every channel --
+        until 2026-10-20 a refused subscribe parsed to nothing and the
+        connection idled into dead air."""
+        typ, cid, sid, code = kalshi_ws.control_info(frame)
+        label = sh.label if sh else channel
+        if typ == "subscribed" and sh is not None:
+            sh.sid = sid
+            await self._sync_shard(sh)
+        elif typ == "ok" and sh is not None and cid is not None:
+            sh.pending.pop(cid, None)
+        elif typ == "error":
+            self._count(f"kalshi_{channel}_errors", 1)
+            _log(f"kalshi-{label}: venue error {json.dumps(frame.get('msg'))[:200]} (cmd {cid})")
+            if sh is None or self.books is None:
+                return
+            if cid == 1 and code == kalshi_ws.ERR_MARKET_LIMIT:
+                # The SUBSCRIBE itself was over the per-subscription cap.
+                self.books.split(sh)
+                self._wake_books()
+                raise ConnectionError("subscribe over the market limit; resubscribing halved")
+            action, tickers = (
+                sh.pending.pop(cid, (None, set())) if cid is not None else (None, set())
+            )
+            if action == "add_markets":
+                if code == kalshi_ws.ERR_MARKET_LIMIT:
+                    self.books.over_limit(sh, tickers)
+                    _log(
+                        f"kalshi-{label}: market limit at {len(sh.assigned)}; shard cap"
+                        f" now {self.books.shard_max}, {len(tickers)} market(s) re-homed"
+                    )
+                    self._wake_books()
+                else:
+                    sh.subscribed -= tickers  # retried by the next sync
+
+    def _store_frame(self, channel: str, sh: Shard | None, frame: dict, recv_ts, raw) -> None:
+        """Parse one data frame into its table."""
+        if channel == "lifecycle":
+            row = kalshi_ws.parse_lifecycle(frame, recv_ts, raw)
+            if row is None:
+                return
+            if self.books is not None and row.msg_type == "market_lifecycle_v2":
+                mono = _time.monotonic()  # the clock BookCoverage's bars run on
+                if self.books.on_lifecycle(row.market_id, row.event_type, row.open_ts, mono):
+                    self._wake_books()
+            if row.market_id.startswith(MVE_PREFIX) and not self._include_mve("lifecycle"):
+                self._count("kalshi_lifecycle_mve_dropped", 1)
+                return
+            self.store.append_lifecycles([row])
+            self._count("kalshi_lifecycle", 1)
+            return
+        if channel == "ticker":
+            row = kalshi_ws.parse_ticker(frame, recv_ts)
+            if row is None:
+                return
+            if row.market_id.startswith(MVE_PREFIX) and not self._include_mve("ticker"):
+                self._count("kalshi_ticker_mve_dropped", 1)
+                return
+            self.store.append_tickers([row])
+            self._count("kalshi_ticker", 1)
+            return
+        events, trades = kalshi_ws.parse_message(frame, recv_ts)
+        if events:
+            if sh is not None:
+                if sh.idx:
+                    off = sh.idx * SHARD_SID_STRIDE
+                    for e in events:
+                        if e.sid is not None:
+                            e.sid += off
+                if (
+                    sh.awaiting
+                    and frame.get("type") == "orderbook_snapshot"
+                    and sh.awaiting.pop(events[0].market_id, None) is not None
+                ):
+                    self._count("books_snap_auto", 1)
+            self.store.append_events(events)
+            self._count(f"kalshi_{channel}_events", len(events))
+        if trades:
+            self.store.append_trades(trades)
+            self._count("kalshi_trades", len(trades))
+
+    async def _kalshi_loop(self, channel: str, make_subscribe, shard: Shard | None = None) -> None:
+        """Shared connect/read/reconnect loop for every Kalshi connection.
+
+        `channel` names the stream (gap rows, stats, raw-frame file); `shard`
+        is set for a books connection, whose market set `kalshi_books` edits
+        while it runs. A connection reconnects only on a real failure -- an
+        exception, a seq jump, dead air -- never because its set changed."""
         if not (self.key_id and self.pem):
             _log(f"kalshi-{channel}: missing KALSHI_API_KEY_ID/KALSHI_PRIVATE_KEY_PATH; idle")
             return
+        label = shard.label if shard is not None else channel
+        dead_air = DEAD_AIR_BY_CHANNEL.get(channel, DEAD_AIR_SECS)
         backoff, last_recv, first = 1.0, None, True
         # Bound for the first connection's seq_reset row: in-process
         # `last_recv` does not survive a restart (S-188 class 3), so read
@@ -633,49 +921,79 @@ class Daemon:
         # the frame path, where a transient reader lock would cost the
         # frame in hand and force a reconnect. Best-effort: a failed read
         # only shortens the startup row, and the '*' daemon_start row
-        # still marks the downtime coarsely.
-        try:
-            resume_since = await asyncio.to_thread(self.store.last_recv_ts, "kalshi", channel)
-        except Exception as exc:
-            _log(f"kalshi-{channel}: last_recv_ts unavailable ({type(exc).__name__}: {exc})")
-            resume_since = None
+        # still marks the downtime coarsely. A books shard opened MID-RUN
+        # skips it: its markets were covered by nothing before it, and the
+        # channel's last frame came from another shard a moment ago.
+        resume_since = None
+        if shard is None or shard.at_boot:
+            try:
+                resume_since = await asyncio.to_thread(self.store.last_recv_ts, "kalshi", channel)
+            except Exception as exc:
+                _log(f"kalshi-{label}: last_recv_ts unavailable ({type(exc).__name__}: {exc})")
         while True:
             try:
                 headers = kalshi_ws.auth_headers(self.key_id, self.pem)
                 async with websockets.connect(
                     kalshi_ws.WS_URL, additional_headers=headers, max_size=2**23
                 ) as ws:
+                    if shard is not None:
+                        shard.ws, shard.sid = ws, None
+                        shard.subscribed = set(shard.assigned)
+                        shard.pending.clear()
+                        shard.awaiting.clear()
                     await ws.send(make_subscribe())
                     if not first:
                         self._gap("kalshi", channel, last_recv, "reconnect")
+                        if channel == "lifecycle":
+                            # Lifecycle frames were missed: let REST catch
+                            # the book set up now, not at the next period.
+                            self._reconcile_now = True
+                            self._wake_books()
                     first, backoff = False, 1.0
-                    _log(f"kalshi-{channel}: connected")
+                    _log(f"kalshi-{label}: connected")
                     tracker = kalshi_ws.SeqTracker()
                     seeded = False  # first frame of THIS connection not yet seen
                     mono = asyncio.get_event_loop().time
-                    next_refresh = mono() + TICKER_REFRESH_SECS
                     last_frame = mono()
+                    probe_due: float | None = None  # books: liveness probe sent
                     while True:
-                        deadline = last_frame + DEAD_AIR_SECS
-                        if refresh:
-                            deadline = min(deadline, next_refresh)
+                        deadline = probe_due or (last_frame + dead_air)
+                        if shard is not None and shard.awaiting:
+                            deadline = min(deadline, min(shard.awaiting.values()))
                         try:
                             raw = await asyncio.wait_for(
                                 ws.recv(), timeout=max(1.0, deadline - mono())
                             )
                         except TimeoutError:
-                            if refresh and mono() >= next_refresh:
-                                next_refresh = mono() + TICKER_REFRESH_SECS
-                                if await refresh():
-                                    break  # reconnect with the new ticker set
-                            if mono() - last_frame > DEAD_AIR_SECS:
+                            now = mono()
+                            if shard is not None:
+                                await self._request_snapshots(shard, now)
+                            silent = now - last_frame > dead_air
+                            if silent and shard is not None and probe_due is None and shard.sid:
+                                # A books shard can be legitimately quiet (a
+                                # few illiquid markets overnight). Ask for one
+                                # snapshot: an answer proves the subscription
+                                # is alive, silence proves it is not.
+                                probe = sorted(shard.assigned)[:1]
+                                with contextlib.suppress(Exception):
+                                    await ws.send(
+                                        kalshi_ws.update_subscription(
+                                            shard.sid, probe, "get_snapshot", self._next_cmd()
+                                        )
+                                    )
+                                probe_due = now + PROBE_WAIT_S
+                                self._count("books_probes", 1)
+                                continue
+                            if silent and (probe_due is None or now >= probe_due):
                                 self._gap("kalshi", channel, last_recv, "dead_air")
                                 raise ConnectionError(
-                                    f"no frames for {DEAD_AIR_SECS:.0f}s (dead air)"
+                                    f"no frames for {dead_air:.0f}s (dead air)"
                                 ) from None
                             continue
-                        last_frame = mono()
+                        last_frame, probe_due = mono(), None
                         recv_ts = datetime.now(UTC)
+                        if self.raw is not None:
+                            self.raw.put(channel, label, recv_ts, raw)
                         if not seeded:
                             # Every (re)connect resets the ws sequence, so
                             # anything between the last frame we archived and
@@ -691,32 +1009,39 @@ class Daemon:
                                 self.store.append_gap(
                                     "kalshi", channel, since, recv_ts, "seq_reset"
                                 )
-                                _log(f"kalshi/{channel} GAP (seq_reset)")
+                                _log(f"kalshi/{label} GAP (seq_reset)")
                         self._clock_check("kalshi", channel, recv_ts, last_recv)
                         frame = json.loads(raw)
+                        typ = frame.get("type")
+                        if typ in kalshi_ws.CONTROL_TYPES:
+                            await self._on_control(channel, shard, frame)
+                            sid, seq = frame.get("sid"), frame.get("seq")
+                            if typ == "ok" and seq is not None and tracker.last(sid) == seq:
+                                # An update ack that REPEATS the sid's current
+                                # seq consumed none: not a gap, not a row.
+                                self._count(f"kalshi_{channel}_ok_seq_repeat", 1)
+                                last_recv = recv_ts
+                                continue
                         # Continuity check on the raw frame (sid/seq are
                         # frame-level); a jump means missed messages, so
                         # log the gap and reconnect to re-seed books.
                         if tracker.observe(frame.get("sid"), frame.get("seq")):
                             self._gap("kalshi", channel, last_recv, "seq_gap")
                             raise ConnectionError("seq gap; reconnecting to re-seed")
-                        events, trades = kalshi_ws.parse_message(frame, recv_ts)
-                        if events:
-                            self.store.append_events(events)
-                            self._count(f"kalshi_{channel}_events", len(events))
-                        if trades:
-                            self.store.append_trades(trades)
-                            self._count("kalshi_trades", len(trades))
+                        self._store_frame(channel, shard, frame, recv_ts, raw)
+                        if shard is not None and shard.awaiting:
+                            await self._request_snapshots(shard, mono())
                         last_recv = recv_ts
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 note = _venue_clock_note(exc, datetime.now(UTC))
-                _log(
-                    f"kalshi-{channel}: {type(exc).__name__}: {exc}{note}; retry in {backoff:.0f}s"
-                )
+                _log(f"kalshi-{label}: {type(exc).__name__}: {exc}{note}; retry in {backoff:.0f}s")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
+            finally:
+                if shard is not None:
+                    shard.ws, shard.sid = None, None
 
     def _poly_token_set(self) -> list[str]:
         """Watchlist pair tokens + top-volume markets' tokens (data-first:
@@ -918,7 +1243,7 @@ class Daemon:
         documented as; see `StreamStore.BUFFER_ROWS_PER_S`. The spill-all is
         right for the reason stated here, which does not depend on it.) (c) The
         drain is a race against the unit's `TimeoutStopSec` at a measured
-        7,100 rows/s, and LOSING that race is worse than not starting: a
+        `StreamStore.FLUSH_ROWS_PER_S`, and LOSING that race is worse than not starting: a
         SIGKILL lands after `flush()` has moved the buffers into locals,
         skipping the `except BaseException` that would put them back and
         the `spill_all` that would have saved them. Refused above the row
@@ -989,7 +1314,7 @@ class Daemon:
         # and the boundary stays exactly where DRAIN_BUDGET_S puts it.
         # Sub-second resolution here would be false precision anyway --
         # FLUSH_ROWS_PER_S is a rounded-down measurement, and one second of
-        # it is 7,100 rows.
+        # it is 100,000 rows.
         left = max(0.0, DRAIN_BUDGET_S - float(int(elapsed())))
         budget = int(left * self.store.FLUSH_ROWS_PER_S)
         est = self.store.drain_rows_estimate()
@@ -1079,6 +1404,8 @@ class Daemon:
         tasks = [
             asyncio.create_task(self.kalshi_trades(), name="kalshi-trades"),
             asyncio.create_task(self.kalshi_books(), name="kalshi-books"),
+            asyncio.create_task(self.kalshi_lifecycle(), name="kalshi-lifecycle"),
+            asyncio.create_task(self.kalshi_ticker(), name="kalshi-ticker"),
             asyncio.create_task(self.poly_books(), name="poly-books"),
             asyncio.create_task(self.flusher(), name="flusher"),
         ]
@@ -1120,6 +1447,12 @@ def main() -> None:
     ap.add_argument("--db", default="data/hyxstream.duckdb")
     ap.add_argument("--watchlist", default=None)
     ap.add_argument("--smoke", type=float, default=None, help="run N seconds, then exit")
+    ap.add_argument(
+        "--raw-frames",
+        default="data/raw_frames",
+        help="root for the raw Kalshi frame files; '' keeps none",
+    )
+    ap.add_argument("--env", default=".env", help="KEY=VALUE file for the Kalshi credentials")
     args = ap.parse_args()
 
     # Own the stream archive before opening it. DuckDB's file lock is held
@@ -1134,15 +1467,22 @@ def main() -> None:
         print(f"[streamd] {why}; not starting", flush=True)
         raise SystemExit(75)
 
-    load_env()
+    load_env(args.env)
     from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 
     watchlist = load_watchlist(args.watchlist or str(DEFAULT_WATCHLIST))
     store = StreamStore(args.db)
-    daemon = Daemon(store, watchlist)
-    _log(f"starting (db={args.db}, smoke={args.smoke})")
-    with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(daemon.run(duration=args.smoke))
+    raw = RawFrameWriter(args.raw_frames) if args.raw_frames else None
+    if raw is not None:
+        raw.start()
+    daemon = Daemon(store, watchlist, raw)
+    _log(f"starting (db={args.db}, raw_frames={args.raw_frames or 'off'}, smoke={args.smoke})")
+    try:
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(daemon.run(duration=args.smoke))
+    finally:
+        if raw is not None and not raw.close(RAW_CLOSE_S):
+            print(f"[streamd] raw frames: close timed out after {RAW_CLOSE_S:.0f}s", flush=True)
     print(f"[streamd] final counts: {store.counts()}", flush=True)
 
 
