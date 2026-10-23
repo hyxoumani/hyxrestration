@@ -52,7 +52,9 @@ def test_a_full_buffer_always_fits_the_drain_budget():
     flush it could have finished and leave the archive short for no
     reason."""
     worst = StreamStore.SPILL_CAP / StreamStore.FLUSH_ROWS_PER_S
-    assert worst == pytest.approx(56.3, abs=0.5)
+    # 56.3s in the executemany era; 4.0s since the 2026-10-23 staged-CSV
+    # insert (FLUSH_ROWS_PER_S 7,100 -> 100,000).
+    assert worst == pytest.approx(4.0, abs=0.5)
     assert 1.5 * worst <= streamd.DRAIN_BUDGET_S, (
         f"a full buffer takes {worst:.1f}s to flush; a "
         f"{streamd.DRAIN_BUDGET_S:.0f}s budget leaves it no margin"

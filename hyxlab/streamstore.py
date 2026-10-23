@@ -59,16 +59,18 @@ over convenience — replay logic interprets):
 from __future__ import annotations
 
 import contextlib
+import csv
 import json
 import os
+import tempfile
 import threading
 from collections.abc import Callable
-from dataclasses import astuple, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from operator import attrgetter
 from pathlib import Path
 
 import duckdb
-import pandas as pd
 
 from hyxlab.store import duck_connect
 
@@ -147,77 +149,75 @@ CREATE TABLE IF NOT EXISTS stream_lifecycle (
 #: stay single-digit; the stride only has to clear that by a wide margin.
 SHARD_SID_STRIDE = 1_000_000
 
-# Column order of every table, as `_insert` writes it. The pandas dtype is
-# what makes a Python None land as SQL NULL: a nullable extension dtype
-# (`Int64`, `Float64`, `string`, `boolean`) carries pd.NA, where plain
-# float64 would carry NaN -- a VALUE in DuckDB, not a NULL.
+# Column order and SQL type of every table, as `_insert` writes it (the CSV
+# it stages is read back with exactly these types -- see `_insert_frame`).
 _COLS = {
     "book_events": (
-        ("venue", "string"),
-        ("market_id", "string"),
-        ("recv_ts", "datetime64[us]"),
-        ("src_ts", "datetime64[us]"),
-        ("sid", "Int64"),
-        ("seq", "Int64"),
-        ("kind", "string"),
-        ("side", "string"),
-        ("price", "float64"),
-        ("qty", "float64"),
+        ("venue", "VARCHAR"),
+        ("market_id", "VARCHAR"),
+        ("recv_ts", "TIMESTAMP"),
+        ("src_ts", "TIMESTAMP"),
+        ("sid", "BIGINT"),
+        ("seq", "BIGINT"),
+        ("kind", "VARCHAR"),
+        ("side", "VARCHAR"),
+        ("price", "DOUBLE"),
+        ("qty", "DOUBLE"),
     ),
     "stream_trades": (
-        ("venue", "string"),
-        ("market_id", "string"),
-        ("recv_ts", "datetime64[us]"),
-        ("src_ts", "datetime64[us]"),
-        ("price", "float64"),
-        ("qty", "float64"),
-        ("taker_side", "string"),
-        ("seq", "Int64"),
+        ("venue", "VARCHAR"),
+        ("market_id", "VARCHAR"),
+        ("recv_ts", "TIMESTAMP"),
+        ("src_ts", "TIMESTAMP"),
+        ("price", "DOUBLE"),
+        ("qty", "DOUBLE"),
+        ("taker_side", "VARCHAR"),
+        ("seq", "BIGINT"),
     ),
     "stream_gaps": (
-        ("venue", "string"),
-        ("channel", "string"),
-        ("started_at", "datetime64[us]"),
-        ("ended_at", "datetime64[us]"),
-        ("reason", "string"),
+        ("venue", "VARCHAR"),
+        ("channel", "VARCHAR"),
+        ("started_at", "TIMESTAMP"),
+        ("ended_at", "TIMESTAMP"),
+        ("reason", "VARCHAR"),
     ),
     "stream_ticker": (
-        ("venue", "string"),
-        ("market_id", "string"),
-        ("recv_ts", "datetime64[us]"),
-        ("src_ts", "datetime64[us]"),
-        ("sid", "Int64"),
-        ("seq", "Int64"),
-        ("price", "Float64"),
-        ("yes_bid", "Float64"),
-        ("yes_ask", "Float64"),
-        ("yes_bid_size", "Float64"),
-        ("yes_ask_size", "Float64"),
-        ("last_trade_size", "Float64"),
-        ("volume", "Float64"),
-        ("open_interest", "Float64"),
-        ("dollar_volume", "Int64"),
-        ("dollar_open_interest", "Int64"),
+        ("venue", "VARCHAR"),
+        ("market_id", "VARCHAR"),
+        ("recv_ts", "TIMESTAMP"),
+        ("src_ts", "TIMESTAMP"),
+        ("sid", "BIGINT"),
+        ("seq", "BIGINT"),
+        ("price", "DOUBLE"),
+        ("yes_bid", "DOUBLE"),
+        ("yes_ask", "DOUBLE"),
+        ("yes_bid_size", "DOUBLE"),
+        ("yes_ask_size", "DOUBLE"),
+        ("last_trade_size", "DOUBLE"),
+        ("volume", "DOUBLE"),
+        ("open_interest", "DOUBLE"),
+        ("dollar_volume", "BIGINT"),
+        ("dollar_open_interest", "BIGINT"),
     ),
     "stream_lifecycle": (
-        ("venue", "string"),
-        ("market_id", "string"),
-        ("recv_ts", "datetime64[us]"),
-        ("src_ts", "datetime64[us]"),
-        ("sid", "Int64"),
-        ("seq", "Int64"),
-        ("msg_type", "string"),
-        ("event_type", "string"),
-        ("event_ticker", "string"),
-        ("series_ticker", "string"),
-        ("open_ts", "datetime64[us]"),
-        ("close_ts", "datetime64[us]"),
-        ("determination_ts", "datetime64[us]"),
-        ("settled_ts", "datetime64[us]"),
-        ("result", "string"),
-        ("settlement_value", "Float64"),
-        ("is_deactivated", "boolean"),
-        ("raw", "string"),
+        ("venue", "VARCHAR"),
+        ("market_id", "VARCHAR"),
+        ("recv_ts", "TIMESTAMP"),
+        ("src_ts", "TIMESTAMP"),
+        ("sid", "BIGINT"),
+        ("seq", "BIGINT"),
+        ("msg_type", "VARCHAR"),
+        ("event_type", "VARCHAR"),
+        ("event_ticker", "VARCHAR"),
+        ("series_ticker", "VARCHAR"),
+        ("open_ts", "TIMESTAMP"),
+        ("close_ts", "TIMESTAMP"),
+        ("determination_ts", "TIMESTAMP"),
+        ("settled_ts", "TIMESTAMP"),
+        ("result", "VARCHAR"),
+        ("settlement_value", "DOUBLE"),
+        ("is_deactivated", "BOOLEAN"),
+        ("raw", "VARCHAR"),
     ),
 }
 
@@ -278,8 +278,20 @@ def _enc_gap(g: tuple) -> str:
     return json.dumps({"t": "g", "r": [g[0], g[1], _iso(g[2]), _iso(g[3]), g[4]]}) + "\n"
 
 
+def _row(obj) -> tuple:
+    """A row dataclass as a flat tuple in field order (its `_COLS` order).
+    `dataclasses.astuple` deep-copies every value; this is one C call."""
+    getter = _GETTERS.get(type(obj))
+    if getter is None:
+        getter = _GETTERS[type(obj)] = attrgetter(*obj.__dataclass_fields__)
+    return getter(obj)
+
+
+_GETTERS: dict[type, attrgetter] = {}
+
+
 def _ts_cols(table: str) -> frozenset[int]:
-    return frozenset(i for i, (_, dt) in enumerate(_COLS[table]) if dt.startswith("datetime"))
+    return frozenset(i for i, (_, dt) in enumerate(_COLS[table]) if dt == "TIMESTAMP")
 
 
 def _enc_generic(tag: str, table: str, row) -> str:
@@ -287,7 +299,7 @@ def _enc_generic(tag: str, table: str, row) -> str:
     (tz-awareness round-trips, as for the original three), everything else
     as-is."""
     ts = _ts_cols(table)
-    vals = [_iso(v) if i in ts else v for i, v in enumerate(astuple(row))]
+    vals = [_iso(v) if i in ts else v for i, v in enumerate(_row(row))]
     return json.dumps({"t": tag, "r": vals}) + "\n"
 
 
@@ -298,23 +310,40 @@ def _dec_generic(cls, table: str, r: list):
     return cls(*[_from_iso(v) if i in ts else v for i, v in enumerate(r)])
 
 
-def _insert_frame(conn: duckdb.DuckDBPyConnection, table: str, rows: list[tuple]) -> None:
+def _insert_frame(
+    conn: duckdb.DuckDBPyConnection, table: str, rows: list[tuple], tmpdir: str | Path
+) -> None:
     """Insert `rows` (tuples in `_COLS[table]` order, timestamps already naive
-    UTC) as one registered frame. A no-op for an empty batch."""
+    UTC) through a staged CSV file and one `read_csv` scan. A no-op for an
+    empty batch.
+
+    Why a file: the stable deployment's venv carries duckdb and nothing that
+    DuckDB can scan in memory (no pandas, numpy, pyarrow or fsspec --
+    `scripts/requirements-stable.txt`), and `executemany` runs one prepared
+    INSERT per row. The CSV is lossless for every type here: QUOTE_NOTNULL
+    quotes every non-None value, so an unquoted empty field is NULL and a
+    quoted one is the empty string (`allow_quoted_nulls=false`); str() of a
+    naive datetime is DuckDB's timestamp text and of a float its repr; quotes
+    and newlines inside VARCHARs (the lifecycle `raw` frame) are escaped by
+    the csv module. `tests/test_stream_coverage.py` pins the round trip
+    against `executemany` as an oracle, NULLs and empty strings included."""
     if not rows:
         return
     cols = _COLS[table]
-    data = {
-        name: pd.Series(vals, dtype=dtype)
-        for (name, dtype), vals in zip(cols, zip(*rows, strict=True), strict=True)
-    }
-    view = f"_ins_{table}"
-    conn.register(view, pd.DataFrame(data))
+    fd, path = tempfile.mkstemp(prefix=f".{table}-", suffix=".csv", dir=str(tmpdir))
     try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            csv.writer(fh, quoting=csv.QUOTE_NOTNULL, lineterminator="\n").writerows(rows)
         names = ", ".join(n for n, _ in cols)
-        conn.execute(f"INSERT INTO {table} ({names}) SELECT {names} FROM {view}")
+        conn.execute(
+            f"INSERT INTO {table} ({names}) SELECT {names} FROM read_csv(?, header=false,"
+            " columns=?, auto_detect=false, quote='\"', escape='\"', nullstr='',"
+            " allow_quoted_nulls=false)",
+            [path, dict(cols)],
+        )
     finally:
-        conn.unregister(view)
+        with contextlib.suppress(OSError):
+            os.unlink(path)
 
 
 def _enc_ticker(t: StreamTicker) -> str:
@@ -524,16 +553,21 @@ class StreamStore:
     # preserved — and survives a daemon restart.
     SPILL_CAP = 400_000
 
-    #: Rows/s one `flush()` sustains end to end — sidecar parse,
-    #: `executemany` into all three tables, commit. This is the rate a
-    #: SHUTDOWN drain is racing, and it is 28x SLOWER than the rate rows
-    #: ARRIVE at (`BUFFER_ROWS_PER_S`); the two are not interchangeable
-    #: and nothing before 2026-09-18 had measured this one at all.
+    #: Rows/s one `flush()` sustains end to end — sidecar parse, the insert
+    #: into every table, commit. This is the rate a SHUTDOWN drain is
+    #: racing; it is not the rate rows ARRIVE at (`BUFFER_ROWS_PER_S`), and
+    #: the two are not interchangeable.
     #:
-    #: MEASURED 2026-09-18 on the live box, four buffer sizes at the
-    #: observed channel mix, linear within 0.7%: 50k in 7.05s (7,090/s),
-    #: 200k in 28.04s (7,132/s), 400k in 56.46s (7,085/s), 1M in 140.66s
-    #: (7,110/s). Rounded DOWN to the slowest reading.
+    #: HISTORY: 7,100 until 2026-10-23 -- MEASURED 2026-09-18 on the live
+    #: box over the `executemany` path, linear within 0.7% from 50k to 1M
+    #: rows. The coverage expansion replaced that path with a staged-CSV
+    #: `read_csv` (`_insert_frame`); MEASURED 2026-10-23 on a temp database
+    #: under the STABLE venv, observed channel mix plus ticker rows: buffer
+    #: flushes 313k-396k rows/s (50k / 200k / 1M rows), and the slowest path,
+    #: a 400k-row SIDECAR drain (JSON parse dominates), 189,584 rows/s.
+    #: Set to ~half that slowest reading, not to it: the benchmark file was
+    #: empty and uncontended, the live one is tens of GB under a memory cap
+    #: shared with page cache. Re-measure on the box once promoted.
     #:
     #: Its consumer is `collector.streamd.DRAIN_BUDGET_S`: systemd stops
     #: the daemon with SIGTERM and SIGKILLs it `TimeoutStopSec` later, so
@@ -542,7 +576,7 @@ class StreamStore:
     #: after `flush()` has already moved the buffers into locals, where no
     #: `except BaseException` will restore them and no gap row marks the
     #: hole.
-    FLUSH_ROWS_PER_S = 7_100
+    FLUSH_ROWS_PER_S = 100_000
 
     #: Bytes one sidecar JSONL record occupies. MEASURED 2026-09-18:
     #: 167 B/event, 150 B/trade, ~160 weighted by the observed channel mix
@@ -958,20 +992,17 @@ class StreamStore:
         tickers: list[StreamTicker] = (),  # type: ignore[assignment]
         lifecycles: list[StreamLifecycle] = (),  # type: ignore[assignment]
     ) -> None:
-        """All five tables in ONE transaction, each as a columnar frame.
+        """All five tables in ONE transaction, each as one staged-CSV scan.
 
         Until 2026-10-20 this was `executemany`, which DuckDB runs as one
-        prepared INSERT per row: measured 6,743 rows/s on a temp database
-        (the box's 7,100/s `FLUSH_ROWS_PER_S` is the same path end to end).
-        The coverage expansion multiplies the arrival rate several-fold, and
-        at that path a 15 s flush of a busy minute would have needed most of
-        the 15 s. A registered pandas frame inserts the same rows in one
-        vectorised scan -- measured 1.25M rows/s for the identical 200k-row
-        book batch. Values are unchanged: the nullable dtypes in `_COLS` map
-        None to NULL exactly as the bound parameters did, and
-        `tests/test_stream_coverage.py` pins the round trip against the old
-        `executemany` as an oracle."""
+        prepared INSERT per row: 7,100 rows/s end to end on this box
+        (`FLUSH_ROWS_PER_S` before the change). The coverage expansion
+        multiplies the arrival rate several-fold, and at that path a
+        15 s flush of a busy minute would have needed most of the 15 s.
+        `_insert_frame` loads the same rows in one vectorised `read_csv` --
+        measured on a temp database 2026-10-23, see `FLUSH_ROWS_PER_S`."""
         conn.execute("BEGIN")
+        tmp = self.path.parent
         _insert_frame(
             conn,
             "book_events",
@@ -990,6 +1021,7 @@ class StreamStore:
                 )
                 for e in events
             ],
+            tmp,
         )
         _insert_frame(
             conn,
@@ -1007,17 +1039,19 @@ class StreamStore:
                 )
                 for t in trades
             ],
+            tmp,
         )
-        _insert_frame(conn, "stream_gaps", gaps)
+        _insert_frame(conn, "stream_gaps", gaps, tmp)
         for table, rows in (("stream_ticker", tickers), ("stream_lifecycle", lifecycles)):
             ts = _ts_cols(table)
             _insert_frame(
                 conn,
                 table,
                 [
-                    tuple(_naive_utc(v) if i in ts else v for i, v in enumerate(astuple(r)))
+                    tuple(_naive_utc(v) if i in ts else v for i, v in enumerate(_row(r)))
                     for r in rows
                 ],
+                tmp,
             )
         conn.execute("COMMIT")
 
@@ -1061,7 +1095,4 @@ class StreamStore:
 
     def counts(self) -> dict[str, int]:
         with duck_connect(str(self.path), read_only=True) as conn:
-            return {
-                t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
-                for t in TABLES
-            }
+            return {t: conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in TABLES}
