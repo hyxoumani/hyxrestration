@@ -130,18 +130,22 @@ class BookCoverage:
                 self.removes.discard(t)
                 self.adds.add(t)
 
-    def reconcile(self, rest_open: set[str], mono: float) -> None:
+    def reconcile(
+        self, rest_open: set[str], mono: float, incomplete: set[str] | frozenset = frozenset()
+    ) -> None:
         """Queue the difference between what REST lists open and what is
         held. A market the lifecycle channel closed stays out while barred;
         a market REST no longer lists goes, unless a lifecycle add for it is
-        still queued (it opened after the REST page was read)."""
+        still queued (it opened after the REST page was read) or its series'
+        walk was `incomplete` (raised or truncated -- absence there is not
+        evidence of a close)."""
         for t, until in list(self.closed_until.items()):
             if until <= mono:
                 del self.closed_until[t]
         want = {t for t in rest_open if t not in self.closed_until}
         held = self.held
         self.adds |= want - held
-        self.removes |= held - want - self.adds
+        self.removes |= {t for t in held - want - self.adds if series_of(t) not in incomplete}
 
     def take(self) -> tuple[set[str], set[str]]:
         adds, removes = self.adds - self.removes, set(self.removes)

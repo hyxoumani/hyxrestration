@@ -977,7 +977,7 @@ def test_real_reader_lock_wedge_spills_and_reconciles_every_row(tmp_path, monkey
 
 @pytest.mark.skipif(
     os.environ.get("EXP936_FULL_CAP") != "1",
-    reason="~95 s: drives the real 400k SPILL_CAP; set EXP936_FULL_CAP=1",
+    reason="minutes: drives the real SPILL_CAP; set EXP936_FULL_CAP=1",
 )
 def test_real_wedge_past_the_unpatched_spill_cap(tmp_path):
     """The same run at the SHIPPED SPILL_CAP, no monkeypatching: 600k rows
@@ -988,13 +988,13 @@ def test_real_wedge_past_the_unpatched_spill_cap(tmp_path):
     store = StreamStore(db)
     injected = 0
     with _real_reader_lock(db):
-        for batch in range(24):
+        target = StreamStore.SPILL_CAP * 3 // 2
+        while injected < target:
             store.append_trades([_seq_trade(injected + i) for i in range(25_000)])
             injected += 25_000
             with contextlib.suppress(Exception):
                 store.flush()
-    assert injected == 600_000
-    assert store.pending == StreamStore.SPILL_CAP == 400_000
+    assert store.pending == StreamStore.SPILL_CAP
     assert store.flush() == injected
     with duckdb.connect(str(db), read_only=True) as conn:
         n, distinct = conn.execute(
@@ -1154,7 +1154,9 @@ def test_open_tickers_paces_between_series(monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr(streamd._time, "sleep", lambda s: sleeps.append(s))
     monkeypatch.setattr(
-        streamd.kalshi, "get_markets", lambda **kw: [{"ticker": kw["series_ticker"] + "-X"}]
+        streamd.kalshi,
+        "get_markets",
+        lambda **kw: ([{"ticker": kw["series_ticker"] + "-X"}], False),
     )
 
     out = streamd.open_tickers(["A", "B", "C"], pause_s=0.25)
@@ -1171,7 +1173,9 @@ def test_open_tickers_pause_zero_disables_spacing(monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr(streamd._time, "sleep", lambda s: sleeps.append(s))
     monkeypatch.setattr(
-        streamd.kalshi, "get_markets", lambda **kw: [{"ticker": kw["series_ticker"] + "-X"}]
+        streamd.kalshi,
+        "get_markets",
+        lambda **kw: ([{"ticker": kw["series_ticker"] + "-X"}], False),
     )
 
     streamd.open_tickers(["A", "B"], pause_s=0)
@@ -1190,7 +1194,7 @@ def test_open_tickers_still_paces_when_a_series_raises(monkeypatch):
     def boom(**kw):
         if kw["series_ticker"] == "B":
             raise RuntimeError("429")
-        return [{"ticker": kw["series_ticker"] + "-X"}]
+        return [{"ticker": kw["series_ticker"] + "-X"}], False
 
     monkeypatch.setattr(streamd.kalshi, "get_markets", boom)
 
@@ -1308,7 +1312,7 @@ def test_buffer_fill_rate_is_the_sum_over_every_buffer_pending_counts(tmp_path):
 
 @pytest.mark.parametrize(
     "name, minutes",
-    [("PENDING_ALARM", 13), ("SPILL_CAP", 27)],
+    [("PENDING_ALARM", 4), ("SPILL_CAP", 8)],
 )
 def test_sizing_comment_minutes_match_the_constant_beside_it(name, minutes):
     """The comment is the artifact that was wrong, so the comment is what is

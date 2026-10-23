@@ -565,3 +565,115 @@ def test_a_quiet_books_shard_is_probed_before_it_is_declared_dead_air(tmp_path, 
     store.flush()
     with duckdb.connect(str(store.path), read_only=True) as conn:
         assert conn.execute("SELECT count(*) FROM stream_gaps").fetchone()[0] == 0
+
+
+# -- follow-ups: enumeration, pacing, cache, retention ------------------------
+
+
+def _paged_markets(monkeypatch, n_markets, page_seen=None):
+    """Serve `n_markets` open markets for any series through the REAL
+    get_markets pagination, honouring the requested page size."""
+    from collector.venues import kalshi
+
+    class Resp:
+        def __init__(self, body):
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    def fake_get(sess, url, params, **kw):
+        start = int(params.get("cursor") or 0)
+        lim = params["limit"]
+        if page_seen is not None:
+            page_seen.append(lim)
+        rows = [
+            {"ticker": f"{params['series_ticker']}-{i}"}
+            for i in range(start, min(start + lim, n_markets))
+        ]
+        nxt = start + lim
+        return Resp({"markets": rows, "cursor": str(nxt) if nxt < n_markets else ""})
+
+    monkeypatch.setattr(kalshi, "_get_with_429_retry", fake_get)
+
+
+def test_open_ticker_walk_is_not_truncated_at_2000(monkeypatch):
+    """Staging 2026-10-23: KXNCAAFSPREAD held exactly 2,000 books -- the walk
+    took get_markets' default 10 pages x 200 and dropped the rest."""
+    pages: list[int] = []
+    _paged_markets(monkeypatch, 4_321, pages)
+    monkeypatch.setattr(streamd._time, "sleep", lambda s: None)
+    out, incomplete = streamd.open_tickers_detail(["KXNCAAFSPREAD"], pause_s=0)
+    assert len(out) == 4_321 and incomplete == set()
+    assert set(pages) == {streamd.OPEN_TICKERS_PAGE}
+
+
+def test_a_walk_that_still_truncates_is_reported_incomplete_and_never_removes(monkeypatch):
+    monkeypatch.setattr(streamd, "OPEN_TICKERS_MAX_PAGES", 2)
+    _paged_markets(monkeypatch, 5_000)
+    out, incomplete = streamd.open_tickers_detail(["S"], pause_s=0)
+    assert len(out) == 2_000 and incomplete == {"S"}
+    cov = BookCoverage({"S", "T"})
+    cov.boot({"S-4999", "T-1"})
+    cov.reconcile(out, 0.0, incomplete)
+    adds, removes = cov.take()
+    assert "S-4999" not in removes  # absent from a truncated walk is not closed
+    assert removes == {"T-1"}  # complete series: absence IS a close
+
+
+def test_the_walk_paces_pages_as_well_as_series(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(streamd._time, "sleep", lambda s: sleeps.append(s))
+    import time as real_time
+
+    monkeypatch.setattr(real_time, "sleep", lambda s: sleeps.append(s))
+    _paged_markets(monkeypatch, 2_500)  # 3 pages per series
+    streamd.open_tickers_detail(["A", "B"], pause_s=1.0)
+    assert sleeps == [1.0] * 5  # 2 page gaps + 1 series gap + 2 page gaps
+
+
+def test_a_restart_boots_from_a_fresh_cache_without_a_rest_walk(tmp_path, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(streamd, "open_tickers", lambda s: calls.append(1) or {"S-1"})
+    started: list[set] = []
+
+    async def fake_loop(self, channel, make_subscribe, shard=None):
+        started.append(set(shard.assigned))
+
+    monkeypatch.setattr(streamd.Daemon, "_kalshi_loop", fake_loop)
+    store = StreamStore(tmp_path / "s.duckdb")
+    d = streamd.Daemon(store, {"kalshi_book_series": ["S"]})
+    d._write_ticker_cache(["S"], {"S-7", "S-8"})
+    asyncio.run(d.kalshi_books())
+    assert calls == [] and started == [{"S-7", "S-8"}]
+
+    # a cache for another series list, or a stale one, is ignored
+    d._write_ticker_cache(["OTHER"], {"X-1"})
+    assert d._read_ticker_cache(["S"]) == (set(), 0.0)
+    path = d._ticker_cache_path()
+    rec = json.loads(path.read_text())
+    rec["series"] = ["S"]
+    rec["at"] = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    path.write_text(json.dumps(rec))
+    assert d._read_ticker_cache(["S"]) == (set(), 0.0)
+
+
+def test_raw_frame_retention_prunes_only_old_day_directories(tmp_path):
+    for name in ("2026-10-01", "2026-10-08", "2026-10-09", "2026-10-23", "notes"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "00-books.jsonl.zst").write_bytes(b"x")
+    w = RawFrameWriter(tmp_path, retain_days=14)
+    gone = w.prune(datetime(2026, 10, 23, 5, 0, tzinfo=UTC))
+    assert gone == ["2026-10-01", "2026-10-08"]
+    left = sorted(p.name for p in tmp_path.iterdir())
+    assert left == ["2026-10-09", "2026-10-23", "notes"]
+    assert w.stats()["raw_pruned_days"] == 2
+    assert RawFrameWriter(tmp_path, retain_days=None).prune() == []
+
+
+def test_the_writer_thread_prunes_at_start(tmp_path):
+    (tmp_path / "2020-01-01").mkdir()
+    w = RawFrameWriter(tmp_path, retain_days=14)
+    w.start()
+    assert w.close(5)
+    assert not (tmp_path / "2020-01-01").exists()
