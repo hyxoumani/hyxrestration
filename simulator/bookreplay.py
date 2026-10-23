@@ -23,7 +23,7 @@ slice — this module refuses non-Kalshi events rather than guessing.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -217,12 +217,20 @@ EVENT_SLICE_HOURS = 6.0
 _EVENT_COLS = "venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
 
 
+#: `book_events` rows whose market belongs to one of a bound list of Kalshi
+#: series (one `?`, a VARCHAR list). Exact on the series field, so
+#: `KXHIGHT...` never matches a `KXHIGH...` universe the way a LIKE prefix
+#: would.
+SERIES_PREDICATE = "list_contains(?, split_part(market_id, '-', 1))"
+
+
 def stream_events(
     conn,
     lo: datetime,
     hi: datetime | None,
     *,
     prefix: str | None = None,
+    series: Sequence[str] | None = None,
     slice_hours: float = EVENT_SLICE_HOURS,
     lo_inclusive: bool = False,
 ) -> Iterator[BookEvent]:
@@ -256,8 +264,16 @@ def stream_events(
     report's 10.5-day default target peaked at 14.3 GB. Slicing holds the
     sort's contribution flat at one slice regardless of window length, at
     no wall-clock cost (13.6s sliced vs 12.6s single over 18.5M rows).
+
+    `series` restricts the walk to markets of those Kalshi series (the
+    ticker's first dash field), IN the SQL, so rows of other series are
+    never sorted, fetched or built. A caller with a fixed universe passes
+    it: since the 2026-10-20 coverage expansion `book_events` carries books
+    for ~45 more series (~290M rows/day measured at staging), and a walk
+    sized "since the last gap" over all of them is a different order of
+    memory. `None` walks every series, as before.
     """
-    sql, bounds, tail = _plan_walk(conn, lo, hi, prefix, slice_hours, lo_inclusive)
+    sql, bounds, tail = _plan_walk(conn, lo, hi, prefix, series, slice_hours, lo_inclusive)
     for start, stop in bounds:
         cur = conn.execute(sql, [start, stop, *tail])
         while rows := cur.fetchmany(EVENT_CHUNK):
@@ -270,6 +286,7 @@ def _plan_walk(
     lo: datetime,
     hi: datetime | None,
     prefix: str | None,
+    series: Sequence[str] | None,
     slice_hours: float,
     lo_inclusive: bool,
 ) -> tuple[str, list[tuple[datetime, datetime]], list]:
@@ -288,6 +305,9 @@ def _plan_walk(
     if prefix:
         where += " AND market_id LIKE ?"
         params.append(prefix + "%")
+    if series is not None:
+        where += f" AND {SERIES_PREDICATE}"
+        params.append(sorted(series))
     # Resolve the real extent first: `lo` may be datetime.min (no prior
     # coverage break) and `hi` may be open, either of which would make a
     # naive slice walk iterate over empty millennia.
@@ -298,9 +318,10 @@ def _plan_walk(
         f"SELECT {_EVENT_COLS} FROM book_events"
         " WHERE venue='kalshi' AND recv_ts > ? AND recv_ts <= ?"
         + (" AND market_id LIKE ?" if prefix else "")
+        + (f" AND {SERIES_PREDICATE}" if series is not None else "")
         + " ORDER BY recv_ts, seq"
     )
-    tail = [prefix + "%"] if prefix else []
+    tail = ([prefix + "%"] if prefix else []) + ([sorted(series)] if series is not None else [])
     if first is None:
         return sql, [], tail
     step = timedelta(hours=slice_hours)
@@ -358,6 +379,7 @@ def export_events(
     dest: str | Path,
     *,
     prefix: str | None = None,
+    series: Sequence[str] | None = None,
     slice_hours: float = EVENT_SLICE_HOURS,
     lo_inclusive: bool = False,
 ) -> Path:
@@ -369,7 +391,7 @@ def export_events(
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    sql, bounds, tail = _plan_walk(conn, lo, hi, prefix, slice_hours, lo_inclusive)
+    sql, bounds, tail = _plan_walk(conn, lo, hi, prefix, series, slice_hours, lo_inclusive)
     for i, (start, stop) in enumerate(bounds):
         out = str(dest / f"{i:04d}.parquet").replace("'", "''")
         conn.execute(

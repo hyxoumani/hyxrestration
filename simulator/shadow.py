@@ -45,7 +45,14 @@ from hyxlab.store import (
     spill_cap,
 )
 from hyxlab.streamstore import BookEvent
-from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots, stream_events
+from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
+from simulator.bookreplay import (
+    BOOK_GAPS,
+    SERIES_PREDICATE,
+    BookReplayer,
+    replay_snapshots,
+    stream_events,
+)
 from simulator.registry import build as build_strategies
 from simulator.sim import Simulator
 
@@ -339,8 +346,15 @@ class ShadowRunner:
         stream_db: str = STREAM_DB,
         archive_db: str = "data/hyxlab.duckdb",
         ledger: ShadowLedger | None = None,
+        series: list[str] | None = None,
     ) -> None:
         self.stream_db = stream_db
+        # The Kalshi series whose books this runner reads -- pushed into
+        # every book_events query (seed and poll) so rows of other series
+        # are never fetched. None reads every series (the test harness's
+        # synthetic markets have no series). The daemon passes
+        # `shadow_universe()`; see there for why.
+        self.series = sorted(series) if series is not None else None
         self.archive_db = archive_db
         self.ledger = ledger or ShadowLedger()
         self.run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%S}"
@@ -381,9 +395,7 @@ class ShadowRunner:
         # ledgered attach. A hold here is a dropped capture cycle.
         try:
             with held_store(self.archive_db, read_only=True) as store:
-                return store.markets(
-                    venue="kalshi", alive_days=MARKETS_ALIVE_DAYS, include=held
-                )
+                return store.markets(venue="kalshi", alive_days=MARKETS_ALIVE_DAYS, include=held)
         except duckdb.Error:
             return None
 
@@ -444,7 +456,11 @@ class ShadowRunner:
                     def _seed_events():
                         nonlocal n_rows
                         for e in stream_events(
-                            conn, floor or datetime.min, self.cursor, lo_inclusive=True
+                            conn,
+                            floor or datetime.min,
+                            self.cursor,
+                            series=self.series,
+                            lo_inclusive=True,
                         ):
                             n_rows += 1
                             yield e
@@ -458,11 +474,12 @@ class ShadowRunner:
                         flush=True,
                     )
                 return [], []
+            only = f" AND {SERIES_PREDICATE}" if self.series is not None else ""
             rows = conn.execute(
                 "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
-                " FROM book_events WHERE recv_ts > ? AND venue = 'kalshi'"
+                f" FROM book_events WHERE recv_ts > ? AND venue = 'kalshi'{only}"
                 " ORDER BY recv_ts, seq",
-                [self.cursor],
+                [self.cursor] + ([self.series] if self.series is not None else []),
             ).fetchall()
             gaps = conn.execute(
                 f"SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ? AND {BOOK_GAPS}",
@@ -535,6 +552,20 @@ class ShadowRunner:
         return n
 
 
+def shadow_universe(watchlist: str | Path = DEFAULT_WATCHLIST) -> list[str]:
+    """The series the daemon trades: the watchlist's `kalshi_series`.
+
+    Until the 2026-10-20 coverage expansion that was every series in
+    `book_events`, so reading the whole table and reading this universe were
+    the same thing. The expansion adds books for `kalshi_book_series` (crypto
+    15-minute, sports, more weather; ~290M book rows/day at staging against
+    ~16M before), and shadow's seed walks "since the last book gap" -- a
+    shadow-only restart days after a stream restart would sort hundreds of
+    millions of rows under a 1G cap (EXP-1375: an unsliced 24h seed died at
+    10.4M rows). Pinning the universe keeps its input exactly what it was."""
+    return list(load_watchlist(watchlist).get("kalshi_series", []))
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="hyxlab shadow harness (ledger-only live trading)")
     ap.add_argument("--latency", type=float, default=2.0)
@@ -566,7 +597,7 @@ def main() -> None:
     # So the block describes THIS run's attaches and not an import's.
     reset_attach_waits()
     strategies = build_strategies(args.strategy.split(","))
-    runner = ShadowRunner(strategies, latency=args.latency)
+    runner = ShadowRunner(strategies, latency=args.latency, series=shadow_universe())
     print(
         f"[shadow] run {runner.run_id} strategies={args.strategy}"
         f" latency={args.latency}s poll={args.poll}s "
