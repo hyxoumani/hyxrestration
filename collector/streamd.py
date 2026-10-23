@@ -72,6 +72,22 @@ TICKER_REFRESH_SECS = 3600.0  # poly token-set refresh
 # period, so a missed lifecycle frame costs at most one period's book. One
 # get_markets call per series, paced by SERIES_PAUSE_S like the old refresh.
 RECONCILE_SECS = 900.0
+# WHERE in the quarter-hour the periodic walk starts (V2-378, 2026-10-23). The
+# walk is ~90 s of GETs that no rate governor sees (p90 105 s, max 128 s on
+# 10-23), and the hylshi family-book collector and hyxlab-collect both start on
+# the :X0/:X5 marks (the collector's pass runs ~140-190 s). RECONCILE_SECS is a
+# multiple of 300, so a walk keeps whatever offset it starts at -- and before
+# this the offset was wherever the last restart left it: on 10-23 the walks
+# started 131 s, 441 s, then 650 s after a quarter-hour (the last = :X0:50,
+# inside a collector pass on every walk). Walks start
+# RECONCILE_OFFSET_S after each UTC quarter-hour instead, which (a) puts them in
+# the gap between the quarter's pass and the next :X5 one and (b) fixes the
+# listing delay of markets that open ON the quarter -- the hourly KXBTCD ladders
+# (no `created` lifecycle frame at all) and the 15-minute series (created ~8 h
+# ahead, so a restart forgets them), which on 10-23 reached the book set only
+# through this walk, 3.6 / 9.0 / 12.3 min after opening depending on the
+# restart. Here: offset + one walk, ~4.5 min, every day.
+RECONCILE_OFFSET_S = float(os.environ.get("HYXLAB_RECONCILE_OFFSET_S", "180"))
 # An added market's book needs a snapshot. If none arrives this long after
 # `add_markets` (the docs do not say add_markets sends one), ask for it with
 # `get_snapshot`. The counters `books_snap_auto` / `books_snap_requested`
@@ -118,8 +134,9 @@ OPEN_TICKERS_PAGE = 1000
 OPEN_TICKERS_MAX_PAGES = 100
 # A restart boots the book set from the last reconciliation's result when it
 # is at most this old, so a restart costs no REST burst at all; the first
-# reconciliation then runs when the cached one would have been due (but not
-# sooner than BOOT_RECONCILE_MIN_S, so a crash loop cannot become a walk loop).
+# reconciliation then runs at the next phase-locked slot (RECONCILE_OFFSET_S),
+# but not sooner than BOOT_RECONCILE_MIN_S, so a crash loop cannot become a
+# walk loop.
 TICKER_CACHE_MAX_AGE_S = 3600.0
 BOOT_RECONCILE_MIN_S = 120.0
 # Retry waits when a book task's subscription set comes back EMPTY (venue
@@ -378,6 +395,25 @@ def open_tickers_detail(
 def open_tickers(series_list: list[str], pause_s: float = SERIES_PAUSE_S) -> set[str]:
     """`open_tickers_detail` without the completeness half."""
     return open_tickers_detail(series_list, pause_s)[0]
+
+
+def secs_to_next_reconcile(
+    now: float,
+    min_s: float = 0.0,
+    period: float | None = None,
+    offset: float | None = None,
+) -> float:
+    """Seconds from wall-clock `now` (epoch s) to the first reconciliation
+    slot at least `min_s` away. Slots are the epoch times congruent to
+    `offset` modulo `period`; the epoch is a UTC quarter-hour boundary, so
+    with period 900 a slot is `offset` seconds past :00/:15/:30/:45."""
+    period = RECONCILE_SECS if period is None else period
+    offset = RECONCILE_OFFSET_S if offset is None else offset
+    t = now + min_s
+    slot = (t - offset) // period * period + offset
+    if slot < t:
+        slot += period
+    return slot - now
 
 
 class FlushStalls:
@@ -740,13 +776,17 @@ class Daemon:
         cached, age = self._read_ticker_cache(series)
         if cached:
             tickers = cached
-            next_reconcile = mono() + max(BOOT_RECONCILE_MIN_S, RECONCILE_SECS - age)
+            next_reconcile = mono() + secs_to_next_reconcile(
+                _time.time(), min_s=BOOT_RECONCILE_MIN_S
+            )
             _log(f"kalshi-books: booting from the {age:.0f}s-old open-ticker cache")
         else:
             tickers = await _fetch_until_nonempty(
                 lambda: open_tickers(series), "kalshi-books", "initial ticker set"
             )
-            next_reconcile = mono() + RECONCILE_SECS
+            next_reconcile = mono() + secs_to_next_reconcile(
+                _time.time(), min_s=BOOT_RECONCILE_MIN_S
+            )
             self._write_ticker_cache(series, set(tickers))
         cov = BookCoverage(set(series), int(self.watchlist.get("kalshi_book_shard_max", SHARD_MAX)))
         self.books = cov
@@ -776,7 +816,12 @@ class Daemon:
             cov.due_opens()
             if mono() >= next_reconcile or self._reconcile_now:
                 self._reconcile_now = False
-                next_reconcile = mono() + RECONCILE_SECS
+                # The NEXT phase-locked slot, never sooner than
+                # BOOT_RECONCILE_MIN_S: an out-of-phase walk (lifecycle
+                # reconnect) does not get a second one a minute later.
+                next_reconcile = mono() + secs_to_next_reconcile(
+                    _time.time(), min_s=BOOT_RECONCILE_MIN_S
+                )
                 rest, incomplete = await asyncio.to_thread(open_tickers_detail, series)
                 if rest:
                     cov.reconcile(set(rest), _time.monotonic(), incomplete)

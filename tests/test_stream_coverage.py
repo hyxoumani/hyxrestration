@@ -677,3 +677,67 @@ def test_the_writer_thread_prunes_at_start(tmp_path):
     w.start()
     assert w.close(5)
     assert not (tmp_path / "2020-01-01").exists()
+
+
+# -- V2-378: the periodic walk is phase-locked ---------------------------------
+
+
+def _epoch(hms: str) -> float:
+    return datetime.fromisoformat(f"2026-10-23T{hms}+00:00").timestamp()
+
+
+def test_reconcile_slots_sit_offset_seconds_after_each_quarter_hour():
+    off = streamd.RECONCILE_OFFSET_S
+    assert streamd.secs_to_next_reconcile(_epoch("12:00:00"), period=900, offset=180) == 180
+    assert streamd.secs_to_next_reconcile(_epoch("12:03:00"), period=900, offset=180) == 0
+    assert streamd.secs_to_next_reconcile(_epoch("12:03:01"), period=900, offset=180) == 899
+    # min_s skips a slot that is too close: 12:02:00 + 120 s is past 12:03:00
+    assert (
+        streamd.secs_to_next_reconcile(_epoch("12:02:00"), min_s=120, period=900, offset=180) == 960
+    )
+    # whatever the clock, the slot lands `off` seconds into a quarter-hour,
+    # i.e. `off` seconds after one of the :X0/:X5 collector starts
+    for k in range(0, 3600, 37):
+        now = _epoch("17:08:55") + k
+        slot = now + streamd.secs_to_next_reconcile(now, min_s=streamd.BOOT_RECONCILE_MIN_S)
+        assert slot - now >= streamd.BOOT_RECONCILE_MIN_S
+        assert round(slot) % 900 == off and round(slot) % 300 == off % 300
+
+
+def test_reconcile_period_is_commensurate_with_the_five_minute_passes():
+    # The phase lock only means something if every walk lands at the same
+    # offset into the :X0/:X5 cycle -- i.e. the period is a whole number of
+    # 5-minute passes and divides the hour.
+    assert streamd.RECONCILE_SECS % 300 == 0 and 3600 % streamd.RECONCILE_SECS == 0
+    # ...and the default offset leaves a ~90 s walk room before the next pass
+    assert 150 <= streamd.RECONCILE_OFFSET_S <= 300 - 100
+
+
+def test_first_periodic_walk_after_a_rest_boot_is_phase_locked(tmp_path, monkeypatch):
+    now = _epoch("17:10:50")  # 10-23: the boot walk ended here; old code walked at 17:25:50
+    monkeypatch.setattr(streamd._time, "time", lambda: now)
+    monkeypatch.setattr(streamd, "open_tickers", lambda s: {"S-1"})
+
+    async def fake_loop(self, channel, make_subscribe, shard=None):
+        await asyncio.Event().wait()  # a live shard: never returns
+
+    monkeypatch.setattr(streamd.Daemon, "_kalshi_loop", fake_loop)
+    timeouts: list[float] = []
+
+    class Stop(Exception):
+        pass
+
+    async def fake_wait(aws, timeout=None, return_when=None):
+        timeouts.append(timeout)
+        for a in aws:
+            if isinstance(a, asyncio.Future) and not a.done():
+                a.cancel()
+        raise Stop
+
+    monkeypatch.setattr(streamd.asyncio, "wait", fake_wait)
+    store = StreamStore(tmp_path / "s.duckdb")
+    d = streamd.Daemon(store, {"kalshi_book_series": ["S"]})
+    with pytest.raises(Stop):
+        asyncio.run(d.kalshi_books())
+    # next slot >= 120 s away is 17:18:00 (= quarter-hour 17:15 + 180 s)
+    assert timeouts and abs(timeouts[0] - 430.0) < 1.0
