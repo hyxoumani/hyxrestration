@@ -1039,6 +1039,109 @@ def _poly_replay(conn, now: datetime, hours: float) -> tuple[int, int, int, int,
     return levels, agree, ivals, bad_ivals, poly_deltas, pairs
 
 
+#: Days of book rows the non-negative-levels reconstruction reads back for
+#: the markets active in the QA window (see the check). One week of Kalshi's
+#: Thursday closure, which re-snapshots every book, plus a day of margin.
+NEG_LOOKBACK_DAYS = 8
+
+# The seq query below, ONE TIME SLICE AT A TIME. Measured 2026-10-23 on a
+# temp DB at the coverage expansion's staging rate (~290M kalshi book
+# rows/day): the whole-window form was cgroup-OOM-killed under the QA
+# unit's 12G cap (DuckDB limit 6G) -- the DISTINCT and three window passes
+# over ~315M rows do not stay inside the buffer manager -- and so was a
+# per-sid split once one sid held ~97M rows. Each slice reads only its own
+# rows plus ONE carry row per sid: the last (seq, recv_ts) the previous
+# slice saw. That is all the windows need to continue across the boundary,
+# because within a run seq never decreases in time order (a decrease IS the
+# run break), so "previous row by (recv_ts, seq)" and "previous seq in the
+# run" are the same row, and both are the carry. Holes straddling a
+# boundary are found from the carry; a reset straddling one starts a new
+# run exactly as before, and the carry's recv_ts is the first sighting of
+# its seq in its trailing run, so the hole after it starts where the
+# whole-window query started it. `tests/test_qa_bounded_stream_checks.py`
+# pins the result against that query as an oracle.
+_SEQ_HOLES_SLICE = """
+        WITH ev AS (
+          SELECT DISTINCT sid, seq, recv_ts FROM book_events
+          WHERE recv_ts > ? AND recv_ts <= ?
+            AND sid IS NOT NULL AND seq IS NOT NULL
+          UNION ALL
+          SELECT * FROM carry
+        ), marked AS (
+          SELECT sid, seq, recv_ts, CASE WHEN seq < lag(seq)
+                   OVER (PARTITION BY sid ORDER BY recv_ts, seq)
+                 THEN 1 ELSE 0 END AS reset
+          FROM ev
+        ), runs AS (
+          SELECT sid, seq, recv_ts, sum(reset) OVER (
+                   PARTITION BY sid ORDER BY recv_ts, seq
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS run
+          FROM marked
+        ), uniq AS (
+          SELECT sid, run, seq, min(recv_ts) AS recv_ts
+          FROM runs GROUP BY sid, run, seq
+        )
+        SELECT seq - lag(seq) OVER w - 1 AS missing,
+               lag(recv_ts) OVER w AS t0, recv_ts AS t1
+        FROM uniq WINDOW w AS (PARTITION BY sid, run ORDER BY seq)
+        QUALIFY missing > 0
+"""
+#: Width of one seq-check slice. ~24M rows at the expansion's measured
+#: rate -- the size a whole day's sid ran at inside the 6G limit.
+SEQ_SLICE_HOURS = 2
+
+
+def _seq_holes(conn, hours: float, now: datetime) -> list[tuple]:
+    """(missing, t0, t1) for every seq hole in the window, all sids, walked
+    in SEQ_SLICE_HOURS slices with a per-sid carry (see above)."""
+    lo = now - timedelta(hours=int(hours))
+    holes: list[tuple] = []
+    carry: dict[int, tuple[int, datetime]] = {}
+    while lo < now:
+        hi = lo + timedelta(hours=SEQ_SLICE_HOURS)
+        if hi >= now:
+            # The whole-window form had no upper bound: rows the daemon
+            # flushes while QA runs belong to the window too.
+            hi = datetime.max
+        rows = [(sid, seq, ts) for sid, (seq, ts) in carry.items()]
+        conn.execute(
+            "CREATE OR REPLACE TEMP TABLE carry (sid BIGINT, seq BIGINT, recv_ts TIMESTAMP)"
+        )
+        if rows:
+            conn.executemany("INSERT INTO carry VALUES (?, ?, ?)", rows)
+        holes += conn.execute(_SEQ_HOLES_SLICE, [lo, hi]).fetchall()
+        # The carry is the slice's LAST row per sid and the FIRST sighting of
+        # its seq in the trailing run of that seq -- uniq's min(recv_ts) for
+        # it. "Trailing" matters: the same seq number recurs in an earlier run
+        # after a reset, and a slice-wide min would date the next hole to it.
+        for sid, seq, ts, only_seq in conn.execute(
+            """
+            WITH s AS (
+              SELECT sid, seq, recv_ts FROM book_events
+              WHERE recv_ts > ? AND recv_ts <= ? AND sid IS NOT NULL AND seq IS NOT NULL
+            ), last AS (
+              SELECT sid, arg_max(seq, (recv_ts, seq)) AS seq FROM s GROUP BY sid
+            ), other AS (
+              SELECT s.sid, max(s.recv_ts) AS t FROM s JOIN last USING (sid)
+              WHERE s.seq <> last.seq GROUP BY s.sid
+            )
+            SELECT last.sid, last.seq, min(s.recv_ts), any_value(other.t IS NULL)
+            FROM last JOIN s ON s.sid = last.sid AND s.seq = last.seq
+            LEFT JOIN other ON other.sid = last.sid
+            WHERE other.t IS NULL OR s.recv_ts > other.t
+            GROUP BY last.sid, last.seq
+            """,
+            [lo, hi],
+        ).fetchall():
+            prev = carry.get(sid)
+            if only_seq and prev is not None and prev[0] == seq:
+                ts = prev[1]  # the trailing run of this seq began in an earlier slice
+            carry[sid] = (seq, ts)
+        lo = hi
+    conn.execute("DROP TABLE IF EXISTS carry")
+    return holes
+
+
 def _stream_checks(conn, hours: float, now: datetime) -> None:
     age = conn.execute("SELECT epoch(? - max(recv_ts)) FROM stream_trades", [now]).fetchone()[0]
     check(
@@ -1072,33 +1175,7 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
     # that self-cleared an hour later. Gap rows are also scoped to the channel
     # that owns these runs: a polymarket or kalshi-trades reconnect says
     # nothing about the kalshi books connection.
-    holes = conn.execute(
-        """
-        WITH ev AS (
-          SELECT DISTINCT sid, seq, recv_ts FROM book_events
-          WHERE recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
-            AND sid IS NOT NULL AND seq IS NOT NULL
-        ), marked AS (
-          SELECT sid, seq, recv_ts, CASE WHEN seq < lag(seq)
-                   OVER (PARTITION BY sid ORDER BY recv_ts, seq)
-                 THEN 1 ELSE 0 END AS reset
-          FROM ev
-        ), runs AS (
-          SELECT sid, seq, recv_ts, sum(reset) OVER (
-                   PARTITION BY sid ORDER BY recv_ts, seq
-                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS run
-          FROM marked
-        ), uniq AS (
-          SELECT sid, run, seq, min(recv_ts) AS recv_ts
-          FROM runs GROUP BY sid, run, seq
-        )
-        SELECT seq - lag(seq) OVER w - 1 AS missing,
-               lag(recv_ts) OVER w AS t0, recv_ts AS t1
-        FROM uniq WINDOW w AS (PARTITION BY sid, run ORDER BY seq)
-        QUALIFY missing > 0
-        """,
-        [now, int(hours)],
-    ).fetchall()
+    holes = _seq_holes(conn, hours, now)
     gap_spans = conn.execute(
         "SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ?"
         " - INTERVAL 1 HOUR * CAST(? AS INTEGER)"
@@ -1201,16 +1278,40 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
     # Pairs whose delta window a coverage gap intersects are skipped —
     # the book is legitimately unknown until the next snapshot re-seeds.
     # (Polymarket deltas carry absolute sizes, never negative; excluded.)
+    #
+    # BOUNDED SINCE 2026-10-23 (coverage expansion, ~290M kalshi book
+    # rows/day). This read the WHOLE table every day -- linear in archive
+    # age, ~1.4B rows on the day it changed and heading for tens of billions.
+    # A market's verdict can only change if it has a row the last run did
+    # not see, so the check now covers the markets with any row in the QA
+    # window, reconstructed from rows since NEG_LOOKBACK_DAYS ago: Kalshi's
+    # weekly Thursday closure reconnects every connection, so every live book
+    # re-snapshots at least weekly. A market whose newest image is older
+    # than that has no snapshot in range and is skipped, exactly as a market
+    # with no snapshot at all always was. Pass/fail and the detail line are
+    # unchanged.
+    active = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT market_id FROM book_events WHERE venue='kalshi'"
+            " AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)",
+            [now, int(hours)],
+        ).fetchall()
+    ]
     neg = conn.execute(
         """
-        WITH pair AS (
+        WITH recent AS NOT MATERIALIZED (
+          SELECT market_id, recv_ts, kind, side, price, qty FROM book_events
+          WHERE venue='kalshi' AND recv_ts > ? - INTERVAL 1 DAY * CAST(? AS INTEGER)
+            AND list_contains(?, market_id)
+        ), pair AS (
           -- One snapshot frame carries BOTH sides, so the baseline is
           -- keyed per market: a side legitimately empty in the newest
           -- image must not stay anchored to an older image's rows.
           SELECT market_id,
                  max(recv_ts) FILTER (kind='snap') AS snap_ts,
                  max(recv_ts) AS last_ts
-          FROM book_events WHERE venue='kalshi' GROUP BY market_id
+          FROM recent GROUP BY market_id
         ), eligible AS (
           SELECT market_id, snap_ts FROM pair
           WHERE snap_ts IS NOT NULL
@@ -1223,12 +1324,13 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
                  sum(CASE WHEN e.kind='snap' AND e.recv_ts = el.snap_ts THEN e.qty
                           WHEN e.kind='delta' AND e.recv_ts > el.snap_ts THEN e.qty
                           ELSE 0 END) AS qty
-          FROM book_events e
+          FROM recent e
           JOIN eligible el ON el.market_id = e.market_id
           GROUP BY e.market_id, e.side, e.price
         )
         SELECT count(*) FROM levels WHERE qty < -1e-9
-        """
+        """,
+        [now, NEG_LOOKBACK_DAYS, active],
     ).fetchone()[0]
     check("reconstructed book levels non-negative", neg == 0, f"{neg} negative levels")
 
