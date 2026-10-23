@@ -640,7 +640,13 @@ def test_streamstore_flush_roundtrip(tmp_path):
     assert store.flush() == 2
     assert store.pending == 0
     assert store.flush() == 0  # idempotent on empty buffer
-    assert store.counts() == {"book_events": 1, "stream_trades": 1, "stream_gaps": 0}
+    assert store.counts() == {
+        "book_events": 1,
+        "stream_trades": 1,
+        "stream_gaps": 0,
+        "stream_ticker": 0,
+        "stream_lifecycle": 0,
+    }
 
 
 def test_streamstore_timestamps_stored_naive_utc(tmp_path):
@@ -690,7 +696,13 @@ def test_flush_failure_preserves_buffer(tmp_path, monkeypatch):
 
     assert store.pending == n  # batch survived the failure
     assert store.flush() == n
-    assert store.counts() == {"book_events": 1, "stream_trades": 1, "stream_gaps": 1}
+    assert store.counts() == {
+        "book_events": 1,
+        "stream_trades": 1,
+        "stream_gaps": 1,
+        "stream_ticker": 0,
+        "stream_lifecycle": 0,
+    }
 
 
 def test_streamstore_gap_rows(tmp_path):
@@ -790,7 +802,13 @@ def test_spill_roundtrip_covers_events_trades_and_gaps(tmp_path, monkeypatch):
 
     assert store.pending == 0  # all three rows spilled
     assert store.flush() == 3
-    assert store.counts() == {"book_events": 1, "stream_trades": 1, "stream_gaps": 1}
+    assert store.counts() == {
+        "book_events": 1,
+        "stream_trades": 1,
+        "stream_gaps": 1,
+        "stream_ticker": 0,
+        "stream_lifecycle": 0,
+    }
 
 
 def test_sidecar_drain_stores_original_event_timestamps(tmp_path, monkeypatch):

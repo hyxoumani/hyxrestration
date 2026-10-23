@@ -69,12 +69,12 @@ def test_drain_never_parses_or_inserts_more_than_one_chunk(tmp_path, monkeypatch
 
     def spy_read(self, *a, **kw):
         out = real_read(self, *a, **kw)
-        parsed.append(sum(len(x) for x in out[:3]))
+        parsed.append(sum(len(x) for x in out[:-1]))  # every table's rows, not the offset
         return out
 
-    def spy_insert(self, conn, events, trades, gaps):
-        inserted.append(len(events) + len(trades) + len(gaps))
-        return real_insert(self, conn, events, trades, gaps)
+    def spy_insert(self, conn, *tables):
+        inserted.append(sum(len(rows) for rows in tables))
+        return real_insert(self, conn, *tables)
 
     monkeypatch.setattr(StreamStore, "_read_spill", spy_read)
     monkeypatch.setattr(StreamStore, "_insert", spy_insert)
