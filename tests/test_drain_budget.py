@@ -184,6 +184,12 @@ def _daemon(tmp_path, store):
     return d
 
 
+# A sidecar well past the drain's row budget. A literal 6M (the 7h-wedge
+# price) did that at the executemany-era 7,100 rows/s, but at 100,000 rows/s
+# the budget is 9M rows -- so the fixture is twice the budget, not a count.
+WEDGE_SIDECAR_ROWS = 2 * int(streamd.DRAIN_BUDGET_S * StreamStore.FLUSH_ROWS_PER_S)
+
+
 def _budget_rows() -> int:
     return int(streamd.DRAIN_BUDGET_S * StreamStore.FLUSH_ROWS_PER_S)
 
@@ -192,7 +198,7 @@ def test_a_drain_that_cannot_finish_spills_instead_of_starting_it(tmp_path, caps
     """The 7h-wedge case. The archive is reachable, so the old drain called
     `flush()` -- ~890s of work against a 90s deadline -- and the SIGKILL that
     ended it took the in-memory buffer with it, unmarked."""
-    store = _Store(pending=300_000, sidecar_rows=6_000_000)
+    store = _Store(pending=300_000, sidecar_rows=WEDGE_SIDECAR_ROWS)
     d = _daemon(tmp_path, store)
 
     d._final_drain()
@@ -201,7 +207,7 @@ def test_a_drain_that_cannot_finish_spills_instead_of_starting_it(tmp_path, caps
     assert store.spill_alls == 1
     assert store.pending == 0 and store.spilled == 300_000
     out = capsys.readouterr().out
-    assert "DECLINED" in out and "6300000" in out.replace(",", "")
+    assert "DECLINED" in out and str(300_000 + WEDGE_SIDECAR_ROWS) in out.replace(",", "")
 
 
 def test_a_drain_that_fits_still_flushes(tmp_path):
@@ -234,7 +240,7 @@ def test_a_declined_drain_records_the_handoff_against_an_open_episode(tmp_path):
     open and this restart is its interruption. The handoff count is the
     slice that left memory at SHUTDOWN -- not the sidecar rows that were
     already down, which the reader must not see as memory pressure."""
-    store = _Store(pending=300_000, sidecar_rows=6_000_000)
+    store = _Store(pending=300_000, sidecar_rows=WEDGE_SIDECAR_ROWS)
     d = _daemon(tmp_path, store)
     d.stalls.failed(300_000, 0, OSError("IO Error: Could not set lock on file"), RECV)
 
@@ -249,7 +255,7 @@ def test_a_declined_drain_does_not_close_the_episode(tmp_path):
     """No flush succeeded, so `ok()` must stay unreached: closing here would
     claim a stall ended when in fact the tape was handed to the sidecar and
     the wedge is still there for the next boot to find."""
-    store = _Store(pending=300_000, sidecar_rows=6_000_000)
+    store = _Store(pending=300_000, sidecar_rows=WEDGE_SIDECAR_ROWS)
     d = _daemon(tmp_path, store)
     d.stalls.failed(300_000, 0, OSError("wedged"), RECV)
 
@@ -265,7 +271,7 @@ def test_a_declined_drain_whose_sidecar_refuses_says_what_was_lost(tmp_path, cap
     """ENOSPC during a multi-hour wedge is a live possibility -- the sidecar
     runs ~1.0 GB for a 7h one. Nothing can be saved at that point, so the
     only job left is to say so rather than exit quietly."""
-    store = _Store(pending=300_000, sidecar_rows=6_000_000)
+    store = _Store(pending=300_000, sidecar_rows=WEDGE_SIDECAR_ROWS)
     store.sidecar_broken = True
     d = _daemon(tmp_path, store)
 
