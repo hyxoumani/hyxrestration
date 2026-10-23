@@ -66,6 +66,26 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(autouse=True)
+def _kalshi_pacer_off():
+    """`collect.main()` switches the Kalshi request pacer on for ITS process
+    (`kalshi.set_pace`), and that is module state: a test that drives the
+    collector leaves the floor armed for every later test in the session,
+    which turned a `[3.0]` Retry-After assertion in test_hyxlab_breadth
+    into `[0.124]` on the first full run (2026-10-23). Off before and after
+    every test, counters and clock cleared."""
+    from collector.venues import kalshi
+
+    def _off():
+        kalshi.set_pace(0.0)
+        kalshi.reset_pace_stats()
+        kalshi._PACE_LAST_MONO = None
+
+    _off()
+    yield
+    _off()
+
+
+@pytest.fixture(autouse=True)
 def _no_cwd_rooted_duckdb_scratch():
     """Same family as the 429 sink above: cwd-rooted state written into
     the DEV repo, by a test that thought it touched nothing.

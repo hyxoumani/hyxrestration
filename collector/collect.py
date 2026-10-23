@@ -349,6 +349,12 @@ def main() -> None:
     ap.add_argument("--interval", type=int, default=300, help="seconds between cycles")
     ap.add_argument("--once", action="store_true", help="one cycle, then exit")
     ap.add_argument(
+        "--pace",
+        type=float,
+        default=kalshi.COLLECT_PACE_INTERVAL_S,
+        help="floor in seconds between Kalshi request starts (0 disables; see kalshi.set_pace)",
+    )
+    ap.add_argument(
         "--lock-wait",
         type=float,
         default=LOCK_WAIT_S,
@@ -358,9 +364,15 @@ def main() -> None:
 
     watchlist = load_watchlist(args.watchlist)
     sess = requests.Session()
+    # The walk is paced rather than refused: ~64 requests at ~18 req/s drew
+    # 3-5 x 429 and 13.6-34.1s of fetch every cycle for 48h (status
+    # 2026-10-23 03:45Z); see the pacer block in `collector.venues.kalshi`.
+    kalshi.set_pace(args.pace)
     while True:
         t0 = time.monotonic()
+        kalshi.reset_pace_stats()
         cyc = fetch_cycle(watchlist, session=sess)  # NO lock held here (EXP-957)
+        pace_s = kalshi.pace_stats()["slept_s"]
         fetch_s = time.monotonic() - t0
         # The lock budget is a budget for the CYCLE, not for the wait: the
         # fetch now runs first, and a wait of the full LOCK_WAIT_S on top
@@ -433,6 +445,9 @@ def main() -> None:
             lock.close()
         timings = {
             "fetch_s": round(fetch_s, 1),
+            # Seconds of fetch_s spent on the pacer's floor, so the floor's
+            # price is read off the journal and not off its constant.
+            "pace_s": round(pace_s, 1),
             "wait_s": round(lock_wait_s, 1),
             "open_s": round(open_s, 1),
             "drain_s": round(drain_s, 1),

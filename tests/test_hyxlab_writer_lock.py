@@ -851,6 +851,7 @@ def test_cycle_print_carries_the_phase_decomposition(tmp_path, monkeypatch, caps
     t = ast.literal_eval(m.group(1))
     assert set(t) == {
         "fetch_s",
+        "pace_s",
         "wait_s",
         "open_s",
         "drain_s",

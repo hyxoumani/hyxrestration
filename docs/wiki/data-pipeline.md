@@ -744,6 +744,37 @@ self-match trap the ops rules name for `pkill -f`.
   journal there is a SKIP. First `[archive]` read: 10-24 10:00Z. ~38 rows per cycle, ~11k/day.
   Not yet judged: a source quiet for a whole day (a watchlist series with
   no open market for 24h) -- the data to judge it now exists.
+  **Since 2026-10-23 the Kalshi walk is PACED, not refused:** the
+  collector's ~64 `/markets` requests per cycle (32 series x open+settled)
+  went out back-to-back at ~18 req/s and drew 3-5 x 429 every cycle for
+  48h, the FIRST 429 at 0.84-1.75s into every fetch and each later one
+  5.0-6.4s after the previous -- the ladder's 5s fallback sleep plus
+  ~0.8s of admitted requests, i.e. a ~15-20 request bucket read from the
+  victim's side (#92), so ~85% of a 13.6-34.1s `fetch_s` was back-off
+  (status 2026-10-23 03:15Z / 03:45Z, measured off `collect_cycles.wall_s`
+  and `data/rate_limit_headers.jsonl` against the cycle walls, nothing
+  else walking the key). `kalshi.set_pace(interval_s)` puts a floor
+  between request STARTS, applied by `kalshi._pace()` immediately before
+  EVERY `sess.get` in the module (the 429 ladder's GET, the trade tape's
+  pages, the one-shot `/series`), under one lock so streamd's
+  `to_thread` refreshes serialise; `collect --pace` (default
+  `kalshi.COLLECT_PACE_INTERVAL_S` = 0.125s, 8 req/s, under every
+  documented tier -- Kalshi's public docs say 10-20 read/s and the
+  measured bucket fits 20/s) switches it on, so the walk costs ~8s with
+  nothing refused. OFF by default (0.0), like `transport_budget=` makes a
+  site name its unit: the sweep's 12.5h wall and breadth's 200-page walk
+  keep their shape until the collector reading says what a floor costs.
+  PER PROCESS by construction (#125): it bounds one process's burst, and
+  two paced processes on one tick still sum past the bucket. The cycle
+  line's `timings=` carries `pace_s` (seconds of `fetch_s` slept on the
+  floor, `kalshi.pace_stats()['slept_s']`, reset per cycle) so the price
+  is in the journal, not in the constant. Verification reads: the
+  collector's share of the sink's `/markets` 429s (40-50/h before, with
+  the sweep idle) should go to ~0, `fetch_s` to ~8-10s, and every series'
+  `collect_cycles.wall_s` back to the 0.08-0.15s shape; a tier downgrade
+  would show as 429s RETURNING under the floor, not as a silent change.
+  `tests/test_kalshi_pacer.py` (8; the every-`sess.get` arm red-verified
+  against a tape-site mutant).
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
