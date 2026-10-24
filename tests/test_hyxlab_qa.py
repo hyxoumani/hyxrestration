@@ -533,6 +533,33 @@ def test_negative_levels_genuine_overdraw_trips(tmp_path):
     assert "reconstructed book levels non-negative" in failed
 
 
+def test_negative_levels_float_roundoff_below_the_fixed_point_is_not_overdraw(tmp_path):
+    """Kalshi qty is two-decimal fixed point stored as DOUBLE; thousands of
+    deltas on one level leave +/-1e-9 of round-off (2026-10-24: 7 such levels
+    failed the check). Below the venue's own precision it is arithmetic, not
+    an overdraw; -0.01 is the smallest real one and still trips."""
+    t = [NOW - timedelta(minutes=m) for m in (20, 10)]
+    _stream_with_books(
+        tmp_path / "s.duckdb",
+        [
+            (_book_frame("snap", 1, "0.4000", "10.00"), t[0]),
+            (_book_frame("delta", 2, "0.4000", "-10.000000001"), t[1]),  # -1e-9 net
+        ],
+    )
+    failed = _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    assert "reconstructed book levels non-negative" not in failed
+
+    _stream_with_books(
+        tmp_path / "t.duckdb",
+        [
+            (_book_frame("snap", 1, "0.4000", "10.00"), t[0]),
+            (_book_frame("delta", 2, "0.4000", "-10.01"), t[1]),  # -0.01 net
+        ],
+    )
+    failed = _run(None, tmp_path, stream=tmp_path / "t.duckdb")
+    assert "reconstructed book levels non-negative" in failed
+
+
 def test_negative_levels_forgiven_when_gap_intersects(tmp_path):
     """Deltas applied across a marked coverage gap can legitimately
     overdraw — the book is unknown until the next snapshot re-seeds."""

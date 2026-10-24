@@ -185,3 +185,100 @@ def test_no_constant_size_ceiling_survives_anywhere_in_qa():
         assert "stream disk under 20 GB" not in code
         if "GB" in code and "under" in code:
             raise AssertionError(f"constant size ceiling reintroduced: {line.strip()}")
+
+
+# ---------------------------------------------------------------------------
+# The filesystem's own free-space series (2026-10-24). The rotation rate is a
+# model of one tenant's files; the series is the measurement of the disk.
+
+
+@pytest.fixture(autouse=True)
+def _series_in_tmp(tmp_path, monkeypatch):
+    """Never let a test append to the repo's own `reports/qa/disk_free.jsonl`."""
+    monkeypatch.setattr(qa, "DISK_SERIES", tmp_path / "series" / "disk_free.jsonl")
+
+
+def _sample(series: Path, days_ago: float, free: int) -> None:
+    series.parent.mkdir(parents=True, exist_ok=True)
+    ts = qa.datetime.now(qa.UTC) - qa.timedelta(days=days_ago)
+    with series.open("a") as fh:
+        fh.write(qa.json.dumps({"ts": ts.isoformat(), "free": free}) + "\n")
+
+
+def test_each_run_records_the_filesystems_free_space(tmp_path, monkeypatch):
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB))
+    _run(dbs=[db], backup_dir=bdir)
+    _run(dbs=[db], backup_dir=bdir)
+    lines = qa.DISK_SERIES.read_text().splitlines()
+    assert len(lines) == 2
+    assert all(qa.json.loads(x)["free"] == 800 * GB for x in lines)
+
+
+def test_a_day_old_sample_makes_the_filesystem_the_burn(tmp_path, monkeypatch):
+    """Model: 1 GB/day live x8 = 8 GB/day, 100 d. Filesystem: 820 -> 800 GB in
+    two days = 10 GB/day, 80 d. The horizon is the filesystem's, and the model
+    is printed beside it rather than replacing it."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB))
+    _sample(qa.DISK_SERIES, 2.0, 820 * GB)
+
+    failed, lines = _run(dbs=[db], backup_dir=bdir, min_days=90.0)
+    detail = "\n".join(lines)
+    assert failed == {"archive disk headroom"}, detail
+    assert "80 d to full" in detail and "burn 10.00 GB/day measured on the filesystem" in detail
+    assert "rotation model 8.00 GB/day" in detail
+    failed, _ = _run(dbs=[db], backup_dir=bdir, min_days=70.0)
+    assert failed == set()
+
+
+def test_a_step_in_the_burn_shows_from_its_first_day_not_the_window_average(tmp_path):
+    """Ten quiet days at ~1 GB/day, then 20 GB/day for the last 1.5 days: the
+    window average is ~4 GB/day and would hide the step for two weeks. The rate
+    is the worst over any sample >= 1 day old."""
+    series = tmp_path / "s.jsonl"
+    now = qa.datetime.now(qa.UTC)
+    _sample(series, 10.0, 900 * GB)
+    _sample(series, 1.5, 890 * GB)
+    rate, span = qa._fs_burn(series, now, 860 * GB)
+    assert rate == pytest.approx(20 * GB, rel=0.01)
+    assert span == pytest.approx(10.0, abs=0.01)
+
+
+def test_a_sample_younger_than_a_day_is_not_a_rate(tmp_path, monkeypatch):
+    """A sub-day delta is the sampling period wearing the quantity's name
+    (mistakes #92): the model stays the burn and the line says how young."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB))
+    _sample(qa.DISK_SERIES, 0.5, 820 * GB)
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=90.0)
+    detail = "\n".join(lines)
+    assert "100 d to full" in detail and "burn 8.00 GB/day = 1.00 live x8" in detail
+    assert "series 0.5d young, not yet a rate" in detail
+
+
+def test_samples_outside_the_window_do_not_vote(tmp_path):
+    series = tmp_path / "s.jsonl"
+    now = qa.datetime.now(qa.UTC)
+    _sample(series, 30.0, 2000 * GB)  # a disk that no longer exists
+    _sample(series, 2.0, 810 * GB)
+    rate, span = qa._fs_burn(series, now, 800 * GB)
+    assert rate == pytest.approx(5 * GB, rel=0.01)
+    assert span == pytest.approx(2.0, abs=0.01)
+
+
+def test_a_filesystem_being_freed_is_not_filling(tmp_path, monkeypatch):
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB))
+    _sample(qa.DISK_SERIES, 2.0, 700 * GB)
+    failed, lines = _run(dbs=[db], backup_dir=bdir, min_days=1e9)
+    assert failed == set()
+    assert "filesystem not filling over 2.0d" in "\n".join(lines)

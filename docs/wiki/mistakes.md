@@ -3841,6 +3841,62 @@ defect, one mode over, and it survived because the fix was written as a
 property of a MODE ("units-only excludes test_unit_drift.py") instead of a
 property of the CHECK.
 
+136. **2026-10-24 20:30Z -- a burn rate derived from one tenant's file
+    sizes, times a multiplier, is a MODEL of the disk, and it read 2.24
+    GB/day live the morning after the stream archive started growing at
+    ~12.** `qa_disk_headroom` measured growth from the backup rotation's
+    slot sizes (`_rotation_growth`: newest slot minus oldest over their
+    span, a 6-day average) and multiplied by 8 for "backups share this
+    filesystem". Three things wrong with it, all in the optimistic
+    direction except the last: (a) a 6-day average dilutes a step --
+    the 2026-10-23 12:45Z coverage expansion took `hyxstream.duckdb`
+    from 0.75-0.9 GB/day (slots 10-17..10-22) to 7.4 GB in its first
+    14.75h and 8.1 GB in the next 16.8h (**11.6-12.1 GB/day**), and the
+    10-24 10:00Z line still read `2.24 live`; (b) the live list is
+    `backup.DBS`, so `data/raw_frames` (18 GB in 31.5h, **13.7 GB/day**,
+    plateauing at 14 days) and every other tenant of /home were invisible;
+    (c) x8 assumes each slot is a full copy, but the slots are btrfs
+    reflinks (ops: the 0.2s copy) whose real cost is the live file's churn
+    since the snapshot, so the multiplier is wrong in the OTHER direction
+    too. The check FAILED that morning (55 d to full vs floor 90) for the
+    right reason with the wrong number: free fell 990 -> 960 GB in the ten
+    hours after it ran, ~72 GB/day on that short window, with no backup in
+    between. Fix: each QA run appends `shutil.disk_usage(...).free` to
+    `reports/qa/disk_free.jsonl` and, once a sample is a day old, the burn
+    is the WORST rate over any sample >= 1 day old inside a 14-day window
+    (a step shows from its first day; a window average hides it for two
+    weeks), with the rotation model printed beside it. A sub-day sample is
+    not a rate (#92). 6 tests, 2 mutants diffed red. Rule: **the resource
+    you are asking about has its own counter; read it. A rate rebuilt from
+    one tenant's artifacts needs a multiplier, and the multiplier is where
+    the mechanism (reflink, retention, other tenants) you did not model
+    hides.** The capacity question itself is user-gated: nothing in this
+    repo purges stream rows, so at ~12 GB/day + the 14-day raw plateau the
+    disk has roughly two months; the levers are a stream retention purge,
+    dropping `hyxstream` from the 7-slot rotation (the expansion's own note
+    called that backup "unbounded at that rate"), or an off-box backup.
+
+137. **2026-10-24 20:30Z -- a reconstruction check that compared a sum of
+    two-decimal fixed-point quantities, stored as DOUBLE, against `-1e-9`
+    failed on round-off the first day the sums got long.** `reconstructed
+    book levels non-negative` summed one snapshot row plus every later
+    delta per (market, side, price) and flagged `qty < -1e-9`. Kalshi's
+    `count_fp`/`delta_fp` are 2-dp decimals; thousands of them in a DOUBLE
+    sum leave +/-1e-9 of error. Before the expansion the hourly re-seed
+    bounded a level's post-snapshot deltas to ~1h; after it (set changes no
+    longer reconnect, snapshots only at subscribe) levels carry 1,108-6,791
+    deltas over 10 min to 3h+, and the 10-24 10:00Z QA printed `5 negative
+    levels`. Read directly (one 33s held read-only attach as a transient
+    unit): 7 levels, qty -1.0e-9 .. -3.3e-9, four KXBTC15M 0.001 levels and
+    three sports 0.01 levels, each with exactly one snapshot row and no gap
+    -- arithmetic, not an overdraw; the smallest real overdraw is -0.01.
+    Fix: `round(qty, 2) < 0`, the venue's own precision. Red-verified on a
+    -1e-9 net (passes) and a -0.01 net (trips). Rule: **a tolerance on a
+    floating-point SUM scales with the number of terms; pick it from the
+    quantity's own precision, never from "small".** Secondary: the check
+    reports a count and nothing else, so the read cost a query against the
+    daemon's file the QA line could have carried.
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day

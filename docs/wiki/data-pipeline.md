@@ -826,6 +826,17 @@ self-match trap the ops rules name for `pkill -f`.
   SPILL_CAP 2M (~8 min, memory-bound). Raw frames kept 14 days. Measured
   growth ~8.6 GB/day DuckDB (~19 B/book row, ~48 B/ticker row) + ~8 GB/day
   raw -- the full-file hyxstream backup is unbounded at that rate.
+  **Re-measured in production 2026-10-24 (mistakes #136):** `hyxstream.duckdb`
+  43.99 GB at the 10-23 03:30Z backup -> 51.41 GB at 10-24 03:30Z (7.4 GB
+  over the 14.75h since the 12:45Z promote) -> 59.53 GB at 20:20Z (+8.1 GB
+  in 16.8h): **11.6-12.1 GB/day**, ~1.4x the staging figure; `data/raw_frames`
+  18 GB in 31.5h = **13.7 GB/day**, ~1.7x, plateauing at ~190 GB after its
+  14-day retention. Nothing in this repo deletes stream rows, so the DuckDB
+  file is unbounded; /home had 960 GB free at 20:20Z, ~2 months at these
+  rates before any backup churn. `qa_disk_headroom` now burns from the
+  filesystem's own free-space series (`reports/qa/disk_free.jsonl`), not
+  the rotation model. The capacity decision (stream retention purge, drop
+  hyxstream from the 7-slot rotation, or an off-box backup) is user-gated.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,
   2.6M candles. `python -m hyxlab.sweep --doctor` = health check for
   BOTH archives (includes mirror tripwire + stream counts/size).

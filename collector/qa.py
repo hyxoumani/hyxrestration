@@ -1328,7 +1328,11 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
           JOIN eligible el ON el.market_id = e.market_id
           GROUP BY e.market_id, e.side, e.price
         )
-        SELECT count(*) FROM levels WHERE qty < -1e-9
+        -- Kalshi quotes qty as two-decimal fixed point (`count_fp`/`delta_fp`),
+        -- stored as DOUBLE: thousands of deltas on one level sum to +/-1e-9 of
+        -- round-off, which is not an overdraw. A real one is at least -0.01.
+        -- 2026-10-24: 7 levels at -1.0e-9..-3.3e-9 with 1,108-6,791 deltas each.
+        SELECT count(*) FROM levels WHERE round(qty, 2) < 0
         """,
         [now, NEG_LOOKBACK_DAYS, active],
     ).fetchone()[0]
@@ -1569,6 +1573,61 @@ BACKUP_DIR = "data/backups"
 # exactly one week deep. Read off that format, not chosen here.
 ROTATION_SLOTS = 7
 HEADROOM_MIN_DAYS = 90.0
+#: The filesystem's own free-space reading, one line per QA run. The rotation
+#: rate below is a MODEL of one tenant's files -- x8 for slots that are btrfs
+#: reflinks and cost nothing like a full copy, blind to `data/raw_frames`, to
+#: the backups' real churn and to every other tenant of the disk, and a 6-day
+#: slot average that dilutes a step in the burn (the 2026-10-23 coverage
+#: expansion took the stream archive from 0.8 to ~12 GB/day; the model read
+#: 2.24 GB/day live the next morning). This series is the measurement, and
+#: once it holds a sample a day old it is the burn. It describes the SHARED
+#: filesystem, not this checkout, so unlike `STATE` it is rooted through
+#: `shared_reports` (`tests/test_shared_reports.py`).
+DISK_SERIES = shared_reports("qa") / "disk_free.jsonl"
+#: Oldest sample a rate is taken against. Older ones describe a disk that no
+#: longer exists (retention plateaus, deletions, a tenant that moved).
+DISK_SERIES_WINDOW_D = 14.0
+
+
+def _record_free(series: Path, now: datetime, free: int) -> None:
+    series.parent.mkdir(parents=True, exist_ok=True)
+    with series.open("a") as fh:
+        fh.write(json.dumps({"ts": now.isoformat(), "free": int(free)}) + "\n")
+
+
+def _fs_burn(
+    series: Path, now: datetime, free: int, window_d: float = DISK_SERIES_WINDOW_D
+) -> tuple[float | None, float]:
+    """Bytes/day the FILESYSTEM is losing, from its own free-space series, as
+    `(rate, span_days)`.
+
+    The rate is the WORST over every sample at least a day old inside the
+    window, not the average over the window: a step in the burn must show
+    from its first day, and an average over 14 quiet days hides it for two
+    weeks. `None` when no sample is a day old yet -- a sub-day delta is the
+    sampling period wearing the quantity's name (mistakes #92) -- with the
+    oldest age available as the span, so the caller can say how young.
+    """
+    best: float | None = None
+    span = 0.0
+    if not series.exists():
+        return None, span
+    for line in series.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+            ts = datetime.fromisoformat(rec["ts"])
+            then_free = int(rec["free"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        age = (now - ts).total_seconds() / 86400.0
+        if age <= 0 or age > window_d:
+            continue
+        span = max(span, age)
+        if age < 1.0:
+            continue
+        rate = (then_free - free) / age
+        best = rate if best is None else max(best, rate)
+    return best, span
 
 
 def _rotation_growth(live: list[Path], backup_dir: Path) -> tuple[float | None, float]:
@@ -1604,6 +1663,7 @@ def qa_disk_headroom(
     dbs: list[str] | None = None,
     backup_dir: str | Path | None = None,
     min_days: float = HEADROOM_MIN_DAYS,
+    series: str | Path | None = None,
 ) -> None:
     """Will the filesystem holding the archives still be there in `min_days`?
 
@@ -1642,7 +1702,30 @@ def qa_disk_headroom(
         where = "backups share this filesystem" if same_fs else "backups off-box"
 
         rate, span = _rotation_growth(live, backup_dir)
-        burn = None if rate is None else rate * mult
+        model = None if rate is None else rate * mult
+
+        # The filesystem's own series outranks the model the moment it can
+        # speak; the model is printed beside it so the two stay comparable.
+        now = datetime.now(UTC)
+        series = Path(DISK_SERIES if series is None else series)
+        fs_rate, fs_span = _fs_burn(series, now, free)
+        _record_free(series, now, free)
+        if fs_rate is not None:
+            burn = fs_rate
+            source = (
+                f" measured on the filesystem over {fs_span:.1f}d"
+                f" (rotation model {model / 1e9:.2f} GB/day, {where})"
+                if model is not None
+                else f" measured on the filesystem over {fs_span:.1f}d (no rotation model)"
+            )
+        else:
+            burn = model
+            source = (
+                f" = {rate / 1e9:.2f} live x{mult} ({where}), measured over {span:.1f}d;"
+                f" free-space series {fs_span:.1f}d young, not yet a rate"
+                if model is not None
+                else ""
+            )
         if burn is None:
             # No history, so no projection. Fall back to the one property that
             # needs none and is still not a constant: can this disk hold one
@@ -1655,14 +1738,17 @@ def qa_disk_headroom(
             )
         elif burn <= 0:
             ok = True
-            detail = f"free {free / 1e9:.0f} GB; archives not growing over {span:.1f}d"
+            detail = (
+                f"free {free / 1e9:.0f} GB; filesystem not filling over {fs_span:.1f}d"
+                if fs_rate is not None
+                else f"free {free / 1e9:.0f} GB; archives not growing over {span:.1f}d"
+            )
         else:
             days = free / burn
             ok = days > min_days
             detail = (
                 f"{days:.0f} d to full (floor {min_days:.0f}) —"
-                f" free {free / 1e9:.0f} GB, burn {burn / 1e9:.2f} GB/day ="
-                f" {rate / 1e9:.2f} live x{mult} ({where}), measured over {span:.1f}d"
+                f" free {free / 1e9:.0f} GB, burn {burn / 1e9:.2f} GB/day{source}"
             )
     check("archive disk headroom", ok, detail)
 
