@@ -3858,7 +3858,10 @@ property of the CHECK.
     (c) x8 assumes each slot is a full copy, but the slots are btrfs
     reflinks (ops: the 0.2s copy) whose real cost is the live file's churn
     since the snapshot, so the multiplier is wrong in the OTHER direction
-    too. The check FAILED that morning (55 d to full vs floor 90) for the
+    too -- measured 20:40Z with `btrfs filesystem du -s`: `data/backups`
+    471.27 GiB apparent, **2.77 GiB exclusive**, 75.30 GiB shared with
+    the live files; the x8 overstated the rotation's cost ~170x and the
+    disk's burn is the live growth itself. The check FAILED that morning (55 d to full vs floor 90) for the
     right reason with the wrong number: free fell 990 -> 960 GB in the ten
     hours after it ran, ~72 GB/day on that short window, with no backup in
     between. Fix: each QA run appends `shutil.disk_usage(...).free` to
