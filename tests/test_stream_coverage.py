@@ -741,3 +741,73 @@ def test_first_periodic_walk_after_a_rest_boot_is_phase_locked(tmp_path, monkeyp
         asyncio.run(d.kalshi_books())
     # next slot >= 120 s away is 17:18:00 (= quarter-hour 17:15 + 180 s)
     assert timeouts and abs(timeouts[0] - 430.0) < 1.0
+
+
+def test_reconcile_walk_times_the_walk_and_reads_only_its_own_429_delta(monkeypatch):
+    """Status 2026-10-24 03:55Z: a walk's duration was inferred from its 429
+    lines, so a clean walk had none. The line carries the elapsed seconds,
+    both wall-clock ends and the kalshi ledger's delta across the walk --
+    the delta, not the counter, so retries spent before the walk (the boot
+    walk's, say) are not charged to it."""
+    from collector.venues import kalshi
+
+    kalshi.reset_retry_counts()
+    kalshi._RATE_LIMIT_RETRIES = 7  # spent before this walk
+    kalshi._RATE_LIMIT_UNRETRIED = 2
+    clock = [100.0]
+    monkeypatch.setattr(streamd._time, "monotonic", lambda: clock[0])
+
+    def fake_walk(series_list, pause_s):
+        kalshi._RATE_LIMIT_RETRIES += 3
+        kalshi._RATE_LIMIT_UNRETRIED += 1
+        clock[0] += 47.25
+        return {"A-1", "A-2", "B-1"}, {"C"}
+
+    monkeypatch.setattr(streamd, "open_tickers_detail", fake_walk)
+    try:
+        w = streamd.reconcile_walk(["A", "B", "C"])
+    finally:
+        kalshi.reset_retry_counts()
+    assert w.tickers == {"A-1", "A-2", "B-1"} and w.incomplete == {"C"}
+    assert w.series_n == 3
+    assert abs(w.elapsed_s - 47.25) < 1e-9
+    assert (w.rate_limit_d, w.unretried_d) == (3, 1)
+    assert w.started.tzinfo is UTC and w.ended >= w.started
+    line = streamd.walk_line(w)
+    assert "reconcile walk 47.2s" in line or "reconcile walk 47.3s" in line
+    assert "3 tickers across 3 series, 429 retried +3 unretried +1, incomplete 1" in line
+
+
+def test_walk_line_renders_every_field_of_the_walk():
+    """Mistakes #95: a renderer is complete only by perturbation -- bump each
+    field of a real result and the line must change."""
+    import dataclasses
+
+    base = streamd.WalkResult(
+        tickers={"A-1", "A-2"},
+        incomplete=set(),
+        series_n=2,
+        started=datetime(2026, 10, 24, 3, 48, 0, tzinfo=UTC),
+        ended=datetime(2026, 10, 24, 3, 49, 47, tzinfo=UTC),
+        elapsed_s=107.0,
+        rate_limit_d=4,
+        unretried_d=0,
+    )
+    line = streamd.walk_line(base)
+    assert line == (
+        "kalshi-books: reconcile walk 107.0s (03:48:00 -> 03:49:47),"
+        " 2 tickers across 2 series, 429 retried +4 unretried +0, incomplete 0"
+    )
+    bumps = {
+        "tickers": {"A-1"},
+        "incomplete": {"B"},
+        "series_n": 3,
+        "started": base.started + timedelta(seconds=1),
+        "ended": base.ended + timedelta(seconds=1),
+        "elapsed_s": 108.0,
+        "rate_limit_d": 5,
+        "unretried_d": 1,
+    }
+    assert set(bumps) == {f.name for f in dataclasses.fields(base)}
+    for name, value in bumps.items():
+        assert streamd.walk_line(dataclasses.replace(base, **{name: value})) != line, name

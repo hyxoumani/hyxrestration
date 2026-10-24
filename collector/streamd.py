@@ -49,6 +49,7 @@ import os
 import signal
 import time as _time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -390,6 +391,57 @@ def open_tickers_detail(
             _log(f"kalshi-books: {s} walk TRUNCATED at {len(markets)} markets")
             incomplete.add(s)
     return out, incomplete
+
+
+@dataclass(frozen=True)
+class WalkResult:
+    """One periodic reconcile walk, with what it cost on the shared Kalshi
+    REST budget -- the half the journal could not give (status 2026-10-24
+    03:55Z: a walk's span was inferred from its 429 lines, so a walk that
+    drew none had no duration, and the overlap with the collector's :X5 pass
+    was argued from a design note's 110-130 s gap rather than read).
+    `rate_limit_d`/`unretried_d` are the kalshi ledger's process-wide
+    deltas across the walk; this daemon's only REST caller is the walk, so
+    the delta is the walk's own."""
+
+    tickers: set[str]
+    incomplete: set[str]
+    series_n: int
+    started: datetime
+    ended: datetime
+    elapsed_s: float
+    rate_limit_d: int
+    unretried_d: int
+
+
+def reconcile_walk(series_list: list[str], pause_s: float = SERIES_PAUSE_S) -> WalkResult:
+    """`open_tickers_detail`, timed, with the 429 ledger's delta across it."""
+    r0, u0 = kalshi.rate_limit_retries(), kalshi.rate_limit_unretried()
+    started = datetime.now(UTC)
+    t0 = _time.monotonic()
+    tickers, incomplete = open_tickers_detail(series_list, pause_s)
+    return WalkResult(
+        tickers=tickers,
+        incomplete=incomplete,
+        series_n=len(series_list),
+        started=started,
+        ended=datetime.now(UTC),
+        elapsed_s=_time.monotonic() - t0,
+        rate_limit_d=kalshi.rate_limit_retries() - r0,
+        unretried_d=kalshi.rate_limit_unretried() - u0,
+    )
+
+
+def walk_line(w: WalkResult) -> str:
+    """The ONE renderer of a walk (mistakes #95): every field of the result
+    is on the line, and `tests/test_stream_coverage.py` perturbs each."""
+    return (
+        f"kalshi-books: reconcile walk {w.elapsed_s:.1f}s"
+        f" ({w.started:%H:%M:%S} -> {w.ended:%H:%M:%S}),"
+        f" {len(w.tickers)} tickers across {w.series_n} series,"
+        f" 429 retried +{w.rate_limit_d} unretried +{w.unretried_d},"
+        f" incomplete {len(w.incomplete)}"
+    )
 
 
 def open_tickers(series_list: list[str], pause_s: float = SERIES_PAUSE_S) -> set[str]:
@@ -822,7 +874,9 @@ class Daemon:
                 next_reconcile = mono() + secs_to_next_reconcile(
                     _time.time(), min_s=BOOT_RECONCILE_MIN_S
                 )
-                rest, incomplete = await asyncio.to_thread(open_tickers_detail, series)
+                walk = await asyncio.to_thread(reconcile_walk, series)
+                _log(walk_line(walk))
+                rest, incomplete = walk.tickers, walk.incomplete
                 if rest:
                     cov.reconcile(set(rest), _time.monotonic(), incomplete)
                 else:
