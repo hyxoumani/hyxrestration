@@ -29,6 +29,7 @@ SIDECAR_CONSTANTS: tuple[tuple[str, str], ...] = (
     ("collector.qa", "COLLECT_SKIP_LOG"),
     ("collector.qa", "COLLECT_SPOOL_DIR"),
     ("collector.qa", "COLLECT_SPOOL_LOG"),
+    ("collector.qa", "RAW_FRAMES_DIR"),
     ("collector.qa", "SIGNALS_FETCH_LOG"),
     ("collector.qa", "STREAM_STALL_LOG"),
     ("collector.reconcile", "SUMMARY_PATH"),

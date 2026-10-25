@@ -3932,6 +3932,49 @@ property of the CHECK.
     next done line is the measurement. Classification: gotcha. Suite
     2213 -> 2214.
 
+139. **2026-10-25 20:45Z -- a model multiplied every live byte by the
+    SLOT COUNT of a rotation whose own copy mechanism the repo had already
+    measured as a reflink.** `qa_disk_headroom`'s rotation model was
+    `live x8 (backups share this filesystem)`: seven slots plus the live
+    file, each a full copy. The #89/#90 notes record that `collector.backup`
+    copies through `os.copy_file_range` and that /home is btrfs -- measured
+    at 0.2s for 26 GB precisely BECAUSE it reflinks -- and the ops rule
+    written from them says "name the mechanism that makes it cheap, then
+    ask which planned change removes it". Nobody asked the mirror question:
+    what the same mechanism makes the COST. Measured today,
+    `btrfs filesystem du -s --raw data/backups`: 14 slots, 534.5 GB
+    nominal, **3.03 GB exclusive (0.57%)**; per slot 30-65 MiB for the
+    stream, 0.3-0.4 GiB for hyxlab. The live `hyxstream.duckdb` itself is
+    6.4 GiB exclusive of 68 -- its slots hold the rest. So the rotation's
+    whole marginal cost is ~0.5 GB/day against the 31.9 GB/day the model
+    charged it, and the one term the model's own comment named as a blind
+    spot -- `data/raw_frames`, 14-day retention -- is 13-17 GB/day with 3
+    of 14 days held, the LARGEST term by 3x. The check printed `25 d to
+    full` on 10-25 and `55 d` on 10-24; the decomposed model reads `39 d`
+    (`4.56 live + 0.51 backups + 17.58 raw_frames = 22.65 GB/day`), and
+    the filesystem's own 10h delta, 922 -> 891 GB, is ~70 GB/day of which
+    ~21 GB is a sibling tenant's stale DuckDB spill
+    (`hylshi/.claude/worktrees/*/scratchpad/V2-403/spill/`, 10:42Z,
+    untouched -- not ours) and ~7 GB the stream file. Wrong in BOTH
+    directions at once -- x8 pessimistic on the slots, blind to the wire
+    -- and the two errors nearly cancelled, which is why a 25-day horizon
+    on a disk with 900 GB free was read as "the model, the series speaks
+    tomorrow" rather than as a defect. `stat` cannot see any of this: a
+    reflinked file reports its full size, so only the filesystem can
+    price a slot, and the model now asks it (`_slot_exclusive_bytes`),
+    charges a full copy only when it cannot answer, and carries
+    `raw_frames` as its own term with the held/retain count so the
+    plateau is legible (`_raw_frames_growth`). Type: `wrong-assumption`,
+    #89 family (mechanism named for the benefit, not costed). Rule:
+    **a multiplier in a capacity model is a claim about a mechanism;
+    when the repo has measured that mechanism for another purpose, the
+    measurement binds here too -- and a horizon that reads plausible
+    while its terms are unverified is the most dangerous reading a
+    headroom check can give, because nobody chases plausible.** 5 tests,
+    two model arms red-verified by mutant (full-copy fallback forced;
+    raw term dropped). The capacity decision itself stays user-gated;
+    the numbers it is made on are now measured.
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day

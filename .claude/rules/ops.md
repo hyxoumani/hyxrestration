@@ -110,7 +110,14 @@
   step -- point `HYXLAB_BACKUP_DIR` at an off-box mount -- deletes the
   reflink and turns a 0.2s writer exclusion into minutes. Before
   trusting a cheap number in a journal, name the mechanism that makes it
-  cheap, then ask which planned change removes it.
+  cheap, then ask which planned change removes it. And ask the mirror
+  question: what the same mechanism makes the COST. `qa_disk_headroom`
+  charged the rotation as x8 full copies for 11 days while those slots
+  were reflinks holding 0.57% exclusive (3.03 GB of 534.5 GB; mistakes
+  #139). `stat` reports a reflinked file at full size; only
+  `btrfs filesystem du -s --raw` prices a slot. A multiplier in a
+  capacity model is a claim about a mechanism the repo may already have
+  measured -- for the benefit -- elsewhere.
 - An instrument for a SHARED resource has to measure both directions:
   what contention cost this caller, and what this caller cost the
   contenders. Only the first is visible from inside the caller, which is

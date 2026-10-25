@@ -844,8 +844,17 @@ self-match trap the ops rules name for `pkill -f`.
   file is unbounded; /home had 960 GB free at 20:20Z, ~2 months at these
   rates before any backup churn. `qa_disk_headroom` now burns from the
   filesystem's own free-space series (`reports/qa/disk_free.jsonl`), not
-  the rotation model. The capacity decision (stream retention purge, drop
-  hyxstream from the 7-slot rotation, or an off-box backup) is user-gated.
+  the rotation model. **The rotation is NOT x8 (measured 2026-10-25,
+  mistakes #139):** `collector.backup` reflinks on btrfs, so the 14 slots
+  hold 3.03 GB exclusive of 534.5 GB nominal (0.57%; stream slots 30-65 MiB
+  each) -- dropping `hyxstream` from the rotation would free ~0.3 GB, not
+  7x66 GB. The model's terms are now `live + backups (exclusive/span) +
+  raw_frames` (`btrfs filesystem du -s --raw`; full copies only when it
+  cannot measure): 10-25 reads `39 d` = `4.56 live + 0.51 backups + 17.58
+  raw_frames`, with `raw_frames` the largest term until its 14-day window
+  fills (~11-06, ~190-240 GB plateau). The capacity decision (stream
+  retention purge, drop hyxstream from the 7-slot rotation -- now known to
+  buy nothing -- or an off-box backup) is user-gated.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,
   2.6M candles. `python -m hyxlab.sweep --doctor` = health check for
   BOTH archives (includes mirror tripwire + stream counts/size).

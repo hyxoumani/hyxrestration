@@ -19,6 +19,8 @@ import pytest
 from collector import backup, qa
 
 GB = 10**9
+# Captured before the autouse fixture replaces it, for the parser's own test.
+_REAL_SLOT_DU = qa._slot_exclusive_bytes
 
 
 class _Usage:
@@ -79,8 +81,109 @@ def test_rate_is_measured_from_the_rotation_and_multiplied_by_the_slots(tmp_path
 
     _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
     detail = "\n".join(lines)
-    assert "1.00 live x8" in detail, detail
+    assert "1.00 live + 7.00 backups (x7 full copies, sharing unmeasured)" in detail, detail
     assert "burn 8.00 GB/day" in detail, detail
+
+
+BTRFS_DU = (
+    "     Total   Exclusive  Set shared  Filename\n"
+    "534520524800  3030818816  95962836992  data/backups\n"
+)
+
+
+def test_reflinked_slots_cost_their_exclusive_bytes_not_a_full_copy(tmp_path, monkeypatch):
+    """MEASURED 2026-10-25 on this box: 14 slots, 534.5 GB nominal, 3.03 GB
+    exclusive (0.57%) -- `copy_file_range` reflinks on btrfs. x8 on every live
+    byte was the model's premise and was 8x wrong; the rotation's real cost is
+    its exclusive bytes spread over the span they accrued in."""
+    db = _live(tmp_path, "a", 7 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB, 3 * GB, 4 * GB, 5 * GB, 6 * GB, 7 * GB])
+    monkeypatch.setattr(qa, "_slot_exclusive_bytes", lambda _d: (3 * GB, 534 * GB))
+
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
+    detail = "\n".join(lines)
+    assert "1.00 live + 0.50 backups (3.0 GB exclusive of 534 GB nominal, reflinked" in detail, (
+        detail
+    )
+    assert "burn 1.50 GB/day" in detail, detail
+
+
+def test_slot_sharing_is_read_from_the_filesystem_and_admits_when_it_cannot(monkeypatch):
+    """`stat` reports a reflinked slot at full size, so only `btrfs filesystem
+    du` can say what it costs; the parser reads the real tool's summary row,
+    and every way of not knowing is None (-> full copies), never zero."""
+    calls = []
+
+    class _Res:
+        def __init__(self, rc, out):
+            self.returncode, self.stdout = rc, out
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw))
+        return _Res(0, BTRFS_DU)
+
+    monkeypatch.setattr(qa.subprocess, "run", fake_run)
+    assert _REAL_SLOT_DU(Path("data/backups")) == (3030818816, 534520524800)
+    cmd, kw = calls[0]
+    assert cmd[:4] == ["btrfs", "filesystem", "du", "-s"] and "--raw" in cmd
+    assert kw["timeout"] == qa.SLOT_DU_TIMEOUT_S
+
+    monkeypatch.setattr(qa.subprocess, "run", lambda *a, **k: _Res(1, ""))
+    assert _REAL_SLOT_DU(Path("x")) is None
+    monkeypatch.setattr(qa.subprocess, "run", lambda *a, **k: _Res(0, "garbage\n"))
+    assert _REAL_SLOT_DU(Path("x")) is None
+
+    def boom(*a, **k):
+        raise FileNotFoundError("btrfs")
+
+    monkeypatch.setattr(qa.subprocess, "run", boom)
+    assert _REAL_SLOT_DU(Path("x")) is None
+
+    def slow(*a, **k):
+        raise qa.subprocess.TimeoutExpired(cmd="btrfs", timeout=1)
+
+    monkeypatch.setattr(qa.subprocess, "run", slow)
+    assert _REAL_SLOT_DU(Path("x")) is None
+
+
+def _raw_day(raw: Path, day: str, size: int) -> None:
+    (raw / day).mkdir(parents=True, exist_ok=True)
+    f = raw / day / "00-books.jsonl.zst"
+    f.write_bytes(b"")
+    os.truncate(f, size)
+
+
+def test_raw_frames_add_a_days_frames_per_day_until_the_window_is_full(tmp_path):
+    """Measured 2026-10-25: 13-17 GB/day of wire with 3 of 14 days held --
+    the model's largest term. It is the newest COMPLETE day (today's is
+    partial), and once RETAIN_DAYS directories exist the prune makes it a
+    plateau: zero, not negative and not still growing."""
+    raw = tmp_path / "raw_frames"
+    now = qa.datetime(2026, 10, 25, 20, 0, tzinfo=qa.UTC)
+    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 0)
+    _raw_day(raw, "2026-10-25", 5 * GB)  # only the running day: a floor
+    assert qa._raw_frames_growth(raw, 14, now) == (5 * GB, 1)
+    _raw_day(raw, "2026-10-23", 6 * GB)
+    _raw_day(raw, "2026-10-24", 17 * GB)
+    assert qa._raw_frames_growth(raw, 14, now) == (17 * GB, 3)
+    for i in range(11):  # 10-12 .. 10-22: the window is full at 14
+        _raw_day(raw, f"2026-10-{12 + i:02d}", 10 * GB)
+    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 14)
+
+
+def test_raw_frames_are_a_term_of_the_model(tmp_path, monkeypatch):
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    raw = tmp_path / "raw_frames"
+    _raw_day(raw, "2000-01-01", 4 * GB)
+    _raw_day(raw, "2999-01-01", 1 * GB)  # a day that has not closed: ignored
+
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
+    detail = "\n".join(lines)
+    assert "+ 4.00 raw_frames (2 of 14 days held, filling)" in detail, detail
+    assert "burn 12.00 GB/day" in detail, detail  # 1 live + 7 copies + 4 raw
 
 
 def test_headroom_is_a_horizon_so_it_can_fail_and_recover(tmp_path):
@@ -196,6 +299,11 @@ def test_no_constant_size_ceiling_survives_anywhere_in_qa():
 def _series_in_tmp(tmp_path, monkeypatch):
     """Never let a test append to the repo's own `reports/qa/disk_free.jsonl`."""
     monkeypatch.setattr(qa, "DISK_SERIES", tmp_path / "series" / "disk_free.jsonl")
+    # The repo's own `data/raw_frames` and `btrfs filesystem du` must never
+    # reach a test: an empty raw dir and an unmeasured sharing (full copies)
+    # are the defaults; tests that want the measured arm say so.
+    monkeypatch.setattr(qa, "RAW_FRAMES_DIR", str(tmp_path / "raw_frames"))
+    monkeypatch.setattr(qa, "_slot_exclusive_bytes", lambda _d: None)
 
 
 def _sample(series: Path, days_ago: float, free: int) -> None:
@@ -231,7 +339,7 @@ def test_a_day_old_sample_makes_the_filesystem_the_burn(tmp_path, monkeypatch):
     detail = "\n".join(lines)
     assert failed == {"archive disk headroom"}, detail
     assert "80 d to full" in detail and "burn 10.00 GB/day measured on the filesystem" in detail
-    assert "rotation model 8.00 GB/day" in detail
+    assert "rotation model 8.00 GB/day = 1.00 live + 7.00 backups" in detail
     failed, _ = _run(dbs=[db], backup_dir=bdir, min_days=70.0)
     assert failed == set()
 
@@ -259,7 +367,7 @@ def test_a_sample_younger_than_a_day_is_not_a_rate(tmp_path, monkeypatch):
     _sample(qa.DISK_SERIES, 0.5, 820 * GB)
     _, lines = _run(dbs=[db], backup_dir=bdir, min_days=90.0)
     detail = "\n".join(lines)
-    assert "100 d to full" in detail and "burn 8.00 GB/day = 1.00 live x8" in detail
+    assert "100 d to full" in detail and "burn 8.00 GB/day = 1.00 live + 7.00 backups" in detail
     assert "series 0.5d young, not yet a rate" in detail
 
 

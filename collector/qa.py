@@ -29,6 +29,7 @@ from pathlib import Path
 import duckdb
 
 from collector.backup import DBS
+from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.venues import alfred
 from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run, run_completed_at
@@ -1587,6 +1588,84 @@ DISK_SERIES = shared_reports("qa") / "disk_free.jsonl"
 #: Oldest sample a rate is taken against. Older ones describe a disk that no
 #: longer exists (retention plateaus, deletions, a tenant that moved).
 DISK_SERIES_WINDOW_D = 14.0
+#: Where `collector.streamd --raw-frames` keeps the wire (its default); day
+#: directories pruned past `RAW_RETAIN_DAYS`, so a PLATEAU once the window is
+#: full and a day's frames of growth per day until then. Measured 2026-10-25:
+#: 13-17 GB/day, 3 of 14 days held -- the model's largest term and, until
+#: this pass, absent from it (mistakes #139).
+RAW_FRAMES_DIR = "data/raw_frames"
+#: How long the slot-sharing measurement may take before the model falls back
+#: to full copies. Measured 2026-10-25 on 14 slots / 534 GB nominal: seconds.
+SLOT_DU_TIMEOUT_S = 120.0
+
+
+def _slot_exclusive_bytes(backup_dir: Path) -> tuple[int, int] | None:
+    """`(exclusive, nominal)` bytes of everything under `backup_dir` as the
+    filesystem actually holds it, or None when that cannot be measured.
+
+    `collector.backup` copies through `os.copy_file_range`, which on btrfs
+    REFLINKS: a slot shares every extent the live file has not rewritten
+    since, and costs the disk only its exclusive ones. MEASURED 2026-10-25
+    (`btrfs filesystem du -s --raw data/backups`): 534.5 GB nominal across 14
+    slots, 3.03 GB exclusive -- 0.57%. Seven full copies would have been
+    x8 on every live byte; the real rotation is ~x1.006. Only the filesystem
+    can say which, because `stat` reports a reflinked file at full size, so
+    this asks it and admits when it cannot (no btrfs tool, a foreign
+    filesystem, a timeout): an unmeasured sharing is reported as full copies,
+    the pessimistic side, never as free.
+    """
+    try:
+        res = subprocess.run(
+            ["btrfs", "filesystem", "du", "-s", "--raw", str(backup_dir)],
+            capture_output=True,
+            text=True,
+            timeout=SLOT_DU_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode != 0:
+        return None
+    rows = [ln.split() for ln in res.stdout.splitlines() if ln.strip()]
+    # Header `Total Exclusive Set shared Filename`, then the summary row.
+    if len(rows) < 2:
+        return None
+    try:
+        nominal, exclusive = int(rows[-1][0]), int(rows[-1][1])
+    except (ValueError, IndexError):
+        return None
+    if nominal <= 0 or exclusive < 0 or exclusive > nominal:
+        return None
+    return exclusive, nominal
+
+
+def _raw_frames_growth(
+    raw_dir: Path, retain_days: int, now: datetime | None = None
+) -> tuple[float, int]:
+    """Bytes/day `raw_dir` is still ADDING, with the number of day directories
+    it holds. Zero once `retain_days` are held (the prune makes it a plateau);
+    until then the newest COMPLETE day's bytes, or the running day's as a
+    floor when no day has closed yet -- a partial day understates, and the
+    label says so through the held count."""
+    if not raw_dir.is_dir():
+        return 0.0, 0
+    days = sorted(p for p in raw_dir.iterdir() if p.is_dir())
+    if not days:
+        return 0.0, 0
+    held = len(days)
+    if held >= retain_days:
+        return 0.0, held
+    today = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
+    complete = [p for p in days if p.name < today]
+    day = complete[-1] if complete else days[-1]
+    size = 0
+    for f in day.iterdir():
+        try:
+            if f.is_file():
+                size += f.stat().st_size
+        except OSError:
+            continue
+    return float(size), held
 
 
 def _record_free(series: Path, now: datetime, free: int) -> None:
@@ -1664,6 +1743,7 @@ def qa_disk_headroom(
     backup_dir: str | Path | None = None,
     min_days: float = HEADROOM_MIN_DAYS,
     series: str | Path | None = None,
+    raw_dir: str | Path | None = None,
 ) -> None:
     """Will the filesystem holding the archives still be there in `min_days`?
 
@@ -1690,19 +1770,51 @@ def qa_disk_headroom(
         free = shutil.disk_usage(root).free
         footprint = sum(p.stat().st_size for p in live)
 
-        # The rotation multiplies the burn ONLY while it shares the filesystem
-        # it would exhaust. Off-box -- the standing user item -- it costs this
+        # The rotation costs the burn ONLY while it shares the filesystem it
+        # would exhaust. Off-box -- the standing user item -- it costs this
         # disk nothing, so the same archive has two different honest horizons
         # and the check must not assume the pessimistic one is always right.
+        # On-box, what a slot costs is what the filesystem says it holds
+        # exclusively (reflinked: ~nothing), and only when the filesystem
+        # will not say is a slot charged as a full copy.
         try:
             same_fs = backup_dir.stat().st_dev == root.stat().st_dev
         except OSError:
             same_fs = False
-        mult = 1 + ROTATION_SLOTS if same_fs else 1
-        where = "backups share this filesystem" if same_fs else "backups off-box"
 
         rate, span = _rotation_growth(live, backup_dir)
-        model = None if rate is None else rate * mult
+        raw_rate, raw_held = _raw_frames_growth(
+            Path(RAW_FRAMES_DIR if raw_dir is None else raw_dir), RAW_RETAIN_DAYS
+        )
+        raw_how = (
+            f"{raw_rate / 1e9:.2f} raw_frames"
+            f" ({raw_held} of {RAW_RETAIN_DAYS} days held"
+            f"{', filling' if raw_rate > 0 else ', plateau'})"
+        )
+        model = None
+        model_how = ""
+        if rate is not None:
+            if not same_fs:
+                slots_rate, slots_how = 0.0, "backups off-box"
+            else:
+                measured = _slot_exclusive_bytes(backup_dir)
+                if measured is not None and span > 0:
+                    exclusive, nominal = measured
+                    slots_rate = exclusive / span
+                    slots_how = (
+                        f"{slots_rate / 1e9:.2f} backups"
+                        f" ({exclusive / 1e9:.1f} GB exclusive of"
+                        f" {nominal / 1e9:.0f} GB nominal, reflinked,"
+                        f" over {span:.1f}d)"
+                    )
+                else:
+                    slots_rate = rate * ROTATION_SLOTS
+                    slots_how = (
+                        f"{slots_rate / 1e9:.2f} backups"
+                        f" (x{ROTATION_SLOTS} full copies, sharing unmeasured)"
+                    )
+            model = rate + slots_rate + raw_rate
+            model_how = f"{rate / 1e9:.2f} live + {slots_how} + {raw_how}"
 
         # The filesystem's own series outranks the model the moment it can
         # speak; the model is printed beside it so the two stay comparable.
@@ -1714,14 +1826,14 @@ def qa_disk_headroom(
             burn = fs_rate
             source = (
                 f" measured on the filesystem over {fs_span:.1f}d"
-                f" (rotation model {model / 1e9:.2f} GB/day, {where})"
+                f" (rotation model {model / 1e9:.2f} GB/day = {model_how})"
                 if model is not None
                 else f" measured on the filesystem over {fs_span:.1f}d (no rotation model)"
             )
         else:
             burn = model
             source = (
-                f" = {rate / 1e9:.2f} live x{mult} ({where}), measured over {span:.1f}d;"
+                f" = {model_how}, measured over {span:.1f}d;"
                 f" free-space series {fs_span:.1f}d young, not yet a rate"
                 if model is not None
                 else ""
