@@ -37,6 +37,7 @@ args="$*"; printf 'deadline=%s\\nargs=%s\\n' "${AUTOLOOP_DEADLINE:-UNSET}" "${ar
 case "${FAKE_MODE:-hang}" in
   hang) exec sleep 60 ;;
   exit) exit "${FAKE_RC:-0}" ;;
+  limit) echo "You've hit your weekly limit · resets 1pm (America/Chicago)"; exit 1 ;;
   rewrite) cat "$FAKE_REWRITE" > "$FAKE_SCRIPT"; exit 0 ;;
 esac
 """
@@ -119,6 +120,25 @@ def test_child_exit_code_passes_through(root: Path) -> None:
     assert "bounded stop" not in ok.stdout
     bad = _run(root, {"FAKE_MODE": "exit", "FAKE_RC": "3"})
     assert bad.returncode == 3, bad.stderr
+
+
+def test_usage_limit_refusal_is_filed_as_a_skip_not_a_crash(root: Path) -> None:
+    """Over the account's usage limit, `claude -p` prints one line and exits 1
+    -- the status of any crash. Both 2026-10-24 runs reached the digest's
+    RECENT line as `exit-code/1`. The launcher recognises the sentinel in the
+    output it kept and exits 75 (EX_TEMPFAIL, the repo's "declined, retry
+    later" status) with the refusal named; a 1 WITHOUT the sentinel is still
+    a 1, because that one IS a crash."""
+    proc = _run(root, {"FAKE_MODE": "limit"})
+    assert proc.returncode == 75, (proc.stdout, proc.stderr)
+    assert "claude REFUSED (usage limit" in proc.stdout
+    assert "hit your weekly limit" in proc.stdout, "the refusal line itself must reach the journal"
+    assert "exit 75 (EX_TEMPFAIL), not 1" in proc.stdout
+    kept = (root / "data" / "autoloop.last.out").read_text()
+    assert "hit your weekly limit" in kept, "the run's output is kept on disk for the next pass"
+    plain = _run(root, {"FAKE_MODE": "exit", "FAKE_RC": "1"})
+    assert plain.returncode == 1, plain.stderr
+    assert "REFUSED" not in plain.stdout
 
 
 def test_lock_holder_skips(root: Path) -> None:

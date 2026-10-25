@@ -1088,7 +1088,10 @@ UNIT_FAILURE_MESSAGE_ID = "d9b373ed55a64feb8242e02dbe79a49c"
 
 # `exit-code` alone cannot tell a crash from a designed skip: `collector.collect`
 # and `collector.breadth` exit 75 (EX_TEMPFAIL) when a LIVE reader outside the
-# flock holds the archive, and both read `Failed with result 'exit-code'`. On
+# flock holds the archive, and `scripts/autoloop.sh` exits 75 when `claude -p`
+# refused the call over the account's usage limit (a USER item with a reset
+# time; both 2026-10-24 runs were filed `exit-code/1` here before it did) --
+# all of them read `Failed with result 'exit-code'`. On
 # 2026-10-07 15:31-16:09Z the digest printed four collect and two breadth
 # failures that were all a sibling project's read-only attach, and the reader
 # had to dig the journal to learn that. The status is in a SECOND record, the
