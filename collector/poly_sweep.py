@@ -41,7 +41,16 @@ from hyxlab.store import (
     reset_attach_waits,
 )
 
-FLUSH_MARKETS = 25
+#: Markets per flush. The trades dedup is a full read of `trades.market_id`
+#: (703M rows on the 2026-10-24 backup; poly ids are random hex, so the
+#: BETWEEN prunes nothing) and its cost is per FLUSH, not per row: measured
+#: on that backup at 4 threads, 7.21s for 25 markets / 18k prints, 7.80s for
+#: 100 / 74k, 6.82s for 200 / 164k. At 25 the 2026-10-25 run flushed 775
+#: times for `flush 166.8 min` of a 572.9-min run (budget 8.0h). 100 cuts
+#: the scans ~4x for a hold that grows by the staging of 3x more rows,
+#: which `Store._stage_rows` made ~0.3s; 200 was no faster per scan and
+#: doubles the batch a failed flush carries. Re-read on the next done line.
+FLUSH_MARKETS = 100
 LOCK_FILE = "data/writer.lock"
 REQUEST_PAUSE_S = 0.25  # CLOB/data-api pacing
 

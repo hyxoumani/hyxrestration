@@ -379,9 +379,17 @@ def test_open_time_roundtrips_and_migrates(tmp_path):
     from hyxlab.models import MarketInfo
 
     store = Store(tmp_path / "t.duckdb")
-    store.upsert_markets([MarketInfo(
-        venue="kalshi", market_id="KXHIGHNY-26AUG02-B88.5", series="KXHIGHNY",
-        close_time=TS, open_time=datetime(2026, 6, 30, 14, tzinfo=UTC))])
+    store.upsert_markets(
+        [
+            MarketInfo(
+                venue="kalshi",
+                market_id="KXHIGHNY-26AUG02-B88.5",
+                series="KXHIGHNY",
+                close_time=TS,
+                open_time=datetime(2026, 6, 30, 14, tzinfo=UTC),
+            )
+        ]
+    )
     row = store.conn.execute(
         "SELECT open_time FROM markets WHERE market_id='KXHIGHNY-26AUG02-B88.5'"
     ).fetchone()
@@ -390,15 +398,25 @@ def test_open_time_roundtrips_and_migrates(tmp_path):
 
     # simulate a pre-change DB: drop the column, then reopen
     import duckdb as _duckdb
+
     conn = _duckdb.connect(str(tmp_path / "t.duckdb"))
     conn.execute("ALTER TABLE markets DROP COLUMN open_time")
     conn.close()
     store2 = Store(tmp_path / "t.duckdb")
-    store2.upsert_markets([MarketInfo(
-        venue="kalshi", market_id="KXHIGHNY-26AUG03-B89.5", series="KXHIGHNY",
-        close_time=TS, open_time=TS)])
-    n = store2.conn.execute(
-        "SELECT count(*) FROM markets WHERE open_time IS NOT NULL").fetchone()[0]
+    store2.upsert_markets(
+        [
+            MarketInfo(
+                venue="kalshi",
+                market_id="KXHIGHNY-26AUG03-B89.5",
+                series="KXHIGHNY",
+                close_time=TS,
+                open_time=TS,
+            )
+        ]
+    )
+    n = store2.conn.execute("SELECT count(*) FROM markets WHERE open_time IS NOT NULL").fetchone()[
+        0
+    ]
     assert n == 1  # migrated column, upsert works; pre-change row stays NULL
 
 
@@ -515,3 +533,53 @@ def test_connect_retry_backoff_lengthens_and_detunes_the_budget(monkeypatch):
     assert len(set(sleeps)) > 1  # not one period to beat against
     assert sleeps == sorted(sleeps)  # monotone
     assert max(sleeps) == STREAM_ATTACH["max_delay"]  # and capped
+
+
+def test_stage_rows_matches_executemany_with_nulls_and_mixed_numeric(tmp_path):
+    """`Store._stage_rows` (one statement, a list bound per column) must land
+    exactly what `executemany` landed: NULLs in a VARCHAR and a BOOLEAN
+    column, an all-NULL column, and a DOUBLE column fed Python ints and
+    floats mixed. The cast to the staging column's own type is what keeps
+    DuckDB from typing the column off the Python values."""
+    from datetime import datetime
+
+    store = Store(str(tmp_path / "t.duckdb"))
+    rows = [
+        (
+            "polymarket",
+            "0xaa",
+            f"t{i}",
+            datetime(2026, 10, 24, 1, 2, i % 60),
+            0.5,
+            12 if i % 2 else 12.5,
+            None if i % 3 else "buy",
+            None,
+        )
+        for i in range(500)
+    ]
+    store.conn.execute("CREATE TEMP TABLE a AS SELECT * FROM trades LIMIT 0")
+    store.conn.execute("CREATE TEMP TABLE b AS SELECT * FROM trades LIMIT 0")
+    store.conn.executemany("INSERT INTO a VALUES (?,?,?,?,?,?,?,?)", rows)
+    store._stage_rows("b", rows)
+    diff = store.conn.execute(
+        "SELECT (SELECT count(*) FROM (SELECT * FROM a EXCEPT ALL SELECT * FROM b)),"
+        " (SELECT count(*) FROM (SELECT * FROM b EXCEPT ALL SELECT * FROM a)),"
+        " (SELECT count(*) FROM b)"
+    ).fetchone()
+    assert diff == (0, 0, 500)
+    # A ragged row cannot be zipped away into a shorter batch.
+    store.conn.execute("CREATE TEMP TABLE c AS SELECT * FROM trades LIMIT 0")
+    with pytest.raises(ValueError):
+        store._stage_rows("c", [rows[0][:7]])
+    with pytest.raises(ValueError):
+        store._stage_rows("c", [rows[0], rows[1][:7]])
+    # And the dedup insert built on it still counts only the new keys.
+    assert store.insert_trades(rows) == 500
+    assert (
+        store.insert_trades(
+            rows[:10]
+            + [("polymarket", "0xaa", "new", datetime(2026, 10, 24), 0.1, 1.0, None, None)]
+        )
+        == 1
+    )
+    store.close()

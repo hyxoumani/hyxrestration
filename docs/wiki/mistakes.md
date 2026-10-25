@@ -3900,6 +3900,38 @@ property of the CHECK.
     reports a count and nothing else, so the read cost a query against the
     daemon's file the QA line could have carried.
 
+138. **2026-10-25 14:30Z -- a wall published as one SEGMENT total was
+    re-budgeted three times without ever being divided by the COUNT of the
+    operation that produced it, so a per-flush constant cost read as
+    per-row growth.** The poly sweep's done line has carried `flush_min`
+    since 10-19 and the attach ledger `held N for Xs` since 10-17; the 8.0h
+    budget was re-measured 10-21 from three skip-era lines and the 10-22
+    breach (#132) was attributed to `closed_fetched` growth with "the
+    constant stands". Skip-era runs: 7.00, 7.72, 8.17, 8.39, 8.08 and today
+    9.55h -- four of six over the budget, flush 115.8 -> 157.6 -> 133.9 ->
+    166.8 min while the fetch segments stayed within 10%. Measured today on
+    the 10-24 backup (read-only, 4 threads): `insert_new`'s trades dedup is
+    a full read of `trades.market_id` (703M rows; poly ids are random hex,
+    the BETWEEN scope prunes nothing) at 6.8-7.8s whether the batch is 25,
+    100 or 200 markets -- a cost per FLUSH -- and the `executemany` staging
+    in front of it runs 80-240 us/row INSIDE the hold (1.65s for 18k rows,
+    17.1s for 70k). 775 flushes x (scan + staging) = `held 775 for
+    8544.8s`, worst 670.8s, and the collector's cost: `wait_s` 62-101s on
+    five cycles and one skipped at 10:08Z (`writer lock held ... by
+    hyxlab-poly-sweep.service since 09:59:45`). Every number needed was on
+    the done line (`flush_min`, 775 attaches, 8544.8s) -- nobody divided.
+    Fix: `Store._stage_rows` binds one list per column through `unnest`
+    with a cast to the staging column's type (0.29s for the 70k rows,
+    `EXCEPT ALL` both ways = 0 against executemany, NULL and mixed int/float
+    columns included; ragged rows raise) and `FLUSH_MARKETS` 25 -> 100
+    (~4x fewer scans; 200 was no faster per scan and doubles what a failed
+    flush carries). Rule: **a segment wall is count x unit cost; before
+    re-measuring the budget it breaks, divide it by the count the same line
+    publishes and ask which factor grew.** The budget constant stays at
+    8.0h (reports.md: never tune the threshold to reach a verdict); the
+    next done line is the measurement. Classification: gotcha. Suite
+    2213 -> 2214.
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day

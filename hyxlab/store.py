@@ -1292,6 +1292,29 @@ class Store:
         self.conn.execute("DELETE FROM schema_meta")
         self.conn.execute("INSERT INTO schema_meta VALUES (?)", [v])
 
+    def _stage_rows(self, staging: str, rows: list[tuple]) -> None:
+        """Load `rows` into the (empty, typed) temp table `staging` as ONE
+        statement binding a list per column, zipped by `unnest`.
+
+        Not `executemany`: that runs one prepared INSERT per row and was
+        measured at ~80-240 us/row -- 1.65s for an 18,165-row poly trades
+        batch, 17.1s for 70,000 rows -- INSIDE the writer hold the poly
+        sweep takes on the 5-min collector's file, 775 times a run
+        (2026-10-25: `held 775 for 8544.8s`, worst 670.8s, one collector
+        cycle skipped). The same 70,000 rows bind in 0.29s this way, and
+        the two forms produce identical rows, NULLs included (`EXCEPT` both
+        ways = 0). Each list is cast to the staging column's own type, so a
+        column that is all NULL in this batch, or mixes int and float, lands
+        as the table says and not as DuckDB guessed from the Python values.
+        """
+        types = [r[1] for r in self.conn.execute(f"DESCRIBE {staging}").fetchall()]
+        if len(types) != len(rows[0]):
+            raise ValueError(f"{staging}: {len(types)} columns, rows have {len(rows[0])}")
+        select = ", ".join(f"unnest(?::{t}[])" for t in types)
+        self.conn.execute(
+            f"INSERT INTO {staging} SELECT {select}", [list(c) for c in zip(*rows, strict=True)]
+        )
+
     def insert_new(
         self, table: str, rows: list[tuple], key_cols: list[str], scope: str | None = None
     ) -> int:
@@ -1307,8 +1330,7 @@ class Store:
         if not rows:
             return 0
         self.conn.execute(f"CREATE OR REPLACE TEMP TABLE _staging AS SELECT * FROM {table} LIMIT 0")
-        placeholders = ",".join("?" * len(rows[0]))
-        self.conn.executemany(f"INSERT INTO _staging VALUES ({placeholders})", rows)
+        self._stage_rows("_staging", rows)
         on = " AND ".join(f"t.{k} IS NOT DISTINCT FROM s.{k}" for k in key_cols)
         existing, params = table, []
         if scope is not None:

@@ -397,6 +397,9 @@ def test_the_mutator_set_is_derived_and_complete():
     silently making every write site invisible."""
     found = archive_mutators()
     assert found == {
+        # `_stage_rows` writes only the temp staging table and is reached
+        # through `insert_new`, inside whichever hold that caller is in.
+        "_stage_rows",
         "insert_breadth_cycle",
         "insert_breadth_snapshots",
         "insert_candles",

@@ -656,6 +656,15 @@ self-match trap the ops rules name for `pkill -f`.
   asserts the rule one level up: any unit whose ExecStart module attaches
   a live archive must publish `attach_wait_block` or be named in
   `UNIT_NON_PUBLISHERS` with its argument (only `collector.collect`).
+  **The flush's cost is per flush, not per row** (2026-10-25, mistakes
+  #138): the trades dedup reads all of `trades.market_id` (703M rows on
+  the 10-24 backup) at ~7s whatever the batch size, and the staging in
+  front of it was `executemany` at 80-240 us/row inside the hold. Since
+  2026-10-25 `Store._stage_rows` binds a list per column (0.29s for 70k
+  rows) and `FLUSH_MARKETS` is 100 (was 25; 775 flushes held the
+  collector's file 8544.8s on the 10-25 run, worst 670.8s, one collector
+  cycle skipped). Read the next done line's `flush_min` and `held N for
+  Xs` against 166.8 min / 775 / 8544.8s; the QA budget stays 8.0h.
 - `hyxlab-breadth.timer` (5 min, offset to :02,:07,... so it does not
   contend with the collector for `data/writer.lock` on the same minute):
   `collector.breadth --once` — one paginated `/markets?status=open` pass
