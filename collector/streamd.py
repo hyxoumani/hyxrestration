@@ -61,7 +61,7 @@ from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.rawframes import RawFrameWriter
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
 from hyxlab.lockid import db_owner_lock_or_reason
-from hyxlab.memcap import cgroup_sock_throttled
+from hyxlab.memcap import cgroup_sock_throttled, rss_anon_mb
 from hyxlab.store import lock_holder
 from hyxlab.streamstore import SHARD_SID_STRIDE, StreamStore
 
@@ -269,6 +269,24 @@ def load_env(path: str | Path = ".env") -> None:
 
 def _log(msg: str) -> None:
     print(f"[streamd] {datetime.now(UTC):%H:%M:%S} {msg}", flush=True)
+
+
+def stats_line(prefix: str, stats: dict, flushed: int | None, sock: str | None) -> str:
+    """The daemon's periodic / shutdown stats line, rendered in ONE place.
+
+    Two publishers (the `STATS_SECS` report and `shutdown;`) carry the same
+    reading; a field added to one and not the other is a wrong number in
+    the other (#95). `rss_anon_mb` is read at render time -- the line IS
+    the sample -- and it is the daemon's own anonymous RSS, the only
+    memory figure the cgroup cannot give (mistakes #134: the 4G cap's
+    `memory.current` is mostly the page cache of this daemon's own
+    archive writes). An unmeasured sample is None, never 0.0 (#91).
+    """
+    rss = rss_anon_mb()
+    rss_s = "None" if rss is None else f"{rss:.1f}"
+    flushed_s = "" if flushed is None else f" (flushed {flushed} this round)"
+    sock_s = "" if sock is None else f" {sock}"
+    return f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s}{sock_s}"
 
 
 class SockThrottleWatch:
@@ -1349,7 +1367,7 @@ class Daemon:
             now = asyncio.get_event_loop().time()
             if now - last_stats >= STATS_SECS:
                 sock, throttled = self.sock_throttle.note()
-                _log(f"stats {self.stats} (flushed {out.rows} this round) {sock}")
+                _log(stats_line("", self.stats, out.rows, sock))
                 if throttled:
                     # Its own line, so a grep for the word finds the PERIOD
                     # it landed in, not every stats line ever printed.
@@ -1617,7 +1635,7 @@ class Daemon:
                 with contextlib.suppress(asyncio.CancelledError):
                     running.exception()
             self._final_drain()
-            _log(f"shutdown; stats {self.stats}")
+            _log(stats_line("shutdown; ", self.stats, None, None))
 
 
 def main() -> None:

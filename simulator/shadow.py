@@ -35,6 +35,7 @@ from pathlib import Path
 import duckdb
 
 from hyxlab.lockid import db_owner_lock_or_reason
+from hyxlab.memcap import rss_anon_mb
 from hyxlab.store import (
     attach_wait_block,
     charge_hold,
@@ -122,26 +123,6 @@ def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
         conn.close()
         raise
     return conn
-
-
-def rss_anon_mb() -> float | None:
-    """This process's ANONYMOUS resident set in MiB, or None off Linux.
-
-    Measured at the holder, because nothing else can: the cgroup's
-    `memory.current` charges the page cache this daemon's own archive
-    reads pull in, and `MemoryPeak` sits at the cap for any healthy reader
-    (ops rule). The kill that motivated it -- 2026-10-23 14:08Z, mistakes
-    #134 -- left `anon-rss:1039464kB` in the kernel's line and nothing in
-    the daemon's own journal about how fast it got there.
-    """
-    try:
-        with open("/proc/self/status") as fh:
-            for line in fh:
-                if line.startswith("RssAnon:"):
-                    return int(line.split()[1]) / 1024
-    except (OSError, ValueError, IndexError):
-        return None
-    return None
 
 
 def stats_line(prefix: str, stats: dict, fills_n: int, holds: dict | None) -> str:

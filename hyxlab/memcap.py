@@ -48,7 +48,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["cgroup_memory_max", "duck_memory_limit"]
+__all__ = ["cgroup_memory_max", "duck_memory_limit", "rss_anon_mb"]
 
 #: Share of the cgroup cap handed to DuckDB's buffer manager. See the
 #: module docstring: the rest is the host process, its buffers, and the
@@ -160,3 +160,27 @@ def cgroup_sock_throttled(root: Path | None = None, rel: str | None = None) -> i
     except OSError:
         return None
     return sock_throttled_from_events(text)
+
+
+def rss_anon_mb() -> float | None:
+    """This process's ANONYMOUS resident set in MiB, or None off Linux.
+
+    Measured at the holder, because nothing else can: the cgroup's
+    `memory.current` charges the page cache this daemon's own file reads
+    pull in, and `MemoryPeak` sits at the cap for any healthy reader (ops
+    rule). The kill that motivated it -- 2026-10-23 14:08Z, mistakes #134
+    -- left `anon-rss:1039464kB` in the kernel's line and nothing in the
+    daemon's own journal about how fast it got there. Every daemon under a
+    `MemoryMax` samples this on its own stats line: the shadow since
+    2026-10-23, the stream since 2026-10-25 (its anon ran 734M -> 1049M
+    over the first 18h of the expanded book universe with no record of
+    the climb but the operator's ad-hoc cgroup reads).
+    """
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith("RssAnon:"):
+                    return int(line.split()[1]) / 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
