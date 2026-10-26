@@ -20,6 +20,28 @@ RestartSec=10
 # bounded 64 MB queue. DuckDB's memory_limit follows this cap
 # (hyxlab.memcap), so the flush's working memory scales with it too.
 MemoryMax=4G
+# glibc malloc's mmap threshold is DYNAMIC by default: freeing a chunk that
+# was mmapped raises the threshold (up to 32 MiB), so the next chunk that
+# size is carved from a per-thread arena instead, and when freed stays
+# there -- retained, not returned. DuckDB's 24 flush threads plus the
+# asyncio pool did exactly that every FLUSH round: measured 2026-10-26 on
+# the live daemon (pid 89373, 12h up), anon RSS regressed on 136 stats
+# lines as 401 + 0.38*rate_k + 50.2*hours (R2 0.90; rate alone 0.54), and
+# 753 of 987 MiB sat in 76 64 MiB-aligned glibc arena heaps (pymalloc 23,
+# jemalloc 14). Rehearsed on the real StreamStore flush, 20 x 150k rows:
+# default +139 MiB (arenas 96 MiB / 25 heaps); MALLOC_ARENA_MAX=1 +43 (0
+# heaps); MALLOC_ARENA_MAX=2 +60; a fixed 128 KiB threshold +44 with the
+# arenas at 2 MiB across 22 heaps -- the retention IS the large chunks;
+# DuckDB threads=2 +160 (WORSE: fewer, fatter heaps); malloc_trim after
+# each flush +99. Flush wall 0.31-0.48s in every arm. Setting the
+# threshold pins it (disables the dynamic raise) and targets the measured
+# mechanism without serializing 33 threads on one arena. At the measured
+# 50 MiB/h the 4G cap was ~3 days away, masked by near-daily promote
+# restarts (12 in 10 days). The stats line publishes the split as
+# `arena_mb=<MiB>/<heaps>` (hyxlab.memcap.glibc_arena_heaps); the verdict
+# on this line is that number staying flat across a day
+# (tests/test_stream_malloc_env.py).
+Environment=MALLOC_MMAP_THRESHOLD_=131072
 # The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
 # cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
 # journal's `memory peak` is total charge including page cache, == the cap

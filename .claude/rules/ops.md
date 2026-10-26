@@ -493,3 +493,18 @@
   restart it with `--restart-young` before the cap does. A daemon under
   `MemoryMax` publishes its own anon RSS (`/proc/self/status RssAnon`):
   the cgroup's numbers include the page cache and cannot show the climb.
+- `RssAnon` is a SUM across allocators, and a sum fitted to the wrong
+  term reads as growth in the work. The stream's anon was read against
+  its book universe for two days while a regression on its own stats
+  lines said uptime: 50.2 MiB/h with rate controlled (R2 0.90 vs 0.54),
+  76% of it glibc malloc arena heaps -- glibc's DYNAMIC mmap threshold
+  routes freed-then-reallocated large chunks into per-thread arenas,
+  where they stay (mistakes #140). Rehearsed on the real flush: pinning
+  `MALLOC_MMAP_THRESHOLD_=131072` cuts the growth 3x and empties the
+  arenas; `MALLOC_ARENA_MAX=1` matches it by serializing; fewer DuckDB
+  threads makes it WORSE; `malloc_trim` helps 30%. So: before fitting a
+  daemon's memory to its load, regress it on hours; read the split the
+  stats line now carries (`arena_mb=<MiB>/<heaps>`); and bucket
+  `/proc/<pid>/smaps` anonymous regions by 64 MiB alignment to see the
+  arenas directly. Any daemon that mallocs from many threads under a
+  `MemoryMax` wants the threshold pinned in its unit.

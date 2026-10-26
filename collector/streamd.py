@@ -61,7 +61,7 @@ from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.rawframes import RawFrameWriter
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
 from hyxlab.lockid import db_owner_lock_or_reason
-from hyxlab.memcap import cgroup_sock_throttled, rss_anon_mb
+from hyxlab.memcap import cgroup_sock_throttled, glibc_arena_heaps, rss_anon_mb
 from hyxlab.store import lock_holder
 from hyxlab.streamstore import SHARD_SID_STRIDE, StreamStore
 
@@ -284,9 +284,13 @@ def stats_line(prefix: str, stats: dict, flushed: int | None, sock: str | None) 
     """
     rss = rss_anon_mb()
     rss_s = "None" if rss is None else f"{rss:.1f}"
+    # The split of that RSS the cgroup cannot give either: how much of it is
+    # glibc arena retention (memcap.glibc_arena_heaps) -- `arena_mb=<MiB>/<heaps>`.
+    arena = glibc_arena_heaps()
+    arena_s = "None" if arena is None else f"{arena[1]:.1f}/{arena[0]}"
     flushed_s = "" if flushed is None else f" (flushed {flushed} this round)"
     sock_s = "" if sock is None else f" {sock}"
-    return f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s}{sock_s}"
+    return f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}"
 
 
 class SockThrottleWatch:

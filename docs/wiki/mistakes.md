@@ -3975,6 +3975,44 @@ property of the CHECK.
     raw term dropped). The capacity decision itself stays user-gated;
     the numbers it is made on are now measured.
 
+140. **2026-10-26 02:20Z -- a daemon's anon RSS was read as LOAD for two
+    days while it was UPTIME.** `rss_anon_mb` landed on the stream's stats
+    line 2026-10-25 (#134) and every pass since read it against the book
+    universe: "734M -> 1049M over the first 18h of the expanded universe",
+    "anon 1003-1049M on 7k books at 655-688k/min". The Sunday peak then
+    read HIGHER (1149M) on FEWER books (5.9k) at a LOWER rate (480k/min),
+    and the first regression anyone ran, 136 stats lines of one 12h run,
+    said anon = 401 + 0.38 x rate_k + 50.2 x hours, R2 0.90 -- hours alone
+    0.89, rate alone 0.54. `/proc/<pid>/smaps` named the holder: 753 of
+    987 MiB in 76 glibc malloc arena heaps (64 MiB-aligned anonymous
+    regions, one per thread that mallocs: 24 DuckDB workers + 8 asyncio
+    + main), pymalloc 23 MiB, DuckDB's jemalloc 14 MiB, brk heap 38. Live
+    confirmation: 02:22Z -> 02:27Z, one flush round, arenas 753 -> 808
+    MiB with everything else flat at 240-245. Rehearsed on the real
+    `StreamStore.flush` (20 x 150k rows): default +139 MiB, all of it
+    arena; `MALLOC_MMAP_THRESHOLD_=131072` +44 with the arenas at 2 MiB
+    across 22 heaps -- so the retained bytes are LARGE chunks, and the
+    mechanism is glibc's dynamic threshold (a freed mmapped chunk raises
+    it, the next large chunk is carved from an arena and stays there);
+    `MALLOC_ARENA_MAX=1` +43 by serializing every thread on one arena;
+    `malloc_trim` per flush +99; DuckDB `threads=2` +160, WORSE (fewer,
+    fatter heaps -- the collector-drain precedent of 2026-10-11 does not
+    transfer). Flush wall unchanged in every arm. At 50 MiB/h the 4G cap
+    was ~3 days out and had never been reached only because promote
+    restarted the stream 12 times in 10 days. Type: `wrong-assumption`
+    (#134's instrument read without a model of what moves it; see the
+    "prediction thresholds need a model" note). Fix: the unit pins the
+    threshold (`Environment=MALLOC_MMAP_THRESHOLD_=131072`, measured
+    rationale beside it, `tests/test_stream_malloc_env.py`), and the
+    stats line publishes the split, `arena_mb=<MiB>/<heaps>`
+    (`hyxlab.memcap.glibc_arena_heaps`), so the next climb says which
+    allocator it is before anyone fits it to a universe. Rule: **a
+    memory figure that climbs across a run is explained by a regression
+    on uptime before it is explained by anything the daemon does; and
+    when two allocators share one RSS, publish the split -- `RssAnon` is
+    a sum, and a sum fitted to the wrong term reads as growth in the
+    work.**
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day

@@ -48,7 +48,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["cgroup_memory_max", "duck_memory_limit", "rss_anon_mb"]
+__all__ = [
+    "cgroup_memory_max",
+    "duck_memory_limit",
+    "glibc_arena_heaps",
+    "glibc_arena_heaps_from_smaps",
+    "rss_anon_mb",
+]
 
 #: Share of the cgroup cap handed to DuckDB's buffer manager. See the
 #: module docstring: the rest is the host process, its buffers, and the
@@ -184,3 +190,65 @@ def rss_anon_mb() -> float | None:
     except (OSError, ValueError, IndexError):
         return None
     return None
+
+
+#: glibc reserves every non-main malloc arena heap as a HEAP_MAX_SIZE
+#: (64 MiB on 64-bit) region aligned to its own size, with the uncommitted
+#: tail PROT_NONE. Nothing else in this process maps anonymous memory on a
+#: 64 MiB boundary of at least a MiB: DuckDB's jemalloc extents are 2 MiB-
+#: aligned, pymalloc arenas are 1 MiB mmaps. Measured 2026-10-26 02:22Z on
+#: the live stream (pid 89373, 11.8h up): 76 such heaps carried 753 MiB of
+#: a 987 MiB anon RSS; pymalloc 23 MiB, jemalloc 14 MiB, brk heap 38 MiB.
+GLIBC_HEAP_ALIGN = 64 << 20
+_GLIBC_HEAP_MIN = 1 << 20
+
+
+def glibc_arena_heaps_from_smaps(text: str) -> tuple[int, float]:
+    """(heap count, resident MiB) of glibc's non-main malloc arenas in a
+    `/proc/<pid>/smaps` text. Pure, so a fixture can drive it."""
+    heaps = 0
+    rss_kb = 0
+    in_heap = False
+    for line in text.splitlines():
+        if not line:
+            continue
+        if line[0] in "0123456789abcdef" and ":" not in line.split(None, 1)[0]:
+            parts = line.split()
+            lo, _, hi = parts[0].partition("-")
+            try:
+                start, end = int(lo, 16), int(hi, 16)
+            except ValueError:
+                in_heap = False
+                continue
+            # Five fields = anonymous (no pathname); `[heap]`/`[stack]` have six.
+            in_heap = (
+                len(parts) == 5 and start % GLIBC_HEAP_ALIGN == 0 and end - start >= _GLIBC_HEAP_MIN
+            )
+            if in_heap:
+                heaps += 1
+        elif in_heap and line.startswith("Rss:"):
+            rss_kb += int(line.split()[1])
+    return heaps, rss_kb / 1024
+
+
+def glibc_arena_heaps() -> tuple[int, float] | None:
+    """This process's glibc arena heaps as (count, resident MiB), or None.
+
+    THE READING `rss_anon_mb` CANNOT SPLIT. The stream's anon RSS was read
+    as load for two days ("734M -> 1049M over the first 18h of the expanded
+    universe") while it was in fact uptime: regressed over 136 stats lines
+    of one 12h run, anon = 401 + 0.38 x rate_k/min + 50.2 x hours (R2
+    0.90); rate alone explains 0.54, hours alone 0.89. The memory was not
+    Python objects (pymalloc 23 MiB) and not DuckDB's buffers (freed with
+    the per-flush connection) but glibc malloc arenas -- 24 DuckDB worker
+    threads plus the asyncio pool each own one, and a freed chunk inside
+    one is retained, not returned. The collector's drain showed the same
+    shape on 2026-10-11 ("native allocator fragmentation across DuckDB's
+    24 threads"). So the holder publishes the split: a climb in this
+    figure is allocator retention, not state the daemon is holding.
+    """
+    try:
+        with open("/proc/self/smaps") as fh:
+            return glibc_arena_heaps_from_smaps(fh.read())
+    except (OSError, ValueError, IndexError):
+        return None
