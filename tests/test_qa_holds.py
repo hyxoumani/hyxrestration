@@ -86,6 +86,13 @@ def _only_qas_attaches() -> None:
     reset_attach_waits()
 
 
+def _snapshot_name(block, stem: str) -> str:
+    """The one held file that is the stem's reflink snapshot (`<stem>.<Day>.duckdb`)."""
+    names = [n for n in block["held_by_db"] if n.startswith(f"{stem}.") and n != f"{stem}.duckdb"]
+    assert len(names) == 1, f"expected one snapshot of {stem}, held: {sorted(block['held_by_db'])}"
+    return names[0]
+
+
 def test_the_hold_spans_the_section_body_not_the_open(tmp_path, monkeypatch):
     """The property #91 is about. `_held_ro` releases when the section
     returns, so a slow body IS a long hold -- and 0.05s of checks must show up
@@ -97,11 +104,17 @@ def test_the_hold_spans_the_section_body_not_the_open(tmp_path, monkeypatch):
 
     block = attach_wait_block(rows=False)
     assert block is not None, "QA attached the stream archive and recorded nothing"
-    assert block["held_n"] == 1
+    # Two holds since #141: the live file for the reflink copy, and the
+    # snapshot (`s.<Weekday>.duckdb`) for the section body.
+    assert block["held_n"] == 2
     assert block["held_unknown_n"] == 0, "a QA attach went unmeasured"
-    assert block["held_by_db"]["s.duckdb"]["held_s_total"] >= 0.05, (
+    snap = _snapshot_name(block, "s")
+    assert block["held_by_db"][snap]["held_s_total"] >= 0.05, (
         "the hold was shorter than the section body it covers — it is timing"
         " the open, not the exclusion"
+    )
+    assert block["held_by_db"]["s.duckdb"]["held_s_total"] < 0.05, (
+        "the LIVE file was held across the section body; the snapshot exists so it is not"
     )
 
 
@@ -117,12 +130,13 @@ def test_the_line_names_every_file_qa_held(tmp_path):
     qa.qa_archive(26.0, path=str(archive))
 
     block = attach_wait_block(rows=False)
-    assert set(block["held_by_db"]) == {"s.duckdb", "a.duckdb"}
+    snap = _snapshot_name(block, "s")
+    assert set(block["held_by_db"]) == {"s.duckdb", snap, "a.duckdb"}
     assert block["held_s_total"] is None, "a sum over two different locks was published"
     assert block["held_s_max"] is None
     line = attach_wait_line(block, prefix="[qa]")
-    assert "across 2 files" in line
-    for name in ("s.duckdb", "a.duckdb"):
+    assert "across 3 files" in line
+    for name in ("s.duckdb", snap, "a.duckdb"):
         assert name in line, f"the line does not say it held {name}"
 
 
@@ -154,8 +168,8 @@ def test_a_section_that_raised_still_publishes_its_hold(tmp_path, monkeypatch):
         qa.qa_stream(26.0, path=str(path))
 
     block = attach_wait_block(rows=False)
-    assert block["held_n"] == 1
-    assert block["held_by_db"]["s.duckdb"]["held_s_total"] >= 0.02
+    assert block["held_n"] == 2
+    assert block["held_by_db"][_snapshot_name(block, "s")]["held_s_total"] >= 0.02
 
 
 def test_main_publishes_the_line_on_the_failure_path_too(tmp_path, monkeypatch):

@@ -28,7 +28,7 @@ from pathlib import Path
 
 import duckdb
 
-from collector.backup import DBS
+from collector.backup import DBS, backup_one
 from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.venues import alfred
 from hyxlab.reportdir import shared_reports
@@ -901,13 +901,84 @@ def _capture_gap_minutes(
     return out
 
 
+#: `qa_stream` reads a reflink SNAPSHOT of the stream archive, not the live
+#: file. The section's cost is the seq walk over the window's `book_events`,
+#: and that cost is bounded by the WINDOW'S INPUT, not by anything in this
+#: module: QA's own ledger read the hold at 28-52s through 2026-10-23, 174s on
+#: 10-24 and 872.3s on 10-25 as the 10-23 coverage expansion filled the 26h
+#: window (CPU 54m55s over a 14m36s wall, 12G peak == the unit's cap), while
+#: `collector.streamd` buffered 1,035,757 rows past PENDING_ALARM, flushed
+#: them under its 4G cap and took 8,789 socket throttles (mistakes #141; #102
+#: scoped the same hold to the section a month ago, and the section
+#: grew). The locked leg of `collector.backup` reflinks the 68 GB file in
+#: ~0.4s (measured 2026-10-26 03:11Z: hold 0.373s, 0 exclusive bytes, the
+#: copy attaches read-only in 0.39s), so the walk runs against a file nobody
+#: else wants, charged there by name, and the live hold IS the copy. The
+#: snapshot sits BESIDE the source so it shares the filesystem (a copy to
+#: another device is a full 68 GB transfer -- the first rehearsal pointed at
+#: /tmp and hit the quota), and a `tmp_path` test therefore snapshots into
+#: its own tmp_path. Any failure to snapshot falls back to the live file, the
+#: pessimistic arm, and says so on the journal.
+STREAM_SNAPSHOT_DIRNAME = "qa-snapshot"
+STREAM_SNAPSHOT_RETRIES = 15  # x 2.0s: the writer's flush holds ~1s every 15s
+
+
+def _rm_tree(p: Path) -> None:
+    if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+    else:
+        p.unlink(missing_ok=True)
+
+
+@contextmanager
+def _stream_snapshot(path: str):
+    """Yield (path to attach, snapshotted?) for the stream section.
+
+    The snapshot directory is emptied first -- a run that died mid-section
+    leaves its copy, and that copy grows by every block the live file has
+    rewritten since -- and emptied again in `finally`, DuckDB's per-attach
+    spill directory (`<db>.tmp`, hyxlab.store.private_spill) included.
+    """
+    src = Path(path)
+    snap_dir = src.parent / STREAM_SNAPSHOT_DIRNAME
+    result = None
+    try:
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        for stale in snap_dir.iterdir():
+            _rm_tree(stale)
+        result = backup_one(src, snap_dir, retries=STREAM_SNAPSHOT_RETRIES)
+    except Exception as exc:  # the live file is the fallback, never a crash
+        print(
+            f"[qa] stream snapshot FAILED ({type(exc).__name__}: {exc});"
+            " attaching the live file for the section",
+            flush=True,
+        )
+        result = None
+    if result is None:
+        yield path, False
+        return
+    print(
+        f"[qa] stream snapshot {result.path.name}: live file held"
+        f" {result.hold_s:.2f}s, copy {result.total_s:.2f}s",
+        flush=True,
+    )
+    try:
+        yield str(result.path), True
+    finally:
+        for p in snap_dir.iterdir():
+            _rm_tree(p)
+
+
 def qa_stream(hours: float, path: str = STREAM) -> None:
     """The stream-archive section. The checks live in `_stream_checks` so the
-    hold has a scope: `_held_ro` releases `hyxstream.duckdb` when this
-    function returns, and the seconds are charged to the attach whatever the
-    body did (`charge_hold` records in `finally`)."""
-    with _held_ro(path) as conn:
-        now = datetime.now(UTC).replace(tzinfo=None)
+    hold has a scope: `_held_ro` releases the file when this function
+    returns, and the seconds are charged to the attach whatever the body did
+    (`charge_hold` records in `finally`). Since 2026-10-26 that file is a
+    reflink SNAPSHOT (`_stream_snapshot`, #141): the live archive is held for
+    the copy only, and the snapshot carries the section's seconds under its
+    own name on the attach_wait line."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    with _stream_snapshot(path) as (attach_path, _snapshotted), _held_ro(attach_path) as conn:
         if not _reachable(conn, "stream archive reachable", "stream", now):
             return
         _stream_checks(conn, hours, now)
