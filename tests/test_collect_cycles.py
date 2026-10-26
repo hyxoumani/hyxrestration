@@ -217,3 +217,23 @@ def test_qa_archive_resets_the_map_before_reading(tmp_path, _qa_state, monkeypat
     Store(str(db)).close()
     qa.qa_archive(26.0, path=str(db))
     assert qa._archive_source_errors is None
+
+
+def test_cycle_line_renders_filesystem_free_bytes(tmp_path):
+    """The cycle line is the collector's only reading of the filesystem's
+    free space at its own cadence (the QA series samples once a day and
+    cannot locate a step inside the day). Prove by PERTURBATION that the
+    value reaches the rendered line (#95), and that the helper reads the
+    filesystem the archive lives on."""
+    from collector import collect
+
+    base = collect.cycle_line({"a": 1}, {"b": 2}, 0, {"total_s": 1.0}, 123456789)
+    bumped = collect.cycle_line({"a": 1}, {"b": 2}, 0, {"total_s": 1.0}, 123456790)
+    assert "fs_free_b=123456789" in base
+    assert base != bumped
+    assert "fs_free_b=None" in collect.cycle_line({}, {}, 0, {}, None)
+
+    db = tmp_path / "hyxlab.duckdb"
+    free = collect.fs_free_bytes(str(db))
+    assert isinstance(free, int) and free > 0
+    assert collect.fs_free_bytes("/nonexistent-dir-for-sure/x.duckdb") is None

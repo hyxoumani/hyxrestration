@@ -22,6 +22,7 @@ import argparse
 import fcntl
 import functools
 import json
+import shutil
 import sys
 import time
 from dataclasses import dataclass, field
@@ -342,6 +343,30 @@ def _skip_cycle(cyc: Cycle, reason: str, waited: float, holder: dict | None) -> 
     print(f"[collect] skipped: {reason} for {waited:.0f}s by {who}")
 
 
+def fs_free_bytes(db: str) -> int | None:
+    """Free bytes on the filesystem holding `db`, or `None` if it cannot be
+    read. The QA headroom series (`collector.qa.DISK_SERIES`) samples this
+    once a day, and a day-cadence series cannot locate a step inside the day
+    (2026-10-25/26: 69 GB lost in one 24h window, 28 GB/day either side, the
+    excess unattributable from static sizes). Printed on every cycle line, the
+    journal holds the same quantity at the collector's cadence for free."""
+    try:
+        return shutil.disk_usage(Path(db).resolve().parent).free
+    except OSError:
+        return None
+
+
+def cycle_line(counts, db_counts, drained: int, timings: dict, fs_free_b: int | None) -> str:
+    """The one cycle summary line; everything the journal knows about a cycle
+    is rendered HERE (#95: one renderer per block). `spooled=` prints every
+    cycle, zeros included: a recovery mechanism that only speaks when it fires
+    is one nobody can tell apart from a dead one (#46)."""
+    return (
+        f"[collect] {datetime.now(UTC).isoformat()} {counts} db={db_counts} "
+        f"spooled={drained} timings={timings} fs_free_b={fs_free_b}"
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="hyxlab market-data collector")
     ap.add_argument("--db", default="data/hyxlab.duckdb")
@@ -455,13 +480,7 @@ def main() -> None:
             "close_s": round(time.monotonic() - t_close, 1),
             "total_s": round(time.monotonic() - t0, 1),
         }
-        # `spooled=` prints every cycle, zeros included: a recovery
-        # mechanism that only speaks when it fires is one nobody can tell
-        # apart from a dead one (#46).
-        print(
-            f"[collect] {datetime.now(UTC).isoformat()} {counts} db={db_counts} "
-            f"spooled={drained} timings={timings}"
-        )
+        print(cycle_line(counts, db_counts, drained, timings, fs_free_bytes(args.db)))
         if args.once:
             break
         time.sleep(args.interval)
