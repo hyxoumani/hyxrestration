@@ -51,6 +51,15 @@ OOMScoreAdjust=220
 # leaves the rest for Python and the page cache memory.max also charges.
 # If the window ever outgrows it the failure is an OutOfMemoryException --
 # one red QA check naming itself -- and no longer 21 dead processes.
+# FALSE FOR ONE CHECK, measured 2026-10-26 03:14Z (mistakes #142): the
+# poly-replay query's ASOF/aggregate pipeline ran to anon 12.47G with 7.8 GB
+# spilled past that 6G limit before the KERNEL killed it -- DuckDB's limit
+# refused nothing, and the only bound that held was this cap. So the cap is
+# a blast-radius bound, not a budget any check fits into: the check is
+# bounded by walking the window in POLY_SLICE_HOURS slices (anon peak 8.3G at
+# 1h on the window that killed the whole-window form, 9.3G at 3h), and a run
+# dying here again is a check whose per-slice work outgrew the cap, not one
+# the cap could have refused cleanly.
 MemoryMax=12G
 # The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
 # cap, oom_kill = killed) -- and the cgroup is removed with the unit. The

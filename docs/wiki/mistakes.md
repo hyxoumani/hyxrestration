@@ -4065,6 +4065,63 @@ property of the CHECK.
     WARNING written for a specific failure is unread until a check names
     the line that must be absent.**
 
+142. **2026-10-26 03:14Z, fixed 08:50Z -- a cap's rationale said the check
+    inside it fails CLEANLY, and the check that outgrew it was killed by
+    the kernel instead.** `hyxlab-qa.service`'s 12G `MemoryMax` was sized
+    on 2026-09-25 from a curve of the poly-replay query at pinned DuckDB
+    limits (1.8 GiB refused with `OutOfMemoryException`; 2.7-5.5 GiB ran
+    at ~limit+0.7G, zero spill), and the unit comment concluded that an
+    outgrown window fails as "an OutOfMemoryException -- one red QA check
+    naming itself". The 03:14Z rehearsal of #141's snapshot fix (12G
+    transient unit, DuckDB limit 6G from `DUCK_SHARE 0.5`) reached anon
+    **12.47G with 7.8 GB spilled** in `poly deltas replay to the next
+    snapshot` and was cgroup-OOM-killed at 4m17s (CPU 52m34s): the
+    ASOF/aggregate pipeline ran 2x past the buffer manager's limit without
+    refusing, so the only bound that held was the cgroup's -- the window
+    was the Sunday evening (`poly_events` ~280k/min, 37.9M in 12h, ~2x the
+    10-25 10:00Z window, which had passed in 31s at a 12G peak == cap).
+    The 09-25 curve measured a 26h window of 2,428 intervals; nothing in
+    it said WHICH operator refuses and which overruns, and the limit's
+    "clean refusal" was read at 1.8 GiB, where the first scan is already
+    over budget -- the refusal happens at the operator that first asks for
+    more than the limit, and an operator that asks in pieces (hash join
+    build, aggregate, spill) is granted each piece. Type:
+    `wrong-assumption` (a measured fact with an unmeasured CAUSE, the
+    reflink family of #90/#139: a cheap number was carried without the
+    mechanism that made it cheap, so the change that removed the mechanism
+    -- 20x the stream's rows, #134 -- was not recognised as the one it
+    guarded against). Fix (SHIPPED + promoted): `_poly_replay` walks the
+    window in `POLY_SLICE_HOURS` slices with a per-market frame carry, the
+    shape of `_seq_holes`: each slice replays only the intervals that CLOSE
+    in it, the carry is each market's last frame so far (the open end of
+    the interval the next slice may close), deltas are read from the
+    earliest such open to the slice edge, and a delta whose interval
+    closes later is dropped by the ASOF's `< c.b` exactly as a gap-excused
+    one is, to be replayed in its own slice; every reported number is a
+    sum over disjoint intervals. `tests/test_poly_replay_asof.py` pins
+    the six numbers against the range-join oracle at slice widths 1h / 3h
+    / 100h over 40 random fixtures (mutant: no carry -> red), plus the
+    open-ended last slice and an aware-vs-naive `now` (the old form bound
+    an aware `now` as TIMESTAMPTZ, shifting the window by the box's local
+    offset -- the oracle shifted with it, which is why the test had NOW
+    aware for 19 days). Rehearsed on the 03:30Z backup of the stream file
+    (the exact window that killed the rehearsal), 12G transient unit, 6G
+    DuckDB limit, identical six numbers at every width: **0.5h slices
+    anon peak 8.46G / 36.8s; 1h 8.29G / 32.0s; 3h 9.28G / 30.4s**; the
+    whole-window form >12.47G, killed. The floor is the buffer pool (anon
+    6.7G after the first 0.9s slice, the limit being the footprint, as
+    the unit comment says correctly), the per-slice excess is the overrun
+    and scales with the slice -- flat below an hour, so 1h stands. The
+    cgroup's `memory.peak` reads 11.3-12G for a run that only ran
+    `max(recv_ts)` (page cache), so the unit's stop line cannot show this
+    at all; `RssAnon` sampled inside the run can.
+    Rule: **a memory limit is a budget only for the operators that ASK
+    before allocating, and which operators those are is a property of the
+    query, not of the engine -- so a cap rationale that promises a clean
+    refusal has to name the query it was measured on and be re-measured
+    when that query's input changes by an order of magnitude; the bound
+    that survives is a slice width on the work, not a cap on the process.**
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day

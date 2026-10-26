@@ -988,10 +988,99 @@ def qa_stream(hours: float, path: str = STREAM) -> None:
     _record_ok("stream", now)
 
 
+# The replay below, ONE TIME SLICE AT A TIME. Measured 2026-10-26 03:14Z as a
+# 12G transient unit on a reflink snapshot of the archive: the whole-window
+# form was cgroup-OOM-killed at anon-rss 12.47G with 7.8 GB spilled, 4m17s
+# in, on a 26h window carrying the Sunday evening (`poly_events` ~280k/min).
+# DuckDB's limit was 6G (DUCK_SHARE 0.5) and the process ran 2x past it:
+# the ASOF/aggregate pipeline overran its buffer manager rather than
+# refusing, so the only bound that held was the cgroup's, and the unit's cap
+# rationale ("an OutOfMemoryException, one red check naming itself") was
+# false for this check (mistakes #142). Each slice replays only the
+# intervals that CLOSE inside it. The frames are the slice's own snapshot
+# timestamps plus ONE carry row per market: the last frame the walk has
+# seen for it, so the interval that opened in an earlier slice and closes
+# in this one is formed exactly as the whole-window lead() formed it. The
+# deltas read are bounded below by the earliest of those intervals' opens
+# and above by the slice edge; a delta whose own interval closes in a LATER
+# slice is matched by ASOF to an earlier interval and dropped by `< c.b`,
+# precisely as a gap-excused one is, and is replayed when its interval's
+# slice comes. Every number the check reports is a sum over disjoint
+# intervals, so the slice sums are the whole-window numbers;
+# `tests/test_poly_replay_asof.py` pins that against the range-join oracle
+# at several slice widths.
+_POLY_REPLAY_SLICE = """
+        WITH frame AS (
+          SELECT DISTINCT market_id, recv_ts FROM book_events
+          WHERE venue='polymarket' AND kind='snap'
+            AND recv_ts > ? AND recv_ts <= ?
+          UNION ALL
+          SELECT market_id, recv_ts FROM pcarry
+        ), iv AS (
+          SELECT market_id, recv_ts AS a,
+                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
+          FROM frame QUALIFY b IS NOT NULL
+        ), clean AS (
+          SELECT * FROM iv WHERE NOT EXISTS (
+            SELECT 1 FROM stream_gaps g
+            WHERE g.venue IN ('polymarket', '*') AND g.channel IN ('market', '*')
+              AND g.started_at <= iv.b AND coalesce(g.ended_at, iv.b) >= iv.a)
+        ), delta AS (
+          SELECT market_id, side, price, qty, recv_ts FROM book_events
+          WHERE venue='polymarket' AND kind='delta'
+            AND recv_ts > (SELECT min(a) FROM iv) AND recv_ts <= ?
+        ), src AS (
+          SELECT c.market_id, c.a, c.b, e.side, e.price, e.qty, e.recv_ts, e.kind
+          FROM clean c JOIN book_events e
+            ON e.venue='polymarket' AND e.market_id = c.market_id
+           AND e.kind='snap' AND e.recv_ts = c.a
+          UNION ALL
+          SELECT c.market_id, c.a, c.b, d.side, d.price, d.qty, d.recv_ts, 'delta'
+          FROM delta d ASOF JOIN clean c
+            ON d.market_id = c.market_id AND d.recv_ts > c.a
+          WHERE d.recv_ts < c.b
+        ), tested AS (
+          SELECT market_id, a, b FROM src WHERE kind='delta' GROUP BY 1, 2, 3
+        ), recon AS (
+          SELECT s.market_id, s.a, s.side, s.price, arg_max(s.qty, s.recv_ts) AS qty
+          FROM src s JOIN tested t USING (market_id, a, b)
+          GROUP BY 1, 2, 3, 4
+        ), truth AS (
+          SELECT t.market_id, t.a, e.side, e.price, e.qty
+          FROM tested t JOIN book_events e
+            ON e.venue='polymarket' AND e.market_id = t.market_id
+           AND e.kind='snap' AND e.recv_ts = t.b
+        ), cmp AS (
+          SELECT coalesce(r.market_id, u.market_id) AS market_id,
+                 coalesce(r.a, u.a) AS a,
+                 CASE WHEN abs(coalesce(r.qty, 0) - coalesce(u.qty, 0)) < 1e-6
+                      THEN 1 ELSE 0 END AS ok
+          FROM (SELECT * FROM recon WHERE qty > 0) r
+          FULL OUTER JOIN (SELECT * FROM truth WHERE qty > 0) u
+            ON r.market_id = u.market_id AND r.a = u.a AND r.side = u.side
+           AND round(r.price, 6) = round(u.price, 6)
+        ), hit AS (
+          SELECT DISTINCT iv.market_id, iv.a
+          FROM delta d ASOF JOIN iv
+            ON d.market_id = iv.market_id AND d.recv_ts > iv.a
+          WHERE d.recv_ts < iv.b
+        )
+        SELECT count(*), coalesce(sum(ok), 0), count(DISTINCT (market_id, a)),
+               count(DISTINCT CASE WHEN ok = 0 THEN (market_id, a) END),
+               (SELECT count(*) FROM hit)
+        FROM cmp
+"""
+#: Width of one poly-replay slice. The 26h whole-window form fit 12G on a
+#: Saturday-into-Sunday window (31s) and died on the Sunday-evening one
+#: (~2x); an hour is 1/26 of either.
+POLY_SLICE_HOURS = 1
+
+
 def _poly_replay(conn, now: datetime, hours: float) -> tuple[int, int, int, int, int, int]:
     """Polymarket delta replay against the venue's next snapshot; returns
     (levels, agreeing levels, gap-free intervals tested, inexact intervals,
-    deltas in window, snapshot pairs carrying a delta).
+    deltas in window, snapshot pairs carrying a delta). Walked in
+    POLY_SLICE_HOURS slices with a per-market frame carry (see above).
 
     EVERY DELTA FINDS ITS INTERVAL BY ASOF JOIN, NEVER BY A RANGE PREDICATE.
     The first version joined `book_events` to the intervals on `market_id`
@@ -1027,87 +1116,42 @@ def _poly_replay(conn, now: datetime, hours: float) -> tuple[int, int, int, int,
     window this check cannot speak about (say so on the line), while losing
     every PAIR is the seeding itself failing.
     """
-    hrs = int(hours)
-    levels, agree, ivals, bad_ivals = conn.execute(
-        """
-        WITH frame AS (
-          SELECT DISTINCT market_id, recv_ts FROM book_events
-          WHERE venue='polymarket' AND kind='snap'
-            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
-        ), iv AS (
-          SELECT market_id, recv_ts AS a,
-                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
-          FROM frame QUALIFY b IS NOT NULL
-        ), clean AS (
-          SELECT * FROM iv WHERE NOT EXISTS (
-            SELECT 1 FROM stream_gaps g
-            WHERE g.venue IN ('polymarket', '*') AND g.channel IN ('market', '*')
-              AND g.started_at <= iv.b AND coalesce(g.ended_at, iv.b) >= iv.a)
-        ), delta AS (
-          SELECT market_id, side, price, qty, recv_ts FROM book_events
-          WHERE venue='polymarket' AND kind='delta'
-            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
-        ), src AS (
-          SELECT c.market_id, c.a, c.b, e.side, e.price, e.qty, e.recv_ts, e.kind
-          FROM clean c JOIN book_events e
-            ON e.venue='polymarket' AND e.market_id = c.market_id
-           AND e.kind='snap' AND e.recv_ts = c.a
-          UNION ALL
-          SELECT c.market_id, c.a, c.b, d.side, d.price, d.qty, d.recv_ts, 'delta'
-          FROM delta d ASOF JOIN clean c
-            ON d.market_id = c.market_id AND d.recv_ts > c.a
-          WHERE d.recv_ts < c.b
-        ), tested AS (
-          SELECT market_id, a, b FROM src WHERE kind='delta' GROUP BY 1, 2, 3
-        ), recon AS (
-          SELECT s.market_id, s.a, s.side, s.price, arg_max(s.qty, s.recv_ts) AS qty
-          FROM src s JOIN tested t USING (market_id, a, b)
-          GROUP BY 1, 2, 3, 4
-        ), truth AS (
-          SELECT t.market_id, t.a, e.side, e.price, e.qty
-          FROM tested t JOIN book_events e
-            ON e.venue='polymarket' AND e.market_id = t.market_id
-           AND e.kind='snap' AND e.recv_ts = t.b
-        ), cmp AS (
-          SELECT coalesce(r.market_id, u.market_id) AS market_id,
-                 coalesce(r.a, u.a) AS a,
-                 CASE WHEN abs(coalesce(r.qty, 0) - coalesce(u.qty, 0)) < 1e-6
-                      THEN 1 ELSE 0 END AS ok
-          FROM (SELECT * FROM recon WHERE qty > 0) r
-          FULL OUTER JOIN (SELECT * FROM truth WHERE qty > 0) u
-            ON r.market_id = u.market_id AND r.a = u.a AND r.side = u.side
-           AND round(r.price, 6) = round(u.price, 6)
-        )
-        SELECT count(*), coalesce(sum(ok), 0), count(DISTINCT (market_id, a)),
-               count(DISTINCT CASE WHEN ok = 0 THEN (market_id, a) END)
-        FROM cmp
-        """,
-        [now, hrs, now, hrs],
-    ).fetchone()
-    poly_deltas, pairs = conn.execute(
-        """
-        WITH delta AS (
-          SELECT market_id, recv_ts FROM book_events
-          WHERE venue='polymarket' AND kind='delta'
-            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
-        ), frame AS (
-          SELECT DISTINCT market_id, recv_ts FROM book_events
-          WHERE venue='polymarket' AND kind='snap'
-            AND recv_ts > ? - INTERVAL 1 HOUR * CAST(? AS INTEGER)
-        ), iv AS (
-          SELECT market_id, recv_ts AS a,
-                 lead(recv_ts) OVER (PARTITION BY market_id ORDER BY recv_ts) AS b
-          FROM frame QUALIFY b IS NOT NULL
-        ), hit AS (
-          SELECT DISTINCT iv.market_id, iv.a
-          FROM delta d ASOF JOIN iv
-            ON d.market_id = iv.market_id AND d.recv_ts > iv.a
-          WHERE d.recv_ts < iv.b
-        )
-        SELECT (SELECT count(*) FROM delta), (SELECT count(*) FROM hit)
-        """,
-        [now, hrs, now, hrs],
-    ).fetchone()
+    if now.tzinfo is not None:  # recv_ts is a naive UTC TIMESTAMP; so is the walk
+        now = now.astimezone(UTC).replace(tzinfo=None)
+    lo = now - timedelta(hours=int(hours))
+    poly_deltas = conn.execute(
+        "SELECT count(*) FROM book_events WHERE venue='polymarket' AND kind='delta'"
+        " AND recv_ts > ?",
+        [lo],
+    ).fetchone()[0]
+    levels = agree = ivals = bad_ivals = pairs = 0
+    carry: dict[str, datetime] = {}
+    while lo < now:
+        hi = lo + timedelta(hours=POLY_SLICE_HOURS)
+        if hi >= now:
+            # The whole-window form had no upper bound: rows the daemon
+            # flushes while QA runs belong to the window too.
+            hi = datetime.max
+        conn.execute("CREATE OR REPLACE TEMP TABLE pcarry (market_id VARCHAR, recv_ts TIMESTAMP)")
+        if carry:
+            conn.executemany("INSERT INTO pcarry VALUES (?, ?)", list(carry.items()))
+        lv, ag, iv, bad, hit = conn.execute(_POLY_REPLAY_SLICE, [lo, hi, hi]).fetchone()
+        levels += lv
+        agree += ag
+        ivals += iv
+        bad_ivals += bad
+        pairs += hit
+        # The carry is each market's LAST frame so far: the open end of the
+        # interval the next slice may close.
+        for market_id, ts in conn.execute(
+            "SELECT market_id, max(recv_ts) FROM book_events"
+            " WHERE venue='polymarket' AND kind='snap' AND recv_ts > ? AND recv_ts <= ?"
+            " GROUP BY market_id",
+            [lo, hi],
+        ).fetchall():
+            carry[market_id] = ts
+        lo = hi
+    conn.execute("DROP TABLE IF EXISTS pcarry")
     return levels, agree, ivals, bad_ivals, poly_deltas, pairs
 
 

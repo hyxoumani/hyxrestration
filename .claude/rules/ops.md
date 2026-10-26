@@ -508,3 +508,16 @@
   `/proc/<pid>/smaps` anonymous regions by 64 MiB alignment to see the
   arenas directly. Any daemon that mallocs from many threads under a
   `MemoryMax` wants the threshold pinned in its unit.
+- A DuckDB `memory_limit` is a budget only for the operators that ASK
+  before allocating, and which operators those are is a property of the
+  QUERY. `hyxlab-qa`'s 12G cap was sized on a curve where the poly-replay
+  query refused cleanly at 1.8 GiB (`OutOfMemoryException`) and the unit
+  comment promised an outgrown window would fail as one red check; on
+  2026-10-26 the same query's ASOF/aggregate pipeline ran to anon 12.47G
+  with 7.8 GB spilled past a 6G limit and the KERNEL killed it (mistakes
+  #142). A cap is a blast-radius bound, never a budget a check fits into:
+  bound the WORK (`qa.POLY_SLICE_HOURS`, `SEQ_SLICE_HOURS` -- a slice width
+  with a per-key carry), measure anon peak vs slice width inside the run
+  (`RssAnon`; the cgroup's `memory.peak` is page cache and read 11.3G for a
+  run that only did `max(recv_ts)`), and re-measure a cap rationale when
+  its query's input moves an order of magnitude (#134 was 20x).

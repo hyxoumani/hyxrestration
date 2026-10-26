@@ -25,7 +25,12 @@ import pytest
 from collector import qa
 from hyxlab.streamstore import BookEvent, StreamStore
 
-NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+# Naive UTC, as production passes it (`qa_stream` strips tzinfo): an AWARE
+# `now` binds as TIMESTAMPTZ and the comparison against the naive `recv_ts`
+# column goes through the box's local zone, shifting the window by its UTC
+# offset -- the old whole-window form and the oracle shifted together and
+# hid it; the sliced walk normalises to naive UTC and would not.
+NOW = datetime(2026, 10, 7, 12, 0)
 
 ORACLE_REPLAY = """
             WITH frame AS (
@@ -162,11 +167,42 @@ def _random_stream(path, seed):
 
 
 @pytest.mark.parametrize("seed", range(40))
-def test_asof_replay_matches_the_range_join_oracle(tmp_path, seed):
+@pytest.mark.parametrize("slice_h", [1, 3, 100])
+def test_asof_replay_matches_the_range_join_oracle(tmp_path, monkeypatch, seed, slice_h):
+    """At every slice width, including one wider than the window (the
+    unsliced case) and one that cuts most intervals (fixture frames are
+    <= 600s apart over ~2h per market, so 1h slices split them)."""
     path = tmp_path / "s.duckdb"
     _random_stream(path, seed)
+    monkeypatch.setattr(qa, "POLY_SLICE_HOURS", slice_h)
     with duckdb.connect(str(path), read_only=True) as conn:
         assert qa._poly_replay(conn, NOW, 26.0) == _oracle(conn, NOW, 26.0)
+
+
+def test_an_aware_now_is_the_same_window_as_its_naive_utc(tmp_path):
+    path = tmp_path / "s.duckdb"
+    _random_stream(path, 3)
+    with duckdb.connect(str(path), read_only=True) as conn:
+        naive = qa._poly_replay(conn, NOW, 26.0)
+        assert naive == qa._poly_replay(conn, NOW.replace(tzinfo=UTC), 26.0)
+        assert naive[4] > 0
+
+
+def test_sliced_replay_includes_rows_written_after_now(tmp_path):
+    """The last slice is open-ended, like the whole-window form."""
+    path = tmp_path / "s.duckdb"
+    store = StreamStore(path)
+    a, b = NOW - timedelta(minutes=1), NOW + timedelta(seconds=5)
+    store.append_events(
+        [
+            BookEvent("polymarket", "m", a, None, None, None, "snap", "bid", 0.5, 1.0),
+            BookEvent("polymarket", "m", NOW, None, None, None, "delta", "bid", 0.5, 2.0),
+            BookEvent("polymarket", "m", b, None, None, None, "snap", "bid", 0.5, 2.0),
+        ]
+    )
+    store.flush()
+    with duckdb.connect(str(path), read_only=True) as conn:
+        assert qa._poly_replay(conn, NOW, 26.0) == (1, 1, 1, 0, 1, 1)
 
 
 def test_the_oracle_fixture_is_not_vacuous(tmp_path):
