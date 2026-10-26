@@ -4033,14 +4033,32 @@ property of the CHECK.
     restarted the daemon 5 minutes later for an unrelated promote. The
     10-24 step (32 -> 174s, 5.4x) was already the signal, one day early.
     Type: `missing-verification` (#102 family; a bounded hold is bounded
-    only while its input is). Fix (queued, 08:15Z run): QA reads a
-    REFLINK SNAPSHOT of the stream file, not the live file -- the locked
-    leg `collector.backup._copy_out` reflinks 68 GB in ~0.2s (#89/#90
-    measured) and the snapshot costs only the blocks the live file
-    rewrites meanwhile; `_held_ro(snapshot)` charges the walk to a file
-    nobody else holds, the live hold drops to the copy, and the snapshot
-    is unlinked in `finally`. Then `tests/test_qa_holds.py` must assert
-    the live file's hold is bounded by the COPY, not by the section.
+    only while its input is). Fix (SHIPPED + promoted 03:22Z, `2e87fec`):
+    `qa_stream` reads a REFLINK SNAPSHOT of the stream file through
+    `collector.backup.backup_one`'s locked leg (`qa._stream_snapshot`):
+    measured on the 68 GB live file, hold 0.29-0.37s, 0 exclusive bytes,
+    the copy attaches read-only in 0.39s; `_held_ro(snapshot)` charges
+    the walk to a file nobody else holds under its own name on the
+    attach_wait line, the live hold IS the copy, and the directory is
+    emptied before the copy and in `finally` (spill dir included; a
+    SIGKILLed run's leftovers go at the next run). Any snapshot failure
+    falls back to the live file and says so. `tests/test_qa_holds.py`
+    now asserts the two-hold truth and `tests/test_qa_stream_snapshot.py`
+    the live bound; mutant (section back on the live file) red.
+    Rehearsed on the live archive as a 12G transient unit: the seq walk
+    ran 2m16s on the copy with ZERO failed stream flushes behind it --
+    and the run was then OOM-KILLED (anon-rss 12.47G, 7.8 GB spilled) in
+    the NEXT check, `poly deltas replay to the next snapshot`, whose
+    memory scales with the window's Polymarket deltas (the stream's
+    `poly_events` ran ~280k/min on the Sunday evening, 37.9M in 12h).
+    The 10-25 10:00Z run survived the same check at a 12G peak ==
+    cap; tonight's window holds the full Sunday evening and will very
+    likely not. SEPARATE DEFECT, OPEN (08:15Z run, first item): bound
+    `_poly_replay` by slicing the window like `_seq_holes` does, or
+    size the QA cap from a measured curve of anon vs deltas-in-window
+    (#87's method) -- a 2x raise on a 60 GB box shared with siblings
+    is a guess, not a cap. Under the snapshot a killed QA at least
+    holds nothing of streamd's.
     Rule: **a hold scoped to a section is bounded by the section's
     input, so a QA line that publishes the hold needs a BAND the digest
     reads (`held hyxstream.duckdb` over the trailing week), and a victim's
