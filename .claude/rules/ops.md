@@ -118,6 +118,16 @@
   `btrfs filesystem du -s --raw` prices a slot. A multiplier in a
   capacity model is a claim about a mechanism the repo may already have
   measured -- for the benefit -- elsewhere.
+- A SHARED filesystem's burn is the sum over EVERY tenant, and the tenants
+  you did not think of are the ones outside the workspace. The 2026-10-26
+  chase of a 69 GB/day `archive disk headroom` reading searched
+  `~/workspace` and `~/scratch`, attributed 42 GB and called 27 GB
+  unattributed; the rest was in `~/.local/share` and `~/.cache` (a Steam
+  shader-cache rebuild, 12.9 GB in 85 min; a neighbour's research DBs,
+  8.5 GB; Firefox 1.9 GB). Enumerate with `du -sx -BG /home/devs/* /home/
+  devs/.local/share/* /home/devs/.cache` BEFORE attributing, and locate a
+  step with the collector's 5-min `fs_free_b=` journal field (hour
+  resolution) rather than the QA series (one sample a day, #93 rule).
 - An instrument for a SHARED resource has to measure both directions:
   what contention cost this caller, and what this caller cost the
   contenders. Only the first is visible from inside the caller, which is
