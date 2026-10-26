@@ -4013,6 +4013,40 @@ property of the CHECK.
     a sum, and a sum fitted to the wrong term reads as growth in the
     work.**
 
+141. **2026-10-25 10:00Z, read 2026-10-26 03:20Z -- the QA hold that #102
+    scoped came back 30x larger, and two passes read past it.** `qa_stream`
+    holds `hyxstream.duckdb` for its whole section (`_held_ro`, #102), and
+    the section's cost is the seq walk over the window's `book_events`.
+    QA's own ledger line: hold 28.0 / 29.0 / 52.0 / 30.7 / 32.4s on
+    10-19..23, **174.1s on 10-24, 872.3s on 10-25** (CPU 54m55s over a
+    14m36s wall, 12G peak == the unit's cap) -- the 2026-10-23 12:45Z
+    coverage expansion (~20x book events) filled the 26h window over two
+    days and the walk scaled with it. The victim's side: streamd's stall
+    ledger opened at 10:00:08Z, 17 failed flushes, `hold_lower_s 859.8`,
+    `peak_pending 1,035,757` (past `PENDING_ALARM`, a CRITICAL line), then
+    the 1,077,007-row flush under the 4G cap clamped the daemon's sockets
+    8,789 times (`WARNING sock_throttled +8789`, psi 177s on the stop
+    line) and 7 reconnect/dead_air GAP rows followed. Nobody read any of
+    it: the 14:35Z pass read QA's three FAILs ("archive disk headroom",
+    "batch units", "prior QA run") and not its attach_wait line; the
+    stream's WARNING line was written for exactly this and the next pass
+    restarted the daemon 5 minutes later for an unrelated promote. The
+    10-24 step (32 -> 174s, 5.4x) was already the signal, one day early.
+    Type: `missing-verification` (#102 family; a bounded hold is bounded
+    only while its input is). Fix (queued, 08:15Z run): QA reads a
+    REFLINK SNAPSHOT of the stream file, not the live file -- the locked
+    leg `collector.backup._copy_out` reflinks 68 GB in ~0.2s (#89/#90
+    measured) and the snapshot costs only the blocks the live file
+    rewrites meanwhile; `_held_ro(snapshot)` charges the walk to a file
+    nobody else holds, the live hold drops to the copy, and the snapshot
+    is unlinked in `finally`. Then `tests/test_qa_holds.py` must assert
+    the live file's hold is bounded by the COPY, not by the section.
+    Rule: **a hold scoped to a section is bounded by the section's
+    input, so a QA line that publishes the hold needs a BAND the digest
+    reads (`held hyxstream.duckdb` over the trailing week), and a victim's
+    WARNING written for a specific failure is unread until a check names
+    the line that must be absent.**
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day
