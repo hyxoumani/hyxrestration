@@ -62,10 +62,27 @@ from collector.rawframes import RawFrameWriter
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
 from hyxlab.lockid import db_owner_lock_or_reason
 from hyxlab.memcap import cgroup_sock_throttled, glibc_arena_heaps, rss_anon_mb
-from hyxlab.store import lock_holder
+from hyxlab.store import lock_holder, lock_refused
 from hyxlab.streamstore import SHARD_SID_STRIDE, StreamStore
 
 FLUSH_SECS = 15.0
+# How long the flusher waits before trying again after the FIRST lock refusal
+# of an episode, instead of a full FLUSH_SECS (EXP-1391). The holder that
+# refuses this daemon is, 263 times in 273 closed episodes over 2026-10-20..27,
+# `hyxlab-shadow`'s 20s read poll, which the kernel's lock table measures at
+# p50 0.167s / max 0.188s per hold; the collision rate doubled every ~2 days
+# with event volume (17 -> 81/day) and each one parked the buffer for a full
+# period, 15.9s of span per episode, ~20 min/day of archive lag at 81. One
+# retry at this delay resolves a sub-second holder; a longer one (the 10:00Z
+# QA walk, a user's transient unit) fails it too and the loop is back on
+# FLUSH_SECS, so a long stall costs exactly one extra attach attempt (~20ms
+# when refused). Once per episode, not on every failure: the ledger's
+# `sample_gap_max_s` is the instrument's resolution and a 2s cadence under a
+# long holder would both hammer it and mis-state nothing -- but it would
+# also be a second sampling regime inside one episode. The record carries
+# `retry_s` when this delay closed it, so a reader differencing a ~2s span
+# knows which floor it is looking at (collector.qa._hold_phrase).
+LOCK_RETRY_SECS = 2.0
 STATS_SECS = 300.0
 TICKER_REFRESH_SECS = 3600.0  # poly token-set refresh
 # Kalshi book-set REST reconciliation, the backstop under the lifecycle
@@ -557,6 +574,11 @@ class FlushStalls:
         # Distinct lock holders seen during the open episode, resolved to a
         # systemd unit at the moment of the collision (see `observe`).
         self.holders: list[str] = []
+        # The quick-retry delay the flusher took after the open episode's
+        # first refusal, if it took one (LOCK_RETRY_SECS); None otherwise.
+        # Published on the record so a ~2s single-fail span is read against
+        # the floor that produced it and not against `period_s`.
+        self.retry_s: float | None = None
         self._last_written: datetime | None = None
 
     def _write(self, rec: dict) -> None:
@@ -611,6 +633,10 @@ class FlushStalls:
                 # left to the reader: a single-fail episode bounds the hold
                 # ABOVE and says nothing else.
                 "hold_lower_s": round(self._hold_lower_s(), 1),
+                # The floor a SINGLE-FAIL span sits on when the flusher came
+                # back early (EXP-1391): absent/None means every attempt in
+                # this episode was `period_s` apart.
+                "retry_s": self.retry_s,
                 "peak_pending": self.peak_pending,
                 "spilled": self.spilled,
                 "error": self.last_error,
@@ -707,10 +733,21 @@ class FlushStalls:
         self.peak_pending = max(self.peak_pending, pending)
         self.spilled = max(self.spilled, spilled)
 
-    def failed(self, pending: int, spilled: int, exc: BaseException, now: datetime) -> None:
-        """One failed flush. Opens an episode if none is open."""
+    def failed(
+        self,
+        pending: int,
+        spilled: int,
+        exc: BaseException,
+        now: datetime,
+        retry_s: float | None = None,
+    ) -> None:
+        """One failed flush. Opens an episode if none is open. `retry_s` is
+        the early retry the flusher is about to take, recorded on the episode
+        so its span is legible (see LOCK_RETRY_SECS)."""
         self.observe(pending, spilled, exc, now)
         assert self.started is not None
+        if retry_s is not None:
+            self.retry_s = retry_s
         since = self._last_written or self.started
         if (now - self.started).total_seconds() >= STALL_HEARTBEAT_S and (
             now - since
@@ -759,6 +796,7 @@ class FlushStalls:
         self.spilled = 0
         self.last_error = ""
         self.holders = []
+        self.retry_s = None
 
 
 def _short_err(exc: BaseException) -> str:
@@ -1326,8 +1364,10 @@ class Daemon:
 
     async def flusher(self) -> None:
         last_stats = asyncio.get_event_loop().time()
+        wait = FLUSH_SECS
         while True:
-            await asyncio.sleep(FLUSH_SECS)
+            await asyncio.sleep(wait)
+            wait = FLUSH_SECS
             try:
                 out = await asyncio.to_thread(self.store.flush_outcome)
             except Exception as exc:
@@ -1338,14 +1378,31 @@ class Daemon:
                 n_spilled = self.store.spilled
                 sev = "CRITICAL " if n_pending > self.store.PENDING_ALARM else ""
                 spill = f" (+{n_spilled} spilled to sidecar)" if n_spilled else ""
+                # A REFUSAL BY A HOLDER gets one early retry per episode
+                # (LOCK_RETRY_SECS): the holder is almost always a sub-second
+                # reader, and a full period behind it is the whole cost of
+                # the collision. Only the FIRST failure of an episode -- the
+                # second one says the holder outlasted the retry, and the
+                # loop goes back to its period. Any other error (disk, a
+                # corrupt sidecar) keeps the period: nothing says it clears.
+                quick = lock_refused(exc) and self.stalls.started is None
+                if quick:
+                    wait = LOCK_RETRY_SECS
                 _log(
                     f"{sev}flush FAILED ({type(exc).__name__}: {exc});"
                     f" {n_pending} rows held for retry{spill}"
+                    f"{f' in {LOCK_RETRY_SECS:g}s' if quick else ''}"
                 )
                 # The journal line above says a flush failed; the ledger says
                 # how long the episode ran and how big it got. Written from
                 # here because this is the only scope that sees BOTH ends.
-                self.stalls.failed(n_pending, n_spilled, exc, datetime.now(UTC))
+                self.stalls.failed(
+                    n_pending,
+                    n_spilled,
+                    exc,
+                    datetime.now(UTC),
+                    retry_s=LOCK_RETRY_SECS if quick else None,
+                )
                 continue
             # ONLY A FLUSH THAT OPENED THE FILE ENDS A STALL. `flush_outcome`
             # returns without attaching when there is nothing to write, and

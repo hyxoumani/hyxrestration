@@ -3718,8 +3718,14 @@ def qa_stream_stalls(
         if float(lower) <= 0:
             gap = e.get("sample_gap_max_s")
             period = e.get("period_s")
+            retry = e.get("retry_s")
             if gap:
                 res = f"{float(gap):.0f}s measured sampling gap"
+            elif retry:
+                # A single refusal the flusher retried early (EXP-1391,
+                # `streamd.LOCK_RETRY_SECS`): the floor under this span is
+                # the retry delay, not the period the record also carries.
+                res = f"{float(retry):g}s lock retry"
             elif period:
                 res = f"{float(period):.0f}s nominal flush period"
             else:

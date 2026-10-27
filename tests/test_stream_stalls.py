@@ -1249,3 +1249,118 @@ def test_only_a_flush_with_something_to_write_can_open_an_episode(tmp_path):
     assert store.pending > 0 or store._spill_path.exists()
     store.path = tmp_path / "s.duckdb"
     assert store.flush_outcome().touched is True
+
+
+# --------------------------------------------------------------------------
+# EXP-1391: one early retry after a holder's refusal
+# --------------------------------------------------------------------------
+
+_REFUSAL = (
+    'IO Error: Could not set lock on file "/x/hyxstream.duckdb": Conflicting lock'
+    " is held in /usr/bin/python3.14 (PID 4242) by user devs."
+)
+
+
+class _RefusingStore(_Store):
+    """`_Store`, but the failure is DuckDB's lock refusal, naming a holder."""
+
+    def flush_outcome(self):
+        if self.empty:
+            return streamstore.FlushOutcome(rows=0, touched=False)
+        if self.wedged:
+            raise OSError(_REFUSAL)
+        self.flushes += 1
+        return streamstore.FlushOutcome(rows=7, touched=True)
+
+
+def _drive(monkeypatch, d, store, *, release_on_round: int | None, rounds_max: int):
+    """Run the flusher, recording what it slept; release the lock on the
+    given round (counted at the sleep that FOLLOWS the failure)."""
+    import asyncio
+
+    slept: list[float] = []
+
+    async def fake_sleep(secs):
+        slept.append(secs)
+        if release_on_round is not None and len(slept) == release_on_round:
+            store.wedged = False
+        if len(slept) > rounds_max:
+            raise asyncio.CancelledError
+        return None
+
+    monkeypatch.setattr(streamd.asyncio, "sleep", fake_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(d.flusher())
+    return slept
+
+
+def test_a_holders_refusal_is_retried_once_early_then_at_the_period(monkeypatch, tmp_path):
+    """The whole cost of a collision with a 0.17s reader was the 15s the
+    flusher waited behind it. After the FIRST refusal of an episode it comes
+    back in LOCK_RETRY_SECS; a holder that outlasts that puts the loop back
+    on FLUSH_SECS -- one extra attempt, never a second regime."""
+    store = _RefusingStore()
+    d = _daemon(tmp_path, store)
+    # sleep#1 (period) -> fail#1 -> sleep#2 (QUICK) -> fail#2 -> sleep#3
+    # (period) -> fail#3 -> sleep#4 (period, lock released) -> ok -> sleep#5
+    slept = _drive(monkeypatch, d, store, release_on_round=4, rounds_max=5)
+    assert slept[:5] == [
+        streamd.FLUSH_SECS,
+        streamd.LOCK_RETRY_SECS,
+        streamd.FLUSH_SECS,
+        streamd.FLUSH_SECS,
+        streamd.FLUSH_SECS,
+    ]
+    assert streamd.LOCK_RETRY_SECS < streamd.FLUSH_SECS / 5
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["state"] == "closed" and rec["fails"] == 3
+    assert rec["retry_s"] == streamd.LOCK_RETRY_SECS
+    assert rec["period_s"] == streamd.FLUSH_SECS  # the nominal cadence, unchanged
+
+
+def test_the_quick_retry_closes_the_common_episode_and_says_so(monkeypatch, tmp_path):
+    """The 96% case: the holder is gone by the retry. One failure, one early
+    success, and the record names the floor its ~2s span sits on."""
+    store = _RefusingStore()
+    d = _daemon(tmp_path, store)
+    slept = _drive(monkeypatch, d, store, release_on_round=2, rounds_max=3)
+    assert slept[:3] == [streamd.FLUSH_SECS, streamd.LOCK_RETRY_SECS, streamd.FLUSH_SECS]
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["fails"] == 1 and rec["retry_s"] == streamd.LOCK_RETRY_SECS
+    assert d.stalls.retry_s is None  # cleared with the episode
+
+
+def test_an_error_that_names_no_holder_keeps_the_period(monkeypatch, tmp_path):
+    """A disk error, a corrupt sidecar: nothing says those clear in two
+    seconds, and the retry is for a REFUSAL only. `_Store` raises the lock
+    message with no holder in it, which is also what a dead-lock-file looks
+    like."""
+    store = _Store()
+    d = _daemon(tmp_path, store)
+    slept = _drive(monkeypatch, d, store, release_on_round=3, rounds_max=4)
+    assert slept[:4] == [streamd.FLUSH_SECS] * 4
+    (rec,) = _records(tmp_path / "stalls.jsonl")
+    assert rec["retry_s"] is None
+
+
+def test_the_reader_names_the_retry_floor_under_a_short_span(tmp_path):
+    """A 2.3s single-fail span differenced against the 15s period would read
+    as a hold the period cannot resolve; the floor under it is the retry."""
+    ep = _ep(T0, 2.3)
+    ep["retry_s"] = 2.0
+    path = _ledger(tmp_path, ep)
+    failed, skipped, out = _run_check(path=path, journal_fails=3, now=NOW)
+    assert not failed, out
+    assert "unresolved below the 2s lock retry" in out
+    # and a record without the field reads exactly as before
+    path = _ledger(tmp_path, _ep(T0, 19.0))
+    _, _, out = _run_check(path=path, journal_fails=3, now=NOW)
+    assert "unresolved below the 15s nominal flush period" in out
+
+
+def test_lock_refused_is_the_textual_fact_only():
+    from hyxlab.store import lock_refused
+
+    assert lock_refused(OSError(_REFUSAL))  # PID 4242 need not be alive
+    assert not lock_refused(OSError("IO Error: Could not set lock on file"))
+    assert not lock_refused(OSError("No space left on device"))

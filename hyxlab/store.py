@@ -407,6 +407,18 @@ def _holds_file(pid: str, path: str) -> bool | None:
     return False if seen else None
 
 
+def lock_refused(exc: BaseException) -> bool:
+    """Was this attach REFUSED BY A HOLDER -- as opposed to failing for any
+    other reason? True exactly when DuckDB's message names a conflicting
+    lock. Deliberately NOT `lock_holder(exc) is not None`: that call reads
+    /proc and answers a different question (is the holder alive), and a
+    caller deciding whether to try again in two seconds wants the cheap
+    textual fact, not a liveness verdict -- a refusal by a process that has
+    since exited is the best case for a quick retry, not a reason to skip it.
+    """
+    return _LOCK_HOLDER_RE.search(str(exc)) is not None
+
+
 def lock_holder(exc: BaseException) -> str | None:
     """Who holds this file's lock, from a failed attach — or None.
 
