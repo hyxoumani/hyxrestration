@@ -809,6 +809,16 @@ self-match trap the ops rules name for `pkill -f`.
   lock the writer cannot get past, and `simulator.shadow` is the named
   holder in both. QA fails on the SPILL, never on duration: a stall inside
   the buffer loses nothing and multi-hour readers are legitimate.
+  **A holder's refusal is retried once after 2s** (`LOCK_RETRY_SECS`,
+  2026-10-27, EXP-1391): 263 of 273 closed episodes over 10-20..27 were
+  the shadow's 20s read poll (kernel-measured hold p50 0.167s), each
+  parking the buffer a full `FLUSH_SECS` behind a sub-second reader, and
+  the rate doubled every ~2 days with event volume (17 -> 81/day, ~20
+  min/day of archive lag). The flusher comes back in 2s after the FIRST
+  refusal of an episode and returns to the period if that fails too, so a
+  long holder costs one extra ~20ms attach attempt. The record carries
+  `retry_s` when the early retry closed it; `qa._hold_phrase` reads a
+  short single-fail span against that floor, not against `period_s`.
   **The sidecar drains in committed chunks** (`DRAIN_CHUNK_ROWS` 100k,
   byte-offset checkpoint `<sidecar>.done`) since 2026-10-07: the
   whole-file drain cost ~750 B/row resident, so a 1.69M-row sidecar
