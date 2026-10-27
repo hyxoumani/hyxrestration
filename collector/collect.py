@@ -396,8 +396,12 @@ def main() -> None:
     while True:
         t0 = time.monotonic()
         kalshi.reset_pace_stats()
+        kalshi.reset_retry_counts()
         cyc = fetch_cycle(watchlist, session=sess)  # NO lock held here (EXP-957)
-        pace_s = kalshi.pace_stats()["slept_s"]
+        pace = kalshi.pace_stats()
+        pace_s = pace["slept_s"]
+        kalshi_req = pace["requests"]
+        kalshi_429 = kalshi.retry_counts()["rate_limit"]
         fetch_s = time.monotonic() - t0
         # The lock budget is a budget for the CYCLE, not for the wait: the
         # fetch now runs first, and a wait of the full LOCK_WAIT_S on top
@@ -473,6 +477,14 @@ def main() -> None:
             # Seconds of fetch_s spent on the pacer's floor, so the floor's
             # price is read off the journal and not off its constant.
             "pace_s": round(pace_s, 1),
+            # Requests the floor paced and 429s the ladder retried, THIS
+            # cycle, so the sink's rate is readable from the journal as
+            # 429s per request: Kalshi's 429s carry no rate-limit header
+            # (195k organic samples in data/rate_limit_headers.jsonl, all
+            # served from CloudFront's edge), so the count is the only
+            # instrument the floor can be set from.
+            "kalshi_req": kalshi_req,
+            "kalshi_429": kalshi_429,
             "wait_s": round(lock_wait_s, 1),
             "open_s": round(open_s, 1),
             "drain_s": round(drain_s, 1),

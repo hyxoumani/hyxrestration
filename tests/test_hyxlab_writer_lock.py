@@ -852,6 +852,8 @@ def test_cycle_print_carries_the_phase_decomposition(tmp_path, monkeypatch, caps
     assert set(t) == {
         "fetch_s",
         "pace_s",
+        "kalshi_req",
+        "kalshi_429",
         "wait_s",
         "open_s",
         "drain_s",

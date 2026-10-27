@@ -170,3 +170,44 @@ def test_collector_switches_the_pacer_on_at_8_per_second_and_publishes_pace_s(
     assert m, out
     t = ast.literal_eval(m.group(1))
     assert "pace_s" in t and t["pace_s"] <= t["fetch_s"]
+
+
+def test_collector_publishes_requests_and_429s_per_cycle_from_a_fresh_count(
+    tmp_path, monkeypatch, capsys
+):
+    """The floor is set from the SINK's rate, which is 429s per request --
+    and a 429 carries no rate-limit header (195k organic samples), so the
+    cycle line must carry both counts, reset PER CYCLE: a counter that ran
+    since process start would publish the process's lifetime under the
+    cycle's name (#72)."""
+    import collector.collect as collect
+    from tests.test_hyxlab_writer_lock import _LockProbe, _run_collect
+
+    # Stale state from before the cycle: must NOT leak into the line.
+    k._RATE_LIMIT_RETRIES = 7
+    k._PACE_REQUESTS = 11
+    real_main = collect.main
+
+    def main_with_paced_walk():
+        fixture_get_markets = collect.kalshi.get_markets
+
+        def paced_get_markets(**kw):
+            k._pace()  # one paced request per call, as the real walk does
+            if kw.get("status") == "open":
+                k._RATE_LIMIT_RETRIES += 1  # one 429 retried on the open page
+            return fixture_get_markets(**kw)
+
+        monkeypatch.setattr(collect.kalshi, "get_markets", paced_get_markets)
+        real_main()
+
+    monkeypatch.setattr(collect, "main", main_with_paced_walk)
+    probe = _LockProbe(str(tmp_path / "writer.lock"))
+    _run_collect(tmp_path, monkeypatch, probe, fetch_delay=0.0)
+    out = capsys.readouterr().out
+    m = re.search(r"timings=(\{.*\})", out)
+    assert m, out
+    t = ast.literal_eval(m.group(1))
+    # One series x (open + settled) = 2 paced requests; one 429; neither
+    # carries the 11 / 7 that were on the counters before the cycle.
+    assert t["kalshi_req"] == 2, t
+    assert t["kalshi_429"] == 1, t

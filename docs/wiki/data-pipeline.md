@@ -777,12 +777,44 @@ self-match trap the ops rules name for `pkill -f`.
   two paced processes on one tick still sum past the bucket. The cycle
   line's `timings=` carries `pace_s` (seconds of `fetch_s` slept on the
   floor, `kalshi.pace_stats()['slept_s']`, reset per cycle) so the price
-  is in the journal, not in the constant. Verification reads: the
-  collector's share of the sink's `/markets` 429s (40-50/h before, with
-  the sweep idle) should go to ~0, `fetch_s` to ~8-10s, and every series'
-  `collect_cycles.wall_s` back to the 0.08-0.15s shape; a tier downgrade
-  would show as 429s RETURNING under the floor, not as a silent change.
-  `tests/test_kalshi_pacer.py` (8; the every-`sess.get` arm red-verified
+  is in the journal, not in the constant. The pre-registered clean
+  reading (sweep idle: 0 x 429, `fetch_s` 8-12s, `pace_s` 6-8s) was
+  owed to the 10-23 20:15Z run, whose sweep ran 19h and left no idle
+  window, and was then carried unread for four days (the "documentation,
+  not a deadline" rule). **Read 2026-10-27 14:15Z over two sweep-idle
+  nights (10-25 16Z -> 10-26 06Z, 10-26 16Z -> 10-27 06Z): FALSIFIED.**
+  With nothing else on the key but streamd's phase-locked walks (56 in
+  the window, 0-2 retried 429 each, max 138.8s, none reaching a tick),
+  the paced collector still draws 21-35 x 429/h = 1.8-2.9 per cycle (2
+  of 168 cycles clean; distribution 1:40 2:62 3:46 4:11 5+:7), `fetch_s`
+  17-25s, `pace_s` 3.3-4.7s, the first 429 at p10 2s / median 3s / p90
+  6s into the walk = the ~15-20-request bucket at 8/s, uniform across
+  the :00/:05/:10 tick phases (129/128/130) and 10-20s into the cycle
+  for 60% of them. So the sink's SUSTAINED rate is below 8 req/s and the
+  floor halved the refusals (3-5 -> 1.8-2.9) and the back-off share (85%
+  -> ~60%) without clearing them. The sink cannot name the rate: the
+  EXP-1333 header capture holds 195,354 organic 429s (150 MB, 1.3-3.6k
+  per day, uncapped) and NOT ONE carries `Retry-After` or any
+  `*ratelimit*` header -- every one is `X-Cache: Error from cloudfront`,
+  an edge rule, so the ladder's fixed 5s is the only clock. Since
+  2026-10-27 the cycle line's `timings=` carries `kalshi_req` (requests
+  the floor paced) and `kalshi_429` (retried 429s), both reset PER CYCLE
+  (`tests/test_kalshi_pacer.py`, red against a dropped reset), so the
+  rate the floor must respect is 429s per request read off the journal;
+  the floor is re-set from a day of those two numbers, not guessed.
+  **Under the Kalshi sweep (06:10Z -> ~16-18Z) the same collector pays
+  double, all three days measured (10-25/26/27):** 52-88 x 429/h =
+  4.3-7.3 per cycle, `fetch_s` mean 31-56s (max 120s), 0 cycles over
+  300s from it; the poly sweep hours alone (04-06Z) show nothing. From
+  the other side, 65% of the sweep's own 429s (214 of 330 today, 279 of
+  434 on 10-26) land inside the 60s after a collector tick, against 20%
+  for uniform -- the two share one edge bucket and the sweep's candle
+  ladder is unpaced. Cost to the sweep: 330-434 x 5s = 28-36 min of a
+  9.2-12.5h run. NOT changed: a sweep that yields 45s per tick is +15%
+  wall against a 12.5h budget touched twice in October, and the
+  collector's loss is latency (+18s mean), not cycles. The collector's
+  floor is the lever, once `kalshi_req` says what the bucket admits.
+  `tests/test_kalshi_pacer.py` (9; the every-`sess.get` arm red-verified
   against a tape-site mutant).
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
