@@ -490,6 +490,12 @@
   ` UTC` on a literal bound (relative bounds like `-2h` are safe), and
   prove a window once by printing its first line's timestamp before
   counting anything inside it.
+- The OUTPUT side has the same trap: `journalctl -o short-iso` and
+  `ls -l` print LOCAL time (CDT), and a plan that copies `22:30:00-05:00`
+  as "22:30Z" schedules its read 5h early (mistakes #143; the backup
+  timer is `03:30:00 UTC`). Read journals with `--utc`, list files with
+  `TZ=UTC ls --full-time`, and take a unit's clock time from
+  `OnCalendar`/`list-timers`, which print the zone.
 - A promote that restarts a PRODUCER and defers its CONSUMER has changed
   the consumer's input without changing its code, and the deferral guard
   (`young_run_guard`, bounds 14/14b) reasons only about the consumer. The

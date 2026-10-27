@@ -4122,6 +4122,32 @@ property of the CHECK.
     when that query's input changes by an order of magnitude; the bound
     that survives is a slice width on the work, not a cap on the process.**
 
+
+143. **2026-10-26 22:00Z, caught 2026-10-27 02:20Z -- a timer's run time was
+    read off `journalctl -o short-iso` output and carried as UTC.** The
+    22:00Z pass named "the 22:30Z backup rotation" as the next run's
+    first read; the 10-25 20:50Z entry carried the same hour. The timer
+    is `OnCalendar=*-*-* 03:30:00 UTC`: what both passes read was the
+    journal's LOCAL rendering, `2026-10-25T22:30:00-05:00`, with the
+    offset dropped. The next pass, following the plan, read the unit's
+    journal over `--since -6h`, got `-- No entries --` (correct: the run
+    was 73 min ahead), saw a backup directory whose newest slot was "a
+    day old", and was one line from filing a missed backup -- the
+    directory listing used `--time-style=+%FT%TZ`, a literal `Z` on a
+    local time, so the second instrument agreed with the first by
+    construction. `list-timers` (`LAST Sun 22:30:00 CDT`, `NEXT Mon
+    22:30:00 CDT`) and the digest's `last ran 22.8h ago` disagreed with
+    the plan and settled it. Type: `misread` (the output half of #ops
+    `--since` rule: that rule covers the INPUT zone of a bound and said
+    nothing about the OUTPUT zone of a line). Cost: one planned read
+    scheduled 5h early and a near-false alarm; no data lost.
+    Rule: **a timestamp with no zone suffix in a tool's output is in
+    the tool's zone, not yours, and on this box that is CDT. Read
+    journals with `--utc`, list files with `TZ=UTC ls --full-time` (or
+    a `%z` in the style, never a literal `Z`), and when a plan names a
+    clock time for a unit, take it from `OnCalendar` or `list-timers`,
+    which print the zone, not from a log line that does not.**
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day
