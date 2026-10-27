@@ -796,7 +796,7 @@ self-match trap the ops rules name for `pkill -f`.
   EXP-1333 header capture holds 195,354 organic 429s (150 MB, 1.3-3.6k
   per day, uncapped) and NOT ONE carries `Retry-After` or any
   `*ratelimit*` header -- every one is `X-Cache: Error from cloudfront`,
-  an edge rule, so the ladder's fixed 5s is the only clock. Since
+  an edge rule, so the ladder's fixed 5s is the only clock. Since 2026-10-27 the sink skips a 429 whose header keys are all in `kalshi.ROUTINE_429_HEADER_KEYS` (that CloudFront set) and still writes one carrying anything else, so it stops growing on the answer and stays armed for the question. Since
   2026-10-27 the cycle line's `timings=` carries `kalshi_req` (requests
   the floor paced) and `kalshi_429` (retried 429s), both reset PER CYCLE
   (`tests/test_kalshi_pacer.py`, red against a dropped reset), so the

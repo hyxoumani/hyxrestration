@@ -110,8 +110,12 @@ def test_kalshi_get_trades_reports_truncation():
 
 
 def test_to_market_info_carries_open_time():
-    m = {"ticker": "KXHIGHNY-26AUG02-B88.5", "event_ticker": "KXHIGHNY-26AUG02",
-         "close_time": "2026-08-03T00:00:00Z", "open_time": "2026-06-30T14:00:00Z"}
+    m = {
+        "ticker": "KXHIGHNY-26AUG02-B88.5",
+        "event_ticker": "KXHIGHNY-26AUG02",
+        "close_time": "2026-08-03T00:00:00Z",
+        "open_time": "2026-06-30T14:00:00Z",
+    }
     info = to_market_info(m)
     assert info.open_time is not None and info.open_time.hour == 14
 
@@ -130,6 +134,7 @@ def test_get_markets_page_loop_survives_a_429(monkeypatch):
         def raise_for_status(self):
             if self.status_code >= 400:
                 import requests
+
                 raise requests.HTTPError(response=self)
 
         def json(self):
@@ -412,7 +417,9 @@ def test_candlesticks_short_span_stays_a_single_request():
     from collector.venues import kalshi as k
 
     sess = _LimitEnforcingSess()
-    out = k.get_candlesticks("KXHIGHNY", "KXHIGHNY-26AUG12-B90.5", 7200, 7200 + 6 * 3600, 60, session=sess)
+    out = k.get_candlesticks(
+        "KXHIGHNY", "KXHIGHNY-26AUG12-B90.5", 7200, 7200 + 6 * 3600, 60, session=sess
+    )
     assert sess.calls == [(7200, 7200 + 6 * 3600)]
     assert len(out) == 7
 
@@ -457,6 +464,35 @@ class _HdrResp:
 
     def json(self):
         return self._body
+
+
+_CLOUDFRONT_429 = {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": "68",
+    "Connection": "keep-alive",
+    "Date": "Tue, 27 Oct 2026 14:20:43 GMT",
+    "x-content-type-options": "nosniff",
+    "Cache-Control": "no-store",
+    "content-security-policy": "default-src 'none';",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "Vary": "Accept-Encoding,Accept-Language",
+    "X-Cache": "Error from cloudfront",
+    "Via": "1.1 x.cloudfront.net (CloudFront)",
+    "x-amz-cf-pop": "ORD58-P1",
+    "x-amz-cf-id": "abc==",
+}
+
+
+def test_routine_cloudfront_429_is_not_written_but_a_novel_header_is():
+    """195k samples with exactly this key set answered EXP-1333 (no rate-limit
+    header exists); recording the answer again is only disk. A 429 carrying
+    any other key -- the Retry-After the sink exists to catch -- still lands."""
+    from collector.venues import kalshi as k
+
+    k._log_429_headers(_HdrResp(429, headers=_CLOUDFRONT_429), "u1")
+    assert _sink_rows() == []
+    k._log_429_headers(_HdrResp(429, headers={**_CLOUDFRONT_429, "Retry-After": "2"}), "u2")
+    assert [r["url"] for r in _sink_rows()] == ["u2"]
 
 
 def test_429_headers_captured_in_retry_helper_without_behavior_change(monkeypatch):

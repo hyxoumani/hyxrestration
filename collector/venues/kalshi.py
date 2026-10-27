@@ -48,6 +48,30 @@ from hyxlab.models import MarketInfo, Snapshot  # noqa: E402
 # convention as collector/collect.py's SKIP_LOG (cwd = repo root under the
 # systemd units). Additive telemetry only; retry behavior is unchanged.
 RATE_LIMIT_HEADERS_LOG = "data/rate_limit_headers.jsonl"
+#: ANSWERED 2026-10-27: 195,354 organic 429s captured (150 MB, 1.3-3.6k/day,
+#: uncapped) and not one carried `Retry-After` or any `*ratelimit*` header --
+#: every one was `X-Cache: Error from cloudfront`, an edge rule, with exactly
+#: this header key set. A sink that keeps recording the answer it already has
+#: is a disk-burn with a name on it, so a 429 whose keys are all in this set
+#: is NOT written; one carrying anything else (a Retry-After, a limit header,
+#: a new edge) still is -- the instrument stays pointed at the question.
+ROUTINE_429_HEADER_KEYS: frozenset[str] = frozenset(
+    {
+        "content-type",
+        "content-length",
+        "connection",
+        "date",
+        "x-content-type-options",
+        "content-security-policy",
+        "strict-transport-security",
+        "vary",
+        "x-cache",
+        "via",
+        "x-amz-cf-pop",
+        "x-amz-cf-id",
+        "cache-control",
+    }
+)
 
 
 def _log_429_headers(resp: Any, url: str) -> None:
@@ -59,6 +83,8 @@ def _log_429_headers(resp: Any, url: str) -> None:
 
     try:
         headers = dict(getattr(resp, "headers", None) or {})
+        if {str(k).lower() for k in headers} <= ROUTINE_429_HEADER_KEYS:
+            return  # the known CloudFront edge 429; nothing new to learn
         row = {
             "ts": datetime.now(UTC).isoformat(),
             "source": "collector/venues/kalshi.py",
