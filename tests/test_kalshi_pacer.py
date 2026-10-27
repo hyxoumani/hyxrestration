@@ -1,6 +1,7 @@
 """The Kalshi request pacer (2026-10-23): a per-process floor between request
 starts, applied at every `sess.get` in `collector.venues.kalshi`, off by
-default and switched on by the collector at 8 req/s.
+default and switched on by the collector at its measured floor (2.86 req/s
+since 2026-10-27; 8 req/s before, which still drew 1.67 x 429 per idle cycle).
 
 Measured before it: the collector's ~64-request walk at ~18 req/s drew 3-5
 x 429 per cycle and spent ~85% of a 13.6-34.1s fetch in the ladder's 5s
@@ -154,17 +155,19 @@ def test_reset_clears_the_counters_but_not_the_interval(clock):
     assert k.pace_stats() == {"interval_s": 0.125, "requests": 0, "slept_s": 0.0}
 
 
-def test_collector_switches_the_pacer_on_at_8_per_second_and_publishes_pace_s(
+def test_collector_switches_the_pacer_on_under_the_measured_refill_and_publishes_pace_s(
     tmp_path, monkeypatch, capsys
 ):
     """`collect --once` is the caller that names its rate; the cycle line
     carries what the floor cost beside `fetch_s`."""
     from tests.test_hyxlab_writer_lock import _LockProbe, _run_collect
 
-    assert k.COLLECT_PACE_INTERVAL_S == 0.125
+    # 65 requests at 0.35s drain a ~21-token bucket refilling at ~2.6/s by
+    # ~6 tokens over the walk (kalshi.py pacer block); 0.125s emptied it.
+    assert k.COLLECT_PACE_INTERVAL_S == 0.35
     probe = _LockProbe(str(tmp_path / "writer.lock"))
     _run_collect(tmp_path, monkeypatch, probe, fetch_delay=0.0)
-    assert k.pace_stats()["interval_s"] == 0.125
+    assert k.pace_stats()["interval_s"] == 0.35
     out = capsys.readouterr().out
     m = re.search(r"timings=(\{.*\})", out)
     assert m, out

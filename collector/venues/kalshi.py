@@ -261,11 +261,46 @@ RATE_LIMIT_TRIES = 4
 #
 # So the walk is SPACED instead: a floor on the interval between request
 # starts, applied at every `sess.get` in this module so a retry, a tape
-# page and the one-shot /series pull are all paced by the same clock. At
-# 8 req/s (`COLLECT_PACE_INTERVAL_S`) the 64-request walk costs ~8s with
-# nothing refused, against 20-30s with the refusals -- and 8 is under
-# every documented tier, so a tier downgrade would show as 429s returning
-# (the sink and `retry_counts()['rate_limit']`), not as a silent change.
+# page and the one-shot /series pull are all paced by the same clock.
+#
+# FIRST SETTING, 8 req/s (0.125s, 2026-10-23): predicted a clean walk
+# (~8s, 0 x 429). FALSIFIED 2026-10-27 over two sweep-idle nights: still
+# 1.8-2.9 x 429 per cycle, the first at p10 2s / median 3s / p90 6s into
+# the walk. The per-cycle counters (`kalshi_req`/`kalshi_429`, 70 cycles
+# on 2026-10-27) then gave the sustained rate: 30 sweep-idle cycles =
+# 2000 requests / 50 retried 429 = 0.025 per request, 1.67 per cycle
+# (2 of 30 clean), `fetch_s` 8.3s + 5s per 429; 40 cycles under the
+# Kalshi sweep = 0.078 per request, 5.47 per cycle, `fetch_s` 23-54s.
+#
+# The model that fits every reading is a token bucket of ~21 requests
+# refilling at ~2.6 req/s, with the ladder's 5s sleep as the only clock:
+#   10-23 at 18/s: first 429 at 21/(18-2.6) = 1.4s (measured 1.16s);
+#                  5.84s sleep refills 15 (measured ~15 admitted);
+#   10-27 at  8/s: first 429 at 21/(8-2.6) = 3.9s (median 3s, p90 6s);
+#                  each 5s sleep refills 13, drained in 2.4s at 8/s, so
+#                  the 65-request walk is 31 + 1.8 x 19 -> 1.8 x 429
+#                  per cycle (measured 1.67).
+# A 10s sliding window is REFUTED by the 10-23 reading: 5.84s after a
+# 1.16s burst nothing has left a 10s window, yet 15 were admitted.
+#
+# SECOND SETTING, 2.86 req/s (0.35s): the walk drains the bucket at only
+# 0.26/s, so 65 requests over 22.75s cost ~6 of its 21 tokens and the
+# idle cycle should read 0 x 429 with margin for the refill's error (a
+# refill as slow as 2.0/s still leaves the bucket dry only past 24s).
+# Pre-registered for the first sweep-idle night under it: >= 90% of
+# cycles `kalshi_429 0`, `fetch_s` 22-25s, `pace_s` ~15-17s; a cycle
+# mean of >= 1 x 429 at idle refutes the bucket model and the next step
+# is 0.40s (2.5/s), not another halving. Under the sweep the prediction
+# is loose: fewer than 5.47 per cycle, and the sweep's own 429s (65% of
+# them inside 60s of a collector tick) should fall with it. The idle
+# price is +6s of deterministic wall per cycle against the 16.7s
+# average the refusals cost (8.3s + 1.67 x 5s); the collector holds no
+# lock while fetching, so that is latency and nothing else.
+#
+# Either way the floor is under every documented tier (Kalshi's public
+# docs put the basic read tier at 10-20 req/s), so a tier downgrade would
+# show as 429s returning (`retry_counts()['rate_limit']` and the cycle
+# line's `kalshi_429`), not as a silent change.
 #
 # PER PROCESS, by construction: module state, and the collector, breadth
 # and the sweep walk the same key on their own timers (mistakes #125), so
@@ -286,8 +321,9 @@ _PACE_LAST_MONO: float | None = None
 _PACE_REQUESTS = 0
 _PACE_SLEPT_S = 0.0
 
-#: The collector's floor between request starts: 8 req/s.
-COLLECT_PACE_INTERVAL_S = 0.125
+#: The collector's floor between request starts: 2.86 req/s (was 8 req/s
+#: 2026-10-23 -> 2026-10-27; the block above has the arithmetic).
+COLLECT_PACE_INTERVAL_S = 0.35
 
 
 def set_pace(interval_s: float) -> None:

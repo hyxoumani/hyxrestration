@@ -814,8 +814,26 @@ self-match trap the ops rules name for `pkill -f`.
   wall against a 12.5h budget touched twice in October, and the
   collector's loss is latency (+18s mean), not cycles. The collector's
   floor is the lever, once `kalshi_req` says what the bucket admits.
+  **RE-SET 2026-10-27 20:15Z from 70 instrumented cycles** (30 sweep-idle
+  17:50-20:15Z: 2000 req / 50 x 429 = 0.025 per request, 1.67 per
+  cycle, 2 of 30 clean, `fetch_s` 8.3s + 5s per 429; 40 under the
+  sweep: 0.078 per request, 5.47 per cycle). A token bucket of ~21
+  requests refilling at ~2.6 req/s with the ladder's 5s sleep as the
+  only clock fits every reading -- 10-23 at 18/s: first 429 at
+  21/(18-2.6) = 1.4s (1.16s measured), 15 admitted per 5.84s sleep;
+  10-27 at 8/s: first 429 at 3.9s (median 3s), 1.8 x 429 per 65-request
+  cycle (1.67 measured) -- and a 10s sliding window is refuted (nothing
+  leaves it 5.84s after a 1.16s burst, yet 15 were admitted). So
+  `COLLECT_PACE_INTERVAL_S` = **0.35s, 2.86 req/s**: the walk drains the
+  bucket at 0.26/s, ~6 of 21 tokens over its 22.75s. Pre-registered for
+  the first sweep-idle night under it: >= 90% of cycles `kalshi_429 0`,
+  `fetch_s` 22-25s, `pace_s` 15-17s; an idle mean >= 1 x 429 refutes the
+  bucket and the next step is 0.40s, not another halving; under the sweep
+  fewer than 5.47 per cycle and a fall in the sweep's own 429s (65% land
+  inside 60s of a tick). Idle price: +6s deterministic wall per cycle
+  against the 16.7s the refusals averaged; no lock is held while fetching.
   `tests/test_kalshi_pacer.py` (9; the every-`sess.get` arm red-verified
-  against a tape-site mutant).
+  against a tape-site mutant; the constant is pinned at 0.35).
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
