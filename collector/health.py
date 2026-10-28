@@ -1199,6 +1199,149 @@ def read_unit_failures(units: set[str], hours: int = FAILURE_WINDOW_H) -> list[U
     return parse_unit_failures(proc.stdout, units)
 
 
+# ---- Kalshi 429s, host-wide (mistakes #145) ----------------------------------
+#
+# The Kalshi public-API budget is ONE bucket per host, and two projects draw
+# on it: this repo's units, and the sibling `hylshi-family-books` pass on the
+# same `*:0/5` tick, whose stdout never reaches journald. A 429 count read from
+# this repo's journal alone is therefore this repo's SHARE of the refusals,
+# not the bucket's state -- the night of 2026-10-27/28 read 18 here against
+# 41 in the sibling's own trace, paired by the second. So the digest prints
+# both ledgers on one line: the journal by unit, and the sibling governor's
+# grant trace (one JSON line per `slot` grant and per `429`) by count. The
+# trace is read as a file, never through the sibling's code; an absent trace
+# is reported as absent, never as zero.
+
+KALSHI_429_WINDOW_H = 24
+SIBLING_TRACE = Path.home() / ".local/state/hylshi-research/public_api_governor.trace.jsonl"
+SIBLING_TRACE_BACKUPS = 9  # the governor rotates `.1` .. `.N`; read whatever exists
+
+
+def parse_kalshi_429(stdout: str) -> dict[str, int]:
+    """`[kalshi] ... HTTP 429` lines per user unit from `journalctl -o json`.
+
+    The predicate names the venue: the poly sweep also prints `status 429`,
+    and that is Polymarket's bucket, not this one. Non-JSON lines (journalctl's
+    `-- No entries --` goes to stdout, #99) are skipped, not counted.
+    """
+    counts: dict[str, int] = {}
+    for line in stdout.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        msg, unit = rec.get("MESSAGE"), rec.get("_SYSTEMD_USER_UNIT")
+        if not isinstance(msg, str) or not isinstance(unit, str):
+            continue
+        if "[kalshi]" in msg and "HTTP 429" in msg:
+            counts[unit] = counts.get(unit, 0) + 1
+    return counts
+
+
+def read_kalshi_429(hours: int = KALSHI_429_WINDOW_H) -> dict[str, int] | None:
+    """This repo's refusals in the window, by unit; None when the journal
+    cannot be read (never an empty dict -- that would read as a clean box)."""
+    try:
+        proc = subprocess.run(
+            [
+                "journalctl",
+                "--user",
+                "--no-pager",
+                "--since",
+                f"-{hours}h",
+                "--grep=HTTP 429",
+                "-o",
+                "json",
+                "--output-fields=MESSAGE,_SYSTEMD_USER_UNIT",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode not in (0, 1):  # 1 is journalctl's "no match"
+        return None
+    return parse_kalshi_429(proc.stdout)
+
+
+def sibling_trace_paths(base: Path = SIBLING_TRACE) -> list[Path]:
+    """The live trace plus its rotated backups, whichever of them exist."""
+    paths = [base] + [
+        base.with_name(f"{base.name}.{k}") for k in range(1, SIBLING_TRACE_BACKUPS + 1)
+    ]
+    return [p for p in paths if p.is_file()]
+
+
+def parse_sibling_trace(lines, since_ts: float) -> tuple[int, int]:
+    """(429s, grants) at or after `since_ts` from governor trace lines.
+
+    A `slot` record is one granted request; a `429` record is one refusal the
+    sibling took. Anything else (malformed, other kinds, older) is skipped.
+    """
+    n429 = slots = 0
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        ts = rec.get("ts") if isinstance(rec, dict) else None
+        if not isinstance(ts, (int, float)) or ts < since_ts:
+            continue
+        kind = rec.get("kind")
+        if kind == "429":
+            n429 += 1
+        elif kind == "slot":
+            slots += 1
+    return n429, slots
+
+
+def read_sibling_429(since_ts: float, base: Path = SIBLING_TRACE) -> tuple[int, int] | None:
+    """The sibling's (429s, grants) since `since_ts`, or None when no trace
+    file exists or none could be read."""
+    paths = sibling_trace_paths(base)
+    if not paths:
+        return None
+    n429 = slots = 0
+    read_any = False
+    for path in paths:
+        try:
+            with path.open(errors="replace") as fh:
+                a, b = parse_sibling_trace(fh, since_ts)
+        except OSError:
+            continue
+        read_any = True
+        n429 += a
+        slots += b
+    return (n429, slots) if read_any else None
+
+
+def kalshi_429_line(
+    counts: dict[str, int] | None,
+    sibling: tuple[int, int] | None,
+    hours: int = KALSHI_429_WINDOW_H,
+    trace_dir: Path = SIBLING_TRACE.parent,
+) -> str:
+    """One line, both ledgers, the host total only when both are known."""
+    if counts is None:
+        ours = "hyxlab journal unreadable"
+        mine = None
+    else:
+        mine = sum(counts.values())
+        by_unit = ", ".join(
+            f"{u} {n}" for u, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        ours = f"hyxlab {mine}" + (f" ({by_unit})" if by_unit else "")
+    if sibling is None:
+        theirs = f"sibling trace absent ({trace_dir})"
+        host = ""
+    else:
+        n429, slots = sibling
+        theirs = f"sibling family-books {n429} x 429 of {slots} requests"
+        host = f" | host {mine + n429}" if mine is not None else ""
+    return f"{hours}h: {ours} | {theirs}{host}"
+
+
 def journal_floor() -> datetime | None:
     """Oldest entry journald still holds, or None if it cannot be read.
 
@@ -1518,6 +1661,12 @@ def main() -> None:
             killed.append(v.unit)
     qa_svc = show(QA_UNIT)
     print(judge_qa(_load_state(qa_record_path(qa_svc)), qa_svc, now), flush=True)
+    since = now.timestamp() - KALSHI_429_WINDOW_H * 3600
+    print(
+        f"{'KALSHI429':<10} {'(host)':<{width}}  "
+        f"{kalshi_429_line(read_kalshi_429(), read_sibling_429(since))}",
+        flush=True,
+    )
     drift = drift_report()
     checked = [d for d in drift if d.state != "SKIP"]
     # `ok` is the count's subject, `fault` is the headline's: a pending promotion

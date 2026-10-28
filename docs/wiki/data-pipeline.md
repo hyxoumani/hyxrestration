@@ -633,6 +633,21 @@ measurement became its counter-example, and only once committed, since
 string literals and asks the question of *code*, which is the same
 self-match trap the ops rules name for `pkill -f`.
 
+**`KALSHI429` line (since 2026-10-28, mistakes #145).** The Kalshi
+public-API budget is one bucket per host and two projects draw on it,
+so a 429 count from this repo's journal is this repo's SHARE of the
+refusals, not the bucket's state. The digest prints both ledgers on one
+line over 24h: `[kalshi] ... HTTP 429` lines by unit from journald (the
+poly sweep's `status 429` is Polymarket's bucket and is excluded), and
+the sibling `hylshi-family-books` governor's grant trace
+(`~/.local/state/hylshi-research/public_api_governor.trace.jsonl` plus
+rotations, one JSON line per `slot` grant and per `429`), read as a file
+-- never through the sibling's code -- with `host` printed only when
+both are known. An absent trace prints as absent, an unreadable journal
+as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
+`hyxlab 1290 (collect 747, sweep 477, stream 41, breadth 25) | sibling
+297 x 429 of 54462 requests | host 1587`.
+
 ## Running pieces
 
 - `hyxlab-collect.timer` (systemd user, 5 min): `collect --once` —

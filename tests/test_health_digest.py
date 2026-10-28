@@ -1085,3 +1085,127 @@ def test_a_crash_loop_folds_but_keeps_its_count_and_its_interruption():
     ]
     (line, _) = health.failure_history_lines(late, [], FAIL_NOW)
     assert "oom-kill x3 10-07 23:58Z..10-08 00:00Z" in line
+
+
+# ---- KALSHI429: both ledgers of the one bucket (mistakes #145) ----------------
+
+
+def _jl(**fields: object) -> str:
+    return json.dumps(fields)
+
+
+def test_kalshi_429_is_counted_per_unit_and_only_for_kalshi() -> None:
+    out = "\n".join(
+        [
+            _jl(
+                MESSAGE="[kalshi] WARNING: rate-limit retry in 5s for .../markets: HTTP 429",
+                _SYSTEMD_USER_UNIT="hyxlab-collect.service",
+            ),
+            _jl(
+                MESSAGE="[kalshi] WARNING: rate-limit retry in 5s for .../candlesticks: HTTP 429",
+                _SYSTEMD_USER_UNIT="hyxlab-sweep.service",
+            ),
+            _jl(
+                MESSAGE="[kalshi] WARNING: rate-limit retry in 5s for .../markets: HTTP 429",
+                _SYSTEMD_USER_UNIT="hyxlab-sweep.service",
+            ),
+            # Polymarket's bucket, not Kalshi's: the poly sweep's own 429 wording.
+            _jl(
+                MESSAGE="[poly] trades_tail 0xabc stopped early at 500 prints (non-list body, status 429)",
+                _SYSTEMD_USER_UNIT="hyxlab-poly-sweep.service",
+            ),
+            # A unit that merely TALKS about 429s in prose.
+            _jl(
+                MESSAGE="[collect] kalshi_req=65 kalshi_429=0",
+                _SYSTEMD_USER_UNIT="hyxlab-collect.service",
+            ),
+            "-- No entries --",
+            _jl(MESSAGE=None, _SYSTEMD_USER_UNIT="hyxlab-stream.service"),
+        ]
+    )
+    assert health.parse_kalshi_429(out) == {"hyxlab-collect.service": 1, "hyxlab-sweep.service": 2}
+    assert health.parse_kalshi_429("-- No entries --\n") == {}
+
+
+def test_sibling_trace_counts_slots_and_429s_since_the_window() -> None:
+    lines = [
+        _jl(ts=100.0, lane="collector", kind="slot", wait_s=0.5),
+        _jl(ts=101.0, lane="collector", kind="429"),
+        _jl(ts=99.0, lane="collector", kind="429"),  # before the window
+        _jl(ts=102.0, lane="collector", kind="defer"),  # neither a grant nor a refusal
+        "not json",
+        _jl(ts="102", kind="slot"),  # a string ts is not a time
+        "[]",
+    ]
+    assert health.parse_sibling_trace(lines, since_ts=100.0) == (1, 1)
+
+
+def test_sibling_trace_is_read_across_rotations_and_absent_is_none(tmp_path: Path) -> None:
+    base = tmp_path / "public_api_governor.trace.jsonl"
+    assert health.read_sibling_429(0.0, base) is None, "no file must read as unknown, not as zero"
+    base.write_text(_jl(ts=10.0, kind="slot") + "\n" + _jl(ts=11.0, kind="429") + "\n")
+    base.with_name(base.name + ".1").write_text(
+        _jl(ts=5.0, kind="slot") + "\n" + _jl(ts=6.0, kind="429") + "\n"
+    )
+    base.with_name(base.name + ".2").write_text(_jl(ts=1.0, kind="429") + "\n")
+    assert health.read_sibling_429(0.0, base) == (3, 2)
+    assert health.read_sibling_429(5.5, base) == (2, 1)
+    assert health.sibling_trace_paths(base) == [
+        base,
+        base.with_name(base.name + ".1"),
+        base.with_name(base.name + ".2"),
+    ]
+
+
+def test_kalshi_429_line_carries_both_ledgers_and_names_an_absent_one() -> None:
+    counts = {
+        "hyxlab-collect.service": 18,
+        "hyxlab-sweep.service": 104,
+        "hyxlab-breadth.service": 4,
+    }
+    line = health.kalshi_429_line(counts, (41, 14619), hours=24, trace_dir=Path("/x"))
+    assert line == (
+        "24h: hyxlab 126 (hyxlab-sweep.service 104, hyxlab-collect.service 18, "
+        "hyxlab-breadth.service 4) | sibling family-books 41 x 429 of 14619 requests | host 167"
+    )
+    # Every field moves the line (#95): a renderer that drops one reads the same.
+    base = health.kalshi_429_line(counts, (41, 14619), hours=24, trace_dir=Path("/x"))
+    assert (
+        health.kalshi_429_line(
+            {**counts, "hyxlab-collect.service": 19}, (41, 14619), 24, Path("/x")
+        )
+        != base
+    )
+    assert health.kalshi_429_line(counts, (42, 14619), 24, Path("/x")) != base
+    assert health.kalshi_429_line(counts, (41, 14620), 24, Path("/x")) != base
+    assert health.kalshi_429_line(counts, (41, 14619), 12, Path("/x")) != base
+    absent = health.kalshi_429_line(counts, None, hours=24, trace_dir=Path("/x"))
+    assert "sibling trace absent (/x)" in absent and "host" not in absent, (
+        "no total from one ledger"
+    )
+    unread = health.kalshi_429_line(None, (41, 14619), hours=24, trace_dir=Path("/x"))
+    assert unread.startswith("24h: hyxlab journal unreadable |") and "host" not in unread
+    assert (
+        health.kalshi_429_line({}, (0, 100), 24, Path("/x"))
+        == "24h: hyxlab 0 | sibling family-books 0 x 429 of 100 requests | host 0"
+    )
+
+
+def test_the_digest_prints_the_kalshi429_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(health, "read_kalshi_429", lambda: {"hyxlab-collect.service": 2})
+    monkeypatch.setattr(health, "read_sibling_429", lambda since: (3, 40))
+    monkeypatch.setattr(health, "discover_units", lambda: [])
+    monkeypatch.setattr(health, "read_unit_failures", lambda units: [])
+    monkeypatch.setattr(health, "live_cgmem", lambda units: [])
+    monkeypatch.setattr(health, "journal_floor", lambda: None)
+    monkeypatch.setattr(health, "drift_report", lambda: [])
+    monkeypatch.setattr(health, "show", lambda unit: {})
+    monkeypatch.setattr(health, "judge_qa", lambda rec, svc, now: "QA (stubbed)")
+    health.main()
+    out = capsys.readouterr().out
+    assert (
+        "KALSHI429  (host)  24h: hyxlab 2 (hyxlab-collect.service 2) | sibling family-books 3 x 429 of 40 requests | host 5"
+        in out
+    )
