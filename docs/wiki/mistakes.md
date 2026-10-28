@@ -3571,6 +3571,27 @@ Format: what happened → root cause → error type → prevention tier
     one where the NEW statement fails exercises its membership (the
     perturbation rule above: watch the mutant land, then watch it fail).
 
+146. **2026-10-28 20:45Z -- an intervention was pre-registered as 'the only
+    test' of a cause while the ledgers already held the control on an axis
+    the read did not use.** The 08:35Z (5b) read paired sibling grants to
+    collector walks by the SECOND, found the sibling on 80 of 80 night
+    windows at ~27 requests each, and concluded 'no overlap-free control in
+    the data: the phase-shift experiment is the only test' -- queueing a
+    `*:3/5` move of the collector, a capture-grid change across the
+    tradepass/atlas/breadth offsets, the QA race story and ~10 pinned test
+    sites. The HOUR axis was the control: the sibling's rate was a constant
+    2,179-2,211 grants/h across every sweep-idle hour while the collector's
+    clean rate swung 100% -> 67% and the sibling's own 429s 0 -> 10/h in
+    step with ours. A constant cannot carry variance; the residual is
+    exchange-side and paid by both tenants, and the shift was closed
+    untaken. Classification: reasoning error -- the 'no control' claim was
+    scoped to the axis that had been read and stated for the data. Rule:
+    before pre-registering an INTERVENTION to test a cause, bin the
+    suspect's rate and the victim's loss on every axis the ledgers carry
+    (second, hour, day) and ask whether the suspect VARIES where the loss
+    does; a suspect that is flat where the loss moves is refuted without a
+    change. Instrument: `collector.health --kalshi429-hourly`.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

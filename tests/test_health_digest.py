@@ -1209,3 +1209,141 @@ def test_the_digest_prints_the_kalshi429_line(
         "KALSHI429  (host)  24h: hyxlab 2 (hyxlab-collect.service 2) | sibling family-books 3 x 429 of 40 requests | host 5"
         in out
     )
+
+
+# ---- KALSHI429 by the hour (status 2026-10-28 20:xxZ) --------------------------
+
+
+def _jlt(ts_s: float, **fields) -> str:
+    return json.dumps({"__REALTIME_TIMESTAMP": str(int(ts_s * 1e6)), **fields})
+
+
+_H = 1_793_200_000 - (1_793_200_000 % 3600)  # an exact UTC hour boundary, 2026-10-28
+
+
+def test_collect_cycles_are_binned_by_hour_with_failing_and_429_counts() -> None:
+    out = "\n".join(
+        [
+            _jlt(_H + 10, MESSAGE="[collect] ... timings={'kalshi_req': 65, 'kalshi_429': 0, ...}"),
+            _jlt(_H + 310, MESSAGE="[collect] ... timings={'kalshi_req': 67, 'kalshi_429': 2, ...}"),
+            _jlt(
+                _H + 3610, MESSAGE="[collect] ... timings={'kalshi_req': 66, 'kalshi_429': 1, ...}"
+            ),
+            _jlt(_H + 3620, MESSAGE="[collect] no counter on this line"),
+            "-- No entries --",
+        ]
+    )
+    cycles = health.parse_collect_cycles(out)
+    assert cycles == {health._hour_key(_H): (2, 1, 2), health._hour_key(_H + 3600): (1, 1, 1)}
+
+
+def test_hourly_429s_keep_the_venue_predicate_and_the_unit() -> None:
+    out = "\n".join(
+        [
+            _jlt(
+                _H + 1,
+                MESSAGE="[kalshi] WARNING: ... HTTP 429",
+                _SYSTEMD_USER_UNIT="hyxlab-sweep.service",
+            ),
+            _jlt(
+                _H + 2,
+                MESSAGE="[kalshi] WARNING: ... HTTP 429",
+                _SYSTEMD_USER_UNIT="hyxlab-collect.service",
+            ),
+            _jlt(
+                _H + 3,
+                MESSAGE="[poly] trades_tail stopped early (status 429)",
+                _SYSTEMD_USER_UNIT="hyxlab-poly-sweep.service",
+            ),
+        ]
+    )
+    assert health.parse_kalshi_429_hourly(out) == {
+        health._hour_key(_H): {"hyxlab-sweep.service": 1, "hyxlab-collect.service": 1}
+    }
+
+
+def test_active_hours_name_only_the_sweep_units_not_systemd_edges() -> None:
+    out = "\n".join(
+        [
+            _jlt(_H + 1, _SYSTEMD_USER_UNIT="init.scope"),  # `Started hyxlab-sweep.service`
+            _jlt(_H + 2, _SYSTEMD_USER_UNIT="hyxlab-sweep.service"),
+            _jlt(_H + 3700, _SYSTEMD_USER_UNIT="hyxlab-poly-sweep.service"),
+            _jlt(_H + 3701, _SYSTEMD_USER_UNIT="hyxlab-collect.service"),
+        ]
+    )
+    assert health.parse_active_hours(out) == {
+        health._hour_key(_H): {"hyxlab-sweep.service"},
+        health._hour_key(_H + 3600): {"hyxlab-poly-sweep.service"},
+    }
+
+
+def test_sibling_trace_hourly_bins_grants_and_429s_since_the_window(tmp_path: Path) -> None:
+    lines = [
+        json.dumps({"ts": _H - 1, "kind": "slot"}),  # before the window
+        json.dumps({"ts": _H + 1, "kind": "slot"}),
+        json.dumps({"ts": _H + 2, "kind": "429"}),
+        json.dumps({"ts": _H + 3, "kind": "yield"}),
+        json.dumps({"ts": _H + 3601, "kind": "slot"}),
+        "garbage",
+    ]
+    assert health.parse_sibling_trace_hourly(lines, since_ts=_H) == {
+        health._hour_key(_H): (1, 1),
+        health._hour_key(_H + 3600): (0, 1),
+    }
+    base = tmp_path / "t.jsonl"
+    assert health.read_sibling_429_hourly(0.0, base) is None, "no trace must read as unknown"
+    base.write_text("\n".join(lines[:3]) + "\n")
+    (tmp_path / "t.jsonl.1").write_text(lines[4] + "\n")
+    assert health.read_sibling_429_hourly(_H, base) == {
+        health._hour_key(_H): (1, 1),
+        health._hour_key(_H + 3600): (0, 1),
+    }
+
+
+def test_hourly_lines_carry_every_term_and_name_each_absence() -> None:
+    now = datetime.fromtimestamp(_H + 3600 + 100, UTC)
+    h0 = health._hour_key(_H)
+    cycles = {h0: (12, 3, 5)}
+    ours = {h0: {"hyxlab-sweep.service": 4, "hyxlab-collect.service": 5}}
+    active = {h0: {"hyxlab-sweep.service"}}
+    sibling = {h0: (7, 2190)}
+    lines = health.kalshi_429_hourly_lines(cycles, ours, active, sibling, now, hours=2)
+    assert len(lines) == 3 and lines[0].startswith("KALSHI429 by the hour, last 2h")
+    assert "collect 12 cyc  3 fail ( 75% clean)   5 x 429" in lines[1]
+    assert "sweeps   4 other   5" in lines[1]
+    assert "sibling  2190 req   7 x 429" in lines[1]
+    assert lines[1].endswith("sweeps sweep")
+    # the hour with no rows: each ledger's absence named, never printed as zero
+    assert (
+        "collect --" in lines[2] and "sibling --" in lines[2] and lines[2].endswith("sweeps idle")
+    )
+    # perturbation: every term moves the line (#95 -- a scan of the source cannot prove this)
+    base = lines[1]
+    for c, o, a, s in [
+        ({h0: (12, 4, 5)}, ours, active, sibling),
+        ({h0: (12, 3, 6)}, ours, active, sibling),
+        ({h0: (11, 3, 5)}, ours, active, sibling),
+        (cycles, {h0: {"hyxlab-sweep.service": 5, "hyxlab-collect.service": 5}}, active, sibling),
+        (cycles, {h0: {"hyxlab-sweep.service": 4, "hyxlab-collect.service": 6}}, active, sibling),
+        (cycles, ours, {h0: {"hyxlab-poly-sweep.service"}}, sibling),
+        (cycles, ours, active, {h0: (8, 2190)}),
+        (cycles, ours, active, {h0: (7, 2191)}),
+    ]:
+        assert health.kalshi_429_hourly_lines(c, o, a, s, now, hours=2)[1] != base
+    # unreadable ledgers are named on every line, not rendered as a clean hour
+    blind = health.kalshi_429_hourly_lines(None, None, None, None, now, hours=2)
+    for ln in blind[1:]:
+        assert "collect journal unreadable" in ln and "journal unreadable" in ln
+        assert "sibling trace absent" in ln and ln.endswith("sweeps unknown")
+
+
+def test_cli_hourly_flag_parses_hours_and_rejects_nonsense(monkeypatch, capsys) -> None:
+    seen: list[int] = []
+    monkeypatch.setattr(health, "kalshi_429_hourly_main", lambda hours: seen.append(hours) or 0)
+    assert health.cli(["--kalshi429-hourly"]) == 0
+    assert health.cli(["--kalshi429-hourly", "6"]) == 0
+    assert seen == [health.KALSHI_429_HOURLY_H, 6]
+    assert health.cli(["--kalshi429-hourly", "zero"]) == health.USAGE_ERROR
+    assert health.cli(["--kalshi429-hourly", "0"]) == health.USAGE_ERROR
+    assert health.cli(["--kalshi429-hourly", "6", "7"]) == health.USAGE_ERROR
+    assert "usage:" in capsys.readouterr().err

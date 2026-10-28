@@ -1342,6 +1342,259 @@ def kalshi_429_line(
     return f"{hours}h: {ours} | {theirs}{host}"
 
 
+# ---- the same two ledgers by the HOUR ----------------------------------------
+#
+# The 24h line above says how much of the bucket each tenant lost; it cannot
+# say WHEN, and when is the discriminator. Measured 2026-10-28 over the first
+# sweep-idle stretch under the 0.35s floor (10-27 21Z -> 10-28 04Z and 10-28
+# 18Z -> 20Z): the sibling's grants were a constant 2,179-2,211 per hour across
+# every idle hour while the collector's clean-cycle rate swung 100% (21-22Z,
+# 19Z) to 67% (00Z, 02Z), and the sibling's OWN 429s rose with ours (0 -> 10/h
+# at the same grant rate). A constant cannot carry that variance: the
+# sibling's traffic on our seconds is refuted as the night residual's cause,
+# the residual is exchange-side tightness in 00-05Z that both tenants pay,
+# and the pre-registered `*:3/5` phase shift (status 10-28 08:35Z (5)) was
+# left untaken -- its upside is bounded to those hours and its cost is a
+# capture-grid change across ~10 pinned sites. That reading took an awk over
+# the journal and a script over the trace; this is the same table behind one
+# flag (`--kalshi429-hourly [HOURS]`), so the next drift question is a command
+# rather than an afternoon. Each hour carries which sweeps logged anything in
+# it, because the sweeps are the dominant daytime 429 source and an hour with
+# one running is a different population from an idle one.
+
+KALSHI_429_HOURLY_H = 30
+SWEEP_UNITS = ("hyxlab-sweep.service", "hyxlab-poly-sweep.service")
+_CYCLE_429_RE = re.compile(r"'kalshi_429': (\d+)")
+
+
+def _hour_key(ts: float) -> str:
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H")
+
+
+def _journal_json(stdout: str):
+    """Yield (epoch_s, record) for each JSON line carrying a realtime stamp."""
+    for line in stdout.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        try:
+            ts = int(rec["__REALTIME_TIMESTAMP"]) / 1e6
+        except (KeyError, TypeError, ValueError):
+            continue
+        yield ts, rec
+
+
+def parse_collect_cycles(stdout: str) -> dict[str, tuple[int, int, int]]:
+    """hour -> (cycles, failing cycles, 429s) from the collector's stats lines.
+
+    A cycle is one `'kalshi_429': N` stats line; it is failing when N > 0. The
+    per-cycle count is the collector's own ledger of retried refusals, so the
+    429 column here can differ from the `[kalshi] ... HTTP 429` line count by
+    the retries that never printed (none observed, but two ledgers are two).
+    """
+    out: dict[str, list[int]] = {}
+    for ts, rec in _journal_json(stdout):
+        msg = rec.get("MESSAGE")
+        m = _CYCLE_429_RE.search(msg) if isinstance(msg, str) else None
+        if m is None:
+            continue
+        n = int(m.group(1))
+        row = out.setdefault(_hour_key(ts), [0, 0, 0])
+        row[0] += 1
+        row[1] += n > 0
+        row[2] += n
+    return {h: (a, b, c) for h, (a, b, c) in out.items()}
+
+
+def parse_kalshi_429_hourly(stdout: str) -> dict[str, dict[str, int]]:
+    """hour -> unit -> `[kalshi] ... HTTP 429` lines; the 24h predicate, binned."""
+    out: dict[str, dict[str, int]] = {}
+    for ts, rec in _journal_json(stdout):
+        msg, unit = rec.get("MESSAGE"), rec.get("_SYSTEMD_USER_UNIT")
+        if not isinstance(msg, str) or not isinstance(unit, str):
+            continue
+        if "[kalshi]" in msg and "HTTP 429" in msg:
+            per = out.setdefault(_hour_key(ts), {})
+            per[unit] = per.get(unit, 0) + 1
+    return out
+
+
+def parse_active_hours(stdout: str, units: tuple[str, ...] = SWEEP_UNITS) -> dict[str, set[str]]:
+    """hour -> units in `units` that logged ANY line in it (the sweeps' running
+    hours). `journalctl -u X` also returns systemd's own start/stop lines about
+    X, stamped `_SYSTEMD_USER_UNIT=init.scope`; those are the unit's edges,
+    not its output, and are dropped here rather than printed as a tenant."""
+    out: dict[str, set[str]] = {}
+    for ts, rec in _journal_json(stdout):
+        unit = rec.get("_SYSTEMD_USER_UNIT")
+        if isinstance(unit, str) and unit in units:
+            out.setdefault(_hour_key(ts), set()).add(unit)
+    return out
+
+
+def parse_sibling_trace_hourly(lines, since_ts: float) -> dict[str, tuple[int, int]]:
+    """hour -> (429s, grants) from governor trace lines at or after `since_ts`."""
+    out: dict[str, list[int]] = {}
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        ts = rec.get("ts") if isinstance(rec, dict) else None
+        if not isinstance(ts, (int, float)) or ts < since_ts:
+            continue
+        kind = rec.get("kind")
+        if kind not in ("429", "slot"):
+            continue
+        row = out.setdefault(_hour_key(ts), [0, 0])
+        row[0 if kind == "429" else 1] += 1
+    return {h: (a, b) for h, (a, b) in out.items()}
+
+
+def _journal_hourly(args: list[str], hours: int) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["journalctl", "--user", "--no-pager", "--since", f"-{hours}h", *args],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode in (0, 1) else None
+
+
+def read_kalshi_429_hourly(hours: int = KALSHI_429_HOURLY_H):
+    """The three journal reads for the hourly table; each None when unreadable."""
+    cycles = _journal_hourly(
+        [
+            "-u",
+            "hyxlab-collect.service",
+            "--grep=kalshi_429",
+            "-o",
+            "json",
+            "--output-fields=MESSAGE,__REALTIME_TIMESTAMP",
+        ],
+        hours,
+    )
+    ours = _journal_hourly(
+        [
+            "--grep=HTTP 429",
+            "-o",
+            "json",
+            "--output-fields=MESSAGE,_SYSTEMD_USER_UNIT,__REALTIME_TIMESTAMP",
+        ],
+        hours,
+    )
+    active = _journal_hourly(
+        [
+            *[a for u in SWEEP_UNITS for a in ("-u", u)],
+            "-o",
+            "json",
+            "--output-fields=_SYSTEMD_USER_UNIT,__REALTIME_TIMESTAMP",
+        ],
+        hours,
+    )
+    return (
+        parse_collect_cycles(cycles) if cycles is not None else None,
+        parse_kalshi_429_hourly(ours) if ours is not None else None,
+        parse_active_hours(active) if active is not None else None,
+    )
+
+
+def read_sibling_429_hourly(
+    since_ts: float, base: Path = SIBLING_TRACE
+) -> dict[str, tuple[int, int]] | None:
+    """The sibling's (429s, grants) by hour since `since_ts`; None when no
+    trace could be read (never an empty dict -- that would read as idle)."""
+    paths = sibling_trace_paths(base)
+    if not paths:
+        return None
+    out: dict[str, tuple[int, int]] = {}
+    read_any = False
+    for path in paths:
+        try:
+            with path.open(errors="replace") as fh:
+                part = parse_sibling_trace_hourly(fh, since_ts)
+        except OSError:
+            continue
+        read_any = True
+        for h, (a, b) in part.items():
+            c, d = out.get(h, (0, 0))
+            out[h] = (c + a, d + b)
+    return out if read_any else None
+
+
+def kalshi_429_hourly_lines(
+    cycles: dict[str, tuple[int, int, int]] | None,
+    ours: dict[str, dict[str, int]] | None,
+    active: dict[str, set[str]] | None,
+    sibling: dict[str, tuple[int, int]] | None,
+    now: datetime,
+    hours: int = KALSHI_429_HOURLY_H,
+) -> list[str]:
+    """One line per clock hour, oldest first, both ledgers plus the sweeps.
+
+    An hour with no collector cycle prints `collect --` (the journal has
+    rotated past it, or the timer was down -- the digest cannot tell which,
+    and says neither). An unreadable ledger prints as unreadable on every
+    line; a sibling hour with no trace rows prints `sibling --`, since the
+    governor writes nothing when the sibling is idle.
+    """
+    start = int(now.timestamp()) // 3600 * 3600 - (hours - 1) * 3600
+    lines = [
+        f"KALSHI429 by the hour, last {hours}h (collect cycles / failing / "
+        f"collector 429s | this repo's `[kalshi] HTTP 429` by unit | sibling grants / 429s | sweeps logging)"
+    ]
+    for k in range(hours):
+        ts = start + k * 3600
+        h = _hour_key(ts)
+        label = datetime.fromtimestamp(ts, UTC).strftime("%m-%d %HZ")
+        if cycles is None:
+            col = "collect journal unreadable"
+        elif h in cycles:
+            n, fail, n429 = cycles[h]
+            clean = 100.0 * (n - fail) / n
+            col = f"collect {n:2d} cyc {fail:2d} fail ({clean:3.0f}% clean) {n429:3d} x 429"
+        else:
+            col = "collect --"
+        if ours is None:
+            mine = "journal unreadable"
+        else:
+            per = ours.get(h, {})
+            sweep = sum(v for u, v in per.items() if u in SWEEP_UNITS)
+            other = sum(v for u, v in per.items() if u not in SWEEP_UNITS)
+            mine = f"sweeps {sweep:3d} other {other:3d}"
+        if sibling is None:
+            sib = "sibling trace absent"
+        elif h in sibling:
+            s429, slots = sibling[h]
+            sib = f"sibling {slots:5d} req {s429:3d} x 429"
+        else:
+            sib = "sibling --"
+        if active is None:
+            run = "sweeps unknown"
+        else:
+            names = sorted(
+                u.removeprefix("hyxlab-").removesuffix(".service") for u in active.get(h, ())
+            )
+            run = "sweeps " + (",".join(names) if names else "idle")
+        lines.append(f"{label}  {col} | {mine} | {sib} | {run}")
+    return lines
+
+
+def kalshi_429_hourly_main(hours: int) -> int:
+    now = datetime.now(UTC)
+    cycles, ours, active = read_kalshi_429_hourly(hours)
+    sibling = read_sibling_429_hourly(now.timestamp() - hours * 3600)
+    for line in kalshi_429_hourly_lines(cycles, ours, active, sibling, now, hours):
+        print(line, flush=True)
+    return 0
+
+
 def journal_floor() -> datetime | None:
     """Oldest entry journald still holds, or None if it cannot be read.
 
@@ -1635,8 +1888,18 @@ def drift_main() -> int:
 def cli(argv: list[str]) -> int:
     if argv == ["--drift-only"]:
         return drift_main()
+    if argv and argv[0] == "--kalshi429-hourly" and len(argv) <= 2:
+        try:
+            hours = int(argv[1]) if len(argv) == 2 else KALSHI_429_HOURLY_H
+        except ValueError:
+            hours = 0
+        if hours >= 1:
+            return kalshi_429_hourly_main(hours)
     if argv:
-        print("usage: python -m collector.health [--drift-only]", file=sys.stderr)
+        print(
+            "usage: python -m collector.health [--drift-only | --kalshi429-hourly [HOURS]]",
+            file=sys.stderr,
+        )
         return USAGE_ERROR
     main()
     return 0

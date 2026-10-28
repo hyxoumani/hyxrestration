@@ -469,7 +469,13 @@
   #125). Read a victim's cost by the TICK the suspect fires on, never by
   the day; a short daily unit on a shared budget starts past the periodic
   writer's p99 wall and ends before its next tick (`AccuracySec=1s`, or
-  systemd's 1-min coalescing slides it back).
+  systemd's 1-min coalescing slides it back). The mirror rule: a suspect
+  that is FLAT where the loss moves is refuted without an intervention.
+  The sibling's grants were a constant 2,179-2,211/h across every
+  sweep-idle hour while the collector's clean rate swung 100% -> 67% and
+  the sibling's own 429s rose with ours, so the pre-registered `*:3/5`
+  phase shift was closed untaken (mistakes #146). Bin both ledgers by the
+  hour first: `python -m collector.health --kalshi429-hourly [HOURS]`.
 - `daemon-reload` on a `Persistent=true` timer whose OnCalendar moved to a
   time of day that is already past (but after its last trigger) FIRES the
   service at reload -- systemd re-derives the schedule and counts the new
