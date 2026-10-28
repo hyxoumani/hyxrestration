@@ -4179,6 +4179,39 @@ property of the CHECK.
     daemons -- and the read names which tenant was drawing in each
     failing cycle, or the next re-tune pays for a neighbour's burst.**
 
+145. **2026-10-28 08:35Z -- a tenant enumerated by NAME in #144 was then
+    read as absent because its journal is empty, and the one instrument
+    that records every request it makes sits outside this repo.** #144
+    listed `hylshi-family-books` (the sibling project, same host, same
+    `*:0/5` tick) as a drawer on the shared Kalshi bucket; the 02:15Z
+    and 03:25Z passes then attributed the night's 429s by `journalctl
+    -o json` grouped on `_SYSTEMD_USER_UNIT` and found only
+    `hyxlab-collect`, so the residual was called 'the US-evening peak'
+    and the stream's rollover burst. The sibling's service writes its
+    stdout to a file beside its state, not to journald -- ZERO unit
+    lines across a night in which, by its own governor trace
+    (`~/.local/state/hylshi-research/public_api_governor.trace.jsonl`,
+    one JSON line per grant and per 429), it made 14,619 requests and
+    took 41 x 429 against hyxlab's 18. By the second, 7 of hyxlab's 14
+    failing cycles carry a sibling 429 within 10s (23:20, 00:15, 02:20,
+    02:25, 03:10, 03:25, 04:00Z), and the sibling took 7 in the 21-22Z
+    hour hyxlab logged as 12/12 clean -- one bucket, two counters, each
+    seeing only its own refusals. Worse, the two projects calibrated
+    against each other as weather: the sibling's 1.25 req/s host
+    ceiling (V2-087, 10-06) was measured under hyxlab's then-unpaced
+    8-18 req/s bursts, and hyxlab's 0.35s floor (#144) under the
+    sibling's ~1.2 req/s. Also measured before touching anything: the
+    collector timer has no `AccuracySec`, so systemd coalesced it onto
+    the sibling's :13 wakeup in 44 of 80 cycles -- and :13 starts fail
+    at 16% vs 19% for :00 starts, so that pin alone is not the lever
+    (the 150s pass covers the 22s walk either way). Rule: **an absence
+    of journal lines is evidence about the LOGGING, not the traffic;
+    before attributing a shared-budget refusal, find each named
+    tenant's own request ledger (trace file, state, summary line) and
+    read the two ledgers side by side on the same seconds. A budget
+    shared across projects needs ONE ceiling measured with every
+    tenant named, or each re-tune fits the other's noise.**
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day

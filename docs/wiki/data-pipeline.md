@@ -845,6 +845,19 @@ self-match trap the ops rules name for `pkill -f`.
   (stream REST snapshots, `hyxlab-breadth` at `*:2/5`, the sibling
   `hylshi-family-books` on the same `*:0/5` tick), not the walk
   (mistakes #144). Residual price 50s over 56 cycles vs 182s for 0.40s.
+  By-the-tick read, 2026-10-28 08:35Z (mistakes #145): the tenant is the
+  sibling project's `hylshi-family-books.service` (`*:0/5`, a 150-175s
+  Kalshi pass every 5 min at ~1.2 req/s, ~183 requests per pass, stdout
+  NOT in journald; its governor trace at
+  `~/.local/state/hylshi-research/public_api_governor.trace.jsonl` is
+  the instrument). Same night: 14,619 sibling requests, 41 sibling 429s
+  vs hyxlab's 18, 7 of hyxlab's 14 failing cycles paired with a sibling
+  429 within 10s, and 7 sibling 429s in the 21-22Z hour hyxlab read as
+  clean. One bucket per host; the stream's walk and `hyxlab-breadth`
+  are not it. Timer coalescing (collector on the sibling's :13 wakeup,
+  44/80 cycles) is measured NOT to matter: :13 starts fail 16%, :00
+  starts 19%. Pre-registered candidate, not taken: collector at `*:3/5`
+  (sibling idle :02:50-:05:00), >= 90% clean at the same 0.35s floor.
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
