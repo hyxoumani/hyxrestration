@@ -475,7 +475,11 @@
   sweep-idle hour while the collector's clean rate swung 100% -> 67% and
   the sibling's own 429s rose with ours, so the pre-registered `*:3/5`
   phase shift was closed untaken (mistakes #146). Bin both ledgers by the
-  hour first: `python -m collector.health --kalshi429-hourly [HOURS]`.
+  hour first: `python -m collector.health --kalshi429-hourly [HOURS]`, then
+  by the second (`--kalshi429-pairs`): two tenants refused in the SAME
+  second at flat own-load is one host bucket closing (20Z 10-28: 3 of 3
+  idle-hour collector 429s within 0.3s of a sibling 429; the sweep's own
+  tail 429s pair with nothing -- that is its own load).
 - `daemon-reload` on a `Persistent=true` timer whose OnCalendar moved to a
   time of day that is already past (but after its last trigger) FIRES the
   service at reload -- systemd re-derives the schedule and counts the new

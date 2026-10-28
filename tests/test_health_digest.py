@@ -1225,7 +1225,9 @@ def test_collect_cycles_are_binned_by_hour_with_failing_and_429_counts() -> None
     out = "\n".join(
         [
             _jlt(_H + 10, MESSAGE="[collect] ... timings={'kalshi_req': 65, 'kalshi_429': 0, ...}"),
-            _jlt(_H + 310, MESSAGE="[collect] ... timings={'kalshi_req': 67, 'kalshi_429': 2, ...}"),
+            _jlt(
+                _H + 310, MESSAGE="[collect] ... timings={'kalshi_req': 67, 'kalshi_429': 2, ...}"
+            ),
             _jlt(
                 _H + 3610, MESSAGE="[collect] ... timings={'kalshi_req': 66, 'kalshi_429': 1, ...}"
             ),
@@ -1347,3 +1349,67 @@ def test_cli_hourly_flag_parses_hours_and_rejects_nonsense(monkeypatch, capsys) 
     assert health.cli(["--kalshi429-hourly", "0"]) == health.USAGE_ERROR
     assert health.cli(["--kalshi429-hourly", "6", "7"]) == health.USAGE_ERROR
     assert "usage:" in capsys.readouterr().err
+
+
+def test_429_pairing_by_the_second_names_the_same_event_and_each_absence() -> None:
+    ours = "\n".join(
+        [
+            _jlt(
+                _H + 2.0,
+                MESSAGE="[kalshi] ... HTTP 429",
+                _SYSTEMD_USER_UNIT="hyxlab-collect.service",
+            ),
+            _jlt(
+                _H + 100.0,
+                MESSAGE="[kalshi] ... HTTP 429",
+                _SYSTEMD_USER_UNIT="hyxlab-sweep.service",
+            ),
+            _jlt(
+                _H + 50.0,
+                MESSAGE="[poly] status 429",
+                _SYSTEMD_USER_UNIT="hyxlab-poly-sweep.service",
+            ),
+        ]
+    )
+    events = health.parse_kalshi_429_events(ours)
+    assert events == [(_H + 2.0, "hyxlab-collect.service"), (_H + 100.0, "hyxlab-sweep.service")]
+    trace = [
+        json.dumps({"ts": _H + 1.0, "kind": "429"}),
+        json.dumps({"ts": _H + 1.5, "kind": "slot"}),
+        json.dumps({"ts": _H + 90.0, "kind": "429"}),
+        json.dumps({"ts": _H - 5.0, "kind": "429"}),  # before the window
+    ]
+    sib = health.parse_sibling_429_events(trace, since_ts=_H)
+    assert sib == [_H + 1.0, _H + 90.0]
+    assert health.nearest_delta(_H + 2.0, sib) == -1.0
+    assert health.nearest_delta(_H + 100.0, sib) == -10.0
+    assert health.nearest_delta(_H, []) is None
+    lines = health.kalshi_429_pair_lines(events, sib, hours=1)
+    assert "collect" in lines[1] and "-1.0s  <- same event" in lines[1]
+    assert "sweep" in lines[2] and "-10.0s" in lines[2] and "same event" not in lines[2]
+    assert lines[-1] == "paired inside 2s: 1/2 = 50%; sibling 429s in window: 2"
+    # perturbation: the window, a shifted sibling, a dropped event each move the summary
+    assert health.kalshi_429_pair_lines(events, sib, 1, window_s=10.0)[-1].startswith(
+        "paired inside 10s: 2/2"
+    )
+    assert health.kalshi_429_pair_lines(events, [_H + 90.0], 1)[-1].startswith(
+        "paired inside 2s: 0/2"
+    )
+    assert health.kalshi_429_pair_lines(events[:1], sib, 1)[-1].startswith(
+        "paired inside 2s: 1/1 = 100%"
+    )
+    assert health.kalshi_429_pair_lines(events, [], 1)[1].endswith("sibling: none in window")
+    assert health.kalshi_429_pair_lines(None, sib, 1) == [lines[0], "hyxlab journal unreadable"]
+    assert (
+        health.kalshi_429_pair_lines(events, None, 1)[1]
+        == "sibling trace absent; 2 hyxlab 429(s) unpaired"
+    )
+
+
+def test_cli_pairs_flag_shares_the_hours_parse(monkeypatch) -> None:
+    seen: list[int] = []
+    monkeypatch.setattr(health, "kalshi_429_pairs_main", lambda hours: seen.append(hours) or 0)
+    assert health.cli(["--kalshi429-pairs", "3"]) == 0
+    assert health.cli(["--kalshi429-pairs"]) == 0
+    assert seen == [3, health.KALSHI_429_HOURLY_H]
+    assert health.cli(["--kalshi429-pairs", "x"]) == health.USAGE_ERROR

@@ -97,6 +97,7 @@ from another unread verdict.
 
 from __future__ import annotations
 
+import bisect
 import json
 import re
 import subprocess
@@ -1595,6 +1596,127 @@ def kalshi_429_hourly_main(hours: int) -> int:
     return 0
 
 
+# ---- the same two ledgers by the SECOND --------------------------------------
+#
+# The hour table says the two tenants' refusals rise and fall together; the
+# second says whether they are the SAME refusal event. Measured 2026-10-28
+# 20Z (sweeps idle, both tenants at flat own-load): hyxlab's three `HTTP 429`
+# lines fell at 20:35:02, 20:35:09 and 20:45:21, the sibling's four at
+# 20:35:02, 20:35:04, 20:35:09 and 20:45:20 -- every one of ours inside 1s
+# of one of theirs. Two counters that refuse in the same second are one
+# bucket closing on the host, not one tenant's load pushing the other over;
+# #145 found the same by hand (7 of 14 failing cycles within 10s). This is
+# that pairing as a flag: each of this repo's 429s with the signed seconds
+# to the nearest sibling 429, and the share inside `PAIR_WINDOW_S`.
+
+PAIR_WINDOW_S = 2.0
+
+
+def parse_kalshi_429_events(stdout: str) -> list[tuple[float, str]]:
+    """(epoch_s, unit) per `[kalshi] ... HTTP 429` line, oldest first."""
+    out = []
+    for ts, rec in _journal_json(stdout):
+        msg, unit = rec.get("MESSAGE"), rec.get("_SYSTEMD_USER_UNIT")
+        if (
+            isinstance(msg, str)
+            and isinstance(unit, str)
+            and "[kalshi]" in msg
+            and "HTTP 429" in msg
+        ):
+            out.append((ts, unit))
+    return sorted(out)
+
+
+def parse_sibling_429_events(lines, since_ts: float) -> list[float]:
+    """Epoch seconds of the sibling's `429` records at or after `since_ts`."""
+    out = []
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        ts = rec.get("ts") if isinstance(rec, dict) else None
+        if isinstance(ts, (int, float)) and ts >= since_ts and rec.get("kind") == "429":
+            out.append(float(ts))
+    return sorted(out)
+
+
+def read_sibling_429_events(since_ts: float, base: Path = SIBLING_TRACE) -> list[float] | None:
+    paths = sibling_trace_paths(base)
+    if not paths:
+        return None
+    out: list[float] = []
+    read_any = False
+    for path in paths:
+        try:
+            with path.open(errors="replace") as fh:
+                out.extend(parse_sibling_429_events(fh, since_ts))
+        except OSError:
+            continue
+        read_any = True
+    return sorted(out) if read_any else None
+
+
+def nearest_delta(ts: float, others: list[float]) -> float | None:
+    """Signed seconds from `ts` to the nearest of `others` (sorted); None if empty."""
+    if not others:
+        return None
+    i = bisect.bisect_left(others, ts)
+    cands = [others[j] for j in (i - 1, i) if 0 <= j < len(others)]
+    return min((o - ts for o in cands), key=abs)
+
+
+def kalshi_429_pair_lines(
+    ours: list[tuple[float, str]] | None,
+    sibling: list[float] | None,
+    hours: int,
+    window_s: float = PAIR_WINDOW_S,
+) -> list[str]:
+    """One line per hyxlab 429 with its nearest sibling 429, then the share
+    inside `window_s`. Unreadable ledgers are named; an empty one is a fact."""
+    head = f"KALSHI429 paired by the second, last {hours}h (window +/-{window_s:g}s)"
+    if ours is None:
+        return [head, "hyxlab journal unreadable"]
+    if sibling is None:
+        return [head, f"sibling trace absent; {len(ours)} hyxlab 429(s) unpaired"]
+    lines = [head]
+    inside = 0
+    for ts, unit in ours:
+        d = nearest_delta(ts, sibling)
+        when = datetime.fromtimestamp(ts, UTC).strftime("%m-%d %H:%M:%S")
+        short = unit.removeprefix("hyxlab-").removesuffix(".service")
+        if d is None:
+            lines.append(f"{when}Z {short:<10} sibling: none in window")
+            continue
+        hit = abs(d) <= window_s
+        inside += hit
+        lines.append(
+            f"{when}Z {short:<10} nearest sibling 429 {d:+7.1f}s{'  <- same event' if hit else ''}"
+        )
+    n = len(ours)
+    share = f"{inside}/{n}" + (f" = {100.0 * inside / n:.0f}%" if n else "")
+    lines.append(f"paired inside {window_s:g}s: {share}; sibling 429s in window: {len(sibling)}")
+    return lines
+
+
+def kalshi_429_pairs_main(hours: int) -> int:
+    now = datetime.now(UTC)
+    ours = _journal_hourly(
+        [
+            "--grep=HTTP 429",
+            "-o",
+            "json",
+            "--output-fields=MESSAGE,_SYSTEMD_USER_UNIT,__REALTIME_TIMESTAMP",
+        ],
+        hours,
+    )
+    events = parse_kalshi_429_events(ours) if ours is not None else None
+    sibling = read_sibling_429_events(now.timestamp() - hours * 3600)
+    for line in kalshi_429_pair_lines(events, sibling, hours):
+        print(line, flush=True)
+    return 0
+
+
 def journal_floor() -> datetime | None:
     """Oldest entry journald still holds, or None if it cannot be read.
 
@@ -1888,16 +2010,21 @@ def drift_main() -> int:
 def cli(argv: list[str]) -> int:
     if argv == ["--drift-only"]:
         return drift_main()
-    if argv and argv[0] == "--kalshi429-hourly" and len(argv) <= 2:
+    mains = {
+        "--kalshi429-hourly": kalshi_429_hourly_main,
+        "--kalshi429-pairs": kalshi_429_pairs_main,
+    }
+    if argv and argv[0] in mains and len(argv) <= 2:
         try:
             hours = int(argv[1]) if len(argv) == 2 else KALSHI_429_HOURLY_H
         except ValueError:
             hours = 0
         if hours >= 1:
-            return kalshi_429_hourly_main(hours)
+            return mains[argv[0]](hours)
     if argv:
         print(
-            "usage: python -m collector.health [--drift-only | --kalshi429-hourly [HOURS]]",
+            "usage: python -m collector.health "
+            "[--drift-only | --kalshi429-hourly [HOURS] | --kalshi429-pairs [HOURS]]",
             file=sys.stderr,
         )
         return USAGE_ERROR

@@ -64,6 +64,9 @@ SYSTEMD_UNIT_PATH=$PWD/scripts/systemd:/etc/systemd/user:/usr/lib/systemd/user \
 # Both Kalshi 429 ledgers (this repo's journal by unit + the sibling governor's
 # trace) binned by the HOUR, with which sweeps were logging (mistakes #146).
 .venv/bin/python -m collector.health --kalshi429-hourly 30
+# Each of this repo's 429s with the seconds to the nearest sibling 429: the same
+# second is one host bucket closing, not one tenant pushing the other over.
+.venv/bin/python -m collector.health --kalshi429-pairs 4
 
 # Archive health / one collection cycle / backtest replay
 .venv/bin/python -m collector.sweep --doctor
