@@ -1387,7 +1387,11 @@ def test_429_pairing_by_the_second_names_the_same_event_and_each_absence() -> No
     lines = health.kalshi_429_pair_lines(events, sib, hours=1)
     assert "collect" in lines[1] and "-1.0s  <- same event" in lines[1]
     assert "sweep" in lines[2] and "-10.0s" in lines[2] and "same event" not in lines[2]
-    assert lines[-1] == "paired inside 2s: 1/2 = 50%; sibling 429s in window: 2"
+    assert (
+        lines[-1]
+        == "paired inside 2s: 1/2 = 50%; inside 30s: 2/2 = 100%; sibling 429s in window: 2"
+    )
+    assert "inside 5s: 1/2" in health.kalshi_429_pair_lines(events, sib, 1, burst_s=5.0)[-1]
     # perturbation: the window, a shifted sibling, a dropped event each move the summary
     assert health.kalshi_429_pair_lines(events, sib, 1, window_s=10.0)[-1].startswith(
         "paired inside 10s: 2/2"

@@ -1610,6 +1610,13 @@ def kalshi_429_hourly_main(hours: int) -> int:
 # to the nearest sibling 429, and the share inside `PAIR_WINDOW_S`.
 
 PAIR_WINDOW_S = 2.0
+#: A bucket closes for a SPAN, and inside it each tenant is refused at its own
+#: request instants: the 21:05Z 10-28 episode put hyxlab's four 429s and the
+#: sibling's four inside one 36s window, 1 of 4 within 2s, 4 of 4 within 7s. So
+#: the share is printed at the tight window (the same second -- one request
+#: refused twice over) AND at the burst window (the same closure), or a 30s
+#: closure reads as half-paired (#92: a bound, never a bare span).
+PAIR_BURST_S = 30.0
 
 
 def parse_kalshi_429_events(stdout: str) -> list[tuple[float, str]]:
@@ -1671,16 +1678,21 @@ def kalshi_429_pair_lines(
     sibling: list[float] | None,
     hours: int,
     window_s: float = PAIR_WINDOW_S,
+    burst_s: float = PAIR_BURST_S,
 ) -> list[str]:
     """One line per hyxlab 429 with its nearest sibling 429, then the share
-    inside `window_s`. Unreadable ledgers are named; an empty one is a fact."""
-    head = f"KALSHI429 paired by the second, last {hours}h (window +/-{window_s:g}s)"
+    inside `window_s` (the same second) and inside `burst_s` (the same
+    closure). Unreadable ledgers are named; an empty one is a fact."""
+    head = (
+        f"KALSHI429 paired by the second, last {hours}h "
+        f"(window +/-{window_s:g}s, burst +/-{burst_s:g}s)"
+    )
     if ours is None:
         return [head, "hyxlab journal unreadable"]
     if sibling is None:
         return [head, f"sibling trace absent; {len(ours)} hyxlab 429(s) unpaired"]
     lines = [head]
-    inside = 0
+    inside = burst = 0
     for ts, unit in ours:
         d = nearest_delta(ts, sibling)
         when = datetime.fromtimestamp(ts, UTC).strftime("%m-%d %H:%M:%S")
@@ -1690,12 +1702,19 @@ def kalshi_429_pair_lines(
             continue
         hit = abs(d) <= window_s
         inside += hit
+        burst += abs(d) <= burst_s
         lines.append(
             f"{when}Z {short:<10} nearest sibling 429 {d:+7.1f}s{'  <- same event' if hit else ''}"
         )
     n = len(ours)
-    share = f"{inside}/{n}" + (f" = {100.0 * inside / n:.0f}%" if n else "")
-    lines.append(f"paired inside {window_s:g}s: {share}; sibling 429s in window: {len(sibling)}")
+
+    def share(k: int) -> str:
+        return f"{k}/{n}" + (f" = {100.0 * k / n:.0f}%" if n else "")
+
+    lines.append(
+        f"paired inside {window_s:g}s: {share(inside)}; inside {burst_s:g}s: {share(burst)}; "
+        f"sibling 429s in window: {len(sibling)}"
+    )
     return lines
 
 
