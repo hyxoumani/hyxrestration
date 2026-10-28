@@ -4148,6 +4148,37 @@ property of the CHECK.
     clock time for a unit, take it from `OnCalendar` or `list-timers`,
     which print the zone, not from a log line that does not.**
 
+144. **2026-10-27 20:25Z, read 2026-10-28 02:20Z -- a pre-registered
+    threshold on a SHARED rate budget was set from the one window in
+    which the other tenants were quiet.** The 0.35s pace floor
+    (`eaf07d7`) was pre-registered at ">= 90% of sweep-idle cycles at
+    `kalshi_429 0`" and read 16/16 clean over 20:25-21:40Z; the night
+    read, 21:40-02:15Z, is **48 of 56 = 85.7%, FAIL**. The 8 non-clean
+    cycles (1-2 retries each, 10 in all) sit at 23:20Z, 00:10/00:15/
+    00:30Z, 00:55/01:00/01:10Z and 02:15Z -- the Kalshi US-evening peak
+    that the SAME morning's pass (02:45Z, #143's run) had already
+    measured as diurnal for the disk burn, and 4 of the 8 are the cycle
+    right after the stream's own hourly-rollover REST burst
+    (`books_added` +204 / +245 / +208 / +263 at 00:06, 01:07, 02:07,
+    23:09Z, against +0-70 in other 5-min periods); `hyxlab-breadth`
+    (`*:2/5`) drew 429s of its own at 22:37, 00:52 and 00:57Z, and the
+    sibling project's `hylshi-family-books` fires on the collector's
+    own `*:0/5` tick (AccuracySec 15s, since 10-13). The pre-
+    registration's MODEL survived -- idle mean 0.18 x 429 per cycle
+    against the ">= 1 refutes the bucket" line, so the next step to
+    0.40s is NOT taken -- but its threshold was written as if the
+    collector were the bucket's only emptier at night, and the one
+    tenant this repo never listed is its own stream daemon's snapshot
+    fetches. Price of the residual: 10 retries x 5s = 50s over 56
+    cycles (0.0027 per request, a 9x cut from the 0.025 idle rate under
+    0.125s); a 0.40s floor would cost 65 x 0.05 = 3.25s EVERY cycle,
+    182s over the same span, to remove 50s. Recorded as FAIL on the
+    line as written, floor unchanged. Rule: **a threshold on a shared
+    budget is pre-registered from the window where the MOST tenants
+    draw on it, enumerated by name -- including this repo's own
+    daemons -- and the read names which tenant was drawing in each
+    failing cycle, or the next re-tune pays for a neighbour's burst.**
+
 59. **2026-09-18 -- the guard that protects a shadow run was sized off
     the threshold that makes the run READABLE AT ALL, not the one it is
     being accumulated for. Same defect class as #58, found the same day

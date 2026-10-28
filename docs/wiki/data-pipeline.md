@@ -834,6 +834,17 @@ self-match trap the ops rules name for `pkill -f`.
   against the 16.7s the refusals averaged; no lock is held while fetching.
   `tests/test_kalshi_pacer.py` (9; the every-`sess.get` arm red-verified
   against a tape-site mutant; the constant is pinned at 0.35).
+  First sweep-idle night read (21:40-02:15Z, 10-27/28, 56 cycles):
+  **48 clean = 85.7%, FAIL on the >= 90% line**; `fetch_s` 22.6-22.8 /
+  `pace_s` 18.7-19.5 on clean cycles (the 15-17s band was mis-derived,
+  corrected 20:55Z to 18-20s before the read), idle mean 0.18 x 429 per
+  cycle, so the bucket is NOT refuted and 0.40s is not taken. The 8
+  non-clean cycles cluster in the 23-01Z evening peak and 4 follow the
+  stream's hourly-rollover snapshot burst (`books_added` +200-260 at
+  :02-:07): the residual is the shared bucket drawn by other tenants
+  (stream REST snapshots, `hyxlab-breadth` at `*:2/5`, the sibling
+  `hylshi-family-books` on the same `*:0/5` tick), not the walk
+  (mistakes #144). Residual price 50s over 56 cycles vs 182s for 0.40s.
   QA COVERAGE IS NOW DERIVED, NOT HAND-KEPT — see below.
 - `hyxlab-stream.service` (long-running, Restart=always, live since
   2026-07-07): `python -u -m hyxlab.streamd` — Kalshi exchange-wide
