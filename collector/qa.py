@@ -1824,6 +1824,37 @@ def _fs_burn(
     return best, span
 
 
+def _fs_burn_latest(
+    series: Path, now: datetime, free: int, window_d: float = DISK_SERIES_WINDOW_D
+) -> tuple[float | None, float]:
+    """Bytes/day over the YOUNGEST sample at least a day old, as `(rate, age_days)`.
+
+    `_fs_burn` is a max, so a one-day step stays the printed burn until it
+    leaves the window (14 d); this is the live pace beside it, so a reader can
+    see whether the worst day is still the current one without differencing
+    the series by hand (2026-10-27 and -28 both did). `(None, 0.0)` when no
+    sample is a day old -- the same sub-day rule as `_fs_burn`.
+    """
+    best_age: float | None = None
+    rate: float | None = None
+    if not series.exists():
+        return None, 0.0
+    for line in series.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+            ts = datetime.fromisoformat(rec["ts"])
+            then_free = int(rec["free"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        age = (now - ts).total_seconds() / 86400.0
+        if age < 1.0 or age > window_d:
+            continue
+        if best_age is None or age < best_age:
+            best_age = age
+            rate = (then_free - free) / age
+    return rate, (best_age or 0.0)
+
+
 def _rotation_growth(live: list[Path], backup_dir: Path) -> tuple[float | None, float]:
     """Bytes/day the LIVE archives are gaining, measured from the backup
     rotation's own slot series, with the span it was measured over.
@@ -1936,14 +1967,22 @@ def qa_disk_headroom(
         now = datetime.now(UTC)
         series = Path(DISK_SERIES if series is None else series)
         fs_rate, fs_span = _fs_burn(series, now, free)
+        latest_rate, latest_age = _fs_burn_latest(series, now, free)
         _record_free(series, now, free)
         if fs_rate is not None:
             burn = fs_rate
+            # The max is the verdict's burn; the youngest day-old sample is
+            # the live pace, printed so a step that has aged is legible as one.
+            latest = (
+                f" (latest {latest_rate / 1e9:.2f} GB/day over {latest_age:.1f}d)"
+                if latest_rate is not None
+                else ""
+            )
             source = (
-                f" measured on the filesystem over {fs_span:.1f}d"
+                f" measured on the filesystem over {fs_span:.1f}d{latest}"
                 f" (rotation model {model / 1e9:.2f} GB/day = {model_how})"
                 if model is not None
-                else f" measured on the filesystem over {fs_span:.1f}d (no rotation model)"
+                else f" measured on the filesystem over {fs_span:.1f}d{latest} (no rotation model)"
             )
         else:
             burn = model

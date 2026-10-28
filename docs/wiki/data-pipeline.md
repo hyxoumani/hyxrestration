@@ -951,7 +951,21 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   raw_frames` (`btrfs filesystem du -s --raw`; full copies only when it
   cannot measure): 10-25 reads `39 d` = `4.56 live + 0.51 backups + 17.58
   raw_frames`, with `raw_frames` the largest term until its 14-day window
-  fills (~11-06, ~190-240 GB plateau). The capacity decision (stream
+  fills (~11-06, ~190-240 GB plateau). The filesystem burn is the WORST rate
+  over every day-old sample in the 14-d window (a step shows from its
+  first day and stays until it ages out), so the line also prints
+  `(latest X GB/day over 1.0d)`, the youngest day-old sample's pace
+  (`qa._fs_burn_latest`, 2026-10-28): read `latest` for what the disk is
+  doing now, the max for the verdict. The model counts only this repo's
+  files; the gap to the measured burn is the OTHER tenants of /home, and
+  on 2026-10-28 (47.7 GB/day over the last day vs a 23.7 model) it was the
+  sibling hylshi project's: its `hylshi-backup.timer` at 12:00Z writes
+  ~7 GB/day (a 4.95 GB source tarball reflinked into two trees -- one
+  physical copy -- plus ~1.7 GB of DB snapshots, `--keep 14`), its
+  nightly parquet partitioning of OUR stream archive into
+  `~/.local/share/hylshi-research/partitions/` ~4-5 GB/day (05:27Z step),
+  and its `rfq/` recorder ~3 GB/day; the `fs_free_b` hourly series shows
+  the two steps (7.0 and 5.3 GB) on a ~1.5 GB/h baseline. The capacity decision (stream
   retention purge, drop hyxstream from the 7-slot rotation -- now known to
   buy nothing -- or an off-box backup) is user-gated.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,

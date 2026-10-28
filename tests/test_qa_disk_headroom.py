@@ -357,6 +357,33 @@ def test_a_step_in_the_burn_shows_from_its_first_day_not_the_window_average(tmp_
     assert span == pytest.approx(10.0, abs=0.01)
 
 
+def test_the_live_pace_is_printed_beside_the_worst_day(tmp_path, monkeypatch):
+    """A 60 GB step three days ago, then 20 GB/day: the verdict's burn is the
+    worst day-old sample (max, 33.33 GB/day over 3.0d) and stays so until the
+    step leaves the window -- but the line also says the youngest day-old
+    sample's pace (20.00 GB/day over 1.0d), so nobody differences the series
+    by hand to learn whether the step is still the current burn."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB))
+    _sample(qa.DISK_SERIES, 3.0, 900 * GB)
+    _sample(qa.DISK_SERIES, 2.0, 840 * GB)
+    _sample(qa.DISK_SERIES, 1.0, 820 * GB)
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=90.0)
+    detail = "\n".join(lines)
+    assert "burn 33.33 GB/day measured on the filesystem over 3.0d" in detail
+    assert "(latest 20.00 GB/day over 1.0d)" in detail
+    rate, age = qa._fs_burn_latest(qa.DISK_SERIES, qa.datetime.now(qa.UTC), 800 * GB)
+    assert rate == pytest.approx(20 * GB, rel=0.01) and age == pytest.approx(1.0, abs=0.01)
+
+
+def test_the_live_pace_needs_a_day_old_sample_too(tmp_path):
+    series = tmp_path / "s.jsonl"
+    _sample(series, 0.5, 820 * GB)
+    assert qa._fs_burn_latest(series, qa.datetime.now(qa.UTC), 800 * GB) == (None, 0.0)
+
+
 def test_a_sample_younger_than_a_day_is_not_a_rate(tmp_path, monkeypatch):
     """A sub-day delta is the sampling period wearing the quantity's name
     (mistakes #92): the model stays the burn and the line says how young."""
