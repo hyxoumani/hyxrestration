@@ -88,6 +88,21 @@ at boot (6,819 opens restored on the first working boot). So the level
 mapping holds on KXBTC15M too, conditional on a book being held; the
 foundation's gap was the first ~4m45s of each 15-minute market after a
 restart, which is also where a quarter of its prints are.
+**VERIFIED on the post-restore population 2026-10-29 20:16Z**
+(`--series KXBTC15M --hours 5`, window from 15:15Z, 8 markets opening
+15:30Z-16:15Z..., `reports/priority_check/20261029T201602.json`):
+410,654 prints, absorb_match 0.9996, **no_decrement_at_level 97
+(0.02%; per market 0-80, i.e. 0.00-0.17%)** against 18-28% before the
+fix -- the coverage gap is closed, not reduced. exact (±5ms) 0.969,
+timing median 0.10ms, p95 2.8ms. naive_would_match is 0.37% (0.19-0.66%
+per market) rather than the weather reading's ~0: KXBTC15M carries
+~16 book decrements per print (6.87M book rows for 411k prints), so an
+exact-size decrement coincidentally landing at the same-side level
+inside 2s is a density effect -- the complement mapping wins 270:1 and
+it stays a watch, not a falsification (a falsification is naive
+approaching absorb). Cost: one 13.1s hold on `hyxstream.duckdb`,
+rss_anon peak 4.35 GB for the 1.05M-row market -- this probe is not
+sized for a 1G-capped unit at this density.
 
 ## Runtime accounting invariants
 
