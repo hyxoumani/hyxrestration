@@ -71,11 +71,23 @@ latency shift since the 10-23 book-coverage expansion, inside the 2s
 window by 60x. **NOT verified on KXBTC15M**, which is now the top-8 by
 prints (`20261029T143206.json`, 539,780 prints): absorb_match 0.814,
 no_decrement_at_level 18.6% (0.18-0.28 per market), naive 0.65%. One in
-five prints has NO decrement at the predicted level within 2s -- a
-coverage gap (26 `kalshi/books GAP (reconnect)` in the window) or a
-venue mechanic on dense books (netted deltas); undetermined. A maker
-bracket on 15-minute crypto markets would rest on an unverified
-foundation until this is attributed.
+five prints has NO decrement at the predicted level within 2s.
+**ATTRIBUTED the same afternoon (15:00Z), and it is coverage, not the
+mapping:** replaying the worst market's book (`KXBTC15M-26OCT282215-15`,
+28% no-decrement) print by print, every one of its 19,562 misses fell
+while the book was UNKNOWN -- the market traded from 02:00:00Z and its
+first book image arrived 02:04:47Z; after seeding, 0 of 49,550 prints
+missed. Seven of the eight markets had first-image lags of 285-291s
+(the reconcile walk at :03:00 + ~106s); the eighth, created AFTER the
+stream's 10-27 20:24Z restart, was subscribed at open (0.0s). The
+`created` frames for the other seven arrived 10-27 20:01Z, 24-30h ahead
+and 23 min before that restart, and `BookCoverage.pending_open` was
+in-memory only. FIXED 2026-10-29 (`7b1380a` + `ddda611`, promoted
+15:07Z): the queue is restored from the archive's `stream_lifecycle`
+at boot (6,819 opens restored on the first working boot). So the level
+mapping holds on KXBTC15M too, conditional on a book being held; the
+foundation's gap was the first ~4m45s of each 15-minute market after a
+restart, which is also where a quarter of its prints are.
 
 ## Runtime accounting invariants
 

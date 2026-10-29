@@ -547,3 +547,13 @@
   (`RssAnon`; the cgroup's `memory.peak` is page cache and read 11.3G for a
   run that only did `max(recv_ts)`), and re-measure a cap rationale when
   its query's input moves an order of magnitude (#134 was 20x).
+- A process that holds a DuckDB file read-WRITE cannot open the same file
+  read-only from another thread: DuckDB serves same-process attaches from
+  one instance and refuses a different CONFIGURATION while one is open
+  (`Can't open a connection to same database file with a different
+  configuration than existing connections`). `streamd`'s boot read of its
+  own `stream_lifecycle` asked `read_only=True` while the flusher held the
+  writer, degraded quietly and shipped inert (mistakes #149). An owner's
+  reads attach exactly as its writes do (`StreamStore.announced_opens`,
+  registered in `tests/test_connect_discipline.py` `WRITE_ALLOWED`), and a
+  test of such a read holds a writer connection open across it.

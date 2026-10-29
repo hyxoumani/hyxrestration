@@ -3653,6 +3653,34 @@ Format: what happened → root cause → error type → prevention tier
     silently returns 0 markets for a prefix (`KXHIGH` vs `KXHIGHNY`); the
     help text now says which.
 
+149. **2026-10-29 14:59Z -- a fix whose failure path was designed to be
+    quiet shipped inert, and the test that covered it had never put the
+    process in the state production is always in.** `announced_opens`
+    (the boot restore of the lifecycle-announced book queue) attached
+    `hyxstream.duckdb` read-only from inside `collector.streamd`, whose
+    flusher thread holds a read-WRITE connection on the same file; DuckDB
+    serves every same-process attach from one instance and refuses a
+    second CONFIGURATION while the first is open -- `Can't open a
+    connection to same database file with a different configuration than
+    existing connections`. The `except` logged `announced opens unreadable
+    ... the walk is the backstop` and the boot went on with 0 restored:
+    the 15:00Z KXBTC15M market reached the book set through the walk at
+    15:04:49Z, exactly the 4m45s the change existed to remove. Three
+    tests were green, because each opened the store alone. Read the
+    boot's journal line on the FIRST restart -- that is what caught it 20
+    minutes later -- and re-promoted with the owner's configuration:
+    6,819 opens restored, 22 queued at once. Rule: **a "degrade and
+    continue" branch needs the same two things as the happy path -- a
+    test that drives it from the state the process is really in (here: a
+    writer connection already open in-process), and a reading of its log
+    line in production before the pass calls the fix shipped. And in-
+    process DuckDB has a third discipline beside the file lock (#90) and
+    the spill directory (EXP-1373): every attach a process makes to one
+    file must share ONE configuration -- a daemon that writes reads
+    read-write.** Where this bit: `tests/test_connect_discipline.py`
+    had to be told twice -- first as a read-only OWNER site, then moved to
+    `WRITE_ALLOWED` -- and the second registration is the honest one.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
