@@ -910,6 +910,23 @@ class Daemon:
             f"kalshi-books: {len(tickers)} open tickers across {len(series)} series"
             f" on {len(cov.shards)} connection(s) (<= {cov.shard_max} each)"
         )
+        # The lifecycle-announced queue is in-memory state; the archive holds
+        # the `created` frames it was built from. Without this a restart
+        # forgot every market created before it (the 15-minute series are
+        # created 24-30h ahead) and the walk re-added each ~4m45s after
+        # its open -- 18-28% of a KXBTC15M market's prints with no book
+        # (measured 2026-10-29, 7 of 8 top markets). The walk stays the
+        # backstop if the read fails.
+        try:
+            opens = await asyncio.to_thread(self.store.announced_opens)
+        except Exception as exc:  # the boot must not die on its own archive
+            _log(f"kalshi-books: announced opens unreadable ({exc}); the walk is the backstop")
+            opens = {}
+        waiting, due = cov.seed_announced(opens)
+        _log(
+            f"kalshi-books: {waiting} lifecycle-announced opens restored from the archive"
+            f" ({len(opens)} announced in the lookback), {due} already open and queued"
+        )
         while True:
             live = [t for t in self._book_tasks.values() if not t.done()]
             if self._book_tasks and not live:

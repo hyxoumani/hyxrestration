@@ -66,7 +66,7 @@ import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from operator import attrgetter
 from pathlib import Path
 
@@ -439,6 +439,13 @@ class FlushOutcome:
 
     rows: int
     touched: bool
+
+
+#: How far back `announced_opens` reads `stream_lifecycle` for `created`
+#: frames. The 15-minute series are created ~24-30h ahead (measured
+#: 2026-10-27 20:01Z for opens through 10-29 02:15Z); 7 days covers any
+#: series announced a week out without scanning the whole table.
+ANNOUNCED_LOOKBACK_S = 7 * 86400.0
 
 
 class StreamStore:
@@ -1086,6 +1093,36 @@ class StreamStore:
             return conn.execute(
                 f"SELECT max(recv_ts) FROM {table} WHERE venue = ?", [venue]
             ).fetchone()[0]
+
+    def announced_opens(
+        self, now: datetime | None = None, lookback_s: float = ANNOUNCED_LOOKBACK_S
+    ) -> dict[str, datetime]:
+        """`{market_id: open_ts}` (aware UTC) for every market the lifecycle
+        channel announced (`created` with an `open_ts`) inside `lookback_s`
+        that no later frame determined, settled or deactivated -- whether
+        or not it has opened yet. The daemon seeds `BookCoverage.pending_open`
+        from this at boot: that queue lived only in memory, and the 15-minute
+        series are created in one daily batch 24-30h ahead, so a restart
+        forgot every market of the next day and each reached the book set
+        only through the reconcile walk, ~4m45s after opening (measured
+        2026-10-29: 7 of 8 KXBTC15M markets, 18-28% of each one's prints
+        with no book). Empty when the archive does not exist yet."""
+        if not self.path.exists():
+            return {}
+        now = now or datetime.now(UTC)
+        since = (now - timedelta(seconds=lookback_s)).replace(tzinfo=None)
+        with duck_connect(str(self.path), read_only=True) as conn:
+            rows = conn.execute(
+                "WITH c AS (SELECT market_id, max(open_ts) AS open_ts FROM stream_lifecycle"
+                " WHERE msg_type = 'market_lifecycle_v2' AND event_type = 'created'"
+                " AND open_ts IS NOT NULL AND recv_ts > ? GROUP BY market_id)"
+                " SELECT c.market_id, c.open_ts FROM c WHERE NOT EXISTS ("
+                "   SELECT 1 FROM stream_lifecycle x WHERE x.market_id = c.market_id"
+                "   AND x.recv_ts > ? AND (x.event_type IN ('determined', 'settled')"
+                "        OR x.is_deactivated IS TRUE))",
+                [since, since],
+            ).fetchall()
+        return {m: ts.replace(tzinfo=UTC) for m, ts in rows}
 
     def mark_startup_gap(self, now: datetime | None = None) -> None:
         """Record daemon downtime: everything between the last archived

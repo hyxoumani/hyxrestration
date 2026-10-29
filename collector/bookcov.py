@@ -120,6 +120,30 @@ class BookCoverage:
             return True
         return False
 
+    def seed_announced(
+        self, opens: dict[str, datetime], now: datetime | None = None
+    ) -> tuple[int, int]:
+        """Restore the lifecycle-announced queue from the archive at boot.
+        `opens` is `StreamStore.announced_opens()`: watched markets whose
+        open is still ahead wait in `pending_open` (an entry the live channel
+        already queued is kept); ones already open and not held are queued
+        as adds now rather than at the next walk. Barred (closed) markets
+        stay out. Returns (waiting, due)."""
+        now = now or datetime.now(UTC)
+        held = self.held
+        waiting = due = 0
+        for ticker, open_ts in opens.items():
+            if not self.watches(ticker) or ticker in self.closed_until or ticker in held:
+                continue
+            if open_ts > now:
+                self.pending_open.setdefault(ticker, open_ts)
+                waiting += 1
+            else:
+                self.removes.discard(ticker)
+                self.adds.add(ticker)
+                due += 1
+        return waiting, due
+
     def due_opens(self, now: datetime | None = None) -> None:
         """Move lifecycle-announced markets whose open time has come into
         the add queue."""

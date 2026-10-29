@@ -819,3 +819,92 @@ def test_walk_line_renders_every_field_of_the_walk():
     assert set(bumps) == {f.name for f in dataclasses.fields(base)}
     for name, value in bumps.items():
         assert streamd.walk_line(dataclasses.replace(base, **{name: value})) != line, name
+
+
+# -- the lifecycle-announced queue survives a restart (2026-10-29) ------------
+
+
+def _created(store, market, open_at: datetime, recv: datetime, seq=1, event="created", **over):
+    raw = json.dumps(_lifecycle(market, event, seq=seq, open_ts=int(open_at.timestamp()), **over))
+    store.append_lifecycles([kalshi_ws.parse_lifecycle(json.loads(raw), recv, raw)])
+
+
+def test_announced_opens_reads_created_frames_not_yet_closed(tmp_path):
+    """`created` frames for the 15-minute series arrive 24-30h ahead in one
+    daily batch; the archive keeps them, the daemon's queue did not. The
+    read returns every announced market the lookback holds that no later
+    frame closed -- opened or not -- as aware UTC."""
+    store = StreamStore(tmp_path / "s.duckdb")
+    assert StreamStore(tmp_path / "absent.duckdb").announced_opens() == {}
+    now = datetime(2026, 10, 29, 2, 0, tzinfo=UTC)
+    recv = now - timedelta(hours=30)
+    _created(store, "KXBTC15M-FUTURE", now + timedelta(hours=1), recv)
+    _created(store, "KXBTC15M-OPEN", now - timedelta(minutes=3), recv, seq=2)
+    _created(store, "KXBTC15M-SETTLED", now + timedelta(hours=2), recv, seq=3)
+    raw = json.dumps(_lifecycle("KXBTC15M-SETTLED", "settled", seq=4))
+    store.append_lifecycles(
+        [kalshi_ws.parse_lifecycle(json.loads(raw), recv + timedelta(hours=1), raw)]
+    )
+    _created(store, "KXBTC15M-OLD", now + timedelta(hours=3), now - timedelta(days=8), seq=5)
+    assert store.flush() == 5
+    got = store.announced_opens(now)
+    assert got == {
+        "KXBTC15M-FUTURE": now + timedelta(hours=1),
+        "KXBTC15M-OPEN": now - timedelta(minutes=3),
+    }
+    assert all(ts.tzinfo is UTC for ts in got.values())
+
+
+def test_seed_announced_restores_the_pending_queue_and_queues_overdue_opens():
+    cov = BookCoverage({"KXBTC15M"})
+    for sh in cov.boot({"KXBTC15M-HELD"}):
+        pass
+    now = datetime.now(UTC)  # on_lifecycle reads the real clock for `created`
+    live_ts = now + timedelta(minutes=5)
+    assert cov.on_lifecycle("KXBTC15M-LIVE", "created", live_ts, 0.0)  # the channel got there first
+    cov.on_lifecycle("KXBTC15M-CLOSED", "determined", None, 0.0)
+    cov.take()
+    opens = {
+        "KXBTC15M-FUTURE": now + timedelta(hours=1),
+        "KXBTC15M-LIVE": now + timedelta(hours=9),  # archive says later; the live frame wins
+        "KXBTC15M-OVERDUE": now - timedelta(minutes=3),
+        "KXBTC15M-HELD": now - timedelta(minutes=10),
+        "KXBTC15M-CLOSED": now + timedelta(hours=1),
+        "KXETH15M-OTHER": now + timedelta(hours=1),
+    }
+    assert cov.seed_announced(opens, now) == (2, 1)
+    assert cov.pending_open == {
+        "KXBTC15M-FUTURE": now + timedelta(hours=1),
+        "KXBTC15M-LIVE": live_ts,
+    }
+    assert cov.take() == ({"KXBTC15M-OVERDUE"}, set())
+    cov.due_opens(now + timedelta(hours=1, seconds=1))  # both waits have come due
+    assert cov.take() == ({"KXBTC15M-FUTURE", "KXBTC15M-LIVE"}, set())
+
+
+def test_a_restart_restores_announced_opens_from_the_archive(tmp_path, monkeypatch, capsys):
+    """End to end through the daemon's book-set boot: the queue the previous
+    process built from `created` frames comes back from the archive, and a
+    market that opened while the daemon was down is queued at once instead
+    of at the next walk (~4m45s after the quarter-hour, measured 10-29)."""
+    monkeypatch.setattr(streamd, "open_tickers", lambda s: {"S-1"})
+
+    async def fake_loop(self, channel, make_subscribe, shard=None):
+        return None
+
+    monkeypatch.setattr(streamd.Daemon, "_kalshi_loop", fake_loop)
+    store = StreamStore(tmp_path / "s.duckdb")
+    now = datetime.now(UTC)
+    _created(store, "S-FUTURE", now + timedelta(hours=2), now - timedelta(hours=20))
+    _created(store, "S-DOWNTIME", now - timedelta(minutes=2), now - timedelta(hours=20), seq=2)
+    _created(store, "S-7", now - timedelta(hours=5), now - timedelta(hours=20), seq=3)  # held
+    store.flush()
+    d = streamd.Daemon(store, {"kalshi_book_series": ["S"]})
+    d._write_ticker_cache(["S"], {"S-7", "S-8"})
+    asyncio.run(d.kalshi_books())
+    cov = d.books
+    assert set(cov.pending_open) == {"S-FUTURE"}
+    assert cov.adds == {"S-DOWNTIME"}  # queued at boot, not left to the walk
+    out = capsys.readouterr().out
+    assert "1 lifecycle-announced opens restored from the archive (3 announced" in out
+    assert "1 already open and queued" in out

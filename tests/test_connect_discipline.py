@@ -51,6 +51,11 @@ ALLOWED: dict[str, tuple[str, str]] = {
         "OWNER",
         "only production caller is collector.streamd, which owns the file",
     ),
+    "hyxlab/streamstore.py::StreamStore.announced_opens": (
+        "OWNER",
+        "the daemon's own boot read of its lifecycle table, before any flush;"
+        " a failure is logged and the reconcile walk stays the backstop",
+    ),
     # -- hand-rolled retry, each for a reason the helper cannot serve -----
     # EXP-1379 removed `simulator/atlas.py::main` from here rather than
     # adding to it. Its disposition read "15x2s report attach", which is a
