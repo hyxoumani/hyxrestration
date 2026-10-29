@@ -410,6 +410,35 @@ structure — see [venues](venues.md)).
    span / 6 fails / `hold_lower_s` 75 / 60,029 pending / 0 spilled,
    holder named -- the per-run cost is now ~100s of stream exclusion
    (62.7s on 10-15; the window is entirely post-flood book_events).
+   **Econ width-24 re-run 2026-10-29 (`20261029T082353.json`, the
+   10-22 read's named rollover date; re-measured on the restructured
+   reader as `20261029T083239.json`, same orders both ways; same
+   arguments): the FIFTH consecutive econ null, and the SEP events are
+   gone without making the units new.** 5,497 orders / 24 markets / 7
+   underlyings (KXCPI 2,540, KXU3 1,087, KXFED 818, KXCPIYOY 551,
+   KXPAYROLLS 501). All four readings `not_significant` and powered
+   (floor 5 over / 2 under, `underlying_sign_p` 0.9375, `min` 0.0078;
+   market tier 10/11/2 tied, p 0.5; ceiling identical). Crossing 200 vs
+   queue-pess 206 / opt 266; `crossing_but_not_pess` 135 vs
+   `pess_but_not_crossing` 141, `inside_bracket` 0. Floor
+   `net_disagreement` -6 on `abs_net_by_underlying` 78: with KXCPI-26SEP
+   and KXCPIYOY-26SEP out of the window the "SEP under / OCT over"
+   reading of 10-15 and 10-22 does NOT survive -- the under side is now
+   KXU3-26OCT -24 (was -2) and KXFED-26DEC -18, the over side KXCPI-26OCT
+   +16 (from +35) and KXCPI-26NOV +14, the rest within +-3. The
+   aggregate is a cancellation, not a direction. `independence`: 6 of 7
+   underlyings shared with 10-22 (all 6 kept sign), 1 new
+   (KXCPIYOY-26NOV), `new_share_vs_all` on orders 0.635 and on units
+   0.143 -- so the rollover as DEFINED (no SEP event) arrived and the
+   units still did not turn over, because the OCT events live for weeks
+   and a 336h window always carries the prior read's. A clean econ
+   replication needs reads spaced by the EVENT LIFETIME (a month for
+   the monthly prints), not by the window; the next read that can be new
+   against this one is ~11-26 or later. Victim side: the 08:17Z read
+   held 404s (one episode, 28 fails, 87,947 pending, 0 spilled) -- the
+   per-market-scan defect, mistakes #147, fixed the same pass; the
+   restructured reader held 54.5s with the replay 3.3s of it, and the
+   next weekly run reads its `cost` block.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer (SHIPPED 07-11; gate open).
    **Coverage probe (2026-10-14, read on the 10-13 backup; no edge was

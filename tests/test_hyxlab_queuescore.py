@@ -12,12 +12,18 @@ from simulator.queuescore import (
     DIRECTION_STATUSES,
     VirtualOrder,
     concentration_by_market,
+    cost_block,
+    cost_line,
     direction_verdict,
     event_ticker,
+    fetch_gaps,
+    fetch_rows,
     independence_vs_prior,
+    iter_market_rows,
     over_award,
     over_award_split,
     score_market,
+    score_rows,
     select_markets,
     series_composition,
     sign_test_p,
@@ -114,6 +120,104 @@ def test_queue_fill_without_crossing_and_crossing_without_queue(tmp_path):
     assert b[0].crossed_qty == 5.0
     assert b[0].tracker.filled_pess == 0.0  # no prints: no queue evidence
     assert b[0].tracker.filled_opt == 0.0
+
+
+def _order_facts(orders):
+    return [
+        (
+            o.market_id,
+            o.price,
+            o.placed,
+            o.crossed_at,
+            o.crossed_qty,
+            o.tracker.filled_pess,
+            o.tracker.filled_opt,
+            o.tracker.level_size,
+        )
+        for o in orders
+    ]
+
+
+def test_batched_fetch_scores_identically_to_the_one_market_read(tmp_path):
+    """`main` reads every selected market in one scan per table and scores
+    after the release (2026-10-29: the per-market reads held streamd's
+    file for N scans, 404s). The batched rows must replay exactly as the
+    one-market read did -- same orders, same bracket -- with three markets
+    interleaved in time so the `ORDER BY market_id` grouping is exercised,
+    and a market that is in the window but has no rows still gets its
+    (empty) entry rather than a KeyError in the scoring loop."""
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    for mid, base in (("A", 10), ("B", 20), ("C", 30)):
+        store.append_events(_image(mid, base, T0))
+        store.append_events(
+            _delta(mid, base + 1, T0 + timedelta(seconds=1), "yes", "0.1000", "1.00")
+        )
+    store.append_trades(_trade("A", 12, T0 + timedelta(seconds=60), "0.4000", "35.00", "no"))
+    store.append_events(_delta("A", 13, T0 + timedelta(seconds=60), "yes", "0.4000", "-30.00"))
+    store.append_events(_delta("B", 22, T0 + timedelta(seconds=60), "no", "0.6000", "40.00"))
+    store.append_trades(_trade("C", 32, T0 + timedelta(seconds=61), "0.4000", "10.00", "no"))
+    store.append_events(_delta("C", 33, T0 + timedelta(seconds=61), "yes", "0.4000", "-10.00"))
+    for mid, base in (("A", 14), ("B", 23), ("C", 34)):
+        store.append_events(_delta(mid, base, T0 + timedelta(seconds=90), "yes", "0.1000", "1.00"))
+    store.flush()
+
+    since = T0 - timedelta(minutes=1)
+    conn = duckdb.connect(str(db), read_only=True)
+    one_by_one = [score_market(conn, m, since, qty=5.0) for m in ("A", "B", "C")]
+    rows = fetch_rows(conn, ["A", "B", "C", "ABSENT"], since)
+    # chunk=2 forces every market's group to span a fetchmany boundary
+    streamed = list(iter_market_rows(conn, ["A", "B", "C", "ABSENT"], since, chunk=2))
+    gaps = fetch_gaps(conn, since)
+    conn.close()
+
+    assert set(rows) == {"A", "B", "C", "ABSENT"}
+    assert rows["ABSENT"] == ([], [])
+    assert [m for m, _, _ in streamed] == ["A", "B", "C", "ABSENT"]  # absent last
+    assert {m: (ev, tr) for m, ev, tr in streamed} == rows
+    assert all(len(ev) > 2 for _, ev, _ in streamed[:3])  # each group spans a chunk boundary
+    batched = [score_rows(m, *rows[m], gaps, since, qty=5.0) for m in ("A", "B", "C")]
+    assert [_order_facts(o) for o in batched] == [_order_facts(o) for o in one_by_one]
+    # the fixture is not vacuous: every market placed an order and the
+    # three disagree in the way the bracket exists to show
+    assert [len(o) for o in batched] == [1, 1, 1]
+    assert batched[0][0].tracker.filled_pess == 5.0 and batched[0][0].crossed_at is None
+    assert batched[1][0].crossed_at is not None and batched[1][0].tracker.filled_pess == 0.0
+    assert score_rows("ABSENT", [], [], gaps, since, qty=5.0) == []
+
+
+def _cost_fixture():
+    rows = {"A": (3, 1), "B": (1, 0)}
+    wait = {"held_s_total": 12.345, "held_unknown_n": 0}
+    return cost_block(wait, score_s=7.25, rows=rows, rss_peak_mb=410.04)
+
+
+def test_cost_block_prices_the_window_and_the_hold():
+    c = _cost_fixture()
+    assert c["held_s"] == 12.345 and c["score_s"] == 7.25 and c["rss_peak_mb"] == 410.0
+    assert c["markets"] == 2 and c["book_rows"] == 4 and c["trade_rows"] == 1
+    assert c["book_rows_max"] == 3
+    assert c["per_market"] == {
+        "A": {"book_rows": 3, "trade_rows": 1},
+        "B": {"book_rows": 1, "trade_rows": 0},
+    }
+    # an unmeasured hold is None, never 0.0 (ops rule), and the line says so
+    c2 = cost_block({}, score_s=0.0, rows={}, rss_peak_mb=None)
+    assert c2["held_s"] is None and c2["rss_peak_mb"] is None
+    assert cost_line(c2).count("unmeasured") == 2
+
+
+def test_cost_line_renders_every_scalar_field():
+    """#95: assert the renderer's completeness by PERTURBATION -- bump each
+    scalar field of a real block and the line must change. The per-market
+    detail is the one field the line summarises rather than prints."""
+    base = _cost_fixture()
+    line = cost_line(base)
+    for key in [k for k in base if k != "per_market"]:
+        bumped = dict(base)
+        v = base[key]
+        bumped[key] = (v or 0) + 1 if not isinstance(v, str) else v + "x"
+        assert cost_line(bumped) != line, key
 
 
 def test_series_composition_groups_by_prefix_high_to_low():

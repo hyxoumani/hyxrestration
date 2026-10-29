@@ -3592,6 +3592,42 @@ Format: what happened → root cause → error type → prevention tier
     does; a suspect that is flat where the loss moves is refuted without a
     change. Instrument: `collector.health --kalshi429-hourly`.
 
+147. **2026-10-29 08:17Z -- a standing report's hold on a daemon's file
+    grew four-fold in a week because it read the archive once PER MARKET,
+    and every one of those reads paid the whole window.** The econ maker
+    bracket (`simulator.queuescore`) held `hyxstream.duckdb` -- the file
+    `collector.streamd` flushes every 15s -- for 404s on 10-29 against
+    101s on 10-22, 62.7s on 10-15 and 17s on 10-07 (victim: one ledger
+    episode, 28 failed flushes, 87,947 pending, 0 spilled). The ~100s
+    reading had been filed as "tracks the window's row volume", which was
+    true and not the mechanism: `score_market` ran `WHERE market_id=? AND
+    recv_ts > ?` over `book_events` for each of the 24 markets, and a
+    DuckDB scan with that predicate costs the window's row volume whatever
+    its selectivity -- measured the same morning from a transient unit,
+    one market's `count(*)` 5.4s against all 23 markets grouped 7.8s. So
+    N markets were N window scans, and the 10-23 book-coverage expansion
+    (~20x events, #134) multiplied the per-scan price while the "cost"
+    note kept pointing at the window. The replay itself, measured once it
+    was timed apart, was 3.3s for all 24 markets. Two fixes were measured
+    before one shipped: fetching every market's rows then releasing the
+    file before the replay cut the hold to 48.9s but read 5,135 MB anon
+    (2.45M Python tuples) with the unit at its 6G cap -- the #134 class,
+    state proportional to the archive -- and was abandoned; streaming the
+    one batched, market-ordered query through `fetchmany` and replaying
+    each market as its group completes holds 54.5s, peaks at 3,016 MB
+    anon under the 4G unit (DuckDB's half of the cap plus one market's
+    rows), and reproduces the per-market read's orders exactly on the
+    live archive (5,471 / 193 / 204 / 263 both ways) and on a fixture
+    whose groups span chunk boundaries. Rule: **when a report's hold on
+    a shared file is "proportional to the window", ask how many TIMES it
+    reads the window -- a per-item read over a columnar table is a full
+    scan per item, and the item count is the multiplier nobody prices.
+    Then measure the two halves (scan vs compute) before choosing which
+    side of the release the compute goes on: the memory to move it out
+    can cost more than the seconds it buys.** The report now carries a
+    `cost` block (`held_s`, `score_s`, rows, `rss_peak_mb`) and prints it
+    through one renderer, perturbation-asserted (#95).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

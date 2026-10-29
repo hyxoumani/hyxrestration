@@ -36,10 +36,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from hyxlab.memcap import rss_anon_mb
 from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 from hyxlab.streamstore import BookEvent
 from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
@@ -790,23 +792,98 @@ def select_markets(conn, since: datetime, top_n: int, series: list[str] | None =
     return [r[0] for r in conn.execute(sql, params).fetchall()]
 
 
-def score_market(conn, market_id: str, since: datetime, qty: float) -> list[VirtualOrder]:
-    events = conn.execute(
-        "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
-        " FROM book_events WHERE market_id=? AND venue='kalshi' AND recv_ts > ?"
-        " ORDER BY recv_ts, seq",
-        [market_id, since],
-    ).fetchall()
-    trades = conn.execute(
-        "SELECT recv_ts, price, qty, taker_side FROM stream_trades"
-        " WHERE market_id=? AND venue='kalshi' AND recv_ts > ? ORDER BY recv_ts",
-        [market_id, since],
-    ).fetchall()
-    gaps = conn.execute(
+def fetch_gaps(conn, since: datetime) -> list:
+    """The book-gap rows every market's replay excludes -- one read, not
+    one per market (it was re-read inside the hold for each of the 24)."""
+    return conn.execute(
         f"SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ? AND {BOOK_GAPS}",
         [since],
     ).fetchall()
 
+
+CHUNK_ROWS = 65_536
+
+
+def iter_market_rows(conn, markets: list[str], since: datetime, chunk: int = CHUNK_ROWS):
+    """Yield `(market_id, events, trades)` per selected market from ONE scan
+    per table, holding one market's rows in Python at a time.
+
+    A `WHERE market_id=?` read over `book_events` pays the whole window's
+    row volume whatever its selectivity -- measured 2026-10-29 on the live
+    archive, 336h window: one market's count 5.4s, all 23 markets grouped
+    7.8s -- so scoring N markets through N reads held `hyxstream.duckdb`
+    (the file `collector.streamd` flushes every 15s) for N scans: 404s on
+    10-29 against 101s on 10-22, four-fold in the week the stream's book
+    coverage grew ~20x (#134). The other way to cut the scans -- fetch
+    every market's rows, release, then replay -- was measured the same
+    morning: hold 48.9s, but 2.45M Python tuples read 5,135 MB anon with
+    the unit at its 6G cap, for a replay that costs 3.3s in total. So the
+    replay stays inside the hold and the rows stream through it: the
+    batched query is ordered by market, pulled `chunk` rows at a time, and
+    a market is yielded the moment its group ends. The per-market order
+    (`recv_ts, seq`) is the one-market read's, so the replay sees exactly
+    what that read gave it (`tests/test_hyxlab_queuescore.py` asserts the
+    two paths score identically, across chunk boundaries). Markets with no
+    rows in the window are yielded last, empty, so the caller's loop is
+    the selection and never a KeyError.
+    """
+    if not markets:
+        return
+    ph = ",".join("?" * len(markets))
+    trades_by: dict[str, list] = {m: [] for m in markets}
+    for t in conn.execute(
+        "SELECT recv_ts, price, qty, taker_side, market_id FROM stream_trades"
+        f" WHERE market_id IN ({ph}) AND venue='kalshi' AND recv_ts > ?"
+        " ORDER BY market_id, recv_ts",
+        [*markets, since],
+    ).fetchall():
+        trades_by[t[4]].append(t[:4])
+    cur = conn.execute(
+        "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
+        f" FROM book_events WHERE market_id IN ({ph}) AND venue='kalshi' AND recv_ts > ?"
+        " ORDER BY market_id, recv_ts, seq",
+        [*markets, since],
+    )
+    seen: set[str] = set()
+    current: str | None = None
+    buf: list = []
+    while True:
+        rows = cur.fetchmany(chunk)
+        if not rows:
+            break
+        for e in rows:
+            if e[1] != current:
+                if current is not None:
+                    seen.add(current)
+                    yield current, buf, trades_by[current]
+                current, buf = e[1], []
+            buf.append(e)
+    if current is not None:
+        seen.add(current)
+        yield current, buf, trades_by[current]
+    for m in markets:
+        if m not in seen:
+            yield m, [], trades_by[m]
+
+
+def fetch_rows(conn, markets: list[str], since: datetime) -> dict[str, tuple[list, list]]:
+    """Every selected market's rows at once -- the fixture/one-market path.
+    `main` streams them (`iter_market_rows`); this holds them all."""
+    return {m: (ev, tr) for m, ev, tr in iter_market_rows(conn, markets, since)}
+
+
+def score_market(conn, market_id: str, since: datetime, qty: float) -> list[VirtualOrder]:
+    """One market, read and scored under one connection -- the fixture path.
+    `main` scores every market from one scan per table (`iter_market_rows`)."""
+    events, trades = fetch_rows(conn, [market_id], since)[market_id]
+    return score_rows(market_id, events, trades, fetch_gaps(conn, since), since, qty)
+
+
+def score_rows(
+    market_id: str, events: list, trades: list, gaps: list, since: datetime, qty: float
+) -> list[VirtualOrder]:
+    """Replay one market's rows and place the virtual maker orders. Pure
+    Python over rows already in memory: no connection, no hold."""
     orders: list[VirtualOrder] = []
     state: dict = {"open": None, "next_arm": since, "ti": 0}
 
@@ -857,6 +934,49 @@ def score_market(conn, market_id: str, since: datetime, qty: float) -> list[Virt
     return orders
 
 
+def cost_block(
+    wait: dict, *, score_s: float, rows: dict[str, tuple[int, int]], rss_peak_mb: float | None
+) -> dict:
+    """What this run cost the archive's owner and itself, split where the
+    split is actionable: `held_s` is the hold on `hyxstream.duckdb` (the
+    attach block's own reading, #91) and `score_s` the replay's share of
+    it, so `held_s - score_s` is the scans plus materialisation -- the part
+    that tracks the window's row volume. `rss_peak_mb` is the holder's
+    anonymous RSS sampled after each market (the cgroup's peak is page
+    cache, #134): the memory the one-market-at-a-time stream actually
+    holds, against the unit's `MemoryMax`. The row counts price the window;
+    `book_rows_max` is the most any one replay materialised."""
+    book_rows = {m: n for m, (n, _) in rows.items()}
+    trade_rows = {m: n for m, (_, n) in rows.items()}
+    return {
+        "held_s": wait.get("held_s_total"),
+        "held_unknown_n": wait.get("held_unknown_n"),
+        "score_s": round(score_s, 3),
+        "markets": len(rows),
+        "book_rows": sum(book_rows.values()),
+        "trade_rows": sum(trade_rows.values()),
+        "book_rows_max": max(book_rows.values(), default=0),
+        "rss_peak_mb": None if rss_peak_mb is None else round(rss_peak_mb, 1),
+        "per_market": {m: {"book_rows": book_rows[m], "trade_rows": trade_rows[m]} for m in rows},
+    }
+
+
+def cost_line(cost: dict) -> str:
+    """The one renderer of the cost block (#95: render a shared block in one
+    place; every field but the per-market detail reaches the line)."""
+    held = cost["held_s"]
+    held_s = "unmeasured" if held is None else f"{held:.1f}s"
+    unknown = cost["held_unknown_n"]
+    unknown_s = "" if not unknown else f" ({unknown} unmeasured)"
+    rss = cost["rss_peak_mb"]
+    rss_s = "rss_anon peak unmeasured" if rss is None else f"rss_anon peak {rss:.1f} MB"
+    return (
+        f"held {held_s}{unknown_s} of which replay {cost['score_s']:.1f}s;"
+        f" {cost['markets']} markets, {cost['book_rows']} book rows"
+        f" (max {cost['book_rows_max']} in one), {cost['trade_rows']} prints; {rss_s}"
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="maker fill-model calibration bracket")
     ap.add_argument("--hours", type=float, default=24.0)
@@ -898,14 +1018,31 @@ def main() -> None:
             + (f", series={series}" if series else "")
         )
 
+        # Inside the hold: one scan per table, streamed by market, each
+        # market replayed as its group completes (see `iter_market_rows`:
+        # the replay is ~3s for 24 markets; holding every market's rows to
+        # replay after the release cost 5 GB). `score_s` is the replay's
+        # share of the hold; what `held_s` carries beyond it is the scans.
+        gaps = fetch_gaps(conn, since)
         all_orders: list[VirtualOrder] = []
-        for m in markets:
-            orders = score_market(conn, m, since, args.qty)
+        score_s = 0.0
+        rows_n: dict[str, tuple[int, int]] = {}
+        rss_peak = rss_anon_mb()
+        for m, events, trades in iter_market_rows(conn, markets, since):
+            t_score = time.monotonic()
+            orders = score_rows(m, events, trades, gaps, since, args.qty)
+            score_s += time.monotonic() - t_score
+            rows_n[m] = (len(events), len(trades))
             all_orders.extend(orders)
             print(f"  {m}: {len(orders)} virtual maker orders")
+            rss = rss_anon_mb()
+            if rss is not None and (rss_peak is None or rss > rss_peak):
+                rss_peak = rss
     # After the RELEASE: `held_s` is charged by the close, so a block built
     # inside the `with` would publish `held_unknown_n 1` against this attach.
     wait = attach_wait_block(db=Path(args.stream_db).name)
+    cost = cost_block(wait, score_s=score_s, rows=rows_n, rss_peak_mb=rss_peak)
+    print(f"[queuescore] cost: {cost_line(cost)}")
 
     n = len(all_orders)
     crossed = [o for o in all_orders if o.crossed_at]
@@ -929,6 +1066,7 @@ def main() -> None:
         "concentration_strict": conc_strict,
         "direction_verdict": direction_verdict(conc, conc_strict),
         "independence": independence_vs_prior(out_dir, all_orders, composition, conc),
+        "cost": cost,
         "note": (
             "crossing rule = what backtests award today; queue bounds ="
             " what L2+tape evidence supports (pess is the floor)."
