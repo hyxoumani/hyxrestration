@@ -709,7 +709,15 @@ def test_reconcile_period_is_commensurate_with_the_five_minute_passes():
     # offset into the :X0/:X5 cycle -- i.e. the period is a whole number of
     # 5-minute passes and divides the hour.
     assert streamd.RECONCILE_SECS % 300 == 0 and 3600 % streamd.RECONCILE_SECS == 0
-    # ...and the default offset leaves a ~90 s walk room before the next pass
+    # ...and the default offset leaves walk room before the next pass. The
+    # room is NOT the ~90 s the V2-378 note assumed: the walk's floor is one
+    # SERIES_PAUSE_S per series (97 series = 97 s), so measured 10-22..10-29
+    # over 459 walks it ran p50 105 s / p90 115 s / max 275 s, and 39 (8.5%)
+    # ended 0-54 s PAST the :X5 collector tick (one 128 s). Read by the tick
+    # (#125) that overrun costs the collector nothing -- 0.41/0.45/0.44
+    # 429s per sweep-idle cycle at marks :X0/:X5/:X10, overlapped cycles
+    # 0.25 -- so the 120 s room stands on the listing-delay half of the
+    # design, not on the collision half (status 2026-10-29 02:15Z).
     assert 150 <= streamd.RECONCILE_OFFSET_S <= 300 - 100
 
 
