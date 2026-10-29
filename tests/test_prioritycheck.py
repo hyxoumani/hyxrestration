@@ -5,6 +5,8 @@ no-match decomposition (late decrement, coverage gap, naive-would-match
 staying zero) on a crafted in-memory stream.
 """
 
+import re
+
 import duckdb
 import pytest
 
@@ -167,7 +169,7 @@ def test_the_selector_is_queuescores_not_a_copy():
 
     src = (Path(__file__).resolve().parent.parent / "simulator/prioritycheck.py").read_text()
     assert "FROM book_events b" not in src, "a second selector query string"
-    assert "from simulator.queuescore import select_markets" in src
+    assert re.search(r"from simulator\.queuescore import .*\bselect_markets\b", src), src[:200]
 
 
 def test_main_measures_the_hold_on_the_stream_archive(tmp_path, monkeypatch, capsys):
@@ -194,3 +196,231 @@ def test_main_measures_the_hold_on_the_stream_archive(tmp_path, monkeypatch, cap
     report = json.loads(next(out_dir.glob("*.json")).read_text())
     assert report["markets"] == 0
     assert report["attach_wait"]["held_n"] == 1 and report["attach_wait"]["held_unknown_n"] == 0
+
+
+def test_streamed_rows_pair_identically_to_the_one_market_read(tmp_path):
+    """`main` reads every selected market in ONE scan per table
+    (`queuescore.iter_market_rows`) and pairs each group as it completes;
+    until 2026-10-29 it ran `check_market`'s two `WHERE market_id=?` reads
+    per market -- 2N window scans on streamd's file (#147). The streamed
+    rows must pair exactly as the one-market read did: three markets
+    interleaved in time so the `ORDER BY market_id` grouping is exercised,
+    `chunk=2` so every group spans a fetchmany boundary, and a positive
+    delta per market that `negative_deltas` must drop."""
+    from datetime import datetime, timedelta
+
+    from hyxlab.streamstore import StreamStore
+    from simulator.prioritycheck import check_rows, negative_deltas
+    from simulator.queuescore import iter_market_rows
+    from tests.test_hyxlab_queuescore import _delta as sdelta
+    from tests.test_hyxlab_queuescore import _image
+    from tests.test_hyxlab_queuescore import _trade as strade
+
+    t0 = datetime(2026, 7, 11, 12, 0)
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    for mid, base in (("A", 10), ("B", 20), ("C", 30)):
+        store.append_events(_image(mid, base, t0))
+        store.append_events(
+            sdelta(mid, base + 1, t0 + timedelta(seconds=1), "yes", "0.1000", "1.00")
+        )
+    # A: exact match at the complement level; B: no-taker print, decrement 1.5s late;
+    # C: yes-taker print whose decrement lands at the SAME-side level (naive fit).
+    store.append_trades(strade("A", 12, t0 + timedelta(seconds=60), "0.4000", "35.00", "no"))
+    store.append_events(sdelta("A", 13, t0 + timedelta(seconds=60), "yes", "0.4000", "-35.00"))
+    store.append_trades(strade("B", 22, t0 + timedelta(seconds=60), "0.4000", "40.00", "no"))
+    store.append_events(
+        sdelta("B", 23, t0 + timedelta(seconds=61, milliseconds=500), "yes", "0.4000", "-40.00")
+    )
+    store.append_trades(strade("C", 32, t0 + timedelta(seconds=61), "0.4000", "10.00", "yes"))
+    store.append_events(sdelta("C", 33, t0 + timedelta(seconds=61), "yes", "0.4000", "-10.00"))
+    for mid, base in (("A", 14), ("B", 24), ("C", 34)):
+        store.append_events(sdelta(mid, base, t0 + timedelta(seconds=90), "yes", "0.1000", "1.00"))
+    store.flush()
+
+    since = t0 - timedelta(minutes=1)
+    conn = duckdb.connect(str(db), read_only=True)
+    one_by_one = {m: check_market(conn, m, since) for m in ("A", "B", "C")}
+    streamed = list(iter_market_rows(conn, ["A", "B", "C", "ABSENT"], since, chunk=2))
+    conn.close()
+
+    assert [m for m, _, _ in streamed] == ["A", "B", "C", "ABSENT"]
+    assert all(len(ev) > 2 for _, ev, _ in streamed[:3])  # each group spans a chunk boundary
+    paired = {m: check_rows(m, tr, negative_deltas(ev)) for m, ev, tr in streamed}
+    assert {m: paired[m] for m in ("A", "B", "C")} == one_by_one
+    assert paired["ABSENT"]["trades"] == 0 and paired["ABSENT"]["neg_deltas"] == 0
+    # not vacuous: the three markets land in three different cells
+    assert one_by_one["A"]["exact_match"] == 1
+    assert one_by_one["B"]["late_decrement"] == 1 and one_by_one["B"]["exact_match"] == 0
+    assert one_by_one["C"]["naive_would_match"] == 1 and one_by_one["C"]["absorb_match"] == 0
+    # the positive deltas were dropped before pairing, not counted
+    assert all(r["neg_deltas"] == 1 for r in one_by_one.values())
+
+
+def test_main_publishes_the_cost_block_with_the_pairing_label(tmp_path, monkeypatch, capsys):
+    """The report carries queuescore's `cost` block (held vs compute split,
+    rows, rss) rendered through the ONE renderer (#95), and the line names
+    the compute as pairing -- not the bracket's replay."""
+    import json
+
+    from hyxlab.streamstore import StreamStore
+    from simulator import prioritycheck
+
+    db = tmp_path / "hyxstream.duckdb"
+    StreamStore(db).flush()
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(
+        "sys.argv", ["prioritycheck", "--stream-db", str(db), "--out", str(out_dir)]
+    )
+    prioritycheck.main()
+    text = capsys.readouterr().out
+    lines = [ln for ln in text.splitlines() if ln.startswith("[prioritycheck] cost:")]
+    assert len(lines) == 1 and "of which pairing 0.0s" in lines[0], text
+    assert "replay" not in lines[0]
+    report = json.loads(next(out_dir.glob("*.json")).read_text())
+    cost = report["cost"]
+    assert cost["markets"] == 0 and cost["held_s"] is not None and cost["held_unknown_n"] == 0
+
+
+def _brute_force_check_rows(market_id, trades, deltas):
+    """The pre-2026-10-29 pairing, verbatim in shape: a comprehension over the
+    whole level per print. Kept here as the oracle for the bisect path."""
+    from collections import defaultdict
+
+    from simulator.prioritycheck import ABSORB_WINDOW, EXACT_WINDOW, PRICE_EPS
+
+    idx = defaultdict(list)
+    for ts, side, price, qty in deltas:
+        idx[(side, round(price, 4))].append((ts, -qty))
+    for b in idx.values():
+        b.sort()
+    res = dict.fromkeys(
+        (
+            "exact_match",
+            "absorb_match",
+            "naive_would_match",
+            "late_decrement",
+            "no_decrement_at_level",
+            "batched_with_cancels",
+        ),
+        0,
+    )
+    res.update(market_id=market_id, trades=len(trades), neg_deltas=len(deltas), dt_ms=[])
+    for ts, p, q, taker in trades:
+        key = predicted_level(taker, p)
+        near_exact = [
+            (dts, dec)
+            for dts, dec in idx.get(key, [])
+            if abs((dts - ts).total_seconds()) <= EXACT_WINDOW
+        ]
+        hit = next((dts for dts, dec in near_exact if abs(dec - q) < PRICE_EPS), None)
+        if hit is not None:
+            res["exact_match"] += 1
+            res["absorb_match"] += 1
+            res["dt_ms"].append((hit - ts).total_seconds() * 1000)
+            continue
+        near_absorb = [
+            (dts, dec)
+            for dts, dec in idx.get(key, [])
+            if abs((dts - ts).total_seconds()) <= ABSORB_WINDOW
+        ]
+        late = next((dts for dts, dec in near_absorb if abs(dec - q) < PRICE_EPS), None)
+        if late is not None:
+            res["absorb_match"] += 1
+            res["late_decrement"] += 1
+            res["dt_ms"].append((late - ts).total_seconds() * 1000)
+        elif not near_absorb:
+            res["no_decrement_at_level"] += 1
+        else:
+            res["batched_with_cancels"] += 1
+        naive = naive_level(taker, p)
+        if any(
+            abs((dts - ts).total_seconds()) <= ABSORB_WINDOW and abs(dec - q) < PRICE_EPS
+            for dts, dec in idx.get(naive, [])
+        ):
+            res["naive_would_match"] += 1
+    return res
+
+
+def test_bisect_pairing_equals_the_whole_level_scan_on_random_tapes():
+    """The pairing slices each level by `bisect` instead of scanning it per
+    print (2026-10-29: the scan was 206.7s of a 224.8s hold on streamd's
+    file). Same answer as the scan, print for print, on random tapes dense
+    enough that windows overlap, levels repeat, timestamps tie and
+    decrements sit exactly ON both window edges -- the `<=` boundary."""
+    import random
+    from datetime import datetime, timedelta
+
+    from simulator.prioritycheck import ABSORB_WINDOW, EXACT_WINDOW, check_rows
+
+    rng = random.Random(1729)
+    t0 = datetime(2026, 7, 11, 12, 0)
+    prices = [0.40, 0.41, 0.59, 0.60]
+    sizes = [5.0, 10.0, 15.0]
+    nontrivial = 0
+    for _ in range(40):
+        trades, deltas = [], []
+        for _ in range(60):
+            ts = t0 + timedelta(milliseconds=rng.randrange(0, 20_000))
+            trades.append((ts, rng.choice(prices), rng.choice(sizes), rng.choice(["yes", "no"])))
+        for _ in range(200):
+            ts = t0 + timedelta(milliseconds=rng.randrange(0, 20_000))
+            deltas.append((ts, rng.choice(["yes", "no"]), rng.choice(prices), -rng.choice(sizes)))
+        # edge cases pinned, not left to chance: a decrement exactly at the
+        # exact-window edge and one exactly at the absorb-window edge, plus
+        # two at the same instant on one level with different sizes
+        ts, p, q, taker = trades[0]
+        side, lvl = predicted_level(taker, p)
+        deltas.append((ts + timedelta(seconds=EXACT_WINDOW), side, lvl, -q))
+        ts, p, q, taker = trades[1]
+        side, lvl = predicted_level(taker, p)
+        deltas.append((ts - timedelta(seconds=ABSORB_WINDOW), side, lvl, -q))
+        ts, p, q, taker = trades[2]
+        side, lvl = predicted_level(taker, p)
+        deltas.append((ts, side, lvl, -q))
+        deltas.append((ts, side, lvl, -(q + 1)))
+        deltas.sort()
+        got = check_rows("M", trades, deltas)
+        want = _brute_force_check_rows("M", trades, deltas)
+        assert got == want
+        nontrivial += got["exact_match"] > 0 and got["late_decrement"] > 0
+        nontrivial += got["batched_with_cancels"] > 0 and got["no_decrement_at_level"] > 0
+    assert nontrivial >= 40, nontrivial  # every cell of the decomposition exercised, often
+
+
+def test_series_flag_reaches_the_shared_selector_and_the_report(tmp_path, monkeypatch, capsys):
+    """`--series KXHIGH` is how the 2026-09-20 weather reading stays
+    comparable once the top-N by prints is KXBTC15M; it must reach
+    `queuescore.select_markets` as its `series` argument and be recorded."""
+    import json
+
+    from hyxlab.streamstore import StreamStore
+    from simulator import prioritycheck
+
+    db = tmp_path / "hyxstream.duckdb"
+    StreamStore(db).flush()
+    calls = []
+
+    def fake_select(conn, since, top_n, series=None):
+        calls.append((top_n, series))
+        return []
+
+    monkeypatch.setattr(prioritycheck, "select_markets", fake_select)
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prioritycheck",
+            "--stream-db",
+            str(db),
+            "--out",
+            str(out_dir),
+            "--series",
+            "KXHIGH, KXLOW",
+        ],
+    )
+    prioritycheck.main()
+    assert calls == [(8, ["KXHIGH", "KXLOW"])]
+    report = json.loads(next(out_dir.glob("*.json")).read_text())
+    assert report["series"] == ["KXHIGH", "KXLOW"]
+    assert "series=['KXHIGH', 'KXLOW']" in capsys.readouterr().out

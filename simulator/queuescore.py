@@ -961,9 +961,12 @@ def cost_block(
     }
 
 
-def cost_line(cost: dict) -> str:
+def cost_line(cost: dict, compute: str = "replay") -> str:
     """The one renderer of the cost block (#95: render a shared block in one
-    place; every field but the per-market detail reaches the line)."""
+    place; every field but the per-market detail reaches the line). `compute`
+    names what `score_s` timed for the publisher -- the bracket's replay, the
+    priority check's pairing -- so a reader of the line is not told a
+    pairing pass was a replay."""
     held = cost["held_s"]
     held_s = "unmeasured" if held is None else f"{held:.1f}s"
     unknown = cost["held_unknown_n"]
@@ -971,7 +974,7 @@ def cost_line(cost: dict) -> str:
     rss = cost["rss_peak_mb"]
     rss_s = "rss_anon peak unmeasured" if rss is None else f"rss_anon peak {rss:.1f} MB"
     return (
-        f"held {held_s}{unknown_s} of which replay {cost['score_s']:.1f}s;"
+        f"held {held_s}{unknown_s} of which {compute} {cost['score_s']:.1f}s;"
         f" {cost['markets']} markets, {cost['book_rows']} book rows"
         f" (max {cost['book_rows_max']} in one), {cost['trade_rows']} prints; {rss_s}"
     )

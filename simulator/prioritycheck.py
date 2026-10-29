@@ -42,15 +42,18 @@ than assumes. Ledger-only; nothing is traded.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import statistics
+import time
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from hyxlab.memcap import rss_anon_mb
 from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
-from simulator.queuescore import select_markets
+from simulator.queuescore import cost_block, cost_line, iter_market_rows, select_markets
 
 STREAM_DB = "data/hyxstream.duckdb"
 EXACT_WINDOW = 0.005  # s: tight pairing for the exact-match rate / timing stats
@@ -100,6 +103,18 @@ def naive_level(taker_side: str, print_price: float) -> tuple[str, float]:
 
 
 def check_market(conn, market_id: str, since: datetime) -> dict:
+    """The one-market read: two `WHERE market_id=?` scans, then `check_rows`.
+
+    This is the REFERENCE path the fixture tests pair against, not what
+    `main` runs. A `WHERE market_id=?` read over a columnar table pays the
+    whole window's row volume whatever its selectivity, so N markets through
+    this function held `hyxstream.duckdb` -- the file `collector.streamd`
+    flushes every 15s -- for 2N window scans (#147, the same shape fixed in
+    `queuescore` the same morning). `main` streams one scan per table
+    through `queuescore.iter_market_rows` and feeds `check_rows` the same
+    rows in the same order (`tests/test_prioritycheck.py` asserts the two
+    paths agree across chunk boundaries).
+    """
     trades = conn.execute(
         "SELECT recv_ts, price, qty, taker_side FROM stream_trades"
         " WHERE venue='kalshi' AND market_id=? AND recv_ts > ? ORDER BY recv_ts",
@@ -111,12 +126,44 @@ def check_market(conn, market_id: str, since: datetime) -> dict:
         " AND recv_ts > ? ORDER BY recv_ts",
         [market_id, since],
     ).fetchall()
+    return check_rows(market_id, trades, deltas)
 
-    idx: dict[tuple[str, float], list[tuple[datetime, float]]] = defaultdict(list)
+
+def negative_deltas(events: list) -> list[tuple[datetime, str, float, float]]:
+    """`(recv_ts, side, price, qty)` for the `kind='delta' AND qty < 0` rows of
+    an `iter_market_rows` event group (columns: venue, market_id, recv_ts,
+    src_ts, sid, seq, kind, side, price, qty), in the group's order."""
+    return [(e[2], e[7], e[8], e[9]) for e in events if e[6] == "delta" and e[9] < 0]
+
+
+def check_rows(market_id: str, trades: list, deltas: list) -> dict:
+    """Pair one market's prints with its negative book deltas.
+
+    `trades` rows are `(recv_ts, price, qty, taker_side)` and `deltas` rows
+    `(recv_ts, side, price, qty)` with `qty < 0`, both ascending in time.
+    """
+    # Per (side, price) level: the decrements' timestamps and sizes in time
+    # order, so a print's window is a `bisect` slice rather than a scan of
+    # the level. A comprehension over the whole level per print cost
+    # 206.7s of a 224.8s hold on streamd's file for eight KXBTC15M markets
+    # (2026-10-29: 540k prints against levels of 10^4-10^5 decrements).
+    pairs: dict[tuple[str, float], list[tuple[datetime, float]]] = defaultdict(list)
     for ts, side, price, qty in deltas:
-        idx[(side, round(price, 4))].append((ts, -qty))
-    for bucket in idx.values():
+        pairs[(side, round(price, 4))].append((ts, -qty))
+    idx: dict[tuple[str, float], tuple[list[datetime], list[float]]] = {}
+    for key, bucket in pairs.items():
         bucket.sort()
+        idx[key] = ([ts for ts, _ in bucket], [dec for _, dec in bucket])
+
+    def within(key, ts, window_s: float) -> list[tuple[datetime, float]]:
+        """The level's decrements with |dts - ts| <= window, in time order."""
+        bucket = idx.get(key)
+        if bucket is None:
+            return []
+        tss, decs = bucket
+        lo = bisect.bisect_left(tss, ts - timedelta(seconds=window_s))
+        hi = bisect.bisect_right(tss, ts + timedelta(seconds=window_s))
+        return list(zip(tss[lo:hi], decs[lo:hi], strict=True))
 
     res = {
         "market_id": market_id,
@@ -136,11 +183,7 @@ def check_market(conn, market_id: str, since: datetime) -> dict:
     }
     for ts, p, q, taker in trades:
         key = predicted_level(taker, p)
-        near_exact = [
-            (dts, dec)
-            for dts, dec in idx.get(key, [])
-            if abs((dts - ts).total_seconds()) <= EXACT_WINDOW
-        ]
+        near_exact = within(key, ts, EXACT_WINDOW)
         hit = next((dts for dts, dec in near_exact if abs(dec - q) < PRICE_EPS), None)
         if hit is not None:
             res["exact_match"] += 1
@@ -148,11 +191,7 @@ def check_market(conn, market_id: str, since: datetime) -> dict:
             res["dt_ms"].append((hit - ts).total_seconds() * 1000)
             continue
         # miss at the tight window: decompose it
-        near_absorb = [
-            (dts, dec)
-            for dts, dec in idx.get(key, [])
-            if abs((dts - ts).total_seconds()) <= ABSORB_WINDOW
-        ]
+        near_absorb = within(key, ts, ABSORB_WINDOW)
         late = next((dts for dts, dec in near_absorb if abs(dec - q) < PRICE_EPS), None)
         if late is not None:
             res["absorb_match"] += 1
@@ -163,10 +202,8 @@ def check_market(conn, market_id: str, since: datetime) -> dict:
         else:
             res["batched_with_cancels"] += 1
         # would the wrong mapping have fit? (must stay ~0)
-        naive = naive_level(taker, p)
         if any(
-            abs((dts - ts).total_seconds()) <= ABSORB_WINDOW and abs(dec - q) < PRICE_EPS
-            for dts, dec in idx.get(naive, [])
+            abs(dec - q) < PRICE_EPS for _, dec in within(naive_level(taker, p), ts, ABSORB_WINDOW)
         ):
             res["naive_would_match"] += 1
     return res
@@ -176,9 +213,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="verify the trade→book-decrement mapping")
     ap.add_argument("--hours", type=float, default=24.0)
     ap.add_argument("--markets", type=int, default=8, help="top-N book-subscribed by prints")
+    ap.add_argument(
+        "--series",
+        default=None,
+        help="comma-separated Kalshi series (the whole first dash-token, e.g. KXHIGHNY,KXHIGHCHI);"
+        " default = all, which since the 10-23 coverage expansion is KXBTC15M-dominated"
+        " -- the 2026-09-20 reading was weather, so a drift read names the series",
+    )
     ap.add_argument("--stream-db", default=STREAM_DB)
     ap.add_argument("--out", default="reports/priority_check")
     args = ap.parse_args()
+    series = [x.strip() for x in args.series.split(",") if x.strip()] if args.series else None
 
     reset_attach_waits()
     # `held_attach`: every market is checked through a cursor on
@@ -193,20 +238,40 @@ def main() -> None:
             "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
             [int(args.hours)],
         ).fetchone()[0]
-        markets = select_markets(conn, since, args.markets)
-        print(f"[prioritycheck] window since {since}, {len(markets)} markets")
+        markets = select_markets(conn, since, args.markets, series)
+        print(
+            f"[prioritycheck] window since {since}, {len(markets)} markets"
+            + (f", series={series}" if series else "")
+        )
 
+        # Inside the hold: ONE scan per table, streamed by market, each
+        # market paired as its group completes -- `check_market`'s two
+        # `WHERE market_id=?` reads per market were 2N window scans (#147).
+        # `score_s` is the pairing's share of the hold; the rest is the scans.
         per_market = []
         dt_ms: list[float] = []
-        for m in markets:
-            r = check_market(conn, m, since)
+        score_s = 0.0
+        rows_n: dict[str, tuple[int, int]] = {}
+        rss_peak = rss_anon_mb()
+        for m, events, trades in iter_market_rows(conn, markets, since):
+            deltas = negative_deltas(events)
+            rows_n[m] = (len(events), len(trades))
+            del events
+            t_pair = time.monotonic()
+            r = check_rows(m, trades, deltas)
+            score_s += time.monotonic() - t_pair
             dt_ms.extend(r.pop("dt_ms"))
             per_market.append(r)
             print(
                 f"  {m}: trades={r['trades']} exact={r['exact_match']} absorb={r['absorb_match']}"
             )
+            rss = rss_anon_mb()
+            if rss is not None and (rss_peak is None or rss > rss_peak):
+                rss_peak = rss
     # After the RELEASE: `held_s` is charged by the close.
     wait = attach_wait_block(db=Path(args.stream_db).name)
+    cost = cost_block(wait, score_s=score_s, rows=rows_n, rss_peak_mb=rss_peak)
+    print(f"[prioritycheck] cost: {cost_line(cost, compute='pairing')}")
 
     tot = sum(r["trades"] for r in per_market)
     agg = {
@@ -233,6 +298,7 @@ def main() -> None:
     report = {
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None, microsecond=0)),
         "window_hours": args.hours,
+        "series": series,
         "markets": len(markets),
         "trades": tot,
         "exact_match_frac": round(agg["exact_match"] / tot, 4) if tot else None,
@@ -255,13 +321,14 @@ def main() -> None:
         ),
         "per_market": per_market,
         "attach_wait": wait,
+        "cost": cost,
     }
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
     for k, v in report.items():
-        if k not in ("per_market", "note", "attach_wait"):
+        if k not in ("per_market", "note", "attach_wait", "cost"):
             print(f"  {k}: {v}")
     print(attach_wait_line(wait, prefix="[prioritycheck]"))
     print(f"[prioritycheck] written to {out}")
