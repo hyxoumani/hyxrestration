@@ -61,6 +61,21 @@ claim is typical, not a bound; ABSORB_WINDOW=2s is safely generous).
 This verifies WHICH level a trade consumes; the front-vs-back
 consumption ORDER within a level stays bracketed (pess/opt), not
 assumed — that needs a live maker probe (Tier-3, capital-gated).
+**Re-read 2026-10-29 14:33Z** (`--series KXHIGHNY,KXHIGHCHI,KXHIGHMIA`,
+the 09-20 population; `reports/priority_check/20261029T143335.json`):
+the LEVEL mapping still holds on weather -- 10,859 prints / 8 markets /
+24h, absorb_match 1.000, no_decrement 0, naive 12 -- but the exact
+±5ms rate fell 0.978 -> 0.801 because the pairing delay widened
+(median 1.54ms vs -0.82, p95 8.3ms vs 1.3, max 34ms): a stream-side
+latency shift since the 10-23 book-coverage expansion, inside the 2s
+window by 60x. **NOT verified on KXBTC15M**, which is now the top-8 by
+prints (`20261029T143206.json`, 539,780 prints): absorb_match 0.814,
+no_decrement_at_level 18.6% (0.18-0.28 per market), naive 0.65%. One in
+five prints has NO decrement at the predicted level within 2s -- a
+coverage gap (26 `kalshi/books GAP (reconnect)` in the window) or a
+venue mechanic on dense books (netted deltas); undetermined. A maker
+bracket on 15-minute crypto markets would rest on an unverified
+foundation until this is attributed.
 
 ## Runtime accounting invariants
 

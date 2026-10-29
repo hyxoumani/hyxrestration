@@ -3628,6 +3628,31 @@ Format: what happened → root cause → error type → prevention tier
     `cost` block (`held_s`, `score_s`, rows, `rss_peak_mb`) and prints it
     through one renderer, perturbation-asserted (#95).
 
+148. **2026-10-29 14:28Z -- the #147 fix applied one file over moved the
+    hold from the scans into the compute, and the compute had the same
+    shape one level down.** `simulator.prioritycheck` ran `check_market`'s
+    two `WHERE market_id=?` reads per market -- 2N window scans on
+    `hyxstream.duckdb`, the exact #147 shape, found by grepping the
+    predicate the morning #147 was written. Streaming
+    `queuescore.iter_market_rows` (one scan per table) was applied and
+    measured from a transient unit: **held 224.8s, of which pairing
+    206.7s** -- the scans were 18s; the per-print comprehension over the
+    whole (side, price) level was O(prints x level) on eight KXBTC15M
+    markets (540k prints, levels of 10^4-10^5 decrements), and had been
+    cheap only while the top-8 by prints were weather markets (12k prints
+    on 09-20). The victim recorded it: 16 failed flushes, 1.41M rows
+    pending, 0 spilled. A `bisect` slice per print: held 24.8s, pairing
+    3.5s, aggregates identical. Rule: **removing one multiplier is not a
+    fix until the hold is re-measured and SPLIT (scan vs compute) -- the
+    compute you kept inside the hold has its own complexity, and "a scan
+    of a list per item" is the #147 shape whether the list is a DuckDB
+    column or a Python level bucket. Carry an oracle: the old pairing is
+    kept verbatim in the test as the brute-force reference, and the two
+    agree on random tapes with both window edges pinned.** Also: a
+    filter that matches a whole token (`split_part(market_id,'-',1)`)
+    silently returns 0 markets for a prefix (`KXHIGH` vs `KXHIGHNY`); the
+    help text now says which.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
