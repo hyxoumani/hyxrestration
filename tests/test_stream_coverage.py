@@ -908,3 +908,22 @@ def test_a_restart_restores_announced_opens_from_the_archive(tmp_path, monkeypat
     out = capsys.readouterr().out
     assert "1 lifecycle-announced opens restored from the archive (3 announced" in out
     assert "1 already open and queued" in out
+
+
+def test_announced_opens_reads_while_the_owner_holds_a_writer_connection(tmp_path):
+    """The daemon's flusher may be mid-write when the book set boots, and
+    DuckDB refuses a same-process attach whose configuration differs from
+    the open one. The first production boot asked read-only and got
+    `different configuration than existing connections` (2026-10-29
+    14:59:39Z) -- the walk backstop ran and the restore did nothing."""
+    from hyxlab.store import duck_connect
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    now = datetime.now(UTC)
+    opens_at = now + timedelta(hours=2)
+    _created(store, "S-FUTURE", opens_at, now - timedelta(hours=20))
+    store.flush()
+    with duck_connect(str(store.path)) as writer:  # the flusher's configuration
+        writer.execute("SELECT 1")
+        got = store.announced_opens(now)
+    assert set(got) == {"S-FUTURE"} and abs((got["S-FUTURE"] - opens_at).total_seconds()) < 1

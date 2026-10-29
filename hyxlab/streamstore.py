@@ -1106,12 +1106,20 @@ class StreamStore:
         forgot every market of the next day and each reached the book set
         only through the reconcile walk, ~4m45s after opening (measured
         2026-10-29: 7 of 8 KXBTC15M markets, 18-28% of each one's prints
-        with no book). Empty when the archive does not exist yet."""
+        with no book). Empty when the archive does not exist yet.
+
+        The attach is the owner's read-WRITE configuration, like `flush`:
+        DuckDB serves every same-process attach from one instance and
+        refuses a second configuration while the first is open, and the
+        flusher thread may be mid-write when the book set boots. The first
+        production boot (2026-10-29 14:59:39Z) asked read-only and got
+        `Can't open a connection to same database file with a different
+        configuration` -- the backstop logged it and the fix was inert."""
         if not self.path.exists():
             return {}
         now = now or datetime.now(UTC)
         since = (now - timedelta(seconds=lookback_s)).replace(tzinfo=None)
-        with duck_connect(str(self.path), read_only=True) as conn:
+        with duck_connect(str(self.path)) as conn:
             rows = conn.execute(
                 "WITH c AS (SELECT market_id, max(open_ts) AS open_ts FROM stream_lifecycle"
                 " WHERE msg_type = 'market_lifecycle_v2' AND event_type = 'created'"

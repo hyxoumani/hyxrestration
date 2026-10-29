@@ -51,11 +51,6 @@ ALLOWED: dict[str, tuple[str, str]] = {
         "OWNER",
         "only production caller is collector.streamd, which owns the file",
     ),
-    "hyxlab/streamstore.py::StreamStore.announced_opens": (
-        "OWNER",
-        "the daemon's own boot read of its lifecycle table, before any flush;"
-        " a failure is logged and the reconcile walk stays the backstop",
-    ),
     # -- hand-rolled retry, each for a reason the helper cannot serve -----
     # EXP-1379 removed `simulator/atlas.py::main` from here rather than
     # adding to it. Its disposition read "15x2s report attach", which is a
@@ -115,6 +110,11 @@ WRITE_ALLOWED: dict[str, str] = {
     "hyxlab/streamstore.py::StreamStore.__init__": "creates its own schema",
     "hyxlab/streamstore.py::StreamStore.flush_outcome": "the daemon's write path",
     "hyxlab/streamstore.py::StreamStore.last_recv_ts": "same connection discipline as flush",
+    "hyxlab/streamstore.py::StreamStore.announced_opens": (
+        "the daemon's boot read of its own lifecycle table; the flusher may hold the"
+        " read-write instance at that moment and DuckDB refuses a different configuration"
+        " in-process (2026-10-29 14:59Z), so it attaches like flush does"
+    ),
     "hyxlab/streamstore.py::StreamStore.mark_startup_gap": "records the gap it just found",
     "simulator/shadow.py::ShadowLedger.__init__": "the daemon owns hyxshadow.duckdb",
     "simulator/shadow.py::ShadowLedger.persist": "the ledger's write path",
