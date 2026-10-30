@@ -1058,14 +1058,20 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   15M/D/H/EOY family that has settled 0 markets in two runs -- NOT a
   ladder yet; if it grows a KXSOLD-shaped book it is +50 min/run and a
   category decision). Of today's 4,102 series, **3,846 (94%) settled
-  ZERO markets** and still cost the small class's ~1.2 s/series
-  intercept each: ~77 min of the 718 (11%) is enumeration of series
-  with nothing to fetch, and every new series joins that term for
-  good. So the intercept grows ~12 s/day (10 x 1.2 s), ~6 min/month,
-  i.e. the 12.5h ceiling falls ~700 markets/month: the worst count
-  seen (10-24, 75,269 -> fit 731.4, 18.6 min under 750) breaches on
-  series growth alone around 2027-01-25 at this rate, with no change
-  in the market count. The response then is the one reports.md
+  ZERO markets** and still cost one listing call each -- MEASURED
+  from consecutive `swept_at` differences (rows are written in sorted
+  order, so the difference is the series' wall): median 0.54 s (p10
+  0.52, p90 2.49 -- the 429-retry tail), mean 1.03 s, **66.3 min of
+  the 718 (9%)** enumerates series with nothing to fetch (10-25: 3,912
+  such series / 77.5 min; 10-26: 3,874 / 65.8 -- the 577c59a cut is
+  visible here too), and every new series joins that term for good.
+  So the intercept grows ~10 s/day (10 x 1.03 s), ~5 min/month, i.e.
+  the 12.5h ceiling falls ~580 markets/month: the worst count seen
+  (10-24, 75,269 -> fit 731.4, 18.6 min under 750) breaches on series
+  growth alone around 2027-02-15 at this rate, with no change in the
+  market count. (The small class's "~1.2 s/series" fit intercept above
+  is the mean over 429 tails and the 1-9-market series' own fetches;
+  the zero-market floor is the 0.35 s pause plus one round trip.) The response then is the one reports.md
   prescribes (per-market cost or a category decision -- e.g. skipping
   the listing call for a series with no open market at the prior run,
   which needs its own no-lookahead argument), never a budget bump.
