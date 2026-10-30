@@ -444,6 +444,12 @@ FADE_WINDOW_PAIR_GRACE_S = FADE_WINDOW_CADENCE_MIN * 60
 #:                     0.35s candles pause + latency, r 0.89), so the budget
 #:                     is a claim that Kalshi lists under ~77.8k markets in
 #:                     the swept categories; 10-14 swept 74,681 in 12h28m.
+#:                     Re-read 2026-10-30 (data-pipeline.md, OPEN-MARKET
+#:                     COUNT): residuals -11..+46 min on every healthy
+#:                     line 10-14..10-29; `577c59a` (10-25) cut the
+#:                     sweep's CPU and writer holds 25% through the shared
+#:                     `insert_new`, wall/market only ~3% -- refit 63 +
+#:                     8.88/1k, ceiling ~77.4k. Constant unchanged.
 #:                     A healthy breach means the listing count grew, and
 #:                     the answer is per-market cost, not a bigger constant
 #:                     (docs/wiki/data-pipeline.md, "OPEN-MARKET COUNT").

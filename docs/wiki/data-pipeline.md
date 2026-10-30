@@ -1020,6 +1020,27 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   to one is a per-market cost or a category decision, never a
   budget bump (the fade-window clearance has 4.3h to spare, so the
   bump would be free and would say nothing).
+  **Re-read 2026-10-30 over the 16 done lines 10-14..10-29:** the
+  model holds on every healthy line (residual -11..+46 min; the 10-23
+  06:10Z -> 10-24 01:19Z coverage-expansion catch-up is +115, the one
+  outlier, and it ages out of QA's window 10-31). Something moved on
+  10-26 that nobody attributed: CPU per market 0.075-0.083 s on the
+  13 runs through 10-25 -> 0.056-0.064 s on 10-26..10-29 (disjoint
+  sets, -25%), the run's `attach_wait ... held` total on hyxlab.duckdb
+  2,846-3,215 s -> 2,139-2,381 s (-25%), worst hold 100-132 s -> 60-94
+  s. Cause: `577c59a` (promoted 10-25 14:32Z, after that day's sweep
+  had started) replaced `executemany` staging with `Store._stage_rows`
+  inside `insert_new`, which `insert_candles`/`insert_trades` share
+  with the poly sweep it was measured for -- the kalshi sweep got the
+  saving unannounced, and 10-26 was its first run under it. Wall per
+  market moved only ~0.02 s (0.605-0.630 -> 0.579-0.601) because the
+  wall is the 0.35 s pause plus latency, not CPU: refit on 10-26..10-29
+  `wall_min = 63 + 8.88 x (markets/1000)`, r 0.99 (10-14..10-21 alone:
+  `58 + 9.40/1k`, r 0.99), 12.5h ceiling ~77.4k markets vs ~73.7k on
+  the pre-change fit. The constant stands (reports.md: no retuning
+  without a healthy breach); the series count grew 3,910 -> 4,102 in
+  16 days while markets/run stayed 53-75k, so the ceiling is still ~4%
+  above the worst day seen (10-24, 75,269).
 - **Where the sweep's wall goes, per series (measured 2026-10-16 from
   `sweep_log.swept_at` differences -- each series writes its row in its
   own closing burst, so consecutive gaps are per-series wall; the method
