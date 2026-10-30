@@ -3653,6 +3653,37 @@ Format: what happened → root cause → error type → prevention tier
     silently returns 0 markets for a prefix (`KXHIGH` vs `KXHIGHNY`); the
     help text now says which.
 
+150. **2026-10-30 02:40Z -- a streaming read measured with a query on
+    the same connection, and the measurement ended the read.** The
+    ladder item was to bound the priority-check probe's 4.35 GB anon
+    peak before any unit runs it, so a probe ran `queuescore.
+    iter_market_rows` on the live archive and sampled `duckdb_memory()`
+    at every yield -- through the SAME connection the generator was
+    streaming from. A DuckDB connection carries ONE pending result, and
+    `conn.execute` replaces it: the generator's next `fetchmany` returned
+    empty and it ended as if the window did -- exactly 12 x 65,536 =
+    786,432 of 6.9M rows, six of eight markets yielded EMPTY against
+    70-85k trades each, no error anywhere (`KXBTC15M-26OCT291245-45`
+    read 52,487 book rows where the 20:16Z run had read 1,049,200). The
+    probe's own bug, but the shape was production's: `iter_market_rows`
+    and both `bookreplay` walkers handed the caller a generator whose
+    completeness depended on the caller never touching the connection,
+    and nothing said so. Fix: the scans run on `conn.cursor()`, closed in
+    a `finally`; `tests/test_hyxlab_queuescore.py` issues a query between
+    yields and asserts the stream equals the whole read (red on the old
+    code at the equality). The measurement itself, from the valid part
+    of the run: the peak is DuckDB's buffer pool caching the scanned
+    blocks (`BASE_TABLE` 2.8-3.2 GB after `select_markets` alone,
+    identical under an EXISTS or a GROUP BY selector -- the rewrite was
+    measured and NOT shipped) plus the largest market's Python rows at
+    ~0.5 KB/row (734k rows = 370 MB; 81 MB as negative deltas). The pool
+    is bounded by `memory_limit` alone -- half the cap in a unit, 80% of
+    host RAM ad hoc -- so the bound is the cap's, not the window's.
+    Rule: **a result set belongs to the connection, not to the cursor
+    variable; a generator that streams one runs it on its own cursor,
+    and an instrument that samples mid-stream reads through a different
+    connection than the one it is watching.** Suite 2342 green (+1; the shadow seed proxies now follow the walker's cursor, or a cursor would be the materialising path their guard misses).
+
 149. **2026-10-29 14:59Z -- a fix whose failure path was designed to be
     quiet shipped inert, and the test that covered it had never put the
     process in the state production is always in.** `announced_opens`

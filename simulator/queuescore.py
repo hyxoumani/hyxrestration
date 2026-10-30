@@ -838,26 +838,34 @@ def iter_market_rows(conn, markets: list[str], since: datetime, chunk: int = CHU
         [*markets, since],
     ).fetchall():
         trades_by[t[4]].append(t[:4])
-    cur = conn.execute(
-        "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
-        f" FROM book_events WHERE market_id IN ({ph}) AND venue='kalshi' AND recv_ts > ?"
-        " ORDER BY market_id, recv_ts, seq",
-        [*markets, since],
-    )
-    seen: set[str] = set()
-    current: str | None = None
-    buf: list = []
-    while True:
-        rows = cur.fetchmany(chunk)
-        if not rows:
-            break
-        for e in rows:
-            if e[1] != current:
-                if current is not None:
-                    seen.add(current)
-                    yield current, buf, trades_by[current]
-                current, buf = e[1], []
-            buf.append(e)
+    # The scan runs on its OWN cursor. A DuckDB connection carries ONE
+    # pending result, and the caller's next `conn.execute` between two
+    # yields -- a memory sample, a progress read -- replaces it: the next
+    # `fetchmany` returns empty and the generator ends as if the window
+    # did. Measured 2026-10-30 on the live archive: a `duckdb_memory()`
+    # read after the first yield stopped the scan at exactly 12 x 65,536
+    # of 6.9M rows and yielded six of eight markets EMPTY, no error.
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty"
+            f" FROM book_events WHERE market_id IN ({ph}) AND venue='kalshi' AND recv_ts > ?"
+            " ORDER BY market_id, recv_ts, seq",
+            [*markets, since],
+        )
+        seen: set[str] = set()
+        current: str | None = None
+        buf: list = []
+        while rows := cur.fetchmany(chunk):
+            for e in rows:
+                if e[1] != current:
+                    if current is not None:
+                        seen.add(current)
+                        yield current, buf, trades_by[current]
+                    current, buf = e[1], []
+                buf.append(e)
+    finally:
+        cur.close()
     if current is not None:
         seen.add(current)
         yield current, buf, trades_by[current]

@@ -1159,3 +1159,40 @@ def test_the_window_aggregate_stays_unbounded():
         "the window aggregate is folded from statistics only while it is bare;"
         f" a WHERE there is a 1.2e9-row column scan under the daemon's lock: {aggs}"
     )
+
+
+def test_streamed_rows_survive_a_query_on_the_same_connection(tmp_path):
+    """The book scan runs on its OWN cursor, so a caller that touches the
+    connection between yields (a memory sample, a progress read) does not
+    replace the pending result. Measured 2026-10-30 on the live archive: a
+    `duckdb_memory()` read after the first yield ended the scan at the next
+    `fetchmany` -- exactly 12 x 65,536 rows of 6.9M, six of eight markets
+    yielded EMPTY with 70-85k trades each, and no error anywhere."""
+    from hyxlab.streamstore import StreamStore
+
+    db = tmp_path / "hyxstream.duckdb"
+    store = StreamStore(db)
+    for mid, base in (("A", 10), ("B", 20), ("C", 30)):
+        store.append_events(_image(mid, base, T0))
+        for k in range(1, 6):
+            store.append_events(
+                _delta(mid, base + k, T0 + timedelta(seconds=k), "yes", "0.1000", "1.00")
+            )
+        store.append_trades(
+            _trade(mid, base + 9, T0 + timedelta(seconds=9), "0.4000", "1.00", "no")
+        )
+    store.flush()
+
+    since = T0 - timedelta(minutes=1)
+    conn = duckdb.connect(str(db), read_only=True)
+    try:
+        whole = fetch_rows(conn, ["A", "B", "C"], since)
+        streamed = []
+        for m, ev, tr in iter_market_rows(conn, ["A", "B", "C"], since, chunk=4):
+            streamed.append((m, ev, tr))
+            conn.execute("SELECT 1").fetchall()  # the caller's own read
+    finally:
+        conn.close()
+    assert [m for m, _, _ in streamed] == ["A", "B", "C"]
+    assert {m: (ev, tr) for m, ev, tr in streamed} == whole
+    assert all(len(ev) > 4 for _, ev, _ in streamed)  # every group spans a chunk boundary

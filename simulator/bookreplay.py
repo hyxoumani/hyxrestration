@@ -274,11 +274,18 @@ def stream_events(
     memory. `None` walks every series, as before.
     """
     sql, bounds, tail = _plan_walk(conn, lo, hi, prefix, series, slice_hours, lo_inclusive)
+    # Own cursor: a caller's `conn.execute` between yields would replace
+    # the pending result and end the walk early, silently (see
+    # `queuescore.iter_market_rows`, measured 2026-10-30).
     for start, stop in bounds:
-        cur = conn.execute(sql, [start, stop, *tail])
-        while rows := cur.fetchmany(EVENT_CHUNK):
-            for r in rows:
-                yield BookEvent(*r)
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, [start, stop, *tail])
+            while rows := cur.fetchmany(EVENT_CHUNK):
+                for r in rows:
+                    yield BookEvent(*r)
+        finally:
+            cur.close()
 
 
 def _plan_walk(
@@ -414,10 +421,14 @@ def stream_exported(dest: str | Path) -> Iterator[BookEvent]:
     conn = duck_connect(str(Path(dest) / "reader.duckdb"))
     try:
         for p in paths:
-            cur = conn.execute(f"SELECT {_EVENT_COLS} FROM read_parquet(?)", [str(p)])
-            while rows := cur.fetchmany(EVENT_CHUNK):
-                for r in rows:
-                    yield BookEvent(*r)
+            cur = conn.cursor()
+            try:
+                cur.execute(f"SELECT {_EVENT_COLS} FROM read_parquet(?)", [str(p)])
+                while rows := cur.fetchmany(EVENT_CHUNK):
+                    for r in rows:
+                        yield BookEvent(*r)
+            finally:
+                cur.close()
     finally:
         conn.close()
 

@@ -424,6 +424,11 @@ class _NoFetchAll:
     def execute(self, *a, **k):
         return self._Guard(self._inner.execute(*a, **k))
 
+    # the walkers stream on their own cursor (mistakes #150): the guard
+    # follows it, or a cursor would be the materialising path it misses
+    def cursor(self):
+        return _NoFetchAll(self._inner.cursor())
+
     # `held_stream_conn` releases the attach through `conn.close` to charge
     # the hold, so a proxy that swallowed it would hold the file for the
     # whole test session.
@@ -452,6 +457,11 @@ class _SqlLog:
     def execute(self, sql, *a, **k):
         self.sql.append(sql)
         return self._inner.execute(sql, *a, **k)
+
+    def cursor(self):  # the walkers' own cursor logs into the same list
+        child = _SqlLog(self._inner.cursor())
+        child.sql = self.sql
+        return child
 
     def __getattr__(self, name):  # see _MemGuard.__getattr__
         return getattr(self._inner, name)

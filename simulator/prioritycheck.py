@@ -252,6 +252,17 @@ def main() -> None:
         dt_ms: list[float] = []
         score_s = 0.0
         rows_n: dict[str, tuple[int, int]] = {}
+        # `rss_peak_mb` is two terms, measured 2026-10-30 on the live archive
+        # (24h window, 8 KXBTC15M/NFL markets, 6.9M book rows): DuckDB's
+        # buffer pool caching the scanned blocks -- `duckdb_memory()` tag
+        # BASE_TABLE, 2.8-3.2 GB after `select_markets` alone, the same under
+        # an EXISTS or a GROUP BY form, bounded only by `memory_limit` (half
+        # the cgroup cap in a unit via `store.cgroup_memory_limit`; 80% of
+        # host RAM ad hoc) -- and the largest market's Python rows, ~0.5 KB
+        # per row (734k rows = 370 MB, 81 MB as negative deltas). Neither is
+        # the pairing. So the peak is the cap's to bound, not the window's:
+        # a unit that runs this needs `MemoryMax`, and an ad-hoc run on an
+        # uncapped box lets DuckDB cache up to its host default.
         rss_peak = rss_anon_mb()
         for m, events, trades in iter_market_rows(conn, markets, since):
             deltas = negative_deltas(events)

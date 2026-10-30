@@ -557,3 +557,11 @@
   reads attach exactly as its writes do (`StreamStore.announced_opens`,
   registered in `tests/test_connect_discipline.py` `WRITE_ALLOWED`), and a
   test of such a read holds a writer connection open across it.
+- A DuckDB connection carries ONE pending result, and the next `execute`
+  on it replaces that result without an error: a generator streaming
+  `fetchmany` from the connection ends at the caller's first query
+  between yields as if the data had. Measured 2026-10-30: a
+  `duckdb_memory()` sample after the first yield cut a 6.9M-row scan to
+  exactly 12 x 65,536 rows and yielded six of eight markets empty
+  (mistakes #150). Stream through `conn.cursor()` (closed in `finally`),
+  and sample a hold from a different connection than the one streaming.
