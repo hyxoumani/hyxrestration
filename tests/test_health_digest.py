@@ -1417,3 +1417,155 @@ def test_cli_pairs_flag_shares_the_hours_parse(monkeypatch) -> None:
     assert health.cli(["--kalshi429-pairs"]) == 0
     assert seen == [3, health.KALSHI_429_HOURLY_H]
     assert health.cli(["--kalshi429-pairs", "x"]) == health.USAGE_ERROR
+
+
+# ---- SOCKTHR: placing a nonzero sock_throttled (status 2026-10-30 08:15Z) -----
+# The CGMEM line's `sock_throttled` is a lifetime count; the ops rule says a
+# nonzero increment is the cue to read that period's GAP lines. This block is
+# that read, done by the digest. Fixture lines are copied from the real
+# `journalctl --user -u hyxlab-stream.service --utc -o short-iso` output of
+# 2026-10-30 (#99: a fixture must emit what the tool emits, offset included).
+
+_WARN_0504 = (
+    "2026-10-30T05:04:59+00:00 hyz python[3842435]: [streamd] 05:04:59 WARNING "
+    "sock_throttled +41 this period: the cgroup's memory pressure clamped this daemon's "
+    "sockets (reclaim with a cost -- check the next GAP lines and the stall ledger)"
+)
+
+
+def _gap(ts: str) -> str:
+    return f"{ts} hyz python[3842435]: [streamd] {ts[11:19]} kalshi/books GAP (dead_air)"
+
+
+def test_a_throttle_period_is_paired_with_the_gap_lines_around_it() -> None:
+    lines = [
+        _gap("2026-10-30T04:50:00+00:00"),  # two periods earlier: neither bucket
+        _gap("2026-10-30T05:01:30+00:00"),  # inside the period the warning closes
+        _WARN_0504,
+        _gap("2026-10-30T05:07:00+00:00"),  # the following period
+        _gap("2026-10-30T05:07:30+00:00"),
+        _gap("2026-10-30T05:20:00+00:00"),  # later: neither bucket
+    ]
+    (p,) = health.parse_sock_throttle_periods(lines)
+    assert p.delta == 41
+    assert p.at == datetime(2026, 10, 30, 5, 4, 59, tzinfo=UTC)
+    assert (p.gaps_in_period, p.gaps_after) == (1, 2)
+
+
+def test_a_warning_from_before_this_run_is_not_this_runs_counter() -> None:
+    """The cgroup counter resets with the unit; a warning older than the
+    unit's start was a previous run's, and placing today's 41 on it would
+    be a WRONG placement, worse than an unplaceable one."""
+    earlier = _WARN_0504.replace("2026-10-30T05:04:59", "2026-10-29T22:00:00")
+    floor = datetime(2026, 10, 29, 23, 0, tzinfo=UTC)
+    assert health.parse_sock_throttle_periods([earlier, _WARN_0504], floor) == [
+        health.ThrottlePeriod(datetime(2026, 10, 30, 5, 4, 59, tzinfo=UTC), 41, 0, 0)
+    ]
+
+
+def test_journalctls_own_sentinel_lines_place_nothing() -> None:
+    """`-- No entries --` and the boot marker have no timestamp (#99); they
+    must parse to no period, not to a crash or a phantom one."""
+    assert health.parse_sock_throttle_periods("-- No entries --\n") == []
+    assert health.parse_sock_throttle_periods(["-- Boot 1234 --", ""]) == []
+
+
+def _throttled(unit: str = "hyxlab-stream.service", n: int | None = 41) -> health.CgMem:
+    return health.CgMem(
+        unit=unit,
+        anon=1,
+        peak=1,
+        cap=2,
+        max_events=1,
+        oom_kill=0,
+        sock_throttled=n,
+        stall_full_us=0,
+        uptime_s=3600.0,
+    )
+
+
+def test_the_line_says_unplaceable_rather_than_clean() -> None:
+    assert "journal unreadable (unplaceable)" in health.sock_throttle_line(_throttled(), None)
+    assert "0 WARNING lines" in health.sock_throttle_line(_throttled(), [])
+    assert "unplaceable" in health.sock_throttle_line(_throttled(), [])
+    other = health.sock_throttle_line(_throttled("hyxlab-poly-sweep.service"), [])
+    assert "no per-period instrument" in other and "unplaceable" in other
+
+
+def test_a_count_the_warnings_do_not_add_up_to_is_said() -> None:
+    p = health.ThrottlePeriod(datetime(2026, 10, 30, 5, 4, 59, tzinfo=UTC), 30, 0, 0)
+    line = health.sock_throttle_line(_throttled(), [p])
+    assert line.startswith(
+        "41 in 1 period(s): 10-30 05:04Z +30 (GAP lines: 0 in period, 0 in the next)"
+    )
+    assert "+11 unaccounted" in line
+    assert "unaccounted" not in health.sock_throttle_line(
+        _throttled(), [p, health.ThrottlePeriod(p.at, 11, 0, 0)]
+    )
+
+
+def test_the_period_is_streamds_stats_cadence() -> None:
+    """Pinned, not imported (the digest imports no daemon); this keeps the pin
+    honest when STATS_SECS moves."""
+    from collector import streamd
+
+    assert health.SOCKTHR_PERIOD_S == streamd.STATS_SECS
+
+
+def test_the_digest_prints_sockthr_only_for_a_throttled_unit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    asked: list[tuple[str, float | None]] = []
+
+    def fake_read(unit: str, uptime_s: float | None):
+        asked.append((unit, uptime_s))
+        return [health.ThrottlePeriod(datetime(2026, 10, 30, 5, 4, 59, tzinfo=UTC), 41, 0, 0)]
+
+    monkeypatch.setattr(health, "read_sock_throttle_periods", fake_read)
+    monkeypatch.setattr(
+        health,
+        "live_cgmem",
+        lambda units: [_throttled(), _throttled("hyxlab-shadow.service", 0)],
+    )
+    monkeypatch.setattr(health, "read_kalshi_429", lambda: {})
+    monkeypatch.setattr(health, "read_sibling_429", lambda since: (0, 0))
+    monkeypatch.setattr(health, "discover_units", lambda: [])
+    monkeypatch.setattr(health, "read_unit_failures", lambda units: [])
+    monkeypatch.setattr(health, "journal_floor", lambda: None)
+    monkeypatch.setattr(health, "drift_report", lambda: [])
+    monkeypatch.setattr(health, "show", lambda unit: {})
+    monkeypatch.setattr(health, "judge_qa", lambda rec, svc, now: "QA (stubbed)")
+    health.main()
+    out = capsys.readouterr().out
+    assert asked == [("hyxlab-stream.service", 3600.0)]
+    sockthr = [ln for ln in out.splitlines() if ln.startswith("SOCKTHR")]
+    assert len(sockthr) == 1 and "hyxlab-stream.service" in sockthr[0]
+    assert (
+        "41 in 1 period(s): 10-30 05:04Z +41 (GAP lines: 0 in period, 0 in the next)" in sockthr[0]
+    )
+
+
+def test_the_journal_read_is_scoped_to_the_unit_this_run_and_utc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`-u` and `--grep` push the filter into journalctl (indexed field, no
+    full scan); `--utc` so the rendered clock is the one every other line in
+    the digest uses (#143); the span covers the run so the floor can drop
+    the previous run's warnings rather than the read missing this run's."""
+    seen: dict[str, object] = {}
+
+    def fake_journal(args: list[str], hours: int) -> str:
+        seen["args"], seen["hours"] = args, hours
+        return _WARN_0504 + "\n"
+
+    monkeypatch.setattr(health, "_journal_hourly", fake_journal)
+    out = health.read_sock_throttle_periods("hyxlab-stream.service", 17.2 * 3600)
+    args = seen["args"]
+    assert args[args.index("-u") + 1] == "hyxlab-stream.service"
+    assert "--utc" in args and any(a.startswith("--grep=") for a in args)
+    assert seen["hours"] == 18
+    # The real line above is in the past relative to a floor of now-17.2h only
+    # if now is within 17.2h of it; the parser is exercised either way.
+    assert isinstance(out, list)
+    monkeypatch.setattr(health, "_journal_hourly", lambda args, hours: None)
+    assert health.read_sock_throttle_periods("hyxlab-stream.service", None) is None

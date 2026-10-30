@@ -418,7 +418,15 @@
   timed, from streamd's stats line (`sock_throttled=N (+d)` plus a
   `WARNING sock_throttled` line in the period it lands); a nonzero
   increment is the cue to read that period's GAP lines and stall ledger
-  before calling the cap sized right.
+  before calling the cap sized right. Since 2026-10-30 the digest does the
+  GAP half: a `SOCKTHR` line under the unit's `CGMEM` places the lifetime
+  count on THIS run's `WARNING sock_throttled +N` periods (floored at the
+  unit's start -- the counter resets with it) with the GAP lines in that
+  period and the next, and says `unplaceable` when it cannot (no WARNING
+  lines in the run's journal; a unit with no per-period instrument)
+  rather than printing a bare count. The stall ledger is still read by
+  hand. First reading, 10-30 08:15Z: `41 in 1 period(s): 05:04Z +41 (GAP
+  lines: 0 in period, 0 in the next)` -- a cost-free throttle burst.
 - `max` in `memory.events` is a COUNT of reclaim events, and the count
   says nothing about what they cost. The cost is PSI, `memory.pressure`
   `full ... total=` (microseconds every task in the cgroup was stalled

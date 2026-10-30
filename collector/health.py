@@ -104,7 +104,7 @@ import subprocess
 import sys
 import time as _time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from collector.qa import QA_RUN_CHECK as QA_UNREAD_CHECK
@@ -511,6 +511,136 @@ def live_cgmem(units: list[str] | None = None) -> list[CgMem]:
         c = read_cgmem(unit, props.get("ControlGroup", ""), uptime_s=uptime)
         if c is not None:
             out.append(c)
+    return out
+
+
+# --- SOCKTHR: where a nonzero sock_throttled landed, and what followed -------
+# `sock_throttled` on the CGMEM line is a LIFETIME count for the run, and the
+# ops rule (.claude/rules/ops.md, mistakes #121) says a nonzero increment is
+# the cue to read that period's GAP lines and the stall ledger before calling
+# the cap sized right. Until 2026-10-30 that read was a hand grep: the
+# 08:15Z pass found `sock_throttled 41` on the digest and spent three journal
+# reads locating ONE period (05:00-05:05Z) with zero GAP lines around it.
+# streamd prints a `WARNING sock_throttled +N this period` line at the END of
+# the stats period the throttles landed in, on its own line precisely so a
+# grep finds the period; this block does that grep, pairs each warning with
+# the GAP lines inside its own period and the next, and says when the
+# counter cannot be placed (a run older than the journal, or a unit with no
+# per-period instrument) rather than printing a count the reader must chase.
+
+#: streamd's `STATS_SECS`: the warning closes a period this long. Pinned here
+#: rather than imported -- the digest opens no DB and imports no daemon.
+SOCKTHR_PERIOD_S = 300.0
+#: Units that print the per-period WARNING line. Any other throttled unit is
+#: reported as unplaceable, not as clean.
+SOCKTHR_PUBLISHERS = frozenset({"hyxlab-stream.service"})
+
+_SOCKTHR_WARN_RE = re.compile(r"WARNING sock_throttled \+(\d+) this period")
+_SOCKTHR_GAP_RE = re.compile(r"\bGAP \(")
+
+
+@dataclass(frozen=True)
+class ThrottlePeriod:
+    #: When the WARNING line printed -- the END of the period it reports.
+    at: datetime
+    delta: int
+    #: GAP lines inside the period the warning closes, (at - period, at].
+    gaps_in_period: int
+    #: GAP lines in the following period, (at, at + period].
+    gaps_after: int
+
+
+def _short_iso_ts(line: str) -> datetime | None:
+    """`journalctl -o short-iso` leads with `YYYY-MM-DDTHH:MM:SS+HHMM` (or
+    `+HH:MM`); systemd's own `-- No entries --`/`-- Boot ...` lines have none."""
+    head = line.split(" ", 1)[0]
+    try:
+        ts = datetime.fromisoformat(head)
+    except ValueError:
+        return None
+    return ts if ts.tzinfo is not None else None
+
+
+def parse_sock_throttle_periods(
+    lines: list[str] | str,
+    floor: datetime | None = None,
+    period_s: float = SOCKTHR_PERIOD_S,
+) -> list[ThrottlePeriod]:
+    """Pure: one unit's `-o short-iso` lines -> its throttle periods. `floor`
+    is the unit's own start; a warning before it belongs to an earlier run
+    whose counter the cgroup has since reset, and is dropped. GAP lines are
+    counted around each warning, never attributed to the counter -- a GAP in
+    the period is EVIDENCE the throttle cost something, not proof."""
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    warns: list[tuple[datetime, int]] = []
+    gaps: list[datetime] = []
+    for line in lines:
+        ts = _short_iso_ts(line)
+        if ts is None:
+            continue
+        m = _SOCKTHR_WARN_RE.search(line)
+        if m:
+            if floor is None or ts >= floor:
+                warns.append((ts, int(m.group(1))))
+        elif _SOCKTHR_GAP_RE.search(line):
+            gaps.append(ts)
+    out: list[ThrottlePeriod] = []
+    for at, delta in warns:
+        before = sum(1 for g in gaps if (at - g).total_seconds() < period_s and g <= at)
+        after = sum(1 for g in gaps if 0 < (g - at).total_seconds() <= period_s)
+        out.append(ThrottlePeriod(at, delta, before, after))
+    return out
+
+
+def read_sock_throttle_periods(unit: str, uptime_s: float | None) -> list[ThrottlePeriod] | None:
+    """The unit's own journal, this run only, the two line kinds the parser
+    reads -- `--grep` pushes the match into journalctl. `--utc` is for the
+    rendered line (#143); the parser keys on the offset either way. None when
+    the journal is unreadable, which the renderer says rather than hides."""
+    span_h = 24 if uptime_s is None else max(1, int(uptime_s // 3600) + 1)
+    text = _journal_hourly(
+        [
+            "-u",
+            unit,
+            "--utc",
+            r"--grep=sock_throttled \+[0-9]+ this period|GAP \(",
+            "-o",
+            "short-iso",
+        ],
+        span_h,
+    )
+    if text is None:
+        return None
+    floor = None if uptime_s is None else datetime.now(UTC) - timedelta(seconds=uptime_s)
+    return parse_sock_throttle_periods(text, floor)
+
+
+def sock_throttle_line(c: CgMem, periods: list[ThrottlePeriod] | None) -> str:
+    """Render one throttled unit. Three honest shapes: the periods with their
+    GAP counts; `unplaceable` when the counter exists but nothing in this
+    run's journal can place it; `journal unreadable` when the read failed.
+    A count the per-period lines do not add up to is said as `unaccounted`
+    -- the counter outlives the journal's retention, not the reverse."""
+    n = c.sock_throttled or 0
+    if c.unit not in SOCKTHR_PUBLISHERS:
+        return f"{n} throttles; no per-period instrument on this unit (unplaceable)"
+    if periods is None:
+        return f"{n} throttles; journal unreadable (unplaceable)"
+    if not periods:
+        return (
+            f"{n} throttles; 0 WARNING lines in this run's journal "
+            "(unplaceable: counter predates the line, or the journal rotated)"
+        )
+    parts = [
+        f"{p.at:%m-%d %H:%M}Z +{p.delta} (GAP lines: {p.gaps_in_period} in period, "
+        f"{p.gaps_after} in the next)"
+        for p in periods
+    ]
+    seen = sum(p.delta for p in periods)
+    out = f"{n} in {len(periods)} period(s): " + "; ".join(parts)
+    if seen != n:
+        out += f"; {n - seen:+d} unaccounted by the WARNING lines"
     return out
 
 
@@ -2068,6 +2198,12 @@ def main() -> None:
         print(f"{v.state:<10} {v.unit:<{width}}  {v.detail}", flush=True)
         if v.state == "OOM-KILLED":
             killed.append(v.unit)
+        if c.sock_throttled:
+            periods = read_sock_throttle_periods(c.unit, c.uptime_s)
+            print(
+                f"{'SOCKTHR':<10} {c.unit:<{width}}  {sock_throttle_line(c, periods)}",
+                flush=True,
+            )
     qa_svc = show(QA_UNIT)
     print(judge_qa(_load_state(qa_record_path(qa_svc)), qa_svc, now), flush=True)
     since = now.timestamp() - KALSHI_429_WINDOW_H * 3600
