@@ -1041,6 +1041,15 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   without a healthy breach); the series count grew 3,910 -> 4,102 in
   16 days while markets/run stayed 53-75k, so the ceiling is still ~4%
   above the worst day seen (10-24, 75,269).
+  **Verified 2026-10-30 18:08Z, the first done line after the re-read:**
+  73,470 markets, `elapsed_min 718.0` vs fit 715.4 (+2.6 min, inside
+  the 583-748 band), CPU 0.0586 s/mkt. The `held` total was 2,579.6 s,
+  ABOVE the 2,139-2,381 s band written above -- because that band is
+  a TOTAL and today's count is the largest in it. Read the hold as a
+  RATE: held/market 0.0506 s pre-change (10-25) -> 0.0336-0.0378 s on
+  10-26..10-30 (today 0.0351), -30%. The per-market band is the one a
+  bigger run cannot breach by being bigger; a reading outside
+  0.033-0.038 s/mkt is a finding, a bigger total is not.
 - **Where the sweep's wall goes, per series (measured 2026-10-16 from
   `sweep_log.swept_at` differences -- each series writes its row in its
   own closing burst, so consecutive gaps are per-series wall; the method
