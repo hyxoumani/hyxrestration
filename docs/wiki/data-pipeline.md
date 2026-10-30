@@ -1050,6 +1050,27 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   10-26..10-30 (today 0.0351), -30%. The per-market band is the one a
   bigger run cannot breach by being bigger; a reading outside
   0.033-0.038 s/mkt is a finding, a bigger total is not.
+  **The ceiling has a time derivative (read 2026-10-30 from
+  `sweep_log` first-seen dates, read-only):** the series count is
+  3,897 (10-10) -> 4,102 (10-30), +205 in 20 days, ~10/day (36 on
+  10-30 alone: 22 `KXRAIND*` daily per-city rain + 12 `KXSNOWXMAS*`,
+  weather families shaped like `KXHIGH*`; 13 on 10-29, a `KXCOFFEE*`
+  15M/D/H/EOY family that has settled 0 markets in two runs -- NOT a
+  ladder yet; if it grows a KXSOLD-shaped book it is +50 min/run and a
+  category decision). Of today's 4,102 series, **3,846 (94%) settled
+  ZERO markets** and still cost the small class's ~1.2 s/series
+  intercept each: ~77 min of the 718 (11%) is enumeration of series
+  with nothing to fetch, and every new series joins that term for
+  good. So the intercept grows ~12 s/day (10 x 1.2 s), ~6 min/month,
+  i.e. the 12.5h ceiling falls ~700 markets/month: the worst count
+  seen (10-24, 75,269 -> fit 731.4, 18.6 min under 750) breaches on
+  series growth alone around 2027-01-25 at this rate, with no change
+  in the market count. The response then is the one reports.md
+  prescribes (per-market cost or a category decision -- e.g. skipping
+  the listing call for a series with no open market at the prior run,
+  which needs its own no-lookahead argument), never a budget bump.
+  Re-read the first-seen histogram when the small class's `s/ser`
+  moves off 1.8-2.6 at a flat market count.
 - **Where the sweep's wall goes, per series (measured 2026-10-16 from
   `sweep_log.swept_at` differences -- each series writes its row in its
   own closing burst, so consecutive gaps are per-series wall; the method
