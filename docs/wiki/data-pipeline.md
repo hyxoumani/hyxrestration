@@ -1077,6 +1077,37 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   which needs its own no-lookahead argument), never a budget bump.
   Re-read the first-seen histogram when the small class's `s/ser`
   moves off 1.8-2.6 at a flat market count.
+  **The ladder class has its own derivative (read 2026-10-31 08:20Z
+  from `sweep_log`, two read-only attaches of 0.16 s / 0.18 s, the run
+  still at series 744 of 4,120):** today's first 744 series carry
+  11,844 markets vs 10,353 for the same series on 10-30 (+1,491, +14%),
+  and the sweep's own ETA at the 700 mark read `~751 min left` (x1.16)
+  -- a 13.9h projection against the 12.5h budget. Attributed in full:
+  (a) the crypto ladders are a per-HOUR rate times the window between
+  the prior run's watermark and this listing -- KXBTC settled 4,028 on
+  a 22h window (10-29), 4,028 on 10-30, 4,374 on a 24h window today,
+  ~183 markets/h on both ends; KXBNB/KXBNBD 1,540/1,615 -> 1,850/1,805
+  the same way -- so a `n_markets` step on a ladder is read against
+  `max_close - min_close` BEFORE it is read as listings (+846 of the
+  +1,491 is this, and it is not growth). (b) The five Treasury-yield
+  hourly ladders `KX{2,5,7,10,30}YRRATEH` ARE growth: ~250 markets on
+  10-21 (above), 0 on 10-26, 210-233 each on 10-27 (a 3-day window,
+  ~70/day), 294-343 (10-29), 200-420 (10-30), 490 each today on a
+  24h weekday window (~20/h; +610 of the +1,491, 2,450 markets in the
+  family = +18.6 min/run at the ladder rate 0.456 s/mkt, vs ~+8 min
+  at their 10-27 size). KX5YRRATE15M is flat at 48-57. Projection for
+  tonight's done line: ladders 68,472 (10-30) + ~1.5k here + whatever
+  the other 24 ladders' windows add, ~75-77k markets -> fit 729-747
+  min vs the 750 budget, i.e. the done line (~18:15-19:15Z, lands in
+  the 20:15Z run) is at the band's edge; a breach would be HEALTHY
+  (ladder s/mkt flat at 0.449-0.456 on 10-28..10-30, small 2.20-2.31
+  s/series, dense KXBTC15M ~40 min) and is the listings breach the
+  paragraph above prescribes a category decision for -- the candidate
+  is the rates family (weekday-only: a Saturday window should settle
+  ~0 on 11-02's run, which is the cheap test of whether it is a market-
+  hours ladder or a 24h one), never a budget bump. Read the done line's
+  `wall by class` ladder markets against 68,472 and the ETA's x-factor
+  against the window lengths first.
 - **Where the sweep's wall goes, per series (measured 2026-10-16 from
   `sweep_log.swept_at` differences -- each series writes its row in its
   own closing burst, so consecutive gaps are per-series wall; the method
