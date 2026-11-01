@@ -99,6 +99,7 @@ from __future__ import annotations
 
 import bisect
 import json
+import os
 import re
 import subprocess
 import sys
@@ -762,6 +763,173 @@ def oom_attribution(victims: list[OomVictim], unit: str) -> str:
         f"the episode's largest victim was {worst.comm} at {_gib(worst.anon_kb)} "
         f"(adj={worst.adj}, {worst.owner})"
     )
+
+
+# --- HOSTMEM: the host's memory, which no per-unit line can show -----------
+# Every CGMEM line above is one unit's view of ITS OWN cap. A global OOM is the
+# HOST running out, and its victims are whoever the kernel ranked: measured
+# 2026-11-01 12:12-13:41Z, 52 kills in nine episodes, none a hyxlab unit, while
+# streamd logged 16,000 socket throttles and 66 GAP lines, the poly sweep's
+# flush ran 40 min long and the collector lost a slot to a stop-post that
+# hung under the pressure. Two terms explained it and neither was in the
+# digest: a 20.1 GiB python nobody owned, and 21.4 GiB of Shmem -- `/tmp` is a
+# tmpfs on this box, so a file left there is RAM held until someone deletes it
+# (20.5 GiB of a sibling's stale test and spill files, nine days old). The
+# ops rule "a shared resource's burn is the sum over every tenant" had been
+# applied to the disk and never to the RAM. This line reads both terms.
+HOSTMEM_WINDOW_H = 24
+TMPFS_PATH = "/tmp"
+
+
+@dataclass(frozen=True)
+class HostMem:
+    """One reading of the host's memory, every field `None` when unread."""
+
+    total_kb: int | None
+    available_kb: int | None
+    shmem_kb: int | None
+    tmp_is_tmpfs: bool | None
+    tmp_used_b: int | None
+    tmp_size_b: int | None
+    psi_full_us: int | None
+
+
+def parse_meminfo(text: str) -> dict[str, int]:
+    """`/proc/meminfo` as kB per key. Pure."""
+    out: dict[str, int] = {}
+    for line in text.splitlines():
+        key, sep, rest = line.partition(":")
+        if not sep:
+            continue
+        parts = rest.split()
+        if parts and parts[0].isdigit():
+            out[key.strip()] = int(parts[0])
+    return out
+
+
+def mount_is_tmpfs(mounts_text: str, path: str = TMPFS_PATH) -> bool | None:
+    """Is `path` a tmpfs mount, from `/proc/mounts`? `None` when the path has
+    no mount line of its own (it is then part of its parent's filesystem,
+    which is the on-disk case on a default install). Pure."""
+    for line in mounts_text.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[1] == path:
+            return fields[2] == "tmpfs"
+    return None
+
+
+def _read_text(path: str) -> str | None:
+    try:
+        return Path(path).read_text()
+    except OSError:
+        return None
+
+
+def read_hostmem(tmp_path: str = TMPFS_PATH) -> HostMem:
+    """Never raises; an unreadable term is `None`, never 0."""
+    mem = parse_meminfo(_read_text("/proc/meminfo") or "")
+    mounts = _read_text("/proc/mounts")
+    is_tmpfs = mount_is_tmpfs(mounts, tmp_path) if mounts is not None else None
+    used = size = None
+    try:
+        st = os.statvfs(tmp_path)
+        size = st.f_blocks * st.f_frsize
+        used = (st.f_blocks - st.f_bfree) * st.f_frsize
+    except OSError:
+        pass
+    return HostMem(
+        total_kb=mem.get("MemTotal"),
+        available_kb=mem.get("MemAvailable"),
+        shmem_kb=mem.get("Shmem"),
+        tmp_is_tmpfs=is_tmpfs,
+        tmp_used_b=used,
+        tmp_size_b=size,
+        psi_full_us=_psi_full_total(_read_text("/proc/pressure/memory")),
+    )
+
+
+def read_kernel_oom_window(hours: int = HOSTMEM_WINDOW_H) -> list[OomVictim] | None:
+    """The kernel's kill record over the digest window. `None` when the
+    journal could not be read -- an unread journal is not a quiet one."""
+    try:
+        proc = subprocess.run(
+            ["journalctl", "-k", "-o", "short-iso", "--no-pager", "--since", f"-{hours}h"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return parse_kernel_oom(proc.stdout)
+
+
+def oom_episodes(
+    victims: list[OomVictim], episode_s: float = OOM_EPISODE_S
+) -> list[list[OomVictim]]:
+    """Kills clustered by time: a new episode starts when the gap from the
+    previous kill exceeds `episode_s`. Pure."""
+    out: list[list[OomVictim]] = []
+    for v in sorted(victims, key=lambda v: v.ts):
+        if out and v.ts - out[-1][-1].ts <= episode_s:
+            out[-1].append(v)
+        else:
+            out.append([v])
+    return out
+
+
+def _gib_b(n: int) -> str:
+    return f"{n / 2**30:.1f} GiB"
+
+
+def host_memory_line(
+    victims: list[OomVictim] | None,
+    units: set[str],
+    hm: HostMem,
+    window_h: int = HOSTMEM_WINDOW_H,
+) -> str:
+    """The one line that says what the HOST did to memory in the window. Pure.
+
+    Kill half: count, episodes, whether any victim was one of ours, and the
+    largest victim -- the thing that WAS the memory. Standing half:
+    MemAvailable against MemTotal, and Shmem, which on a box whose `/tmp` is
+    tmpfs is files pretending to be free disk. PSI is the cost the host's own
+    tasks paid, lifetime, so a reader can difference it between digests.
+    """
+    if victims is None:
+        kills = f"{window_h}h: kernel journal UNREAD (no claim about OOM kills)"
+    elif not victims:
+        kills = f"{window_h}h: 0 kernel OOM kills"
+    else:
+        ours = sorted({v.owner for v in victims if v.owner in units})
+        worst = max(victims, key=lambda v: v.anon_kb)
+        when = datetime.fromtimestamp(worst.ts, UTC).strftime("%m-%d %H:%MZ")
+        who = f"hyxlab victims: {ours}" if ours else "none a hyxlab unit"
+        kills = (
+            f"{window_h}h: {len(victims)} kernel OOM kill(s) in {len(oom_episodes(victims))} "
+            f"episode(s), {who}; largest {worst.comm} {_gib(worst.anon_kb)} anon "
+            f"(adj={worst.adj}, {worst.owner}) at {when}"
+        )
+    if hm.available_kb is None or hm.total_kb is None:
+        standing = "MemAvailable unread"
+    else:
+        standing = f"MemAvailable {_gib(hm.available_kb)} of {_gib(hm.total_kb)}"
+    if hm.shmem_kb is not None:
+        standing += f", Shmem {_gib(hm.shmem_kb)}"
+        if hm.tmp_is_tmpfs and hm.tmp_used_b is not None and hm.tmp_size_b is not None:
+            standing += (
+                f" ({TMPFS_PATH} is tmpfs: {_gib_b(hm.tmp_used_b)} used of "
+                f"{_gib_b(hm.tmp_size_b)} is RAM, not disk)"
+            )
+        elif hm.tmp_is_tmpfs is False:
+            standing += f" ({TMPFS_PATH} on disk)"
+    psi = (
+        f"memory PSI full {hm.psi_full_us / 1e6:.0f}s lifetime"
+        if hm.psi_full_us is not None
+        else "memory PSI unread"
+    )
+    return f"{kills} | {standing} | {psi}"
 
 
 def judge(
@@ -2210,6 +2378,11 @@ def main() -> None:
     print(
         f"{'KALSHI429':<10} {'(host)':<{width}}  "
         f"{kalshi_429_line(read_kalshi_429(), read_sibling_429(since))}",
+        flush=True,
+    )
+    print(
+        f"{'HOSTMEM':<10} {'(host)':<{width}}  "
+        f"{host_memory_line(read_kernel_oom_window(), units, read_hostmem())}",
         flush=True,
     )
     drift = drift_report()

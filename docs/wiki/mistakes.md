@@ -3653,6 +3653,56 @@ Format: what happened → root cause → error type → prevention tier
     silently returns 0 markets for a prefix (`KXHIGH` vs `KXHIGHNY`); the
     help text now says which.
 
+152. **2026-11-01 14:15Z -- the digest priced every tenant's DISK and no
+    tenant's RAM, and a host-wide OOM storm that cost the stream 66 GAP
+    lines had no line to land on.** The 14:15Z digest showed
+    `hyxlab-stream` `sock_throttled 16217` (111 the day before) with GAP
+    lines in six consecutive periods 12:07-12:43Z and one `+5823` at
+    13:41Z, plus `hyxlab-collect` `exit-code/75` at 12:32Z. Every
+    per-unit reading was clean: the stream's anon a flat 413-460 MB of a
+    4G cap, `oom_kill 0` on every unit, the shadow and simui untouched.
+    The kernel journal had the rest: 50 `Out of memory: Killed` lines in
+    8 episodes 12:12-13:41Z, `global_oom`, victims grafana / argocd /
+    prometheus / the sibling's `hylshi-family-books` / Chromium -- none a
+    hyxlab unit -- and at 13:40:57Z a `python` at **anon-rss 20.1 GiB**
+    under `app-org.chromium.Chromium-2810.scope`. `free -g` then read
+    `shared 21` on a 60 GiB box: `/tmp` is a **tmpfs**, 22 GB used, and
+    `du -sx` priced it -- 10.7 GB of the sibling's `scratchpad/qab`
+    DuckDB bench + spill from 10-23, 8.0 GB in `/tmp/pytest-of-devs/
+    pytest-2825` (two 3.97 GB `.autodev/JOURNAL.md` copies written by the
+    sibling's `test_autodev_integrity` at 05:59Z), 1.9 GB more under
+    `claude-1000/v2-277-tmp` -- 20.5 GiB of RAM held by nine-day-old
+    temp files that every disk tool reports as disk. Costs to this repo,
+    all measured: the stream's reconnect/seq_reset GAPs (46 in 12Z, 20 in
+    13Z, 44 in 10Z) and `BrokenPipe`/`SSLError` transport retries; the
+    poly sweep's `flush_min 101.8` vs a 53-62 band and `flush_lock_min
+    11.3` vs 3-5, `held worst 377.2s` vs 70-81s, `psi_full_us` 168s vs
+    21s on 10-31 -- its done line `elapsed_min 500.1` breaches the 8.0h
+    budget (closed_fetched 2055 @ 161 min vs 1167-1376 @ 93-123, a weekly
+    shape 10-25 also showed at 2004 @ 164, PLUS the storm's flush), so
+    the 10:00Z QA will FAIL `batch units within measured run budget` on
+    it for 7 days -- correct, the constant stands (#132 rule); and the
+    collector's 12:25Z slot refused on a 177s poly hold, then its
+    `ExecStopPost` (`cgmem.sh`) hung >90s under the pressure, systemd
+    killed it, and the 12:30Z tick was swallowed -- 11 cycles in 12Z. The
+    #146 disk rule ("a shared filesystem's burn is the sum over every
+    tenant, and the tenants you did not think of are outside the
+    workspace") had been applied to `/home` and never to memory, although
+    a tmpfs makes them the same resource. Fix: `collector.health` prints
+    `HOSTMEM` -- 24h kernel kills with episode count, hyxlab victims or
+    `none a hyxlab unit`, the largest victim with its cgroup leaf,
+    `MemAvailable`/`MemTotal`, `Shmem` with the mount table's tmpfs
+    verdict and `/tmp`'s used/size, lifetime memory PSI; an unread
+    journal prints `UNREAD`, never `0`. 9 tests (real 11-01 lines; the
+    convict arm; unread arms; perturbation of every term, red-verified by
+    a renderer mutant that was diffed before the test was read). The
+    temp files are the sibling's and are NOT deleted here -- a USER item,
+    named with paths. Rule: **a shared resource has tenants in every
+    namespace that can hold it, and a tmpfs makes files a memory tenant:
+    read `Shmem` and the kernel's kill record at host level before
+    reading any unit's cap, and never park a large temporary in `/tmp` on
+    a box where `/tmp` is RAM.**
+
 151. **2026-11-01 08:15Z -- a timer spec that "pins no hour" was excused
     from the timezone rule, and it skipped the repeated hour at DST
     fall-back.** `tests/test_systemd_units.py` required a zone suffix only

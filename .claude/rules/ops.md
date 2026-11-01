@@ -584,3 +584,26 @@
   exactly 12 x 65,536 rows and yielded six of eight markets empty
   (mistakes #150). Stream through `conn.cursor()` (closed in `finally`),
   and sample a hold from a different connection than the one streaming.
+- A per-unit cgroup line is one tenant's view of ITS OWN cap, and a host
+  that runs out of memory kills whoever the kernel ranked -- the cost
+  lands on daemons no line names. Measured 2026-11-01 12:12-13:41Z: 50
+  global OOM kills in 8 episodes, none a hyxlab unit, while `hyxlab-stream`
+  (anon a flat ~430 MB of 4G) logged `sock_throttled +16,000`, 66 GAP
+  lines and reconnects on every channel, the poly sweep's flush segment
+  ran 102 min against a 53-62 band (its `psi_full_us` 168s vs 21s the day
+  before) and the collector lost a slot to an `ExecStopPost` that hung
+  past the 90s stop timeout. The two terms that explained it were in no
+  digest line: a 20.1 GiB python under the user's Chromium app scope, and
+  **21.4 GiB of Shmem -- `/tmp` is a tmpfs on this box, so a file left in
+  it is RAM held until someone deletes it** (20.5 GiB of a sibling's stale
+  pytest and DuckDB-spill files, nine days old; `df -h /tmp` reads it as
+  disk). The digest now prints `HOSTMEM`: 24h kernel kills with episode
+  count, whether any victim was ours and the largest victim (the thing
+  that WAS the memory), `MemAvailable`/`MemTotal`, `Shmem` with the tmpfs
+  verdict, and lifetime memory PSI. The disk rule ("enumerate every
+  tenant before attributing") applies to RAM unchanged: `du -sx -BG
+  /tmp/*` is a memory reading here, and so is `grep Shmem /proc/meminfo`.
+  Never write a large temporary into `/tmp` on this host (pytest
+  `basetemp`, DuckDB `temp_directory`, probe copies): use a directory on
+  `/home` (`TMPDIR`), or it comes out of the daemons' page cache first and
+  their sockets second.

@@ -1569,3 +1569,150 @@ def test_the_journal_read_is_scoped_to_the_unit_this_run_and_utc(
     assert isinstance(out, list)
     monkeypatch.setattr(health, "_journal_hourly", lambda args, hours: None)
     assert health.read_sock_throttle_periods("hyxlab-stream.service", None) is None
+
+
+# --------------------------------------------------------------------------
+# HOSTMEM: the host's memory, which no per-unit CGMEM line can show. The
+# 2026-11-01 12:12-13:41Z storm killed 50 processes, none ours, and cost the
+# stream 66 GAP lines; the two terms that explained it (a 20 GiB stranger and
+# 21 GiB of tmpfs Shmem) were in no digest line. Real lines, pure functions.
+# --------------------------------------------------------------------------
+HOST_OOM_LINES = """\
+2026-11-01T12:12:18+00:00 hyz kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/kubepods.slice/kubepods-besteffort.slice/pod82d.slice/cri-containerd-cd42.scope,task=grafana,pid=3194325,uid=472
+2026-11-01T12:12:18+00:00 hyz kernel: Out of memory: Killed process 3194325 (grafana) total-vm:1712772kB, anon-rss:157440kB, file-rss:8kB, shmem-rss:0kB, UID:472 pgtables:1020kB oom_score_adj:1000
+2026-11-01T12:12:18+00:00 hyz kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/kubepods.slice/kubepods-besteffort.slice/pod82d.slice/cri-containerd-1db4.scope,task=python,pid=3193932,uid=472
+2026-11-01T12:12:18+00:00 hyz kernel: Out of memory: Killed process 3193932 (python) total-vm:106184kB, anon-rss:73800kB, file-rss:4kB, shmem-rss:0kB, UID:472 pgtables:268kB oom_score_adj:1000
+2026-11-01T12:16:42+00:00 hyz kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/kubepods.slice/kubepods-besteffort.slice/pod82d.slice/cri-containerd-f732.scope,task=grafana,pid=3460682,uid=472
+2026-11-01T12:16:42+00:00 hyz kernel: Out of memory: Killed process 3460682 (grafana) total-vm:1708124kB, anon-rss:156620kB, file-rss:8kB, shmem-rss:0kB, UID:472 pgtables:980kB oom_score_adj:1000
+2026-11-01T13:40:57+00:00 hyz kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.chromium.Chromium-2810.scope,task=python,pid=3844911,uid=1000
+2026-11-01T13:40:57+00:00 hyz kernel: Out of memory: Killed process 3844911 (python) total-vm:21500000kB, anon-rss:21092160kB, file-rss:0kB, shmem-rss:0kB, UID:1000 pgtables:41000kB oom_score_adj:0
+"""
+MEMINFO = """\
+MemTotal:       63335732 kB
+MemFree:         5000000 kB
+MemAvailable:   25086968 kB
+Cached:         43698316 kB
+Shmem:          22400800 kB
+Hugepagesize:       2048 kB
+"""
+MOUNTS_TMPFS = (
+    "tmpfs /tmp tmpfs rw,nosuid,nodev,nr_inodes=1048576 0 0\n/dev/nvme0n1p2 /home btrfs rw 0 0\n"
+)
+MOUNTS_DISK = "/dev/nvme0n1p2 / btrfs rw 0 0\n/dev/nvme0n1p2 /tmp btrfs rw 0 0\n"
+UNITS = {"hyxlab-stream.service", "hyxlab-collect.service"}
+
+
+def _hm(**over) -> health.HostMem:
+    base = dict(
+        total_kb=63335732,
+        available_kb=25086968,
+        shmem_kb=22400800,
+        tmp_is_tmpfs=True,
+        tmp_used_b=22 * 2**30,
+        tmp_size_b=31 * 2**30,
+        psi_full_us=3_742_486_406,
+    )
+    return health.HostMem(**(base | over))
+
+
+def test_meminfo_is_parsed_as_kb_per_key() -> None:
+    mem = health.parse_meminfo(MEMINFO)
+    assert mem["MemTotal"] == 63335732 and mem["Shmem"] == 22400800
+    assert health.parse_meminfo("") == {}
+
+
+def test_tmp_mount_kind_is_read_from_the_mount_table_not_assumed() -> None:
+    assert health.mount_is_tmpfs(MOUNTS_TMPFS) is True
+    assert health.mount_is_tmpfs(MOUNTS_DISK) is False
+    # No mount line of its own: /tmp is a directory on its parent's filesystem.
+    assert health.mount_is_tmpfs("/dev/nvme0n1p2 / btrfs rw 0 0\n") is None
+    # A prefix match is not a match.
+    assert health.mount_is_tmpfs("tmpfs /tmpx tmpfs rw 0 0\n") is None
+
+
+def test_oom_kills_cluster_into_episodes_by_time_gap() -> None:
+    victims = health.parse_kernel_oom(HOST_OOM_LINES)
+    assert len(victims) == 4
+    episodes = health.oom_episodes(victims)
+    assert [len(e) for e in episodes] == [2, 1, 1]
+    # One continuous storm when the gaps are inside the episode bound.
+    assert len(health.oom_episodes(victims, episode_s=2 * 3600)) == 1
+    assert health.oom_episodes([]) == []
+
+
+def test_the_host_line_names_the_largest_victim_and_clears_our_units() -> None:
+    line = health.host_memory_line(health.parse_kernel_oom(HOST_OOM_LINES), UNITS, _hm())
+    assert line.startswith("24h: 4 kernel OOM kill(s) in 3 episode(s), none a hyxlab unit;")
+    assert (
+        "largest python 20.1 GiB anon (adj=0, app-org.chromium.Chromium-2810.scope) at 11-01 13:40Z"
+        in line
+    )
+    assert "MemAvailable 23.9 GiB of 60.4 GiB, Shmem 21.4 GiB" in line
+    assert "(/tmp is tmpfs: 22.0 GiB used of 31.0 GiB is RAM, not disk)" in line
+    assert line.endswith("| memory PSI full 3742s lifetime")
+
+
+def test_the_host_line_convicts_when_a_victim_is_ours() -> None:
+    """Symmetry arm: the clearance must be able to fail."""
+    mine = HOST_OOM_LINES.replace("app-org.chromium.Chromium-2810.scope", "hyxlab-stream.service")
+    line = health.host_memory_line(health.parse_kernel_oom(mine), UNITS, _hm())
+    assert "hyxlab victims: ['hyxlab-stream.service']" in line
+    assert "none a hyxlab unit" not in line
+
+
+def test_an_unread_kernel_journal_is_not_a_quiet_one() -> None:
+    quiet = health.host_memory_line([], UNITS, _hm())
+    unread = health.host_memory_line(None, UNITS, _hm())
+    assert quiet.startswith("24h: 0 kernel OOM kills |")
+    assert unread.startswith("24h: kernel journal UNREAD (no claim about OOM kills) |")
+
+
+def test_shmem_is_called_ram_only_when_tmp_really_is_tmpfs() -> None:
+    victims = health.parse_kernel_oom(HOST_OOM_LINES)
+    on_disk = health.host_memory_line(victims, UNITS, _hm(tmp_is_tmpfs=False))
+    assert "Shmem 21.4 GiB (/tmp on disk)" in on_disk and "RAM" not in on_disk
+    unknown = health.host_memory_line(victims, UNITS, _hm(tmp_is_tmpfs=None))
+    assert "Shmem 21.4 GiB |" in unknown and "/tmp" not in unknown
+    # Unread terms print as unread, never as a zero.
+    blind = health.host_memory_line(
+        victims, UNITS, _hm(available_kb=None, shmem_kb=None, psi_full_us=None)
+    )
+    assert "MemAvailable unread" in blind and "Shmem" not in blind
+    assert blind.endswith("| memory PSI unread") and " 0" not in blind.split("|", 1)[1]
+
+
+def test_every_host_term_moves_the_line() -> None:
+    """Perturbation (#95): a renderer that reads a field into a local and drops
+    it passes every source scan. Bump each term and the line must change."""
+    victims = health.parse_kernel_oom(HOST_OOM_LINES)
+    base = health.host_memory_line(victims, UNITS, _hm())
+    assert health.host_memory_line(victims[:-1], UNITS, _hm()) != base
+    # Each bump lands at the line's printed resolution (0.1 GiB), so a change
+    # that stays inside the rounding is not what this test is about.
+    for field, bumped in [
+        ("available_kb", 2**20),
+        ("total_kb", 2**20),
+        ("shmem_kb", 2**20),
+        ("tmp_used_b", 2**30),
+        ("tmp_size_b", 2**30),
+        ("psi_full_us", 10_000_000),
+    ]:
+        hm = _hm(**{field: getattr(_hm(), field) + bumped})
+        assert health.host_memory_line(victims, UNITS, hm) != base, field
+    assert health.host_memory_line(victims, UNITS, _hm(), window_h=48) != base
+
+
+def test_the_live_host_reader_never_raises_and_the_digest_prints_it(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hm = health.read_hostmem(tmp_path="/nonexistent/path")
+    assert hm.tmp_used_b is None and hm.tmp_is_tmpfs is None
+    real = health.read_hostmem()
+    assert real.total_kb is not None  # /proc/meminfo exists on every Linux box
+    # The digest renders the line from the same function the tests exercised.
+    monkeypatch.setattr(health, "read_kernel_oom_window", lambda: None)
+    monkeypatch.setattr(health, "read_hostmem", lambda: _hm())
+    health.main()
+    out = capsys.readouterr().out
+    assert "HOSTMEM    (host)" in out
+    assert "kernel journal UNREAD" in out and "Shmem 21.4 GiB (/tmp is tmpfs" in out
