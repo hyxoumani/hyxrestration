@@ -571,9 +571,12 @@ def test_minute_cadence_units_bound_their_stop_post():
     #152 host OOM storm. The unit inherited systemd's 90s DEFAULT stop
     timeout, stayed in `stop-post` across the tick, and the 12:30Z slot never
     fired. A timer elapse against an active unit is a no-op, so the stop-
-    post's real budget is `cadence - main wall`, and the main wall is
-    allowed `LOCK_WAIT_S` on top of the fetch (collector.collect): the
-    default was never the right number here, whatever made the hang.
+    post's real budget is `cadence - main wall`, and the main wall is the
+    cycle, bounded at `LOCK_WAIT_S` from the collector's own t0 (the fetch
+    is inside that budget, collector.collect), plus process startup before
+    t0 (p99 0.9s over 7 days; 44s in the incident, 128s once, both under
+    the storm): the 90s default was never the right number here, whatever
+    made the hang.
     """
     import collector.collect as collect
 
