@@ -218,7 +218,7 @@ QA_UNIT = "hyxlab-qa.service"
 QA_RECORD_LAG_S = 600.0
 
 # How far past systemd's OWN computed next elapse an idle timer must sit before
-# the digest calls it LATE. The shortest cadence in the tree is `OnCalendar=*:0/5`
+# the digest calls it LATE. The shortest cadence in the tree is `OnCalendar=*:0/5 UTC`
 # (hyxlab-collect, 5 min), so one full period of the fastest timer is both larger
 # than any scheduling jitter and small enough that a stopped timer shows up within
 # one missed cycle. Applies only when the service is idle -- see (3) above.

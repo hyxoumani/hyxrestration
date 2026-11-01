@@ -535,7 +535,7 @@ they could be reported. Each is a way a naive digest lies:
    `list-timers` prints `-` for the sweeps. Lateness is asked only of an
    *idle* service, or the digest would cry wolf on every long sweep,
    daily, on a healthy box. The slack (300s) is one full period of the
-   fastest timer in the tree (`OnCalendar=*:0/5`).
+   fastest timer in the tree (`OnCalendar=*:0/5 UTC`).
 4. **An uninstalled unit answers quietly.** `systemctl show` on an
    unknown name exits 0 with `LoadState=not-found`. The unit set is
    discovered from `scripts/systemd/`, so a unit committed but never

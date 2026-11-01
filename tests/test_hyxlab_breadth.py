@@ -591,7 +591,7 @@ def test_breadth_unit_exists_and_follows_repo_convention():
     assert f"Environment={breadth.WINDOW_ENV}=24" in svc, (
         "the unit must pin the close window: unwindowed is a ~22x request rate"
     )
-    assert "OnCalendar=*:2/5" in timer, "must be offset from hyxlab-collect's *:0/5"
+    assert "OnCalendar=*:2/5 UTC" in timer, "must be offset from hyxlab-collect's *:0/5"
 
 
 # ---------------------------------------------------------------------------

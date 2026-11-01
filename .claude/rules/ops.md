@@ -488,6 +488,17 @@
   second at flat own-load is one host bucket closing (20Z 10-28: 3 of 3
   idle-hour collector 429s within 0.3s of a sibling 429; the sweep's own
   tail 429s pair with nothing -- that is its own load).
+- A suffix-less `OnCalendar` is evaluated in the host's LOCAL zone even
+  when it pins no hour, and at DST fall-back the repeated local hour is
+  SKIPPED: systemd takes the next elapse strictly after the last trigger's
+  wall-clock instant, so every tick of the second 01:00-02:00 is already
+  past. Measured 2026-11-01 07:00Z: `hyxlab-collect` (`*:0/5`) and
+  `hyxlab-breadth` (`*:2/5`) each lost 12 slots, 06:55:41Z -> 08:00:00Z,
+  with `Persistent=true` replaying nothing (mistakes #151). Every timer
+  spec carries ` UTC` (`tests/test_systemd_units.py::
+  test_every_timer_pins_a_timezone`, no carve-outs); a whole hour missing
+  from `--kalshi429-hourly` prints as `collect --` and is a finding, not a
+  blank.
 - `daemon-reload` on a `Persistent=true` timer whose OnCalendar moved to a
   time of day that is already past (but after its last trigger) FIRES the
   service at reload -- systemd re-derives the schedule and counts the new

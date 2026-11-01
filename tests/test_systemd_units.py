@@ -46,9 +46,10 @@ _PROSE_TZ_RE = re.compile(r"\bUTC\b|\b\d{1,2}:\d{2}Z\b")
 # "America/Chicago") or a numeric offset ("+0200"). systemd accepts both.
 _TZ_SUFFIX_RE = re.compile(r"\s(?:[A-Za-z]+(?:/[A-Za-z_+-]+)+|[A-Z]{2,5}|[+-]\d{2}:?\d{2})$")
 
-# An hour-pinned spec: a concrete hour field followed by :MM. Specs like
-# `*:0/5` and `*:2/5` pin no wall-clock hour, so they fire at the same
-# instants in every zone and need no suffix.
+# An hour-pinned spec: a concrete hour field followed by :MM. The prose test
+# below asks only these to match their Description. The zone test after it
+# asks EVERY spec for a suffix: `*:0/5` pins no hour and still lost the
+# repeated 01:00-02:00 local hour at DST fall-back (mistakes #151).
 _HOUR_PINNED_RE = re.compile(r"(?<![\d/*])\d{1,2}(?:,\d{1,2})*:\d{2}")
 
 
@@ -199,6 +200,37 @@ def _utc_hour(spec):
     """Fractional UTC hour of a `HH:MM:SS UTC` OnCalendar, else None."""
     m = re.search(r"(?<![\d/*])(\d{1,2}):(\d{2})(?::\d{2})?\s+UTC$", spec.strip())
     return int(m.group(1)) + int(m.group(2)) / 60 if m else None
+
+
+def test_every_timer_pins_a_timezone():
+    """Every OnCalendar carries a zone suffix, hour-pinned or not.
+
+    The carve-out this replaces said `*:0/5` "fires at the same instants in
+    every zone and needs no suffix". It does not: a suffix-less spec is
+    evaluated in the host's LOCAL zone, and at DST fall-back the local hour
+    01:00-02:00 occurs twice. systemd takes the next elapse as the next
+    wall-clock instant strictly after the last trigger's, so every tick in
+    the repeated hour is already past. Measured 2026-11-01 on the
+    America/Chicago host: `hyxlab-collect` fired at 06:55:41Z (01:55 CDT),
+    then at 08:00:00Z (02:00 CST) -- 12 slots lost; `hyxlab-breadth` and
+    the sibling's `hylshi-family-books` (also `*:0/5`, no suffix) lost the
+    same hour, while every `... UTC` timer on the box kept its schedule
+    (mistakes #151). Lexical, like the prose test: a UTC box cannot show
+    this at runtime.
+    """
+    timers = _timers()
+    assert timers, "no timer units found"
+    offenders = [
+        f"{name}: OnCalendar={spec!r}"
+        for name, text in sorted(timers.items())
+        for spec in _field(text, "OnCalendar")
+        if not _TZ_SUFFIX_RE.search(spec)
+    ]
+    assert not offenders, (
+        "OnCalendar without a timezone suffix is evaluated in the host's local "
+        "zone and skips the repeated hour at DST fall-back:\n  "
+        + "\n  ".join(offenders)
+    )
 
 
 def test_the_daily_archive_pipeline_runs_in_dependency_order():

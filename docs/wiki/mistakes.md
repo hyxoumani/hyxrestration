@@ -3653,6 +3653,46 @@ Format: what happened → root cause → error type → prevention tier
     silently returns 0 markets for a prefix (`KXHIGH` vs `KXHIGHNY`); the
     help text now says which.
 
+151. **2026-11-01 08:15Z -- a timer spec that "pins no hour" was excused
+    from the timezone rule, and it skipped the repeated hour at DST
+    fall-back.** `tests/test_systemd_units.py` required a zone suffix only
+    on hour-pinned `OnCalendar` specs, on the reasoning that `*:0/5` and
+    `*:2/5` "fire at the same instants in every zone and need no suffix".
+    A suffix-less spec is evaluated in the host's LOCAL zone
+    (America/Chicago), and at 07:00:00Z today the clocks went 02:00 CDT ->
+    01:00 CST, so the local hour 01:00-02:00 occurred twice. systemd takes
+    a calendar timer's next elapse as the next wall-clock instant strictly
+    after the last trigger's wall-clock instant, so every tick of the
+    repeated hour was already past. Measured from the user manager's own
+    journal (pid 758): `hyxlab-collect` `Starting` at 06:55:00Z (01:55
+    CDT), next `Starting` 08:00:00Z (02:00 CST) -- **12 slots, one hour of
+    `snapshots`, lost on a healthy box**, the collector's `fs_free_b`
+    series blank 06:50 -> 08:01Z; `hyxlab-breadth` (`*:2/5`) lost the same
+    12; the sibling's `hylshi-family-books` (`*:0/5`, no suffix) too, its
+    grants 427 in 07Z against 2,2xx-2,8xx every other hour. Every timer on
+    the box with a ` UTC` suffix kept its schedule (the sibling's
+    `lake.nightly` fired at 07:00:00Z = 01:00 CST). The daemons were
+    untouched (stream 16 stats lines in the 80 min, 0 GAP). The hourly 429
+    instrument printed the hour as `collect --`, which is how it was seen.
+    Fix: ` UTC` on both specs (`*:0/5 UTC`, `*:2/5 UTC`; same instants
+    outside the transition, `systemd-analyze calendar` confirms the next
+    elapse), the carve-out DELETED and replaced by
+    `test_every_timer_pins_a_timezone` (every `OnCalendar`, hour-pinned or
+    not; red against the old spec, verified by mutating the file). Not
+    recoverable: the slots are top-of-book instants, and `Persistent=true`
+    replayed nothing because systemd never considered them missed. The
+    spring-forward side is benign (the skipped hour does not exist; the
+    next tick is the first valid one). QA's `_check_continuity` will carry
+    the 65-min span (true downtime 60 min, inside its `[G-2c, G]` bound,
+    #93) for 24h -- that FAIL is correct and expected at the 10:00Z run.
+    Rule: **a timer that must fire on wall-clock instants is pinned to a
+    zone without DST, whatever its spec looks like -- "pins no hour" is a
+    statement about the spec's text, not about the clock systemd reads it
+    against. Enumerate the premise of every carve-out in a discipline test
+    against the one calendar event that breaks it (here: a repeated
+    hour); and read the hourly instruments for a WHOLE missing hour, not
+    only for failures inside the hours that ran.** Suite 2351 green (+1).
+
 150. **2026-10-30 02:40Z -- a streaming read measured with a query on
     the same connection, and the measurement ended the read.** The
     ladder item was to bound the priority-check probe's 4.35 GB anon

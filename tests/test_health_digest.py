@@ -212,7 +212,7 @@ def test_the_late_slack_is_one_period_of_the_fastest_timer() -> None:
         for line in f.read_text().splitlines()
         if line.startswith("OnCalendar=")
     ]
-    assert "*:0/5" in cadences, (
+    assert "*:0/5 UTC" in cadences, (
         f"the 5-minute cadence this slack is derived from is gone: {cadences}"
     )
     assert health.LATE_SLACK_S == 300.0
