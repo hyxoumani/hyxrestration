@@ -33,6 +33,15 @@ MemoryMax=1536M
 # for any healthy I/O-heavy run, so it cannot tell reclaim from near-death.
 # ExecStopPost runs inside the cgroup after the main process is gone: the
 # last reader. Reports only; never fails the unit (scripts/cgmem.sh).
+# 15, not the 90s default: a timer elapse against an ACTIVE unit is a no-op,
+# so the stop-post's budget is the cadence minus the main wall, and the main
+# wall may spend LOCK_WAIT_S (240s) waiting on a sweep's hold on top of the
+# fetch. Measured 2026-11-01 12:29:44Z: a lock-wait skip exited 16s before the
+# 12:30:00Z tick, cgmem.sh hung under the #152 host OOM storm, systemd acted
+# at 112s, and the 12:30Z slot never fired. The reporter itself takes 0.05s
+# (max 0.335s over 1,996 runs), so 15s is ~45x its worst and bounds a hang at
+# a fraction of the tick instead of most of it (tests/test_systemd_units.py).
+TimeoutStopSec=15
 ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # No `flock -n` wrapper: it dropped the cycle before python started, so the

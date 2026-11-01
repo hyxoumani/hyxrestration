@@ -536,3 +536,75 @@ def test_the_atlas_runs_while_no_sweep_holds_the_archive():
         "file lands on the collector's write"
     )
     assert _field(timers["hyxlab-atlas.timer"], "AccuracySec") == ["1s"]
+
+
+# The stop-post reporter's own duration, MEASURED 2026-11-01 over the last
+# 7 days of journal: hyxlab-collect 1,996 runs, mean 0.052s, max 0.335s;
+# hyxlab-breadth 2,001 runs, mean 0.052s, max 0.211s (the gap between the
+# cycle's own summary line and the `[cgmem]` line, `-o short-unix`).
+STOP_POST_MAX_S = 0.335
+# A bound that is still a bound when the hang's mechanism is unknown: the
+# one hang on record (12:29:44 -> 12:31:36Z, inside the #152 host OOM storm)
+# ran 112s before systemd acted, against a stop-post that normally takes 0.05s.
+STOP_POST_MARGIN = 20
+
+
+def _sub_hour_cadence_s(spec):
+    """Seconds between elapses of a `*:M/N` minute-step spec, else None."""
+    m = re.match(r"^\*:\d{1,2}/(\d{1,2})\b", spec.strip())
+    return int(m.group(1)) * 60 if m else None
+
+
+def _timeout_s(value):
+    """A unit's TimeoutStopSec in seconds; only the forms this repo writes."""
+    m = re.fullmatch(r"(\d+)(?:s)?", value.strip())
+    return int(m.group(1)) if m else None
+
+
+def test_minute_cadence_units_bound_their_stop_post():
+    """A unit on a minute-step timer must pin TimeoutStopSec well under the
+    slack its own cycle leaves before the next tick.
+
+    2026-11-01 12:29:44Z: the collector exited 75 after a 177s poly hold (a
+    lock-wait skip, by design) 16 seconds before its 12:30:00Z tick, and its
+    `ExecStopPost` (scripts/cgmem.sh, three cgroup reads) hung under the
+    #152 host OOM storm. The unit inherited systemd's 90s DEFAULT stop
+    timeout, stayed in `stop-post` across the tick, and the 12:30Z slot never
+    fired. A timer elapse against an active unit is a no-op, so the stop-
+    post's real budget is `cadence - main wall`, and the main wall is
+    allowed `LOCK_WAIT_S` on top of the fetch (collector.collect): the
+    default was never the right number here, whatever made the hang.
+    """
+    import collector.collect as collect
+
+    timers = _timers()
+    services = _services()
+    checked = []
+    for tname, ttext in timers.items():
+        specs = _field(ttext, "OnCalendar")
+        cadences = [c for c in map(_sub_hour_cadence_s, specs) if c is not None]
+        if not cadences:
+            continue
+        cadence = min(cadences)
+        sname = tname[: -len(".timer")] + ".service"
+        assert sname in services, f"{tname} has no vendored {sname}"
+        pinned = _field(services[sname], "TimeoutStopSec")
+        assert len(pinned) == 1, (
+            f"{sname} runs every {cadence}s and must pin TimeoutStopSec: a "
+            "stuck ExecStopPost under the 90s default holds the unit active "
+            "across the next tick and the slot is lost (2026-11-01 12:30Z)"
+        )
+        stop_s = _timeout_s(pinned[0])
+        assert stop_s is not None, f"{sname}: TimeoutStopSec={pinned[0]!r}"
+        assert stop_s >= STOP_POST_MARGIN * STOP_POST_MAX_S, (
+            f"{sname}: TimeoutStopSec={stop_s}s is under {STOP_POST_MARGIN}x "
+            f"the measured stop-post max ({STOP_POST_MAX_S}s); a healthy "
+            "reporter would be killed and file the unit failed"
+        )
+        assert stop_s <= cadence - collect.LOCK_WAIT_S, (
+            f"{sname}: TimeoutStopSec={stop_s}s plus a full lock wait "
+            f"({collect.LOCK_WAIT_S:g}s) exceeds the {cadence}s cadence: a "
+            "stuck stop-post after a lock-wait skip still eats the next tick"
+        )
+        checked.append(sname)
+    assert sorted(checked) == ["hyxlab-breadth.service", "hyxlab-collect.service"], checked

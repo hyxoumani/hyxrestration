@@ -88,6 +88,15 @@
   and make the cleanup REFUSE work it cannot finish in the budget --
   preferring the fast lossless path (spill to disk, drain next boot) over
   the slow one that gets killed halfway.
+- A oneshot on a minute-cadence timer owns a SECOND deadline: a timer
+  elapse against a unit still in `stop-post` is a no-op, so an
+  `ExecStopPost`'s budget is the cadence minus the main wall -- 16 s on
+  2026-11-01 12:29Z, when a lock-wait skip exited just before the tick and
+  `cgmem.sh` hung under the #152 storm against systemd's 90 s default; the
+  12:30Z slot never fired. Pin `TimeoutStopSec` on every `*:M/N` unit at a
+  multiple of the reporter's MEASURED max (0.335 s over 1,996 runs -> 15 s)
+  and under `cadence - LOCK_WAIT_S` (`tests/test_systemd_units.py` derives
+  the set from the timers, so a new 5-min unit must name its own).
 - A lock held ACROSS an operation is held only if the operation cannot
   drop it, and on POSIX any `close()` does. DuckDB's file lock is an
   `fcntl` record lock, and POSIX releases every record lock a process
