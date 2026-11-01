@@ -5,9 +5,28 @@ sharper here than they look: `hyxrestration-stable/data` is a symlink to
 this repo's `data/`, so the dev tree's sidecars are production's.
 """
 
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
+
+# Temporary files go on DISK, never on the host's RAM-backed /tmp. On this
+# box `/tmp` is a tmpfs, so every byte a test leaves there is memory held
+# until something deletes it: one full-suite run left 1.5 GiB (the EXP-1373
+# shared-spill test alone 587 MiB) in `/tmp/pytest-of-devs`, and pytest keeps
+# the last three, while a sibling's suite had parked 8 GiB of the same kind
+# -- the standing half of the 2026-11-01 host OOM storm that cost the stream
+# 66 GAP lines (mistakes #152). pytest derives its basetemp from
+# `tempfile.gettempdir()`, lazily, so pinning the module-level default here
+# -- before any fixture asks -- moves `tmp_path`, `mkdtemp` and every
+# `TemporaryDirectory` in one place. Set at import, not in a fixture: a
+# fixture runs after the factory has already chosen. `tests/test_tmp_on_disk.py`
+# proves the pin landed and that the volume under it is not tmpfs.
+PYTEST_TMP_ROOT = Path(__file__).resolve().parent.parent / ".pytest-tmp"
+PYTEST_TMP_ROOT.mkdir(exist_ok=True)
+os.environ["TMPDIR"] = str(PYTEST_TMP_ROOT)
+tempfile.tempdir = str(PYTEST_TMP_ROOT)
 
 #: Every cwd-rooted sidecar this repo WRITES, redirected per-test.
 #:

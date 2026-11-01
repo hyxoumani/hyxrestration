@@ -28,6 +28,10 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A passing test's tmp_path is deleted at session end; only failures keep
+# theirs for inspection. With the temp root on disk (tests/conftest.py) this
+# bounds the residue to what is worth reading.
+tmp_path_retention_policy = "failed"
 pythonpath = ["."]
 filterwarnings = [
     "ignore::DeprecationWarning:websockets.legacy",

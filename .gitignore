@@ -33,3 +33,4 @@ phase0/data/finbert_scores.csv
 .secrets/
 .autodev/
 .pytest-spill/
+.pytest-tmp/

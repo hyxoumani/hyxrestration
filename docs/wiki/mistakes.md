@@ -3701,7 +3701,16 @@ Format: what happened → root cause → error type → prevention tier
     namespace that can hold it, and a tmpfs makes files a memory tenant:
     read `Shmem` and the kernel's kill record at host level before
     reading any unit's cap, and never park a large temporary in `/tmp` on
-    a box where `/tmp` is RAM.**
+    a box where `/tmp` is RAM.** Addendum 15:15Z: the first follow-up read
+    of the new line caught THIS repo doing it -- the 14:28Z full suite left
+    1,527 MiB in `/tmp/pytest-of-devs/pytest-2848` (Shmem 21.4 -> 22.7 GiB),
+    587 MiB of it the EXP-1373 shared-spill test, and pytest keeps three such
+    runs. Fix: `tests/conftest.py` pins `tempfile.tempdir` + `TMPDIR` to
+    `<repo>/.pytest-tmp` at import, `tmp_path_retention_policy = "failed"`,
+    `tests/test_tmp_on_disk.py` (5; red with both pins removed, green with
+    either -- both kept against a plugin that caches `gettempdir()` before
+    conftest loads). A rule written about the neighbour applies to the
+    author first.
 
 151. **2026-11-01 08:15Z -- a timer spec that "pins no hour" was excused
     from the timezone rule, and it skipped the repeated hour at DST
