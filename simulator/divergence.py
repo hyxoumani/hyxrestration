@@ -126,7 +126,7 @@ def replay_run(
             # reading them later would re-open it (including gap rows the
             # live run never saw, e.g. flush_failure_backfill).
             gaps = conn.execute(
-                f"SELECT started_at, ended_at FROM stream_gaps"
+                f"SELECT started_at, ended_at, shard FROM stream_gaps"
                 f" WHERE ended_at > ? AND started_at <= ? AND {BOOK_GAPS}"
                 f" ORDER BY started_at",
                 [anchor, end],

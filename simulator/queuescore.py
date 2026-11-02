@@ -796,7 +796,7 @@ def fetch_gaps(conn, since: datetime) -> list:
     """The book-gap rows every market's replay excludes -- one read, not
     one per market (it was re-read inside the hold for each of the 24)."""
     return conn.execute(
-        f"SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ? AND {BOOK_GAPS}",
+        f"SELECT started_at, ended_at, shard FROM stream_gaps WHERE ended_at > ? AND {BOOK_GAPS}",
         [since],
     ).fetchall()
 

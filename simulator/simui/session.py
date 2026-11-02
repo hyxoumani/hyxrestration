@@ -186,7 +186,7 @@ class ReplaySession:
         market_ids: list[str],
         events: list[BookEvent],
         trades: list[StreamTrade],
-        gaps: list[tuple[datetime, datetime]],
+        gaps: list[tuple],  # (started_at, ended_at[, shard]) as replay_snapshots reads them
         markets: dict[tuple[str, str], MarketInfo],
         strategies_factory: Callable[[], list[Strategy]] | None = None,
         latency: float = 2.0,
@@ -197,7 +197,7 @@ class ReplaySession:
         self.market_ids = market_ids
         self.events = events  # sorted by (recv_ts, seq)
         self.trades = trades  # sorted by recv_ts
-        self.gaps = sorted(gaps)
+        self.gaps = sorted(gaps, key=lambda g: g[:2])  # shard may be None: not orderable
         self.markets = {k: _sanitize(v) for k, v in markets.items()}
         self.archive_db = archive_db
         self.meta_loaded = meta_loaded
@@ -498,7 +498,7 @@ def load_session(
             [event + "-%"],
         ).fetchall()
         gaps = conn.execute(
-            "SELECT started_at, ended_at FROM stream_gaps ORDER BY started_at"
+            "SELECT started_at, ended_at, shard FROM stream_gaps ORDER BY started_at"
         ).fetchall()
     _report_hold("load_session")
     events = [BookEvent(*r) for r in ev_rows]

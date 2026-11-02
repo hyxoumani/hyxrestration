@@ -109,7 +109,7 @@ def run_l2(
         ):
             pass
         gaps = conn.execute(
-            f"SELECT started_at, ended_at FROM stream_gaps"
+            f"SELECT started_at, ended_at, shard FROM stream_gaps"
             f" WHERE ended_at > ? AND started_at <= ? AND {BOOK_GAPS} ORDER BY started_at",
             [start, end],
         ).fetchall()
