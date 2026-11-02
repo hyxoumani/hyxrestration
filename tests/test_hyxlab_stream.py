@@ -159,9 +159,17 @@ def test_void_rows_close_the_seq_hole_they_explain(tmp_path):
     store = StreamStore(tmp_path / "s.duckdb")
     for seq, typ in ((1, "delta"), (2, "void"), (3, "delta")):
         frame = (
-            {"type": "orderbook_delta", "sid": 1, "seq": seq,
-             "msg": {"market_ticker": "M1", "price_dollars": "0.40",
-                     "delta_fp": "1.00", "side": "yes"}}
+            {
+                "type": "orderbook_delta",
+                "sid": 1,
+                "seq": seq,
+                "msg": {
+                    "market_ticker": "M1",
+                    "price_dollars": "0.40",
+                    "delta_fp": "1.00",
+                    "side": "yes",
+                },
+            }
             if typ == "delta"
             else {"type": "market_lifecycle_v2", "sid": 1, "seq": seq, "msg": {}}
         )
@@ -521,8 +529,7 @@ def _gap_rows(path):
 
     with duckdb.connect(str(path), read_only=True) as conn:
         return conn.execute(
-            "SELECT venue, channel, started_at, ended_at, reason"
-            " FROM stream_gaps ORDER BY ended_at"
+            "SELECT venue, channel, started_at, ended_at, reason FROM stream_gaps ORDER BY ended_at"
         ).fetchall()
 
 
@@ -1400,3 +1407,115 @@ def test_kalshi_loop_logs_the_clock_note_on_a_401(tmp_path, monkeypatch, capsys)
     out = capsys.readouterr().out
     assert "kalshi-trades: InvalidStatus: server rejected WebSocket connection: HTTP 401" in out
     assert "[box - venue Date +" in out and "; retry in 1s" in out
+
+
+# -- gap rows name the books shard they were observed on (2026-11-02) ----------
+
+
+def _gap_rows_with_shard(path):
+    import duckdb
+
+    with duckdb.connect(str(path), read_only=True) as conn:
+        return conn.execute(
+            "SELECT channel, reason, shard FROM stream_gaps ORDER BY ended_at"
+        ).fetchall()
+
+
+def test_books_shard_loop_stamps_its_shard_on_every_gap_row(tmp_path, monkeypatch):
+    """A books connection's reconnect and seq_reset rows carry `Shard.idx`,
+    so the replayer wipes only that connection's books; the trades loop
+    (no shard) writes NULL = channel-wide, as every row did before."""
+    import asyncio
+
+    from collector import streamd
+    from collector.bookcov import Shard
+
+    db = tmp_path / "s.duckdb"
+    prior = StreamStore(db)
+    prior.append_trades(kalshi_ws.parse_message(_trade_frame(), RECV)[1])
+    prior.flush()
+
+    remaining = [[json.dumps(_trade_frame(seq=1))], [json.dumps(_trade_frame(seq=1))]]
+
+    class ScriptedWS:
+        def __init__(self, frames, last):
+            self._frames, self._last = list(frames), last
+
+        async def send(self, msg):
+            pass
+
+        async def recv(self):
+            if not self._frames:
+                raise asyncio.CancelledError if self._last else ConnectionError("drop")
+            return self._frames.pop(0)
+
+    class FakeConnect:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return ScriptedWS(remaining.pop(0), last=not remaining)
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def no_sleep(secs):
+        pass
+
+    monkeypatch.setattr(streamd.websockets, "connect", FakeConnect)
+    monkeypatch.setattr(streamd.kalshi_ws, "auth_headers", lambda kid, pem: {})
+    monkeypatch.setattr(streamd.asyncio, "sleep", no_sleep)
+    store = StreamStore(db)
+    d = streamd.Daemon(store, watchlist={})
+    d.key_id, d.pem = "k", b"p"
+    sh = Shard(idx=3, assigned={"M1"}, at_boot=True)
+    with contextlib.suppress(asyncio.CancelledError):
+        asyncio.run(d._kalshi_loop("books", lambda: "{}", sh))
+    store.flush()
+
+    rows = _gap_rows_with_shard(db)
+    assert {r[1] for r in rows} == {"reconnect", "seq_reset"}
+    assert all(r[0] == "books" and r[2] == 3 for r in rows), rows
+
+
+def test_trades_loop_gap_rows_carry_no_shard(tmp_path, monkeypatch):
+    store = _scripted_kalshi_loop(
+        tmp_path,
+        monkeypatch,
+        [[json.dumps(_trade_frame(seq=1))], [json.dumps(_trade_frame(seq=1))]],
+    )
+    rows = _gap_rows_with_shard(store.path)
+    assert [r[1] for r in rows] == ["reconnect", "seq_reset"]
+    assert all(r[0] == "trades" and r[2] is None for r in rows), rows
+
+
+def test_shard_column_is_added_to_an_archive_created_before_it(tmp_path):
+    """`CREATE TABLE IF NOT EXISTS` leaves the live archive's five-column
+    table alone; the store must ALTER it, and a legacy sidecar line (five
+    fields) must drain as a channel-wide row rather than corrupt."""
+    import duckdb
+
+    from hyxlab.streamstore import _iso
+
+    db = tmp_path / "old.duckdb"
+    with duckdb.connect(str(db)) as conn:
+        conn.execute(
+            "CREATE TABLE stream_gaps (venue VARCHAR NOT NULL, channel VARCHAR NOT NULL,"
+            " started_at TIMESTAMP NOT NULL, ended_at TIMESTAMP NOT NULL, reason VARCHAR)"
+        )
+        conn.execute(
+            "INSERT INTO stream_gaps VALUES ('kalshi', 'books', ?, ?, 'reconnect')", [RECV, RECV]
+        )
+    store = StreamStore(db)
+    naive = RECV.replace(tzinfo=None)
+    legacy = {"t": "g", "r": ["kalshi", "books", _iso(naive), _iso(naive), "seq_gap"]}
+    store._spill_path.write_text(json.dumps(legacy) + "\n")
+    store.append_gap("kalshi", "books", RECV, RECV, "seq_reset", shard=5)
+    assert store.flush() == 2
+    assert store.spill_corrupt == 0
+    rows = sorted(_gap_rows_with_shard(db), key=lambda r: r[1])
+    assert rows == [
+        ("books", "reconnect", None),
+        ("books", "seq_gap", None),
+        ("books", "seq_reset", 5),
+    ]

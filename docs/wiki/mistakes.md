@@ -3834,11 +3834,20 @@ Format: what happened → root cause → error type → prevention tier
     shards whose images landed in the LAST poll survived. Before the
     10-23 20x expansion a burst fit one poll and this never bit. Fixed:
     `invalidate(before=started_at)` keeps a book whose image postdates
-    the break (red-verified). NOT fixed, queued: a single shard's
-    reconnect (11-01 03:52Z, two rows) still wipes the other 13 shards'
-    books until THEIR shards reconnect (6h blind that night) -- the gap
-    row carries no shard, though the stream encodes it in `sid`
-    (`shard * 1_000_000 + 1`, 14 live values). Cost of the chase: one
+    the break (red-verified). The second half, FIXED 2026-11-02 08:15Z
+    run: a single shard's reconnect (11-01 03:52Z, two rows) wiped the
+    other 13 shards' books until THEIR shards reconnected (6h blind that
+    night) because the gap row carried no shard, though the stream
+    encodes it in `sid` (`shard * 1_000_000 + 1`, 14 live values). Now
+    `stream_gaps.shard` (nullable; `ALTER TABLE ... ADD COLUMN IF NOT
+    EXISTS` at store open, five-field sidecar lines drain as NULL) is
+    stamped by every per-connection row (`reconnect`, `seq_reset`,
+    `seq_gap`, `clock_step`) and `BookReplayer.invalidate(shard=)` wipes
+    only the books whose image that sid prefix archived; a NULL row
+    (`daemon_start`, trades, pre-11-02) still wipes every book. Only the
+    shadow selects the column; `run_l2`/`divergence`/`queuescore`/simui
+    keep the two-tuple read = the conservative channel-wide wipe. Cost of
+    the chase: one
     ad-hoc `sid` census over 20 minutes of `book_events` was a full scan
     and held `hyxstream.duckdb` 60.4s (streamd: 5 refused flushes,
     318k rows pending, 0 spilled) -- an unindexed window on a 1.48B-row

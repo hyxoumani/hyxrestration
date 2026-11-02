@@ -216,3 +216,54 @@ def test_gap_does_not_wipe_an_image_newer_than_its_start():
     seed(r2)
     r2.invalidate(before=T0 + timedelta(seconds=5))
     assert r2.apply(ev("delta", "yes", 0.40, -100, seq=5)) is None
+
+
+# -- per-shard gap scoping (2026-11-02) ----------------------------------------
+#
+# The stream archives each books connection's sids under its own prefix
+# (`SHARD_SID_STRIDE`) and, since 2026-11-02, names that shard on the gap
+# rows the connection writes. A reconnect on one of ~14 shards used to wipe
+# every book until each other shard happened to reconnect (11-01 03:52Z:
+# 6 h of blindness for one connection's flap).
+
+SID_SHARD_2 = 2 * 1_000_000 + 1
+
+
+def test_gap_scoped_to_a_shard_leaves_other_shards_books_known():
+    r = BookReplayer()
+    seed(r, sid=1, mid="A")  # shard 0
+    seed(r, sid=SID_SHARD_2, mid="B")  # shard 2
+    r.invalidate(before=T0 + timedelta(seconds=5), shard=2)
+    assert r.apply(ev("delta", "yes", 0.40, -100, seq=5, sid=1, mid="A")) is not None  # known
+    assert r.apply(ev("delta", "yes", 0.40, -100, seq=5, sid=SID_SHARD_2, mid="B")) is None
+
+
+def test_gap_with_no_shard_wipes_every_book():
+    r = BookReplayer()
+    seed(r, sid=1, mid="A")
+    seed(r, sid=SID_SHARD_2, mid="B")
+    r.invalidate(before=T0 + timedelta(seconds=5), shard=None)
+    assert r.apply(ev("delta", "yes", 0.40, -100, seq=5, sid=1, mid="A")) is None
+    assert r.apply(ev("delta", "yes", 0.40, -100, seq=5, sid=SID_SHARD_2, mid="B")) is None
+
+
+def test_book_whose_image_carried_no_sid_is_wiped_by_any_shard_gap():
+    r = BookReplayer()
+    seed(r, sid=None, mid="A")
+    r.invalidate(before=T0 + timedelta(seconds=5), shard=7)
+    assert r.apply(ev("delta", "yes", 0.40, -100, seq=5, sid=None, mid="A")) is None
+
+
+def test_replay_snapshots_reads_the_shard_from_a_three_tuple_gap():
+    events = [
+        ev("snap", "yes", 0.40, 100, seq=1, sid=1, mid="A", ts_off=0),
+        ev("snap", "yes", 0.40, 100, seq=1, sid=SID_SHARD_2, mid="B", ts_off=0),
+        ev("delta", "yes", 0.40, -50, seq=2, sid=1, mid="A", ts_off=10),  # shard 0: emits
+        ev("delta", "yes", 0.40, -50, seq=2, sid=SID_SHARD_2, mid="B", ts_off=10),  # wiped
+    ]
+    gap = (T0 + timedelta(seconds=5), T0 + timedelta(seconds=6), 2)
+    snaps = list(replay_snapshots(events, gaps=[gap]))
+    assert [(s.market_id, s.yes_bid_size) for s in snaps] == [("A", 100), ("B", 100), ("A", 50)]
+    # The two-tuple form is the pre-2026-11-02 reading: every book wiped.
+    snaps = list(replay_snapshots(events, gaps=[gap[:2]]))
+    assert [(s.market_id, s.yes_bid_size) for s in snaps] == [("A", 100), ("B", 100)]

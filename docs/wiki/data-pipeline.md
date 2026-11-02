@@ -225,7 +225,9 @@ absolute level, delta qty = SIGNED change; poly delta qty = new ABSOLUTE
 size; poly market_id = CLOB token id), `stream_trades`, `stream_gaps`
 (closed intervals of broken coverage — reconnects, Kalshi seq jumps,
 daemon downtime; replay must treat books as unknown inside a gap until
-the next snapshot re-seeds).
+the next snapshot re-seeds; since 2026-11-02 a per-connection row names
+its books `shard`, NULL = the whole channel, so one shard's flap no
+longer blanks the other ~13 shards' replayed books).
 **POLY L2 IS ABSENT, NOT THIN, BEFORE 2026-09-24.** The `price_change`
 parser read the venue's documented list key (`changes`, asset on the
 frame) instead of the wire's (`price_changes`, asset per ENTRY), so every

@@ -10,7 +10,9 @@ Honesty rules:
 - A market's book is UNKNOWN until its first full snapshot, and becomes
   unknown again whenever a coverage gap touches it (reconnect, seq gap,
   daemon downtime — anything in stream_gaps). No emissions while
-  unknown; the next snapshot re-seeds.
+  unknown; the next snapshot re-seeds. A gap row that names a `shard`
+  touches only the books that shard archived (the sid prefix,
+  `SHARD_SID_STRIDE`); a row with no shard touches every book.
 - Kalshi has ONE mirrored book: events carry resting yes/no bids; the
   asks are derived (yes_ask = 1 − best_no_bid) exactly as the venue
   displays them.
@@ -29,7 +31,7 @@ from pathlib import Path
 
 from hyxlab.models import Snapshot
 from hyxlab.store import duck_connect
-from hyxlab.streamstore import BookEvent
+from hyxlab.streamstore import SHARD_SID_STRIDE, BookEvent
 
 _EMPTY: tuple = ()
 
@@ -42,7 +44,7 @@ BOOK_GAPS = "venue IN ('kalshi', '*') AND channel IN ('books', '*')"
 
 
 class _Book:
-    __slots__ = ("levels", "pending_before", "seeded", "snap_key", "snap_ts")
+    __slots__ = ("levels", "pending_before", "seeded", "shard", "snap_key", "snap_ts")
 
     def __init__(self) -> None:
         self.levels: dict[str, dict[float, float]] = {"yes": {}, "no": {}}
@@ -50,14 +52,34 @@ class _Book:
         self.snap_key: tuple | None = None  # (sid, seq) of in-progress image
         self.pending_before: tuple | None = None  # top before the image began
         self.snap_ts: datetime | None = None
+        self.shard: int | None = None  # connection that archived the image
+
+
+def _shard_of(sid: int | None) -> int | None:
+    """The books connection a stored sid came from (`streamd` adds
+    `idx * SHARD_SID_STRIDE` before archiving; shard 0 adds nothing)."""
+    return None if sid is None else sid // SHARD_SID_STRIDE
 
 
 class BookReplayer:
     def __init__(self) -> None:
         self._books: dict[str, _Book] = {}
 
-    def invalidate(self, market_id: str | None = None, before: datetime | None = None) -> None:
+    def invalidate(
+        self,
+        market_id: str | None = None,
+        before: datetime | None = None,
+        shard: int | None = None,
+    ) -> None:
         """Coverage broke: forget state until the next snapshot re-seeds.
+
+        `shard` is the books connection the gap row names: only books
+        whose image that connection archived are touched. The stream runs
+        ~14 shards and writes one gap row per shard's reconnect, so a
+        channel-wide wipe on each left the other shards' books unknown
+        until they too happened to reconnect (11-01 03:52Z: 6 h). None
+        (a daemon_start row, a row written before 2026-11-02) wipes every
+        book; a book whose image carried no sid is wiped either way.
 
         `before` is the gap's `started_at` -- the last archived event
         before the break. A book whose image arrived AFTER it was built by
@@ -76,6 +98,8 @@ class BookReplayer:
             b = self._books.get(m)
             if b is None:
                 continue
+            if shard is not None and b.shard is not None and b.shard != shard:
+                continue  # another connection's book; its coverage held
             if before is not None and b.snap_ts is not None and b.snap_ts > before:
                 continue  # re-seeded by the reconnect that closed this gap
             self._books.pop(m, None)
@@ -102,6 +126,7 @@ class BookReplayer:
                 book.seeded = True
             book.levels[e.side][e.price] = max(e.qty, 0.0)
             book.snap_ts = e.recv_ts
+            book.shard = _shard_of(e.sid)
             return None
 
         if e.kind == "void":
@@ -123,6 +148,7 @@ class BookReplayer:
             book.pending_before = None
             book.seeded = True
             book.snap_ts = e.recv_ts
+            book.shard = _shard_of(e.sid)
             after = self._top(book)
             return None if after == before else self._snapshot(e.market_id, e.recv_ts, after)
 
@@ -453,15 +479,17 @@ def stream_exported(dest: str | Path) -> Iterator[BookEvent]:
 
 def replay_snapshots(
     events: Iterable[BookEvent],
-    gaps: Iterable[tuple[datetime, datetime]] = _EMPTY,
+    gaps: Iterable[tuple] = _EMPTY,
     replayer: BookReplayer | None = None,
 ) -> Iterator[Snapshot]:
     """Events (recv_ts order) + gap intervals → top-of-book Snapshots.
 
-    Any gap whose start falls before an event invalidates ALL book state
-    built before that start (conservative: gap rows aren't per-market;
-    see `BookReplayer.invalidate` for why an image newer than the gap's
-    start survives it). Snapshot
+    A gap is `(started_at, ended_at)` or `(started_at, ended_at, shard)`.
+    Any gap whose start falls before an event invalidates the book state
+    built before that start -- every book for a two-tuple or a None
+    shard, only that connection's books otherwise (gap rows are not
+    per-market; see `BookReplayer.invalidate`, also for why an image
+    newer than the gap's start survives it). Snapshot
     images emit once complete — when their (market, sid, seq) row group
     ends — never row-by-row.
 
@@ -471,11 +499,11 @@ def replay_snapshots(
     batches and the end-of-batch finalize is safe)."""
     if replayer is None:
         replayer = BookReplayer()
-    gap_starts = sorted(g[0] for g in gaps)
+    gap_starts = sorted(((g[0], g[2] if len(g) > 2 else None) for g in gaps), key=lambda g: g[0])
     gi = 0
     open_group: tuple | None = None  # (market_id, sid, seq) of open image
     for e in events:
-        while gi < len(gap_starts) and gap_starts[gi] <= e.recv_ts:
+        while gi < len(gap_starts) and gap_starts[gi][0] <= e.recv_ts:
             # A completed image is a real pre-gap book state: emit it
             # before coverage is declared broken.
             if open_group is not None:
@@ -483,7 +511,7 @@ def replay_snapshots(
                 if snap is not None:
                     yield snap
                 open_group = None
-            replayer.invalidate(before=gap_starts[gi])
+            replayer.invalidate(before=gap_starts[gi][0], shard=gap_starts[gi][1])
             gi += 1
         group = (e.market_id, e.sid, e.seq) if e.kind == "snap" else None
         if open_group is not None and group != open_group:

@@ -499,7 +499,8 @@ class ShadowRunner:
                 [self.cursor] + ([self.series] if self.series is not None else []),
             ).fetchall()
             gaps = conn.execute(
-                f"SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ? AND {BOOK_GAPS}",
+                "SELECT started_at, ended_at, shard FROM stream_gaps"
+                f" WHERE ended_at > ? AND {BOOK_GAPS}",
                 [self.gap_cursor],
             ).fetchall()
         if rows:

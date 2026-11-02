@@ -831,18 +831,36 @@ class Daemon:
     def _count(self, key: str, n: int) -> None:
         self.stats[key] = self.stats.get(key, 0) + n
 
-    def _gap(self, venue: str, channel: str, since: datetime | None, reason: str) -> None:
+    def _gap(
+        self,
+        venue: str,
+        channel: str,
+        since: datetime | None,
+        reason: str,
+        shard: int | None = None,
+    ) -> None:
         now = datetime.now(UTC)
-        self.store.append_gap(venue, channel, since or now, now, reason)
-        _log(f"{venue}/{channel} GAP ({reason})")
+        self.store.append_gap(venue, channel, since or now, now, reason, shard)
+        _log(f"{venue}/{channel} GAP ({reason})" + (f" shard={shard}" if shard is not None else ""))
 
-    def _clock_check(self, venue: str, channel: str, recv_ts: datetime, last: datetime | None):
+    def _clock_check(
+        self,
+        venue: str,
+        channel: str,
+        recv_ts: datetime,
+        last: datetime | None,
+        shard: int | None = None,
+    ):
         """recv_ts moving backwards = the system clock stepped (e.g. NTP
         kicking in on a skewed box). Not lost coverage, but timestamps
         around the step are non-monotonic — record it so replay knows."""
         if last is not None and recv_ts < last:
             self._gap(
-                venue, channel, recv_ts, f"clock_step_{(recv_ts - last).total_seconds():.1f}s"
+                venue,
+                channel,
+                recv_ts,
+                f"clock_step_{(recv_ts - last).total_seconds():.1f}s",
+                shard,
             )
 
     # -- connection loops --------------------------------------------------
@@ -1179,6 +1197,9 @@ class Daemon:
         # still marks the downtime coarsely. A books shard opened MID-RUN
         # skips it: its markets were covered by nothing before it, and the
         # channel's last frame came from another shard a moment ago.
+        # Every gap row this loop writes is scoped to ITS connection: a
+        # books shard's reconnect breaks coverage of its own markets only.
+        sidx = shard.idx if shard is not None else None
         resume_since = None
         if shard is None or shard.at_boot:
             try:
@@ -1198,7 +1219,7 @@ class Daemon:
                         shard.awaiting.clear()
                     await ws.send(make_subscribe())
                     if not first:
-                        self._gap("kalshi", channel, last_recv, "reconnect")
+                        self._gap("kalshi", channel, last_recv, "reconnect", sidx)
                         if channel == "lifecycle":
                             # Lifecycle frames were missed: let REST catch
                             # the book set up now, not at the next period.
@@ -1262,10 +1283,10 @@ class Daemon:
                             since = last_recv or resume_since
                             if since is not None:
                                 self.store.append_gap(
-                                    "kalshi", channel, since, recv_ts, "seq_reset"
+                                    "kalshi", channel, since, recv_ts, "seq_reset", sidx
                                 )
                                 _log(f"kalshi/{label} GAP (seq_reset)")
-                        self._clock_check("kalshi", channel, recv_ts, last_recv)
+                        self._clock_check("kalshi", channel, recv_ts, last_recv, sidx)
                         frame = json.loads(raw)
                         typ = frame.get("type")
                         if typ in kalshi_ws.CONTROL_TYPES:
@@ -1281,7 +1302,7 @@ class Daemon:
                         # frame-level); a jump means missed messages, so
                         # log the gap and reconnect to re-seed books.
                         if tracker.observe(frame.get("sid"), frame.get("seq")):
-                            self._gap("kalshi", channel, last_recv, "seq_gap")
+                            self._gap("kalshi", channel, last_recv, "seq_gap", sidx)
                             raise ConnectionError("seq gap; reconnecting to re-seed")
                         self._store_frame(channel, shard, frame, recv_ts, raw)
                         if shard is not None and shard.awaiting:

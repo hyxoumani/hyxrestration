@@ -19,8 +19,10 @@ decision-time quote is never fillable; orders whose market never prints
 again are counted (`n_dropped_pending`), not filled. Δ=0 is exactly the
 legacy engine. Tier-2 feed: `bookreplay.load_stream_snapshots()` replays
 archived WS books into ms-fidelity snapshots (gap-honest: books unknown
-inside stream_gaps until re-seeded; snapshot images emit only complete —
-partial images are states that never existed). First real sweep
+inside stream_gaps until re-seeded, and since 2026-11-02 a gap row that
+names its books `shard` blanks only the books that connection archived —
+the sid prefix — while a shard-less row blanks all; snapshot images emit
+only complete — partial images are states that never existed). First real sweep
 (2026-07-07 stream, 313k snapshots/455 markets, tight-spread probe):
 1s latency ≈ +0.4¢/contract and ~1% orders unfillable; 30s ≈ +0.6¢.
 Latency sensitivity is now a standard verdict dimension.

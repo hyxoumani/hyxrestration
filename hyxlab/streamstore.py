@@ -102,7 +102,8 @@ CREATE TABLE IF NOT EXISTS stream_gaps (
     channel    VARCHAR NOT NULL,
     started_at TIMESTAMP NOT NULL,
     ended_at   TIMESTAMP NOT NULL,
-    reason     VARCHAR
+    reason     VARCHAR,
+    shard      INTEGER
 );
 CREATE TABLE IF NOT EXISTS stream_ticker (
     venue                VARCHAR NOT NULL,
@@ -180,6 +181,7 @@ _COLS = {
         ("started_at", "TIMESTAMP"),
         ("ended_at", "TIMESTAMP"),
         ("reason", "VARCHAR"),
+        ("shard", "INTEGER"),
     ),
     "stream_ticker": (
         ("venue", "VARCHAR"),
@@ -275,7 +277,7 @@ def _enc_trade(t: StreamTrade) -> str:
 
 
 def _enc_gap(g: tuple) -> str:
-    return json.dumps({"t": "g", "r": [g[0], g[1], _iso(g[2]), _iso(g[3]), g[4]]}) + "\n"
+    return json.dumps({"t": "g", "r": [g[0], g[1], _iso(g[2]), _iso(g[3]), g[4], g[5]]}) + "\n"
 
 
 def _row(obj) -> tuple:
@@ -491,6 +493,9 @@ class StreamStore:
         # Create schema up front so readers see the tables immediately.
         with duck_connect(str(self.path)) as conn:
             conn.execute(_SCHEMA)
+            # Archives created before 2026-11-02 carry no `shard` column;
+            # `CREATE TABLE IF NOT EXISTS` leaves an existing table alone.
+            conn.execute("ALTER TABLE stream_gaps ADD COLUMN IF NOT EXISTS shard INTEGER")
 
     # -- buffering --------------------------------------------------------
 
@@ -513,8 +518,17 @@ class StreamStore:
         started_at: datetime,
         ended_at: datetime,
         reason: str,
+        shard: int | None = None,
     ) -> None:
-        self._gaps.append((venue, channel, _naive_utc(started_at), _naive_utc(ended_at), reason))
+        """`shard` is the books connection the break was observed on (its
+        `Shard.idx`, the prefix every sid it archives carries, see
+        `SHARD_SID_STRIDE`); None means the whole channel -- daemon
+        downtime, a trades reconnect, and every row written before
+        2026-11-02, when one shard's reconnect wiped the other 13 shards'
+        replayed books until each of them happened to reconnect."""
+        self._gaps.append(
+            (venue, channel, _naive_utc(started_at), _naive_utc(ended_at), reason, shard)
+        )
 
     #: Rows per second the BUFFER fills at. Not a channel rate: `pending`
     #: counts events + trades + gaps, so every sizing below must use the
@@ -994,7 +1008,18 @@ class StreamStore:
                     elif rec["t"] == "l":
                         lifecycles.append(_dec_generic(StreamLifecycle, "stream_lifecycle", r))
                     else:
-                        gaps.append((r[0], r[1], _from_iso(r[2]), _from_iso(r[3]), r[4]))
+                        # Sidecar lines written before the `shard` column
+                        # carry five fields; they decode as channel-wide.
+                        gaps.append(
+                            (
+                                r[0],
+                                r[1],
+                                _from_iso(r[2]),
+                                _from_iso(r[3]),
+                                r[4],
+                                r[5] if len(r) > 5 else None,
+                            )
+                        )
                 except (ValueError, KeyError, TypeError, IndexError):
                     self.spill_corrupt += 1
                     continue

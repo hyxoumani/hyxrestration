@@ -456,6 +456,10 @@ def test_staged_csv_insert_matches_executemany_exactly(tmp_path):
             ("kalshi", "M", ts, None, 9, 1, "market_lifecycle_v2", "settled", None, "S")
             + (None, ts, None, ts, "\\N", float("nan"), True, '{"a":\n"b,\\"c"}'),
         ],
+        "stream_gaps": [
+            ("kalshi", "books", ts, ts, "reconnect", 3),
+            ("*", "*", ts, ts, "daemon_start", None),
+        ],
     }
     for table, data in rows.items():
         a, b = tmp_path / f"a-{table}.duckdb", tmp_path / f"b-{table}.duckdb"
