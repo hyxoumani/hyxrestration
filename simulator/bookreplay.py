@@ -56,10 +56,28 @@ class BookReplayer:
     def __init__(self) -> None:
         self._books: dict[str, _Book] = {}
 
-    def invalidate(self, market_id: str | None = None) -> None:
-        """Coverage broke: forget state until the next snapshot re-seeds."""
+    def invalidate(self, market_id: str | None = None, before: datetime | None = None) -> None:
+        """Coverage broke: forget state until the next snapshot re-seeds.
+
+        `before` is the gap's `started_at` -- the last archived event
+        before the break. A book whose image arrived AFTER it was built by
+        the reconnect that closed the gap and is post-gap state; wiping it
+        is not conservative, it is blindness. Measured 2026-11-02 on shadow
+        run 20261023T143153: the stream writes one `books` gap row PER
+        SHARD (14 of them over 15:07:37-15:08:22Z at the 10-29 restart, all
+        with the same `started_at`), the shadow reads them across several
+        20 s polls, and every poll's copy of the gap re-wiped the books the
+        previous poll's images had just re-seeded -- 16 h at 0-63
+        snapshots/h against a 5k-45k norm, 28 blind hours (12.3%) over the
+        run. A book with no image (`snap_ts` None) is wiped either way.
+        """
         targets = [market_id] if market_id else list(self._books)
         for m in targets:
+            b = self._books.get(m)
+            if b is None:
+                continue
+            if before is not None and b.snap_ts is not None and b.snap_ts > before:
+                continue  # re-seeded by the reconnect that closed this gap
             self._books.pop(m, None)
 
     def apply(self, e: BookEvent) -> Snapshot | None:
@@ -441,7 +459,9 @@ def replay_snapshots(
     """Events (recv_ts order) + gap intervals → top-of-book Snapshots.
 
     Any gap whose start falls before an event invalidates ALL book state
-    at that point (conservative: gap rows aren't per-market). Snapshot
+    built before that start (conservative: gap rows aren't per-market;
+    see `BookReplayer.invalidate` for why an image newer than the gap's
+    start survives it). Snapshot
     images emit once complete — when their (market, sid, seq) row group
     ends — never row-by-row.
 
@@ -463,7 +483,7 @@ def replay_snapshots(
                 if snap is not None:
                     yield snap
                 open_group = None
-            replayer.invalidate()
+            replayer.invalidate(before=gap_starts[gi])
             gi += 1
         group = (e.market_id, e.sid, e.seq) if e.kind == "snap" else None
         if open_group is not None and group != open_group:

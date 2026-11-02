@@ -64,7 +64,18 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      They are excluded from the diurnal profile and flagged `partial`.
   3. An hour with few equity points has an unreliable min and range.
      `pts` is reported per hour and hours under `MIN_PTS_PER_HOUR` are
-     excluded from the profile's range statistics.
+     excluded from the profile's range statistics. `pts` counts DISTINCT
+     timestamps, never rows: the shadow persists `equity_curve[-1]` on
+     EVERY poll (~180/h), and a poll that read no new event re-inserts
+     the previous point under its old `ts` -- so a quiet hour holds one
+     sample stamped HH:0x and ~175 copies of it. Measured 2026-11-02 on
+     run 20261023T143153: 11-01 05Z-08Z carried 174-380 rows and ONE
+     distinct ts each, and read as densely sampled (`sparse_hours 0`)
+     with a range of 0.0 computed from a single point. `rows` is
+     published beside `pts`; their difference is the number of polls
+     that found nothing, i.e. the daemon's liveness through a quiet
+     stretch, which the clock-hour holes beside it (10-30 10Z/12Z/13Z,
+     11-01 04Z/09Z, 10-29 18Z) cannot show on their own.
   4. Hour-of-day means need days to average. `n_days` is reported per
      hour, and a profile built from under `MIN_DAYS` days reads
      UNDERPOWERED -- this run has 2-3 days, so it IS underpowered and
@@ -550,7 +561,8 @@ def _r(x: float | None, n: int = 1) -> float | None:
 def _hours(conn: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
     """One row per clock hour of the run: level, spread, flow, drag."""
     eq = conn.execute(
-        """select date_trunc('hour', ts) as h, count(*) as pts,
+        """select date_trunc('hour', ts) as h,
+                  count(distinct ts) as pts, count(*) as rows,
                   last(equity order by ts) as e_end,
                   min(equity) as e_min, max(equity) as e_max
            from shadow_equity where run_id = ? group by 1 order by 1""",
@@ -577,7 +589,7 @@ def _hours(conn: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
     )
 
     rows = []
-    for i, (h, pts, e_end, e_min, e_max) in enumerate(eq):
+    for i, (h, pts, nrows, e_end, e_min, e_max) in enumerate(eq):
         n_fills, drag, strats = fills.get(h, (0, 0.0, []))
         rows.append(
             {
@@ -585,6 +597,7 @@ def _hours(conn: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
                 "hour_of_day": h.hour,
                 "day": f"{h:%Y-%m-%d}",
                 "pts": pts,
+                "rows": nrows,
                 "equity_end": _r(e_end),
                 "equity_min": _r(e_min),
                 "equity_max": _r(e_max),
@@ -2377,7 +2390,9 @@ def main(argv: list[str] | None = None) -> None:
         # stdout is the one machine-readable line `restart_decision.sh`
         # parses, so the hold reads out on stderr -- rendered, not dropped.
         print(
-            attach_wait_line(attach_wait_block(db=Path(args.ledger).name), prefix="[shadow_diurnal]"),
+            attach_wait_line(
+                attach_wait_block(db=Path(args.ledger).name), prefix="[shadow_diurnal]"
+            ),
             file=sys.stderr,
         )
         if "reason" in short:

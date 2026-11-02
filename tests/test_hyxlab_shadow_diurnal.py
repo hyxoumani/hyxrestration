@@ -2414,3 +2414,30 @@ def test_an_untied_control_subject_carries_no_tie_note():
     assert lvl["strongest_hour"]["tied_n"] == 1
     assert lvl["settlement_check"]["anchor_tied_n"] == 1
     assert "taken by clock order" not in lvl["settlement_verdict"]
+
+
+def test_pts_counts_distinct_samples_not_poll_reinserts():
+    """The shadow re-inserts `equity_curve[-1]` on every poll that read no
+    new event, under the OLD ts. A quiet hour then holds one sample and
+    ~175 copies of it; counted as rows it reads densely sampled with a
+    range of 0.0 from a single point (bound 3, measured 2026-11-02 on run
+    20261023T143153: 11-01 05Z-08Z, 174-380 rows, one distinct ts each).
+    `pts` is distinct timestamps; `rows` keeps the re-insert count."""
+    loud = [0.0, -100.0, 100.0, 0.0, 50.0, 80.0]
+    eq = [("R", 0, 0.0)]
+    eq += [("R", 60 + i, loud[i % len(loud)]) for i in range(59)]
+    # 02Z: ONE event at 02:00, then the same point re-inserted 200 times.
+    eq += [("R", 120, -10.0)] * 201
+    eq += [("R", 180, -10.0)]
+    run = _run(build_diurnal(_ledger(eq)))
+    by_hour = {h["hour"]: h for h in run["hours"]}
+    quiet = by_hour["2026-08-01 02Z"]
+    assert quiet["pts"] == 1
+    assert quiet["rows"] == 201
+    # 02Z joins the two one-point partial hours (00Z, 03Z) as sparse;
+    # counted as rows it did not (sparse_hours read 2 before the fix).
+    assert run["validity"]["sparse_hours"] == 3
+    # A one-point hour publishes no range statistic: 02Z is not the
+    # "quietest" hour, it is an unsampled one.
+    assert run["range_extremes"]["quietest_hour_of_day"] != 2
+    assert _hod(run, 2)["mean_range"] is None

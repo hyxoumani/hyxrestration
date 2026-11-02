@@ -188,3 +188,31 @@ def test_empty_snapshot_does_not_open_a_row_group_in_replay_snapshots():
     assert len(out) == 2
     assert out[0].yes_bid == 0.40
     assert (out[1].yes_bid, out[1].no_bid) == (None, None)
+
+
+def test_gap_does_not_wipe_an_image_newer_than_its_start():
+    """The stream writes one `books` gap row PER SHARD with a shared
+    `started_at`, and the shadow reads them across several polls. The
+    second poll's copy of the gap must not wipe the book the first poll's
+    reconnect image re-seeded (measured 2026-11-02: 28 blind hours on run
+    20261023T143153, see `BookReplayer.invalidate`)."""
+    r = BookReplayer()
+    gap_start = T0 + timedelta(seconds=5)
+    # Poll 1: shard A's gap row has closed; its reconnect image re-seeds.
+    poll1 = [
+        ev("snap", "yes", 0.40, 100, seq=1, ts_off=0),
+        ev("snap", "yes", 0.35, 20, seq=3, ts_off=20),  # reconnect image
+    ]
+    gap_a = (gap_start, T0 + timedelta(seconds=20))
+    assert [s.yes_bid for s in replay_snapshots(poll1, gaps=[gap_a], replayer=r)] == [0.40, 0.35]
+    # Poll 2: shard B's row for the SAME break closes later; the delta on
+    # the re-seeded book must still emit.
+    poll2 = [ev("delta", "yes", 0.35, -20, seq=4, ts_off=40)]
+    gap_b = (gap_start, T0 + timedelta(seconds=30))
+    snaps = list(replay_snapshots(poll2, gaps=[gap_b], replayer=r))
+    assert len(snaps) == 1 and snaps[0].yes_bid is None  # top consumed, book known
+    # A book whose image PREDATES the gap start is still wiped.
+    r2 = BookReplayer()
+    seed(r2)
+    r2.invalidate(before=T0 + timedelta(seconds=5))
+    assert r2.apply(ev("delta", "yes", 0.40, -100, seq=5)) is None
