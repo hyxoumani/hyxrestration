@@ -8,7 +8,15 @@ WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m simulator.shadow --latency 2 --poll 20
 Restart=always
 RestartSec=30
-MemoryMax=1G
+# 3G since 2026-11-02: the boot seed (every book event for the universe
+# since the last `books` gap -- 12.5h / 4.07M rows on the 20x archive, 14s)
+# was OOM-killed at 12s under 1G on the first restart since the 10-23
+# coverage expansion, with Restart=always re-running the same seed every
+# 30s (a #112-shaped loop). Measured on the bridged boot: cgroup peak ==
+# cap, anon 99 MB, file 2.1 GB -- the charge is the archive pages the seed
+# walks, and the kill lands when the sort's dirty spill pages cannot be
+# reclaimed in time. Steady state anon is ~165-175 MB.
+MemoryMax=3G
 # The cap's verdict is in the cgroup -- memory.events (max = reclaimed at the
 # cap, oom_kill = killed) -- and the cgroup is removed with the unit. The
 # journal's `memory peak` is total charge including page cache, == the cap
