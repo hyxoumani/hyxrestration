@@ -3811,6 +3811,48 @@ Format: what happened → root cause → error type → prevention tier
     had to be told twice -- first as a read-only OWNER site, then moved to
     `WRITE_ALLOWED` -- and the second registration is the honest one.
 
+153. **2026-11-02 02:15Z -- a "conservative" invalidation that cannot be
+    scoped is not conservative, it is blindness, and the instrument that
+    should have shown it counted the daemon's heartbeat as samples.**
+    Re-running `shadow_diurnal` on the 228h run `20261023T143153` (ladder
+    1) read `sparse_hours 0` while 11-01 05Z-08Z held ONE distinct
+    equity ts each under 174-380 rows: the shadow persists
+    `equity_curve[-1]` on EVERY poll, re-inserting the previous point
+    under its old `ts` when no event arrived, and `pts` counted rows
+    (#92's shape: the poll cadence wearing the sample count's name).
+    Counted honestly, 25 of 221 whole hours are sparse and five clock
+    hours are absent outright. The journal then showed the cause: the
+    shadow READ 140k-700k events/h through all of them and produced
+    0-128 snapshots/h against a 5k-45k norm -- 28 blind hours, 12.3% of
+    the run, every stretch opening on a stream GAP burst and closing on
+    the next reconnect burst. `stream_gaps` writes one `books` row PER
+    SHARD with a shared `started_at` (14 rows over 15:07:37-15:08:22Z at
+    the 10-29 restart); the shadow reads them across several 20s polls
+    and `replay_snapshots` called `replayer.invalidate()` -- every book
+    -- for each one, so each poll's copy of the gap wiped the books the
+    previous poll's reconnect images had just re-seeded, and only the
+    shards whose images landed in the LAST poll survived. Before the
+    10-23 20x expansion a burst fit one poll and this never bit. Fixed:
+    `invalidate(before=started_at)` keeps a book whose image postdates
+    the break (red-verified). NOT fixed, queued: a single shard's
+    reconnect (11-01 03:52Z, two rows) still wipes the other 13 shards'
+    books until THEIR shards reconnect (6h blind that night) -- the gap
+    row carries no shard, though the stream encodes it in `sid`
+    (`shard * 1_000_000 + 1`, 14 live values). Cost of the chase: one
+    ad-hoc `sid` census over 20 minutes of `book_events` was a full scan
+    and held `hyxstream.duckdb` 60.4s (streamd: 5 refused flushes,
+    318k rows pending, 0 spilled) -- an unindexed window on a 1.48B-row
+    table is a scan whatever the window says. And the promote that
+    shipped the fix OOM-killed the new run at boot in 12s under the 1G
+    cap (the seed walks every book event since the last `books` gap --
+    12.5h / 4.07M rows on this archive), with `Restart=always` set to
+    re-run the same seed every 30s (#112's shape); bridged with a
+    `--runtime MemoryMax=3G`, then pinned in the unit (anon 99 MB, file
+    2.1 GB at the seed). Classification: design (global invalidation
+    with per-market recovery), instrument (rows counted as samples),
+    ops (a scan priced as a window; a cap sized before the 20x archive
+    re-measured only when a restart finally reached it).
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
