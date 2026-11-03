@@ -704,6 +704,17 @@ def test_a_unit_with_no_done_line_renders_no_brackets(monkeypatch, capsys):
             {"segments": {"open": {"markets": 10, "wall_min": 2.0}}, "flush_min": None},
             " [open 10 mkts 2.0 min]",
         ),
+        # A class carries its per-market rate, the only term of its wall
+        # that moves when the UNIT slows rather than the enumeration grows;
+        # a class with no markets has no rate to print.
+        (
+            {"by_class": {"ladder": {"n": 2, "wall_s": 120.0, "markets": 400}}},
+            " [ladder 2 series/400 mkts 2.0 min (0.300 s/mkt)]",
+        ),
+        (
+            {"by_class": {"dense": {"n": 0, "wall_s": 0.0, "markets": 0}}},
+            " [dense 0 series/0 mkts 0.0 min]",
+        ),
     ],
 )
 def test_segments_clause_leaves_out_what_it_cannot_render(done, clause):
@@ -737,8 +748,9 @@ def test_the_kalshi_sweeps_dict_repr_done_line_is_read_too(monkeypatch, capsys):
     now = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
     (run,) = qa.read_batch_runs(now=now)["hyxlab-sweep.timer"]
     assert run.segments == (
-        " [ladder 33 series/64,175 mkts 495.5 min; dense 1 series/96 mkts 47.7 min; "
-        "small 3,997 series/4,418 mkts 153.6 min]"
+        " [ladder 33 series/64,175 mkts 495.5 min (0.463 s/mkt); "
+        "dense 1 series/96 mkts 47.7 min (29.819 s/mkt); "
+        "small 3,997 series/4,418 mkts 153.6 min (2.087 s/mkt)]"
     )
     failed, _ = _run(None, now=now)
     assert failed == {"batch units within measured run budget"}

@@ -4303,7 +4303,15 @@ def _segments_clause(done: dict) -> str:
             continue
         n, mk, wall = cls.get("n"), cls.get("markets"), cls.get("wall_s")
         if all(isinstance(v, int | float) for v in (n, mk, wall)):
-            parts.append(f"{name} {int(n):,} series/{int(mk):,} mkts {wall / 60:.1f} min")
+            # The wall of a class is its market count times a per-market
+            # rate, and only the RATE says whether the unit got slower: the
+            # Kalshi ladder ran 0.442-0.477 s/mkt across 14 done lines
+            # 10-20..11-03 while its wall swung 582-744 min with the
+            # enumeration (53,953-71,112 ladder markets). A breach at the
+            # band's rate is growth; a breach above it is the API or the
+            # host. A class with no markets has no rate.
+            rate = f" ({wall / mk:.3f} s/mkt)" if mk > 0 else ""
+            parts.append(f"{name} {int(n):,} series/{int(mk):,} mkts {wall / 60:.1f} min{rate}")
     return f" [{'; '.join(parts)}]" if parts else ""
 
 
