@@ -2460,16 +2460,17 @@ def _poly_archive_with_tail(tmp_path, tail_age_h: float):
 def test_a_sweep_that_archived_no_trades_reds_the_tail_check(tmp_path):
     """2026-11-03: every tail stopped on HTTP 410, 0 trades archived, the done
     line said `errors: 0` and `poly prices fresh` stayed green -- prices are
-    a different endpoint. One dead run reads >= 49h here."""
-    db = _poly_archive_with_tail(tmp_path, 49.0)
+    a different endpoint. One dead run reads ~25.5h here (measured 25.6h at
+    the 10:03Z QA, which the first 36h budget PASSED)."""
+    db = _poly_archive_with_tail(tmp_path, 25.5)
     failed = _run(None, tmp_path, archive=db)
-    assert "poly trade tail fresh (< 36h old)" in failed
+    assert "poly trade tail fresh (< 20h old)" in failed
     assert "poly prices fresh (< 30h old)" not in failed
 
 
 def test_a_tail_inside_the_daily_cadence_passes(tmp_path):
-    """A clean day's newest print lags QA by ~2h during the run and ~26h
-    before its open segment -- both inside the budget."""
-    db = _poly_archive_with_tail(tmp_path, 26.0)
+    """A clean day's newest print lags the 10:00Z QA by 1.5-6h: the open
+    segment is fetched first and flushed as it goes."""
+    db = _poly_archive_with_tail(tmp_path, 6.0)
     failed = _run(None, tmp_path, archive=db)
-    assert "poly trade tail fresh (< 36h old)" not in failed
+    assert "poly trade tail fresh (< 20h old)" not in failed

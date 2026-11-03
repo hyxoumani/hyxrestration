@@ -312,10 +312,13 @@ STANDING_SKIPS: frozenset[str] = frozenset({COLLECT_SKIP_SECTION})
 STREAM_STALL_LOG = "data/stream_stalls.jsonl"
 
 #: Hours the newest archived polymarket TAIL print may lag `now` before the
-#: daily sweep is read as not archiving trades. Clean readings at the 10:00Z
-#: QA are ~2h (during the run) to ~26h (before its open segment); one run
-#: that archived nothing reads >= 49h. See the check in `_price_checks`.
-POLY_TRADE_TAIL_FRESH_H = 36.0
+#: daily sweep is read as not archiving trades. The sweep starts 04:15Z and
+#: fetches the open segment first, flushing as it goes, so at the 10:00Z QA
+#: a clean day's newest print is 1.5-6h old; the run that archived nothing
+#: leaves YESTERDAY's newest print, ~25.5h old. 36h was the first value and
+#: PASSED the 2026-11-03 dead run at 25.6h -- a budget wider than one
+#: cadence reads a dead run a day late. See the check in `_price_checks`.
+POLY_TRADE_TAIL_FRESH_H = 20.0
 STREAM_UNIT = "hyxlab-stream.service"
 _STREAM_STALL_SECTION = "stream-stalls"
 # The threshold is NOT a number picked here: a spill means the daemon's own
@@ -2437,10 +2440,10 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
         # The newest archived print on a clean day lags the run's start by a
         # few hours (the open segment is fetched first and flushed as it
         # goes: 11-02's run started 04:15Z and its newest print is 08:31Z),
-        # so a healthy reading at the 10:00Z QA is ~2h during the run and
-        # ~26h if the sweep has not reached the open segment yet; one dead
-        # run reads >= 49h. The stream's poly trades are a different table
-        # (`stream_trades`), so this is the sweep's tail alone.
+        # so a healthy reading at the 10:00Z QA is 1.5-6h; one dead run
+        # reads ~25.5h (measured 2026-11-03 10:03Z: 25.6h, and the first
+        # 36h budget PASSED it). The stream's poly trades are a different
+        # table (`stream_trades`), so this is the sweep's tail alone.
         n_poly_trades = conn.execute(
             "SELECT count(*) FROM trades WHERE venue='polymarket'"
         ).fetchone()[0]
@@ -2449,7 +2452,7 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
                 "SELECT epoch(? - max(ts)) / 3600 FROM trades WHERE venue='polymarket'", [now]
             ).fetchone()[0]
             check(
-                "poly trade tail fresh (< 36h old)",
+                "poly trade tail fresh (< 20h old)",
                 age < POLY_TRADE_TAIL_FRESH_H,
                 f"age {age:.1f}h, budget {POLY_TRADE_TAIL_FRESH_H}h",
             )
