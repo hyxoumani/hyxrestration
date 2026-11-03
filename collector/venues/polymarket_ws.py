@@ -61,6 +61,32 @@ def subscribe_market(asset_ids: list[str]) -> str:
     return json.dumps({"type": "market", "assets_ids": sorted(asset_ids)})
 
 
+#: The venue's bare-text answer to a dynamic re-subscribe whose assets are
+#: ALL already held on this socket. PROBED ON THE LIVE WIRE 2026-11-03
+#: (EXP-2007, one public socket): re-subscribing a held asset -> "NO NEW
+#: ASSETS"; the same after an `unsubscribe` of one of them -> a fresh `book`
+#: for the dropped asset and no text; an asset id the venue does not know is
+#: still remembered (`[]` on first subscribe, "NO NEW ASSETS" after) -- and the
+#: staging run found the same `[]` for re-added assets of RESOLVED markets, which
+#: have no book; a
+#: repeated `{"type": "market"}` -> "INVALID OPERATION"; `unsubscribe` sends
+#: no reply. So the re-subscribe is a SUBSCRIPTION-level liveness probe that
+#: costs no data row when the answer is "intact", and repairs the
+#: subscription when it is not.
+PROBE_HELD_REPLY = "NO NEW ASSETS"
+
+
+def probe_subscription(asset_ids: list[str]) -> str:
+    """The subscription probe: a dynamic subscribe of the held set."""
+    return json.dumps({"operation": "subscribe", "assets_ids": sorted(asset_ids)})
+
+
+def unsubscribe_assets(asset_ids: list[str]) -> str:
+    """Dynamic unsubscribe (staging fault injection only; the daemon never
+    sends it)."""
+    return json.dumps({"operation": "unsubscribe", "assets_ids": sorted(asset_ids)})
+
+
 def _src_ts(obj: dict[str, Any]) -> datetime | None:
     v = obj.get("timestamp")
     if not v:

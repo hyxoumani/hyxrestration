@@ -653,6 +653,8 @@ def test_streamstore_flush_roundtrip(tmp_path):
         "stream_gaps": 0,
         "stream_ticker": 0,
         "stream_lifecycle": 0,
+        "stream_heartbeats": 0,
+        "stream_subscriptions": 0,
     }
 
 
@@ -709,6 +711,8 @@ def test_flush_failure_preserves_buffer(tmp_path, monkeypatch):
         "stream_gaps": 1,
         "stream_ticker": 0,
         "stream_lifecycle": 0,
+        "stream_heartbeats": 0,
+        "stream_subscriptions": 0,
     }
 
 
@@ -815,6 +819,8 @@ def test_spill_roundtrip_covers_events_trades_and_gaps(tmp_path, monkeypatch):
         "stream_gaps": 1,
         "stream_ticker": 0,
         "stream_lifecycle": 0,
+        "stream_heartbeats": 0,
+        "stream_subscriptions": 0,
     }
 
 

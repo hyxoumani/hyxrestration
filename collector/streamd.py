@@ -57,6 +57,7 @@ from pathlib import Path
 import websockets
 
 from collector.bookcov import SHARD_MAX, BookCoverage, Shard
+from collector.heartbeat import ConnBeat, HeartbeatBook
 from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.rawframes import RawFrameWriter
 from collector.venues import kalshi, kalshi_ws, polymarket_ws
@@ -123,6 +124,14 @@ PROBE_WAIT_S = 60.0
 # keep them regardless.
 MVE_PREFIX = "KXMVE"
 POLY_PING_SECS = 10.0
+# Polymarket subscription probe (EXP-2007, see collector.heartbeat): a
+# connection with no data frame and no probe answer for this long sends a
+# dynamic re-subscribe of its held set; the venue answers "NO NEW ASSETS"
+# (intact) or re-sends books for assets it had dropped. 30 s means every
+# fully silent minute carries at least one answered probe, and a busy
+# connection never sends one. The answer is expected inside the wait below.
+POLY_PROBE_QUIET_S = 30.0
+POLY_PROBE_WAIT_S = 10.0
 POLY_TOP_MARKETS = 50  # busiest books streamed even without verified pairs
 BACKOFF_MAX = 60.0
 # Reconnect a Kalshi channel that goes silent this long. Both channels
@@ -799,6 +808,27 @@ class FlushStalls:
         self.retry_s = None
 
 
+def _ticker_detail(tickers: set[str], keep: int = 20) -> str:
+    """A bounded ticker list for a subscription-log row."""
+    head = sorted(tickers)[:keep]
+    more = len(tickers) - len(head)
+    return ",".join(head) + (f",+{more}" if more else "")
+
+
+def _disconnect_reason(exc: BaseException) -> str:
+    """The subscription log's reason vocabulary for a dropped connection.
+    The daemon raises its own ConnectionErrors with fixed texts for the two
+    decisions it makes; everything else is the exception class."""
+    msg = str(exc)
+    if "dead air" in msg:
+        return "dead_air"
+    if "seq gap" in msg:
+        return "seq_gap"
+    if "market limit" in msg:
+        return "market_limit"
+    return type(exc).__name__
+
+
 def _short_err(exc: BaseException) -> str:
     """First line of the exception, bounded. DuckDB's lock error is a
     paragraph with a URL in it; the ledger needs the class and the holder,
@@ -827,6 +857,17 @@ class Daemon:
         self.sock_throttle = SockThrottleWatch()
         self._spill_corrupt_seen = 0
         self.stalls = FlushStalls()
+        # Per-connection minute heartbeats + subscription log (EXP-2007).
+        self._hb = HeartbeatBook(store)
+
+    @property
+    def hb(self) -> HeartbeatBook:
+        """Built on first use when `__init__` did not run (tests assemble a
+        Daemon with `__new__` and only the attributes they exercise)."""
+        hb = self.__dict__.get("_hb")
+        if hb is None:
+            hb = self._hb = HeartbeatBook(self.store)
+        return hb
 
     def _count(self, key: str, n: int) -> None:
         self.stats[key] = self.stats.get(key, 0) + n
@@ -1030,6 +1071,10 @@ class Daemon:
             for sh in emptied:
                 # Deliberate close, not a failure: no gap row. Nothing it
                 # carried is wanted any more.
+                b = self.hb.beat("kalshi", "books", sh.label, sh.idx)
+                b.n_markets = 0
+                self.hb.sub(b, "closed", "emptied")
+                self.hb.retire(b)
                 task = self._book_tasks.pop(sh.idx, None)
                 if task is not None:
                     task.cancel()
@@ -1070,13 +1115,18 @@ class Daemon:
             except Exception as exc:  # the recv side fails too and reconnects
                 _log(f"kalshi-{sh.label}: {action} send failed ({_short_err(exc)})")
                 return
+            b = self.hb.beat("kalshi", "books", sh.label, sh.idx)
             if action == "add_markets":
                 sh.subscribed |= tickers
+                b.n_markets = len(sh.subscribed)
+                self.hb.sub(b, "update_add", None, _ticker_detail(tickers))
                 due = mono() + SNAPSHOT_WAIT_S
                 sh.awaiting.update(dict.fromkeys(tickers, due))
                 self._count("books_added", len(tickers))
             else:
                 sh.subscribed -= tickers
+                b.n_markets = len(sh.subscribed)
+                self.hb.sub(b, "update_delete", None, _ticker_detail(tickers))
                 for t in tickers:
                     sh.awaiting.pop(t, None)
                 self._count("books_removed", len(tickers))
@@ -1188,6 +1238,7 @@ class Daemon:
         label = shard.label if shard is not None else channel
         dead_air = DEAD_AIR_BY_CHANNEL.get(channel, DEAD_AIR_SECS)
         backoff, last_recv, first = 1.0, None, True
+        beat = self.hb.beat("kalshi", channel, label, shard.idx if shard is not None else None)
         # Bound for the first connection's seq_reset row: in-process
         # `last_recv` does not survive a restart (S-188 class 3), so read
         # the channel's last PERSISTED recv_ts once, up front — never in
@@ -1218,6 +1269,10 @@ class Daemon:
                         shard.pending.clear()
                         shard.awaiting.clear()
                     await ws.send(make_subscribe())
+                    beat.up(_time.time())
+                    beat.sid = None
+                    beat.n_markets = len(shard.assigned) if shard is not None else None
+                    self.hb.sub(beat, "connect", None if first else "reconnect")
                     if not first:
                         self._gap("kalshi", channel, last_recv, "reconnect", sidx)
                         if channel == "lifecycle":
@@ -1259,6 +1314,7 @@ class Daemon:
                                     )
                                 probe_due = now + PROBE_WAIT_S
                                 self._count("books_probes", 1)
+                                beat.probe_sent(_time.time())
                                 continue
                             if silent and (probe_due is None or now >= probe_due):
                                 self._gap("kalshi", channel, last_recv, "dead_air")
@@ -1266,6 +1322,8 @@ class Daemon:
                                     f"no frames for {dead_air:.0f}s (dead air)"
                                 ) from None
                             continue
+                        if probe_due is not None:
+                            beat.probe_ok(_time.time())  # any frame answers the probe
                         last_frame, probe_due = mono(), None
                         recv_ts = datetime.now(UTC)
                         if self.raw is not None:
@@ -1290,8 +1348,21 @@ class Daemon:
                         frame = json.loads(raw)
                         typ = frame.get("type")
                         if typ in kalshi_ws.CONTROL_TYPES:
+                            beat.control()
                             await self._on_control(channel, shard, frame)
                             sid, seq = frame.get("sid"), frame.get("seq")
+                            if typ == "subscribed":
+                                # The ARCHIVED sid: a books shard's wire sid plus its
+                                # stride, as book_events stores it, so a heartbeat joins.
+                                wire = kalshi_ws.control_info(frame)[2]
+                                beat.sid = (
+                                    wire + shard.idx * SHARD_SID_STRIDE
+                                    if wire is not None and shard is not None and shard.idx
+                                    else wire
+                                )
+                                self.hb.sub(beat, "subscribed")
+                            elif typ == "error":
+                                self.hb.sub(beat, "error", None, json.dumps(frame.get("msg")))
                             if typ == "ok" and seq is not None and tracker.last(sid) == seq:
                                 # An update ack that REPEATS the sid's current
                                 # seq consumed none: not a gap, not a row.
@@ -1304,7 +1375,11 @@ class Daemon:
                         if tracker.observe(frame.get("sid"), frame.get("seq")):
                             self._gap("kalshi", channel, last_recv, "seq_gap", sidx)
                             raise ConnectionError("seq gap; reconnecting to re-seed")
+                        if frame.get("seq") is not None:
+                            beat.last_seq = frame["seq"]  # update acks consume a seq too
                         self._store_frame(channel, shard, frame, recv_ts, raw)
+                        if typ not in kalshi_ws.CONTROL_TYPES:
+                            beat.frame(recv_ts, _time.time())
                         if shard is not None and shard.awaiting:
                             await self._request_snapshots(shard, mono())
                         last_recv = recv_ts
@@ -1313,9 +1388,13 @@ class Daemon:
             except Exception as exc:
                 note = _venue_clock_note(exc, datetime.now(UTC))
                 _log(f"kalshi-{label}: {type(exc).__name__}: {exc}{note}; retry in {backoff:.0f}s")
+                if beat.up_since is not None:
+                    self.hb.down(beat)
+                    self.hb.sub(beat, "disconnect", _disconnect_reason(exc), _short_err(exc))
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
             finally:
+                self.hb.down(beat)
                 if shard is not None:
                     shard.ws, shard.sid = None, None
 
@@ -1346,10 +1425,14 @@ class Daemon:
         )
         _log(f"poly-books: {len(assets)} tokens (top {POLY_TOP_MARKETS} by volume + pairs)")
         backoff, last_recv, first = 1.0, None, True
+        beat = self.hb.beat("polymarket", "market", "poly-books")
         while True:
             try:
                 async with websockets.connect(polymarket_ws.WS_URL, max_size=2**23) as ws:
                     await ws.send(polymarket_ws.subscribe_market(assets))
+                    beat.up(_time.time())
+                    beat.n_markets = len(assets)
+                    self.hb.sub(beat, "connect", None if first else "reconnect")
                     if not first:
                         self._gap("polymarket", "market", last_recv, "reconnect")
                     first, backoff = False, 1.0
@@ -1360,6 +1443,7 @@ class Daemon:
                             raw = await asyncio.wait_for(ws.recv(), timeout=POLY_PING_SECS)
                         except TimeoutError:
                             await ws.send("PING")  # idle keepalive
+                            await self._poly_probe(ws, beat, assets)
                             if asyncio.get_event_loop().time() >= next_refresh:
                                 next_refresh = asyncio.get_event_loop().time() + TICKER_REFRESH_SECS
                                 new = await asyncio.to_thread(self._poly_token_set)
@@ -1368,12 +1452,37 @@ class Daemon:
                                         f"poly-books: token set {len(assets)} -> {len(new)};"
                                         " reconnecting"
                                     )
+                                    self.hb.sub(
+                                        beat, "token_set", "refresh", f"{len(assets)}->{len(new)}"
+                                    )
+                                    self.hb.down(beat)
                                     assets = new
                                     break  # reconnect re-seeds via fresh books
                             continue
                         recv_ts = datetime.now(UTC)
+                        if isinstance(raw, str) and raw.strip() == polymarket_ws.PROBE_HELD_REPLY:
+                            # The subscription probe's "intact" answer. Not
+                            # data, and not JSON: before the probe existed the
+                            # venue never sent it, so it never reached the parser.
+                            beat.probe_ok(_time.time())
+                            beat.control()
+                            continue
+                        if isinstance(raw, str) and raw.strip() in polymarket_ws.KEEPALIVE_REPLIES:
+                            beat.keepalive()
                         self._clock_check("polymarket", "market", recv_ts, last_recv)
                         events, trades = polymarket_ws.parse_message(raw, recv_ts)
+                        if beat.probe_at is not None and (
+                            any(e.kind == "snap" for e in events)
+                            or (isinstance(raw, str) and raw.strip() == "[]")
+                        ):
+                            # The venue answered the probe by (re-)adding
+                            # assets: a `book` each, or `[]` when the added
+                            # assets have no book (resolved markets; staging
+                            # 2026-11-03). Either way they were NOT held.
+                            beat.probe_books += 1
+                        if events or trades:
+                            beat.frame(recv_ts, _time.time())
+                            await self._poly_probe(ws, beat, assets)
                         if events:
                             self.store.append_events(events)
                             self._count("poly_events", len(events))
@@ -1395,8 +1504,32 @@ class Daemon:
                 raise
             except Exception as exc:
                 _log(f"poly-books: {type(exc).__name__}: {exc}; retry in {backoff:.0f}s")
+                if beat.up_since is not None:
+                    self.hb.down(beat)
+                    self.hb.sub(beat, "disconnect", _disconnect_reason(exc), _short_err(exc))
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
+            finally:
+                self.hb.down(beat)
+
+    async def _poly_probe(self, ws, beat: ConnBeat, assets: list[str]) -> None:
+        """Resolve an expired subscription probe, then send a new one if the
+        connection has shown no life for POLY_PROBE_QUIET_S (EXP-2007). A
+        dropped answer means the venue had lost assets and the probe itself
+        re-added them (its books are archived as the re-seed they are); an
+        unanswered probe is recorded, not acted on -- reconnecting on it
+        would be a new dead-air policy, which is not this change."""
+        if not self.hb.enabled:
+            return
+        now = _time.time()
+        outcome = beat.probe_expired(now, POLY_PROBE_WAIT_S)
+        if outcome is not None:
+            self._count(f"poly_probe_{outcome}", 1)
+            self.hb.sub(beat, f"probe_{outcome}", "probe")
+        if beat.probe_at is None and now - beat.last_evidence >= POLY_PROBE_QUIET_S:
+            await ws.send(polymarket_ws.probe_subscription(assets))
+            beat.probe_sent(now)
+            self._count("poly_probes", 1)
 
     # -- persistence -------------------------------------------------------
 
@@ -1476,6 +1609,13 @@ class Daemon:
                         " a cost -- check the next GAP lines and the stall ledger)"
                     )
                 last_stats = now
+
+    async def heartbeat(self) -> None:
+        """Close each UTC minute for every connection (collector.heartbeat).
+        Only buffers rows; the flusher writes them with everything else."""
+        while True:
+            await asyncio.sleep(self.hb.secs_to_next_roll() + 0.05)
+            self.hb.roll()
 
     def _install_stop(self) -> asyncio.Task | None:
         """Make SIGTERM reach the shutdown drain instead of killing the
@@ -1703,6 +1843,7 @@ class Daemon:
             asyncio.create_task(self.kalshi_ticker(), name="kalshi-ticker"),
             asyncio.create_task(self.poly_books(), name="poly-books"),
             asyncio.create_task(self.flusher(), name="flusher"),
+            asyncio.create_task(self.heartbeat(), name="heartbeat"),
         ]
         stop = self._install_stop()
         running = asyncio.gather(*tasks)
@@ -1733,6 +1874,9 @@ class Daemon:
             if running.done():
                 with contextlib.suppress(asyncio.CancelledError):
                     running.exception()
+            # The stop minute's rows read connected_s < 60 -> alive FALSE:
+            # the daemon is going down, which is exactly what they should say.
+            self.hb.roll_partial()
             self._final_drain()
             _log(stats_line("shutdown; ", self.stats, None, None))
 

@@ -54,6 +54,17 @@ over convenience — replay logic interprets):
   `event_lifecycle` and `event_fee_update` -- with the parsed fields AND the
   frame's raw JSON, so a field this schema does not name is still on disk.
   `market_id` is the market ticker, or the EVENT ticker for event-level types.
+- stream_heartbeats (EXP-2007): one row per daemon CONNECTION per UTC minute,
+  written whether or not a frame arrived -- seconds connected, frames,
+  control frames, keepalives, subscription probes, last sid/seq, and a
+  tri-state `alive` (TRUE = subscription evidenced, FALSE = disconnected or a
+  probe found it dead, NULL = socket up and nothing more known). A minute with
+  NO heartbeat row for a connection the daemon owned (process down, archive
+  older than the table) is UNKNOWN, never quiet. See `StreamHeartbeat` and
+  `collector.heartbeat`.
+- stream_subscriptions (EXP-2007): one row per subscription-state change
+  (connect, subscribed, disconnect + reason, update_add/update_delete,
+  closed, token_set, probe_dropped, probe_unanswered).
 """
 
 from __future__ import annotations
@@ -143,6 +154,39 @@ CREATE TABLE IF NOT EXISTS stream_lifecycle (
     is_deactivated   BOOLEAN,
     raw              VARCHAR NOT NULL
 );
+CREATE TABLE IF NOT EXISTS stream_heartbeats (
+    venue           VARCHAR NOT NULL,
+    channel         VARCHAR NOT NULL,
+    conn            VARCHAR NOT NULL,
+    shard           INTEGER,
+    minute          TIMESTAMP NOT NULL,
+    emitted_ts      TIMESTAMP NOT NULL,
+    connected_s     DOUBLE NOT NULL,
+    alive           BOOLEAN,
+    evidence        VARCHAR NOT NULL,
+    sid             BIGINT,
+    last_seq        BIGINT,
+    frames          INTEGER NOT NULL,
+    control_frames  INTEGER NOT NULL,
+    keepalives      INTEGER NOT NULL,
+    probes_sent     INTEGER NOT NULL,
+    probes_ok       INTEGER NOT NULL,
+    probes_dropped  INTEGER NOT NULL,
+    n_markets       INTEGER,
+    last_frame_ts   TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS stream_subscriptions (
+    venue      VARCHAR NOT NULL,
+    channel    VARCHAR NOT NULL,
+    conn       VARCHAR NOT NULL,
+    shard      INTEGER,
+    ts         TIMESTAMP NOT NULL,
+    action     VARCHAR NOT NULL,
+    reason     VARCHAR,
+    sid        BIGINT,
+    n_markets  INTEGER,
+    detail     VARCHAR
+);
 """
 
 #: Added to a kalshi books shard's wire sid before it is stored (see the
@@ -220,6 +264,44 @@ _COLS = {
         ("settlement_value", "DOUBLE"),
         ("is_deactivated", "BOOLEAN"),
         ("raw", "VARCHAR"),
+    ),
+    # EXP-2007. `conn` is column 2 in BOTH tables ON PURPOSE: a daemon from
+    # before these tables (a rollback) decodes an unknown sidecar tag as a gap
+    # row and parses column 2 as an ISO timestamp -- a connection label fails
+    # that parse, so the old decoder SKIPS the record (counted in
+    # `spill_corrupt`, loud) instead of inserting a heartbeat as a gap.
+    "stream_heartbeats": (
+        ("venue", "VARCHAR"),
+        ("channel", "VARCHAR"),
+        ("conn", "VARCHAR"),
+        ("shard", "INTEGER"),
+        ("minute", "TIMESTAMP"),
+        ("emitted_ts", "TIMESTAMP"),
+        ("connected_s", "DOUBLE"),
+        ("alive", "BOOLEAN"),
+        ("evidence", "VARCHAR"),
+        ("sid", "BIGINT"),
+        ("last_seq", "BIGINT"),
+        ("frames", "INTEGER"),
+        ("control_frames", "INTEGER"),
+        ("keepalives", "INTEGER"),
+        ("probes_sent", "INTEGER"),
+        ("probes_ok", "INTEGER"),
+        ("probes_dropped", "INTEGER"),
+        ("n_markets", "INTEGER"),
+        ("last_frame_ts", "TIMESTAMP"),
+    ),
+    "stream_subscriptions": (
+        ("venue", "VARCHAR"),
+        ("channel", "VARCHAR"),
+        ("conn", "VARCHAR"),
+        ("shard", "INTEGER"),
+        ("ts", "TIMESTAMP"),
+        ("action", "VARCHAR"),
+        ("reason", "VARCHAR"),
+        ("sid", "BIGINT"),
+        ("n_markets", "INTEGER"),
+        ("detail", "VARCHAR"),
     ),
 }
 
@@ -356,6 +438,14 @@ def _enc_lifecycle(lc: StreamLifecycle) -> str:
     return _enc_generic("l", "stream_lifecycle", lc)
 
 
+def _enc_heartbeat(h: StreamHeartbeat) -> str:
+    return _enc_generic("h", "stream_heartbeats", h)
+
+
+def _enc_subevent(e: StreamSubEvent) -> str:
+    return _enc_generic("s", "stream_subscriptions", e)
+
+
 @dataclass
 class BookEvent:
     venue: str
@@ -430,6 +520,66 @@ class StreamLifecycle:
     raw: str
 
 
+@dataclass
+class StreamHeartbeat:
+    """One connection's minute (EXP-2007): written for every connection the
+    daemon owns, every UTC minute, WHETHER OR NOT a frame arrived -- the row
+    is what turns a zero-frame minute from "quiet or dead?" into evidence.
+    Field order is `_COLS['stream_heartbeats']`.
+
+    `alive` is tri-state, and NULL is not a soft TRUE:
+    - TRUE  -- connected the whole minute AND the SUBSCRIPTION showed life:
+      a data frame (`evidence='frames'`) or a subscription probe the venue
+      answered with "still subscribed" (`evidence='probe'`).
+    - FALSE -- not connected for part of the minute (`evidence='disconnected'`),
+      or a probe found the subscription gone (`'probe_dropped'`) or went
+      unanswered (`'probe_unanswered'`).
+    - NULL  -- connected, no frame, no probe answer (`'transport'`): the socket
+      was up, nothing says whether the subscription was. A silent Kalshi
+      firehose minute is this (no subscription probe exists there yet).
+    `minute` and `emitted_ts` are HOST-clock (the recv_ts clock)."""
+
+    venue: str
+    channel: str
+    conn: str
+    shard: int | None
+    minute: datetime
+    emitted_ts: datetime
+    connected_s: float
+    alive: bool | None
+    evidence: str
+    sid: int | None
+    last_seq: int | None
+    frames: int
+    control_frames: int
+    keepalives: int
+    probes_sent: int
+    probes_ok: int
+    probes_dropped: int
+    n_markets: int | None
+    last_frame_ts: datetime | None
+
+
+@dataclass
+class StreamSubEvent:
+    """One subscription-state change on one connection (EXP-2007): connect,
+    subscribed (venue ack), disconnect, update_add, update_delete, closed,
+    probe_dropped, token_set. `reason` says why (e.g. 'dead_air', 'seq_gap',
+    'token_set', the exception class). Field order is
+    `_COLS['stream_subscriptions']`."""
+
+    venue: str
+    channel: str
+    conn: str
+    shard: int | None
+    ts: datetime
+    action: str
+    reason: str | None
+    sid: int | None
+    n_markets: int | None
+    detail: str | None
+
+
 @dataclass(frozen=True)
 class FlushOutcome:
     """What one `StreamStore.flush_outcome` did.
@@ -462,6 +612,8 @@ class StreamStore:
         self._gaps: list[tuple] = []
         self._tickers: list[StreamTicker] = []
         self._lifecycles: list[StreamLifecycle] = []
+        self._heartbeats: list[StreamHeartbeat] = []
+        self._subevents: list[StreamSubEvent] = []
         # Rows moved to the sidecar by _spill_overflow since the last good
         # flush — observability only (`pending` plateaus at SPILL_CAP during
         # a wedge). Approximate across restarts: starts at 0 even if a
@@ -510,6 +662,12 @@ class StreamStore:
 
     def append_lifecycles(self, rows: list[StreamLifecycle]) -> None:
         self._lifecycles.extend(rows)
+
+    def append_heartbeats(self, rows: list[StreamHeartbeat]) -> None:
+        self._heartbeats.extend(rows)
+
+    def append_subevents(self, rows: list[StreamSubEvent]) -> None:
+        self._subevents.extend(rows)
 
     def append_gap(
         self,
@@ -635,6 +793,8 @@ class StreamStore:
             + len(self._gaps)
             + len(self._tickers)
             + len(self._lifecycles)
+            + len(self._heartbeats)
+            + len(self._subevents)
         )
 
     def _buffers(self) -> tuple[tuple[list, Callable[[object], str]], ...]:
@@ -647,6 +807,8 @@ class StreamStore:
             (self._gaps, _enc_gap),
             (self._tickers, _enc_ticker),
             (self._lifecycles, _enc_lifecycle),
+            (self._heartbeats, _enc_heartbeat),
+            (self._subevents, _enc_subevent),
         )
 
     @contextlib.contextmanager
@@ -728,13 +890,11 @@ class StreamStore:
         leaves the committed chunks committed and the rest for next time."""
         offset, drained = self._spill_done(), 0
         while True:
-            events, trades, gaps, tickers, lifecycles, end = self._read_spill(
-                offset, self.DRAIN_CHUNK_ROWS
-            )
+            *tables, end = self._read_spill(offset, self.DRAIN_CHUNK_ROWS)
             if end == offset:
                 return drained
-            self._insert(conn, events, trades, gaps, tickers, lifecycles)
-            drained += len(events) + len(trades) + len(gaps) + len(tickers) + len(lifecycles)
+            self._insert(conn, *tables)
+            drained += sum(len(rows) for rows in tables)
             offset = end
             self._mark_spill_done(offset)
 
@@ -777,6 +937,8 @@ class StreamStore:
             gaps, self._gaps = self._gaps, []
             tickers, self._tickers = self._tickers, []
             lifecycles, self._lifecycles = self._lifecycles, []
+            heartbeats, self._heartbeats = self._heartbeats, []
+            subevents, self._subevents = self._subevents, []
             try:
                 with duck_connect(str(self.path)) as conn:
                     # Parse the sidecar only once the write lock is held: in
@@ -785,13 +947,17 @@ class StreamStore:
                     # drains in its own chunked transactions, ahead of the
                     # buffer -- recv order kept, memory bounded by a chunk.
                     n += self._drain_spill(conn)
-                    self._insert(conn, events, trades, gaps, tickers, lifecycles)
+                    self._insert(
+                        conn, events, trades, gaps, tickers, lifecycles, heartbeats, subevents
+                    )
             except BaseException:
                 self._events[:0] = events
                 self._trades[:0] = trades
                 self._gaps[:0] = gaps
                 self._tickers[:0] = tickers
                 self._lifecycles[:0] = lifecycles
+                self._heartbeats[:0] = heartbeats
+                self._subevents[:0] = subevents
                 self._spill_overflow()
                 raise
             self._spill_done_path.unlink(missing_ok=True)
@@ -949,6 +1115,8 @@ class StreamStore:
         list[tuple],
         list[StreamTicker],
         list[StreamLifecycle],
+        list[StreamHeartbeat],
+        list[StreamSubEvent],
         int,
     ]:
         """Decode up to `limit` sidecar records from byte `start`, skipping
@@ -966,8 +1134,10 @@ class StreamStore:
         gaps: list[tuple] = []
         tickers: list[StreamTicker] = []
         lifecycles: list[StreamLifecycle] = []
+        heartbeats: list[StreamHeartbeat] = []
+        subevents: list[StreamSubEvent] = []
         if not self._spill_path.exists():
-            return events, trades, gaps, tickers, lifecycles, start
+            return events, trades, gaps, tickers, lifecycles, heartbeats, subevents, start
         offset, taken = start, 0
         with self._spill_path.open("rb") as f:
             f.seek(start)
@@ -1007,6 +1177,10 @@ class StreamStore:
                         tickers.append(_dec_generic(StreamTicker, "stream_ticker", r))
                     elif rec["t"] == "l":
                         lifecycles.append(_dec_generic(StreamLifecycle, "stream_lifecycle", r))
+                    elif rec["t"] == "h":
+                        heartbeats.append(_dec_generic(StreamHeartbeat, "stream_heartbeats", r))
+                    elif rec["t"] == "s":
+                        subevents.append(_dec_generic(StreamSubEvent, "stream_subscriptions", r))
                     else:
                         # Sidecar lines written before the `shard` column
                         # carry five fields; they decode as channel-wide.
@@ -1023,7 +1197,7 @@ class StreamStore:
                 except (ValueError, KeyError, TypeError, IndexError):
                     self.spill_corrupt += 1
                     continue
-        return events, trades, gaps, tickers, lifecycles, offset
+        return events, trades, gaps, tickers, lifecycles, heartbeats, subevents, offset
 
     def _insert(
         self,
@@ -1033,8 +1207,10 @@ class StreamStore:
         gaps: list[tuple],
         tickers: list[StreamTicker] = (),  # type: ignore[assignment]
         lifecycles: list[StreamLifecycle] = (),  # type: ignore[assignment]
+        heartbeats: list[StreamHeartbeat] = (),  # type: ignore[assignment]
+        subevents: list[StreamSubEvent] = (),  # type: ignore[assignment]
     ) -> None:
-        """All five tables in ONE transaction, each as one staged-CSV scan.
+        """All seven tables in ONE transaction, each as one staged-CSV scan.
 
         Until 2026-10-20 this was `executemany`, which DuckDB runs as one
         prepared INSERT per row: 7,100 rows/s end to end on this box
@@ -1084,7 +1260,12 @@ class StreamStore:
             tmp,
         )
         _insert_frame(conn, "stream_gaps", gaps, tmp)
-        for table, rows in (("stream_ticker", tickers), ("stream_lifecycle", lifecycles)):
+        for table, rows in (
+            ("stream_ticker", tickers),
+            ("stream_lifecycle", lifecycles),
+            ("stream_heartbeats", heartbeats),
+            ("stream_subscriptions", subevents),
+        ):
             ts = _ts_cols(table)
             _insert_frame(
                 conn,
