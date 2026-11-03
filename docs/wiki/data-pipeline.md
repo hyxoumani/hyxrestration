@@ -1673,3 +1673,20 @@ ingestion behind a `FeatureView` as-of API.
   pinned just above its floor. Never compare a maturing count across
   ages; use `poly_market_stats`, which is stamped once per run and does
   not mature.
+
+## Polymarket trade tail: Data API v2 (2026-11-03)
+
+Polymarket retired Data API v1 on 2026-11-03 (HTTP 410 on every
+`/trades` request). `collector.venues.polymarket.trades_tail` now
+speaks v2: `GET /v2/trades?condition=<id>&limit=500`, cursor-only
+paging (`pagination.next_cursor` until `has_more` is false; `offset` and
+`market` are 400s), `{data, pagination}` envelope, snake_case rows
+(`condition_id`, `token_id`, `transaction_hash`); `data: null` is a
+documented miss (end of tape), not a stop. The 3,000-print cap is now
+the client's own (v2 pages past v1's server cap) and the page size stays
+500 so the sweep's 420-463 min band keeps its request profile.
+`poly_trade_row` renders an integral `size` as v1's JSON did so the daily
+overlap dedupes against the v1-keyed archive. The 11-03 run archived 0
+trades with `errors: 0` (mistakes #154); QA's `poly trade tail fresh
+(< 36h old)` now reads the tail's own endpoint. Contract:
+`https://data-api.polymarket.com/v2/openapi.json`.

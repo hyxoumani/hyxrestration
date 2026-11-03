@@ -3862,6 +3862,45 @@ Format: what happened → root cause → error type → prevention tier
     ops (a scan priced as a window; a cap sized before the 20x archive
     re-measured only when a restart finally reached it).
 
+154. **2026-11-03 04:15Z, read 09:05Z -- a venue retired an API and the sweep
+    filed the day as `errors: 0`: a fault class that is RECORDED but never
+    COUNTED AGAINST THE OUTPUT is invisible exactly when it becomes total.**
+    Polymarket retired Data API v1: HTTP 410 `{"error": "Data API v1 has
+    been retired", "migration": ".../v2/"}` on every `/trades` request
+    (v2 is `/v2/trades`, filter `condition=` -- `market=` is a 400 --
+    cursor-only paging -- `offset=` is a 400 -- `limit` <= 1000, a
+    `{data, pagination}` envelope, snake_case rows; probed live and read
+    from `/v2/openapi.json`). The 04:15Z poly sweep's 7,871 tails all
+    stopped at 0 prints, it archived 0 trades against 860,606 the day
+    before, finished in 255 min against a 420-463 band (the trade leg WAS
+    the missing ~160 min), and its done line said `errors: 0` -- by the #81
+    decision, which made a tail stop a recorded absorber case rather than
+    an error. That decision was measured on ~80 stops a day of 429/408 and
+    is right for them; its remedy (the next sweep re-fetches the tail)
+    cannot work when every stop IS the endpoint. QA was blind in the same
+    direction: `poly prices fresh` reads a different endpoint and stayed
+    green, and `qa_poly_tail_absorbed` excludes stops younger than its
+    grace, after which a re-visit returning 0 prints against 0 archived
+    would have read as absorbed (#98: the absorber's own detector cannot
+    see an absorber-wide failure). The only witness was the band, from
+    the side nobody alarms on: a run a third UNDER its wall budget. Fix:
+    `trades_tail` speaks v2, the contract pinned by tests (path,
+    `condition`, no `market`/`offset`, cursor until `has_more` is false,
+    `data: null` is the end of the tape and not a stop, the 3,000-print
+    cap now ours because v2 pages past v1's server cap); `poly_trade_row`
+    reads both casings and renders an integral `size` as v1's JSON did,
+    so the daily re-fetched overlap dedupes against 135M v1-keyed rows
+    instead of landing twice; and QA gains `poly trade tail fresh (< 36h
+    old)` (`POLY_TRADE_TAIL_FRESH_H`; clean readings 2-26h at 10:00Z, one
+    dead run >= 49h; red-verified against a 49h archive, green at 26h).
+    Smoke-tested live: 1,000 prints for one market, 0 stops, ids in the
+    v1 rendering. Rule: **a recorded fault class needs a reading of its
+    TOTAL against the run's output beside its count -- stops equal to the
+    markets tailed, or zero trades from a run that fetched tails, is a dead
+    endpoint whatever `errors` says -- and a run that beats its wall band by
+    a third is as much a finding as one that breaches it: read the band
+    from both sides.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
