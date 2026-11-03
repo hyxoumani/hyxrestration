@@ -1688,5 +1688,6 @@ the client's own (v2 pages past v1's server cap) and the page size stays
 `poly_trade_row` renders an integral `size` as v1's JSON did so the daily
 overlap dedupes against the v1-keyed archive. The 11-03 run archived 0
 trades with `errors: 0` (mistakes #154); QA's `poly trade tail fresh
-(< 36h old)` now reads the tail's own endpoint. Contract:
+(< 20h old)` now reads the tail's own endpoint (clean 1.5-6h at 10:00Z,
+one dead run ~25.5h; the first 36h budget passed the dead run). Contract:
 `https://data-api.polymarket.com/v2/openapi.json`.

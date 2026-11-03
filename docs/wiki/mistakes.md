@@ -3890,9 +3890,14 @@ Format: what happened → root cause → error type → prevention tier
     cap now ours because v2 pages past v1's server cap); `poly_trade_row`
     reads both casings and renders an integral `size` as v1's JSON did,
     so the daily re-fetched overlap dedupes against 135M v1-keyed rows
-    instead of landing twice; and QA gains `poly trade tail fresh (< 36h
-    old)` (`POLY_TRADE_TAIL_FRESH_H`; clean readings 2-26h at 10:00Z, one
-    dead run >= 49h; red-verified against a 49h archive, green at 26h).
+    instead of landing twice; and QA gains `poly trade tail fresh (< 20h
+    old)` (`POLY_TRADE_TAIL_FRESH_H`; a clean day reads 1.5-6h at 10:00Z
+    because the open segment is fetched first, one dead run reads ~25.5h;
+    red-verified at 25.5h, green at 6h). The first budget shipped was 36h
+    on arithmetic that added a day -- the 10:03Z QA then PASSED the dead
+    run at a measured 25.6h, a detector one cadence late, and the same
+    pass tightened it: a staleness budget wider than the writer's cadence
+    cannot see the first missed write.
     Smoke-tested live: 1,000 prints for one market, 0 stops, ids in the
     v1 rendering. Rule: **a recorded fault class needs a reading of its
     TOTAL against the run's output beside its count -- stops equal to the
