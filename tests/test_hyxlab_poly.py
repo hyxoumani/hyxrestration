@@ -297,9 +297,7 @@ def test_iter_markets_keyset_page_budget_exhausted_logs_truncated(monkeypatch, c
     assert "TRUNCATED at 1 markets" in capsys.readouterr().out
 
 
-def test_iter_markets_keyset_want_top_n_silences_only_the_intended_truncation(
-    monkeypatch, capsys
-):
+def test_iter_markets_keyset_want_top_n_silences_only_the_intended_truncation(monkeypatch, capsys):
     """streamd asks for the top page by volume on purpose, so its nightly
     TRUNCATED line is noise that trains the reader to ignore a real one.
     `want_top_n` declares that intent -- and must silence ONLY that line,
@@ -348,16 +346,19 @@ def test_want_top_n_does_not_silence_incomplete(monkeypatch, capsys):
 
 
 class _TailSession:
-    """data-api /trades pages, with an optional error object partway."""
+    """data-api `/v2/trades` pages keyed by cursor (None = the first page);
+    a value that is not a page (an error object) ends the tail early."""
 
     def __init__(self, pages, status=429):
-        self.pages = pages  # offset -> list, or a dict to end the tail early
+        self.pages = pages  # cursor -> page body, or a dict to end the tail early
         self.status = status
+        self.calls: list[dict] = []
 
     def get(self, url, params=None, timeout=None):
-        assert url.endswith("/trades")
-        body = self.pages[params["offset"]]
-        status = self.status
+        assert url.endswith("/v2/trades"), url
+        self.calls.append(dict(params))
+        body = self.pages[params.get("cursor")]
+        status = self.status if "data" not in body else 200
 
         class R:
             status_code = status
@@ -368,20 +369,36 @@ class _TailSession:
         return R()
 
 
-def _trade(i):
-    return {"price": "0.5", "size": 1, "timestamp": 1783480483, "conditionId": "0xabc"}
+def _page(trades, next_cursor=None):
+    return {
+        "data": trades,
+        "pagination": {
+            "limit": 500,
+            "offset": 0,
+            "has_more": next_cursor is not None,
+            "next_cursor": next_cursor,
+        },
+    }
+
+
+def _trade(i, **over):
+    row = {"price": 0.5, "size": 1.0, "timestamp": 1783480483, "condition_id": "0xabc"}
+    row.update(over)
+    return row
 
 
 def test_tail_truncation_is_counted_and_split_by_emptiness():
     poly.reset_retry_counts()
-    # Stops at offset 0: nothing captured at all, the strictly worse case.
-    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "rate limited"}}))
+    # Stops at the first page: nothing captured at all, the strictly worse case.
+    poly.trades_tail("0xdead", session=_TailSession({None: {"error": "rate limited"}}))
     assert poly.retry_counts()["tail_truncated"] == 1
     assert poly.retry_counts()["tail_truncated_empty"] == 1
-    # Stops at offset 500: a partial tail, archived as if complete.
+    # Stops on the second page: a partial tail, archived as if complete.
     poly.trades_tail(
         "0xbeef",
-        session=_TailSession({0: [_trade(i) for i in range(500)], 500: {"error": "boom"}}),
+        session=_TailSession(
+            {None: _page([_trade(i) for i in range(500)], "c1"), "c1": {"error": "boom"}}
+        ),
     )
     assert poly.retry_counts()["tail_truncated"] == 2
     assert poly.retry_counts()["tail_truncated_empty"] == 1
@@ -391,7 +408,7 @@ def test_tail_truncation_stays_outside_total():
     """A fault nobody retried spent no allowance. Folding ~80 per run into
     `total` would report the sweep's faults as its recoveries."""
     poly.reset_retry_counts()
-    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "rate limited"}}))
+    poly.trades_tail("0xdead", session=_TailSession({None: {"error": "rate limited"}}))
     counts = poly.retry_counts()
     assert counts["tail_truncated"] == 1
     assert counts["total"] == 0
@@ -399,8 +416,99 @@ def test_tail_truncation_stays_outside_total():
 
 def test_clean_tail_counts_nothing():
     poly.reset_retry_counts()
-    poly.trades_tail("0xfeed", session=_TailSession({0: [_trade(0)]}))
+    poly.trades_tail("0xfeed", session=_TailSession({None: _page([_trade(0)])}))
     assert poly.retry_counts()["tail_truncated"] == 0
+
+
+# --- Data API v2 (v1 retired 2026-11-03: HTTP 410 on every request) -----
+
+
+def test_tail_speaks_the_v2_contract():
+    """`market`/`offset` are 400s on v2 and the path moved; the sweep ran a
+    whole day of 410s with `errors: 0` before anyone looked."""
+    sess = _TailSession({None: _page([_trade(0)])})
+    poly.trades_tail("0xabc", session=sess)
+    (call,) = sess.calls
+    assert call["condition"] == "0xabc"
+    assert "market" not in call and "offset" not in call
+    assert call["limit"] == poly.TAIL_PAGE
+    assert poly.TAIL_PATH == "/v2/trades"
+
+
+def test_tail_follows_next_cursor_until_has_more_is_false():
+    sess = _TailSession(
+        {
+            None: _page([_trade(i) for i in range(500)], "c1"),
+            "c1": _page([_trade(i) for i in range(500)], "c2"),
+            "c2": _page([_trade(0)]),
+        }
+    )
+    out = poly.trades_tail("0xabc", session=sess)
+    assert len(out) == 1001
+    assert [c.get("cursor") for c in sess.calls] == [None, "c1", "c2"]
+
+
+def test_tail_null_data_is_the_end_of_the_tape_not_a_stop():
+    """A documented miss is `data: null` under 200 -- an empty tail, never a
+    recorded stop (a stop row would send QA's absorber looking for prints
+    that never existed)."""
+    poly.reset_retry_counts()
+    out = poly.trades_tail("0xabc", session=_TailSession({None: {"data": None, "pagination": {}}}))
+    assert out == []
+    assert poly.retry_counts()["tail_truncated"] == 0
+    assert poly.take_tail_stops() == []
+
+
+def test_tail_stop_records_the_status_it_saw():
+    poly.reset_retry_counts()
+    poly.take_tail_stops()
+    poly.trades_tail(
+        "0xabc", session=_TailSession({None: {"error": "Data API v1 has been retired"}}, status=410)
+    )
+    ((market, _at, prints, status),) = poly.take_tail_stops()
+    assert (market, prints, status) == ("0xabc", 0, 410)
+
+
+def test_tail_cap_bounds_the_pages_fetched():
+    """v2 pages past v1's 3,000-print server cap, so the cap is ours now."""
+    pages = {None: _page([_trade(i) for i in range(500)], "c1")}
+    for k in range(1, 10):
+        pages[f"c{k}"] = _page([_trade(i) for i in range(500)], f"c{k + 1}")
+    sess = _TailSession(pages)
+    out = poly.trades_tail("0xabc", session=sess, max_offset=3000)
+    assert len(out) == 3000
+    assert len(sess.calls) == 6
+
+
+def test_trade_row_reads_v2_snake_case_and_keeps_the_v1_trade_id():
+    """The archive holds 135M rows keyed under v1's rendering; the same print
+    re-fetched tomorrow under v2 must dedupe against it, not land twice."""
+    v1 = {
+        "transactionHash": "0xtx",
+        "asset": "1910830010387565971650098373488592514702818137344973088263643820608151819241",
+        "conditionId": "0xcond",
+        "side": "BUY",
+        "outcome": "No",
+        "price": 0.83,
+        "size": 1000,
+        "timestamp": 1793696437,
+    }
+    v2 = {
+        "transaction_hash": "0xtx",
+        "token_id": v1["asset"],
+        "condition_id": "0xcond",
+        "side": "BUY",
+        "outcome": "No",
+        "price": 0.83,
+        "size": 1000.0,
+        "timestamp": 1793696437,
+    }
+    assert poly_trade_row(v2) == poly_trade_row(v1)
+    row = poly_trade_row(v2)
+    assert row[1] == "0xcond"
+    assert row[2] == "0xtx:191083001038:0.83:1000"
+    assert row[4] == pytest.approx(0.17)  # NO fill mirrored to YES terms
+    assert row[6] == "no"
 
 
 def test_keyset_retries_counted_and_worst_page_fraction_recorded(monkeypatch):
@@ -448,7 +556,7 @@ def test_reset_clears_every_class(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda _s: None)
     poly.reset_retry_counts()
     iter_markets_by_volume(100.0, session=_TailFaultSession())
-    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "x"}}))
+    poly.trades_tail("0xdead", session=_TailSession({None: {"error": "x"}}))
     assert any(v for v in poly.retry_counts().values())
     poly.reset_retry_counts()
     assert set(poly.retry_counts().values()) == {0}
@@ -460,7 +568,7 @@ def test_sweep_resets_the_ledger_and_publishes_it(monkeypatch, tmp_path):
     from collector import poly_sweep
 
     poly.reset_retry_counts()
-    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "stale"}}))
+    poly.trades_tail("0xdead", session=_TailSession({None: {"error": "stale"}}))
     assert poly.retry_counts()["tail_truncated"] == 1  # leaked in from "before"
 
     monkeypatch.setattr(poly, "iter_markets_by_volume", lambda *a, **k: [])
@@ -484,7 +592,9 @@ def test_tail_stop_is_recorded_with_its_market_depth_and_status():
     poly.reset_retry_counts()
     poly.trades_tail(
         "0x" + "a" * 62,
-        session=_TailSession({0: [{"t": 1}] * 500, 500: {"error": "rate limited"}}, status=429),
+        session=_TailSession(
+            {None: _page([{"t": 1}] * 500, "c1"), "c1": {"error": "rate limited"}}, status=429
+        ),
     )
     stops = poly.take_tail_stops()
     assert len(stops) == 1
@@ -498,7 +608,7 @@ def test_tail_stop_is_recorded_with_its_market_depth_and_status():
 
 def test_taking_the_stops_drains_them_so_two_flushes_cannot_double_insert():
     poly.reset_retry_counts()
-    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "x"}}))
+    poly.trades_tail("0xdead", session=_TailSession({None: {"error": "x"}}))
     assert len(poly.take_tail_stops()) == 1
     assert poly.take_tail_stops() == []
     # Draining the rows must not disturb the run-level count: the `done:`
@@ -508,7 +618,7 @@ def test_taking_the_stops_drains_them_so_two_flushes_cannot_double_insert():
 
 def test_reset_clears_the_stop_rows_too():
     poly.reset_retry_counts()
-    poly.trades_tail("0xdead", session=_TailSession({0: {"error": "x"}}))
+    poly.trades_tail("0xdead", session=_TailSession({None: {"error": "x"}}))
     poly.reset_retry_counts()
     assert poly.take_tail_stops() == []
 

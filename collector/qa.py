@@ -310,6 +310,12 @@ STANDING_SKIPS: frozenset[str] = frozenset({COLLECT_SKIP_SECTION})
 # 286). So the harmful end of this distribution is not hypothetical, it is
 # twice a week.
 STREAM_STALL_LOG = "data/stream_stalls.jsonl"
+
+#: Hours the newest archived polymarket TAIL print may lag `now` before the
+#: daily sweep is read as not archiving trades. Clean readings at the 10:00Z
+#: QA are ~2h (during the run) to ~26h (before its open segment); one run
+#: that archived nothing reads >= 49h. See the check in `_price_checks`.
+POLY_TRADE_TAIL_FRESH_H = 36.0
 STREAM_UNIT = "hyxlab-stream.service"
 _STREAM_STALL_SECTION = "stream-stalls"
 # The threshold is NOT a number picked here: a spill means the daemon's own
@@ -2421,6 +2427,32 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
             0
         ]
         check("poly prices fresh (< 30h old)", page < 30, f"age {page:.1f}h")
+
+        # The trade TAIL is a separate endpoint with its own failure mode,
+        # and the sweep's own totals cannot see it: on 2026-11-03 Data API
+        # v1 was retired (HTTP 410 on every request), every one of 7,871
+        # tails stopped at 0 prints, the run archived 0 trades against
+        # 860,606 the day before, and the done line said `errors: 0` -- a
+        # stop is recorded, never counted as an error, by the #81 decision.
+        # The newest archived print on a clean day lags the run's start by a
+        # few hours (the open segment is fetched first and flushed as it
+        # goes: 11-02's run started 04:15Z and its newest print is 08:31Z),
+        # so a healthy reading at the 10:00Z QA is ~2h during the run and
+        # ~26h if the sweep has not reached the open segment yet; one dead
+        # run reads >= 49h. The stream's poly trades are a different table
+        # (`stream_trades`), so this is the sweep's tail alone.
+        n_poly_trades = conn.execute(
+            "SELECT count(*) FROM trades WHERE venue='polymarket'"
+        ).fetchone()[0]
+        if n_poly_trades:
+            age = conn.execute(
+                "SELECT epoch(? - max(ts)) / 3600 FROM trades WHERE venue='polymarket'", [now]
+            ).fetchone()[0]
+            check(
+                "poly trade tail fresh (< 36h old)",
+                age < POLY_TRADE_TAIL_FRESH_H,
+                f"age {age:.1f}h, budget {POLY_TRADE_TAIL_FRESH_H}h",
+            )
 
         # Enumeration-shrink tripwire: the 2026-07-08 Gamma offset cap
         # silently dropped the swept universe from ~4600 to ~2000 markets

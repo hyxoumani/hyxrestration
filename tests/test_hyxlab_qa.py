@@ -2428,3 +2428,48 @@ def test_nws_station_removed_a_day_ago_is_not_owed(tmp_path):
     store.close()
     failed = _run(None, tmp_path, archive=db)
     assert "nws stations each fresh (< 20 min old)" not in failed
+
+
+# --- poly trade tail freshness (Data API v1 retired 2026-11-03) ----------
+
+
+def _poly_archive_with_tail(tmp_path, tail_age_h: float):
+    """Fresh poly prices (the sibling check stays green) plus one polymarket
+    tail print `tail_age_h` old."""
+    db = tmp_path / "a.duckdb"
+    store = Store(db)
+    store.insert_poly_prices([("t0", "pm0", "yes", NOW - timedelta(hours=2), 0.5)])
+    store.insert_trades(
+        [
+            (
+                "polymarket",
+                "pm0",
+                "tx:tok:0.5:1",
+                NOW - timedelta(hours=tail_age_h),
+                0.5,
+                1.0,
+                "yes",
+                False,
+            )
+        ]
+    )
+    store.close()
+    return db
+
+
+def test_a_sweep_that_archived_no_trades_reds_the_tail_check(tmp_path):
+    """2026-11-03: every tail stopped on HTTP 410, 0 trades archived, the done
+    line said `errors: 0` and `poly prices fresh` stayed green -- prices are
+    a different endpoint. One dead run reads >= 49h here."""
+    db = _poly_archive_with_tail(tmp_path, 49.0)
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly trade tail fresh (< 36h old)" in failed
+    assert "poly prices fresh (< 30h old)" not in failed
+
+
+def test_a_tail_inside_the_daily_cadence_passes(tmp_path):
+    """A clean day's newest print lags QA by ~2h during the run and ~26h
+    before its open segment -- both inside the budget."""
+    db = _poly_archive_with_tail(tmp_path, 26.0)
+    failed = _run(None, tmp_path, archive=db)
+    assert "poly trade tail fresh (< 36h old)" not in failed

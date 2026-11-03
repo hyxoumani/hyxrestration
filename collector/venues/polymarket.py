@@ -33,9 +33,13 @@ from hyxlab.models import MarketInfo, Snapshot  # noqa: E402
 #     it falls through to the restart path).
 #   * the same function's chain restart -- unit is one WALK, budget
 #     `max_restarts`. Not a retry of a request and never summed with one.
-#   * `trades_tail`'s offset pagination -- NO ladder. A non-list body ends the
-#     tail early and returns what it has, which the sweep archives as if it
-#     were the whole tail.
+#   * `trades_tail`'s cursor pagination -- NO ladder. A body that is not a
+#     page (no `data` list: an error object, under any status) ends the tail
+#     early and returns what it has, which the sweep archives as if it were
+#     the whole tail. (v1 was offset-paged and returned a bare list; the
+#     same predicate read "non-list body" until Data API v1 was retired on
+#     2026-11-03 -- every tail that day stopped at 0 prints on HTTP 410 and
+#     the run reported `errors: 0`, see `TAIL_PATH`.)
 #
 # That last class is this venue's analogue of kalshi's unretried 429s, and it
 # is far bigger than anything the sweep's own `errors` total was reporting:
@@ -409,31 +413,58 @@ def prices_history_range(
     return out
 
 
+#: Data API v2 (`/v2/trades`). v1 (`/trades`, `market=` + `offset=`, bare
+#: list body) was retired 2026-11-03: every request answered HTTP 410
+#: `{"error": "Data API v1 has been retired", "migration": ".../v2/"}` from
+#: the 04:15Z sweep's first tail on, 7,871 stops at 0 prints in one run and
+#: 0 trades archived, while the done line said `errors: 0` -- the stop
+#: recorder saw it (status 410 on every row of `poly_tail_stops`), nothing
+#: alarmed on it. v2: filter is `condition` (`market` is a 400), pages are
+#: cursor-only (`offset` is a 400; `pagination.next_cursor` until
+#: `has_more` is false), `limit` <= 1000 and ignored once a cursor is
+#: supplied, body is `{"data": [...] | null, "pagination": {...}}`, rows are
+#: snake_case (`condition_id`, `token_id`, `transaction_hash`). Probed live
+#: 2026-11-03 09:10Z; contract at `/v2/openapi.json`.
+TAIL_PATH = "/v2/trades"
+#: Rows per page. Kept at v1's 500 so a tail costs the same request count the
+#: sweep's 420-463 min band was measured on; v2 allows 1000.
+TAIL_PAGE = 500
+
+
 def trades_tail(
     condition_id: str,
     session: requests.Session | None = None,
     max_offset: int = 3000,
 ) -> list[dict[str, Any]]:
-    """Most recent prints for one market. HARD CAP (probed): the data-api
-    serves at most the LAST 3,000 trades per market, ever — a tail
-    sample, not a tape. The full forward tape is the WS stream."""
+    """Most recent prints for one market, newest first, at most `max_offset`
+    of them (v1's probed HARD CAP: the data-api served the LAST 3,000 trades
+    per market, ever -- a tail sample, not a tape; v2 pages past it, so the
+    cap is now this function's). The full forward tape is the WS stream.
+
+    A page is `{"data": list | None, "pagination": {...}}`; `data: null` or
+    `[]` is the end of the tape (a documented miss, not an error). Anything
+    else -- an error object under 4xx/5xx, or a body with no `data` -- ends
+    the tail early and is RECORDED (`take_tail_stops`), never retried; see
+    the ledger at the top of this module."""
     global _TAIL_TRUNCATED, _TAIL_TRUNCATED_EMPTY
 
     sess = session or requests.Session()
     out: list[dict[str, Any]] = []
-    for offset in range(0, max_offset, 500):
-        resp = sess.get(
-            f"{DATA_API}/trades",
-            params={"market": condition_id, "limit": 500, "offset": offset},
-            timeout=30,
-        )
+    cursor: str | None = None
+    while len(out) < max_offset:
+        params: dict[str, Any] = {"condition": condition_id, "limit": TAIL_PAGE}
+        if cursor:
+            params["cursor"] = cursor
+        resp = sess.get(f"{DATA_API}{TAIL_PATH}", params=params, timeout=30)
         body = resp.json()
-        # An error OBJECT where a list belongs, under a real error status:
-        # measured over 2026-09-01..24, 1,358 stops carried 429 (81%) or 408
-        # (19%) and nothing else. The status is recorded, not just logged,
-        # because the two classes have different remedies if the absorber
+        page = body.get("data", False) if isinstance(body, dict) else False
+        # Not a page: an error OBJECT where the envelope belongs, under a real
+        # error status. Measured over 2026-09-01..24 (v1), 1,358 stops carried
+        # 429 (81%) or 408 (19%) and nothing else; 2026-11-03 added 410 x
+        # 7,871, the retirement. The status is recorded, not just logged,
+        # because the classes have different remedies if the absorber
         # described at the top of this module ever stops absorbing.
-        if not isinstance(body, list):
+        if page is False or not (page is None or isinstance(page, list)):
             _TAIL_TRUNCATED += 1
             if not out:
                 _TAIL_TRUNCATED_EMPTY += 1
@@ -451,12 +482,14 @@ def trades_tail(
                 flush=True,
             )
             break
-        if not body:
+        if not page:
             break
-        out.extend(body)
-        if len(body) < 500:
+        out.extend(page)
+        pagination = body.get("pagination") or {}
+        cursor = pagination.get("next_cursor")
+        if not pagination.get("has_more") or not cursor:
             break
-    return out
+    return out[:max_offset]
 
 
 def gamma_market_info(m: dict[str, Any]) -> MarketInfo:
@@ -478,6 +511,14 @@ def gamma_market_info(m: dict[str, Any]) -> MarketInfo:
     )
 
 
+def _id_num(v: Any) -> Any:
+    """A number as v1's JSON rendered it inside `trade_id`: an integral float
+    as its integer (`1000.0` -> `1000`), anything else untouched."""
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return v
+
+
 def poly_trade_row(t: dict[str, Any]) -> tuple:
     """data-api trade → store trades row, normalized to YES terms.
 
@@ -488,10 +529,19 @@ def poly_trade_row(t: dict[str, Any]) -> tuple:
     price = float(t["price"])
     yes_price = price if outcome != "no" else round(1.0 - price, 6)
     buys_yes = (t.get("side") == "BUY") == (outcome != "no")
-    trade_id = f"{t.get('transactionHash', '')}:{t.get('asset', '')[:12]}:{price}:{t.get('size')}"
+    # v2 is snake_case (`transaction_hash`, `token_id`, `condition_id`); v1
+    # was camelCase. Both are read so a v1 row (tests, the backfill tool)
+    # still normalises. `trade_id` is the dedupe key (`Store.insert_trades`)
+    # and the archive holds 135M rows keyed under v1's rendering, where an
+    # integral size printed as `1000`; v2 serves it as `1000.0`, so the size
+    # is rendered through `_id_num` or every print in the daily re-fetched
+    # overlap would land twice under a second id.
+    tx = t.get("transaction_hash") or t.get("transactionHash") or ""
+    asset = t.get("token_id") or t.get("asset") or ""
+    trade_id = f"{tx}:{asset[:12]}:{price}:{_id_num(t.get('size'))}"
     return (
         VENUE,
-        t.get("conditionId", ""),
+        t.get("condition_id") or t.get("conditionId") or "",
         trade_id,
         datetime.fromtimestamp(int(t["timestamp"]), tz=UTC),
         yes_price,
