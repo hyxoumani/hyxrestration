@@ -1227,6 +1227,16 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   the same index: ladder markets up at the same s/mkt is LISTINGS (the
   ETA's scale over-reads the tail), the same markets at a higher s/mkt
   is PACE (429s, a hold). The scale alone cannot tell the two apart.
+  **QA's batch-budget breach clause prints the same rate per class**
+  (2026-11-03, `qa._segments_clause`, `(0.452 s/mkt)` after each
+  `by_class` wall; promoted 6371572): the 11-03 done line's 709.4 min
+  read on the status page as above a 582-648 band that was three
+  low-enumeration days, while the ladder rate sat at 0.442-0.477
+  s/mkt over all 14 done lines 10-20..11-03 (53,953-71,112 ladder
+  markets, wall 582-744 min). The wall model is `~0.45 s/mkt x ladder
+  markets + small 125-167 min + dense 37-48 min`; at that rate the
+  12.5h budget (750 min) falls at ~74k ladder markets, 8% above the
+  11-03 count, and a breach at the band's rate is listings, not pace.
   **The run names its listings delta on its first line and in the done
   dict** (2026-10-21, `collector.sweep._prior_run` / `listings_delta` /
   `listings_line`, `totals['new_series']` / `['dropped_series']`; first
