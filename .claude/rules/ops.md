@@ -417,7 +417,13 @@
   2026-10-14 poweroff (mistakes #119). The escape from a two-writer race on
   a shared file is a file only one writer can name (`spill_snapshot` ->
   `adopt_snapshots` at boot, before the second writer exists), never a
-  refusal that leaves rows in memory.
+  refusal that leaves rows in memory. The same arithmetic prices a HOST
+  crash: the 15 s flush cadence bounds the buffer a kernel-level death
+  takes only while nothing holds the file. Measured 2026-11-03 02:18:59Z:
+  an ad-hoc read hold from our own autoloop run covered 70 of the 88 s
+  between the last landed flush and the reset, so the loss was the hold,
+  not the cadence. A pass that holds the stream archive is holding rows
+  that have no disk copy until it lets go.
 - `memory.events` has a key that says reclaim had a COST: `sock_throttled`,
   the times the kernel clamped the cgroup's sockets under memory pressure.
   `max` does not predict it (stream: 37,742 `max` with 441 throttles on
