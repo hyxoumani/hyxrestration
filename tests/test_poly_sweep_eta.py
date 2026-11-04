@@ -102,6 +102,73 @@ def test_prior_is_each_markets_latest_wall_within_the_lookback(tmp_path):
         store.close()
 
 
+def test_a_run_whose_tails_stopped_on_a_foreign_class_is_refused_as_a_prior(tmp_path):
+    """2026-11-03: every tail stopped 410 (mistakes #154), so each market's
+    wall is the prices leg alone -- 243 min summed against 378-398 on the
+    clean days. The prior walks back to the clean run and names the refusal."""
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        now = datetime(2026, 11, 4, 4, 15)
+        dead = datetime(2026, 11, 3, 4, 20)
+        clean = datetime(2026, 11, 2, 4, 20)
+        store.insert_poly_sweep_log(
+            [
+                ("m1", clean, 5.0),
+                ("m2", clean, 30.0),
+                ("m1", dead, 0.4),
+                ("m2", dead, 0.3),
+                ("m3", dead, 0.2),  # new on the dead day: no clean wall, unpriced
+            ]
+        )
+        store.conn.execute(
+            "INSERT INTO poly_tail_stops VALUES ('m1', ?, 3000, 410), ('m2', ?, 1, 410)",
+            [dead, dead + timedelta(seconds=1)],
+        )
+        prior, note = ps.load_prior(store, now=now)
+        assert prior == {"m1": 5.0, "m2": 30.0}
+        assert note == "11-03 refused: 2 x 410"
+        assert ps.prior_market_wall(store, now=now) == prior
+    finally:
+        store.close()
+
+
+def test_an_absorbed_stop_class_does_not_refuse_the_day(tmp_path):
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        now = datetime(2026, 11, 4, 4, 15)
+        yesterday = datetime(2026, 11, 3, 4, 20)
+        store.insert_poly_sweep_log([("m1", yesterday, 5.0)])
+        store.conn.execute(
+            "INSERT INTO poly_tail_stops VALUES ('m1', ?, 3000, 429), ('m1', ?, 10, 408)",
+            [yesterday, yesterday + timedelta(seconds=1)],
+        )
+        assert ps.load_prior(store, now=now) == ({"m1": 5.0}, "")
+    finally:
+        store.close()
+
+
+def test_a_refused_run_with_no_clean_run_behind_it_falls_back_to_the_mean_rate(tmp_path):
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        now = datetime(2026, 11, 4, 4, 15)
+        dead = datetime(2026, 11, 3, 4, 20)
+        store.insert_poly_sweep_log([("m1", dead, 0.4)])
+        store.conn.execute("INSERT INTO poly_tail_stops VALUES ('m1', ?, 3000, 410)", [dead])
+        prior, note = ps.load_prior(store, now=now)
+        assert prior == {}
+        assert note == "11-03 refused: 1 x 410"
+        assert ps.eta_weighted(["m1"], ["m2"], 10.0, prior)[1] == "mean rate"
+    finally:
+        store.close()
+
+
+def test_qa_reads_the_stop_ledger_against_the_sweeps_own_absorbed_classes():
+    from collector import qa
+
+    assert qa.POLY_TAIL_STOP_CLASSES is ps.TAIL_STOP_CLASSES
+    assert frozenset({429, 408}) == ps.TAIL_STOP_CLASSES
+
+
 def test_prior_is_empty_without_an_archive_or_a_readable_table(tmp_path):
     class _NoArchive:
         pass
@@ -201,7 +268,7 @@ def test_the_line_carries_the_weighted_tag_and_the_batch_carries_each_markets_wa
     monkeypatch.setattr(ps.poly, "price_rows", lambda *a, **k: [])
     monkeypatch.setattr(ps.poly, "trades_tail", fake_tail)
     monkeypatch.setattr(ps.poly, "take_tail_stops", lambda: [])
-    monkeypatch.setattr(ps, "prior_market_wall", lambda store: dict(prior))
+    monkeypatch.setattr(ps, "load_prior", lambda store: (dict(prior), ""))
 
     def fake_flush(db, batch):  # drains like the real one: cleared on success
         flushed.extend(batch["swept"])

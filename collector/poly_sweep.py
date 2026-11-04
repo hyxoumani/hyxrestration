@@ -128,6 +128,21 @@ PROGRESS_EVERY = 200
 #: `poly_sweep_log` rows this far back are the previous daily run (04:15Z,
 #: ~17h) and nothing older; a market's LATEST wall in the window is its prior.
 ETA_PRIOR_LOOKBACK_H = 30
+#: Tail-stop classes the #81 absorber is licensed for (the next sweep
+#: re-fetches a truncated tail): every one of the 3,418 stops over
+#: 2026-09-06..11-02 carried 429 or 408. Owned here because the absorber is
+#: this module's; `collector.qa` reads the ledger against the same set.
+TAIL_STOP_CLASSES = frozenset({429, 408})
+#: Days the lookback walks back, one run each, to find a prior run whose
+#: tail-stop ledger carries NO foreign class. A run whose tails all stopped
+#: on a class outside `TAIL_STOP_CLASSES` recorded a wall per market with
+#: the tail missing from it: 2026-11-03 (7,871 x 410, mistakes #154) summed
+#: 243 min against 378-398 on the two clean days before it, p90 1.26 s vs
+#: 4.6-5.0 s. Weighted against it, the 2026-11-04 line opened at x3.41 and
+#: walked to x1.81 by 6,000 -- the scale absorbing a shortfall that is not
+#: uniform across rank (the open, trade-heavy markets lose the most) -- so
+#: the estimate read LOW all the way. A refused run is named on the line.
+ETA_PRIOR_MAX_DAYS_BACK = 7
 #: A `poly_sweep_log` wall above this is a FETCH (at least one HTTP round
 #: trip); below it, the skip branch (median 6e-6 s on the 2026-10-20 backup).
 #: The log does not record which branch ran, so this is how a prior run's
@@ -136,26 +151,71 @@ SKIP_WALL_MAX_S = 0.01
 
 
 def prior_market_wall(store, now: datetime | None = None) -> dict[str, float]:
-    """`market_id -> wall seconds` from the previous run's `poly_sweep_log`.
+    """`market_id -> wall seconds` from the previous CLEAN run's `poly_sweep_log`.
 
     Advisory: a wrong prior costs an ETA, nothing else, so a store with no
     archive behind it or any read failure returns {} and the line falls back
-    to the mean rate, tagged.
+    to the mean rate, tagged. The refusal half is `load_prior`.
+    """
+    return load_prior(store, now)[0]
+
+
+def load_prior(store, now: datetime | None = None) -> tuple[dict[str, float], str]:
+    """`(market_id -> wall seconds, refusal note)` for the ETA line.
+
+    The lookback starts at `ETA_PRIOR_LOOKBACK_H` (the previous daily run)
+    and widens a day at a time, up to `ETA_PRIOR_MAX_DAYS_BACK`, past every
+    day whose `poly_tail_stops` rows carry a status outside
+    `TAIL_STOP_CLASSES` -- a run that fetched prices and no tails is not a
+    prior for a run that fetches both. Within the window a market's LATEST
+    wall on a non-refused day wins. The note names each refused day with its
+    foreign class and count (`11-03 refused: 7871 x 410`), empty when none.
     """
     conn = getattr(store, "conn", None)
     if conn is None:
-        return {}
+        return {}, ""
     now = now or datetime.now(UTC).replace(tzinfo=None)
-    since = now - timedelta(hours=ETA_PRIOR_LOOKBACK_H)
+    floor = now - timedelta(hours=ETA_PRIOR_LOOKBACK_H, days=ETA_PRIOR_MAX_DAYS_BACK)
     try:
+        foreign = conn.execute(
+            "SELECT CAST(stopped_at AS DATE), status, count(*) FROM poly_tail_stops"
+            " WHERE stopped_at >= ? AND status IS NOT NULL AND status NOT IN ("
+            + ",".join("?" * len(TAIL_STOP_CLASSES))
+            + ") GROUP BY 1, 2 ORDER BY 1, 3 DESC",
+            [floor, *sorted(TAIL_STOP_CLASSES)],
+        ).fetchall()
         rows = conn.execute(
-            "SELECT market_id, arg_max(wall_s, swept_at) FROM poly_sweep_log"
-            " WHERE swept_at >= ? GROUP BY market_id",
-            [since],
+            "SELECT CAST(swept_at AS DATE), market_id, arg_max(wall_s, swept_at),"
+            " max(swept_at) FROM poly_sweep_log WHERE swept_at >= ? GROUP BY 1, 2",
+            [floor],
         ).fetchall()
     except duckdb.Error:
-        return {}
-    return {m: float(w) for m, w in rows}
+        return {}, ""
+    refused = {d for d, _, _ in foreign}
+    for back in range(ETA_PRIOR_MAX_DAYS_BACK + 1):
+        since = now - timedelta(hours=ETA_PRIOR_LOOKBACK_H, days=back)
+        prior: dict[str, float] = {}
+        latest: dict[str, datetime] = {}
+        for day, market, wall, at in rows:
+            if day in refused or at < since:
+                continue
+            if market not in latest or at > latest[market]:
+                latest[market] = at
+                prior[market] = float(wall)
+        if prior:
+            break
+    else:
+        return {}, _refusal_note(foreign, now)
+    named = [r for r in foreign if r[0] >= (since - timedelta(days=1)).date()]
+    return prior, _refusal_note(named, now)
+
+
+def _refusal_note(foreign: list[tuple], now: datetime) -> str:
+    """`11-03 refused: 7871 x 410` per refused day, the top class per day."""
+    seen: dict = {}
+    for day, status, n in foreign:
+        seen.setdefault(day, (status, n))
+    return ", ".join(f"{d:%m-%d} refused: {n} x {s}" for d, (s, n) in sorted(seen.items()))
 
 
 def eta_weighted(
@@ -318,7 +378,7 @@ def sweep(
         try:
             with charge_hold(store.close):  # the watermark read is a hold too
                 watermarks = store.poly_price_watermarks()
-                prior = prior_market_wall(store)
+                prior, prior_note = load_prior(store)
                 resolved = resolved_complete(store)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
@@ -437,6 +497,8 @@ def sweep(
             eta, tag = eta_weighted(
                 ids[: i + 1], ids[i + 1 :], now_m - t0, prior, skipped_ids, closed_ids
             )
+            if prior_note and prior:
+                tag = f"{tag}; {prior_note}"
             t_line = now_m
             print(
                 f"[poly] {i + 1}/{len(markets)} | {batch['n_prices']} prices,"

@@ -29,6 +29,7 @@ from pathlib import Path
 import duckdb
 
 from collector.backup import DBS, backup_one
+from collector.poly_sweep import TAIL_STOP_CLASSES
 from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.venues import alfred
 from hyxlab.reportdir import shared_reports
@@ -599,7 +600,7 @@ POLY_TAIL_ABSORB_GRACE_H = 48.0
 #: until this check nothing read the column: on 2026-11-03 all 7,871 stops
 #: carried 410 (Data API v1 retired, mistakes #154) and the run filed
 #: `errors: 0`.
-POLY_TAIL_STOP_CLASSES = frozenset({429, 408})
+POLY_TAIL_STOP_CLASSES = TAIL_STOP_CLASSES
 #: Stops per sweep day the absorber's evidence covers: the worst clean day in
 #: the same window was 446 (2026-10-01), median ~25. Above this the daily
 #: re-fetch argument is unmeasured -- this is the edge of the evidence, not
