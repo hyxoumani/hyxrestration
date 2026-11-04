@@ -622,3 +622,15 @@
   `basetemp`, DuckDB `temp_directory`, probe copies): use a directory on
   `/home` (`TMPDIR`), or it comes out of the daemons' page cache first and
   their sockets second.
+- A shared DISK has a tightest tenant too, and on this box it is the
+  kubelet: `/` is one btrfs for the archive, the siblings' lakes, Steam and
+  the kubelet's image store, and the kubelet evicts pods on
+  `ephemeral-storage` above `highThreshold=85`% -- ~285 GB free on a 1.9T
+  device, three times QA's 90 GB floor. It crossed on 2026-11-04 07:16Z
+  (196 reclaim attempts by 09:05Z, argocd evicted in a loop) while QA read
+  `free 381 GB` and 5 days (mistakes #156). Read the digest's `HOSTFS`
+  line: free/size/used% from `statvfs`, the window's eviction attempts,
+  and the signed distance to the kubelet's threshold. What to delete on the
+  shared disk is the USER's call; enumerate first (`du -sx -BG`, then
+  `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
+  price our own reflinked slots with `btrfs filesystem du`, never `du`.

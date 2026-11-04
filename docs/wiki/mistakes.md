@@ -3942,6 +3942,42 @@ Format: what happened → root cause → error type → prevention tier
     that disqualifies a run usually exists already, written for a
     different reader.**
 
+156. **2026-11-04 08:15Z run, read 09:05Z -- the archive's disk headroom was
+    judged against OUR floor while the host's binding threshold was another
+    tenant's, three times higher, and the host had been thrashing on it for
+    two hours in no line of ours.** `/` is one btrfs for everything on this
+    box: the archive, the reflinked backups, the siblings' lakes (hylshi
+    family 122 GB modified in 30h), Steam (375 GB), and the kubelet's image
+    store. The kubelet evicts pods on `ephemeral-storage` and runs image GC
+    above `highThreshold=85`%; the filesystem crossed it at 07:16Z and by
+    09:05Z the kubelet had logged 196 reclaim attempts, evicting and
+    re-admitting argocd pods in a loop with cilium tearing endpoints down --
+    and at 08:41-08:47Z every websocket the stream held (7 kalshi book
+    shards, kalshi trades, polymarket) dropped with no close frame, 17 GAP
+    lines, the first reconnect burst in 24h (correlation only: the loop ran
+    on after the sockets settled, so the mechanism is unproven). QA's
+    `archive disk headroom` read `free 381 GB` against a 90 GB floor and
+    called it 5 days; the collector's 5-min `fs_free_b` fell 419 -> 289 GB
+    over the 30h and nothing read it against 15% of the device (~285 GB).
+    The RAM half of this rule was written three days earlier (#152, HOSTMEM:
+    "the tenants you did not think of are the ones outside the workspace");
+    it was applied to the memory and not carried back to the disk it came
+    from. Fix: the digest's `HOSTFS` line -- free/size/used% from `statvfs`
+    on the archive directory, the window's kubelet eviction attempts with
+    the resource and first/last time, and the SIGNED distance to the
+    kubelet's own threshold (`ABOVE the kubelet's threshold by 12 GB`);
+    first reading 09:50Z `288 GB free of 1,999 GB (85.6% used) | 24h: 196
+    kubelet eviction attempt(s) on ephemeral-storage, 11-04 07:16Z ->
+    09:05Z; image GC: usage 86% vs high 85%`. 4 tests, the count
+    red-verified by a mutant that records no reclaim. The lever is the
+    USER's (what to delete on a shared disk is not an autonomous call):
+    our own largest exclusive term is `raw_frames` at 169 GB / 14 days.
+    Rule: **a headroom floor is the TIGHTEST tenant's threshold on the
+    shared device, not the floor this project needs -- and when a host-wide
+    rule is written for one resource (RAM, #152), apply it to every shared
+    resource the same day, starting with the one the rule was first learned
+    on.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
