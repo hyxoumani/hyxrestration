@@ -1702,6 +1702,85 @@ def test_every_host_term_moves_the_line() -> None:
     assert health.host_memory_line(victims, UNITS, _hm(), window_h=48) != base
 
 
+# HOSTFS: the shared filesystem against the HOST's threshold. 2026-11-04
+# 07:16Z the kubelet began evicting on ephemeral-storage at `usage=85
+# highThreshold=85` while QA's headroom check read 381 GB free against a 90 GB
+# floor. Real lines, pure functions.
+# --------------------------------------------------------------------------
+KUBELET_LINES = """\
+2026-11-04T08:31:25+00:00 hyz kubelet[1270]: I1104 02:31:25.240306    1270 image_gc_manager.go:395] "Disk usage on image filesystem is over the high threshold, trying to free bytes down to the low threshold" usage=85 highThreshold=85 amountToFree=89929754214 lowThreshold=80
+2026-11-04T07:16:37+00:00 hyz kubelet[1270]: I1104 01:16:37.177227    1270 eviction_manager.go:381] "Eviction manager: attempting to reclaim" resourceName="ephemeral-storage"
+2026-11-04T08:37:07+00:00 hyz kubelet[1270]: I1104 02:37:07.301162    1270 eviction_manager.go:381] "Eviction manager: attempting to reclaim" resourceName="ephemeral-storage"
+2026-11-04T08:37:07+00:00 hyz kubelet[1270]: I1104 02:37:07.332308    1270 eviction_manager.go:392] "Eviction manager: must evict pod(s) to reclaim" resourceName="ephemeral-storage"
+2026-11-04T08:37:07+00:00 hyz kubelet[1270]: I1104 02:37:07.332690    1270 eviction_manager.go:410] "Eviction manager: pods ranked for eviction" pods=["argocd/argocd-repo-server-fb87d8994-l4qc6"]
+2026-11-04T09:00:50+00:00 hyz kubelet[1270]: I1104 03:00:50.318162    1270 eviction_manager.go:381] "Eviction manager: attempting to reclaim" resourceName="ephemeral-storage"
+"""
+_FS = health.HostFs(free_b=275_000_000_000, size_b=1_900_000_000_000)
+
+
+def test_the_fs_line_reads_the_kubelet_against_the_filesystem() -> None:
+    kube = health.parse_kubelet(KUBELET_LINES)
+    assert [r for _, r in kube.reclaims] == ["ephemeral-storage"] * 3
+    assert (kube.gc_usage_pct, kube.gc_high_pct, kube.gc_low_pct) == (85, 85, 80)
+    line = health.host_fs_line(_FS, kube)
+    assert line.startswith("275 GB free of 1,900 GB (85.5% used) | 24h: 3 kubelet eviction")
+    assert "attempt(s) on ephemeral-storage, 11-04 07:16Z -> 09:00Z" in line
+    assert line.endswith(
+        "; image GC: usage 85% vs high 85% -- ABOVE the kubelet's threshold by 10 GB (frees to 80%)"
+    )
+
+
+def test_a_quiet_kubelet_and_an_unread_one_are_different_lines() -> None:
+    quiet = health.host_fs_line(_FS, health.parse_kubelet(""))
+    unread = health.host_fs_line(_FS, None)
+    assert quiet.endswith("| 24h: kubelet quiet (0 eviction attempts)")
+    assert unread.endswith("| 24h: kubelet journal UNREAD (no claim about evictions)")
+    blind = health.host_fs_line(health.HostFs(None, None), health.parse_kubelet(KUBELET_LINES))
+    assert blind.startswith("data fs unread |") and "threshold by" not in blind
+    # Below the threshold is said as below, with the distance.
+    roomy = health.host_fs_line(
+        health.HostFs(free_b=400_000_000_000, size_b=1_900_000_000_000),
+        health.parse_kubelet(KUBELET_LINES),
+    )
+    assert "below the kubelet's threshold by 115 GB" in roomy
+
+
+def test_every_fs_term_moves_the_line() -> None:
+    """Perturbation (#95): bump each term and the line must change."""
+    kube = health.parse_kubelet(KUBELET_LINES)
+    base = health.host_fs_line(_FS, kube)
+    assert health.host_fs_line(health.HostFs(_FS.free_b + 10**10, _FS.size_b), kube) != base
+    assert health.host_fs_line(health.HostFs(_FS.free_b, _FS.size_b + 10**11), kube) != base
+    fewer = health.KubeletPressure(kube.reclaims[:-1], 85, 85, 80)
+    assert health.host_fs_line(_FS, fewer) != base
+    for field in ("gc_usage_pct", "gc_high_pct", "gc_low_pct"):
+        bumped = health.KubeletPressure(
+            kube.reclaims,
+            *[
+                getattr(kube, f) + (1 if f == field else 0)
+                for f in ("gc_usage_pct", "gc_high_pct", "gc_low_pct")
+            ],
+        )
+        assert health.host_fs_line(_FS, bumped) != base, field
+    assert health.host_fs_line(_FS, kube, window_h=48) != base
+
+
+def test_the_live_fs_reader_never_raises_and_the_digest_prints_it(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert health.read_hostfs("/nonexistent/path") == health.HostFs(None, None)
+    real = health.read_hostfs(".")
+    assert real.size_b and real.free_b is not None
+    monkeypatch.setattr(health, "read_kernel_oom_window", lambda: None)
+    monkeypatch.setattr(health, "read_hostmem", lambda: _hm())
+    monkeypatch.setattr(health, "read_hostfs", lambda: _FS)
+    monkeypatch.setattr(health, "read_kubelet_window", lambda: health.parse_kubelet(KUBELET_LINES))
+    health.main()
+    out = capsys.readouterr().out
+    assert "HOSTFS     (host)" in out
+    assert "3 kubelet eviction attempt(s) on ephemeral-storage" in out
+
+
 def test_the_live_host_reader_never_raises_and_the_digest_prints_it(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

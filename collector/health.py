@@ -932,6 +932,145 @@ def host_memory_line(
     return f"{kills} | {standing} | {psi}"
 
 
+# --- HOSTFS: the shared filesystem, read against the HOST's threshold -----
+# `/` is one btrfs for everything on this box: the archive, the backups, the
+# siblings' lakes, Steam, AND the kubelet's image store. The kubelet evicts
+# pods on `ephemeral-storage` and runs image GC when that filesystem crosses
+# ITS threshold -- measured 2026-11-04 07:16Z onward, 187 reclaim attempts in
+# 24h at `usage=85 highThreshold=85`, argocd pods evicted and re-admitted in a
+# loop and cilium tearing endpoints down, while QA's `archive disk headroom`
+# read 381 GB free against a 90 GB floor: the host's binding limit was 15% of
+# the device (~285 GB), three times our floor, and in no line of ours. The
+# same ops rule as HOSTMEM: a shared resource's limit is the tightest tenant's.
+HOSTFS_WINDOW_H = 24
+HOSTFS_PATH = "data"
+KUBELET_UNIT = "kubelet"
+_KUBE_RECLAIM_RE = re.compile(
+    r'^(\S+) .*"Eviction manager: attempting to reclaim" resourceName="([^"]+)"'
+)
+_KUBE_GC_RE = re.compile(
+    r"Disk usage on image filesystem is over the high threshold.*?"
+    r"usage=(\d+) highThreshold=(\d+).*?lowThreshold=(\d+)"
+)
+
+
+@dataclass(frozen=True)
+class HostFs:
+    """One reading of the archive's filesystem, every field `None` when unread."""
+
+    free_b: int | None
+    size_b: int | None
+
+
+@dataclass(frozen=True)
+class KubeletPressure:
+    """What the kubelet said about the filesystem in the window. Pure data."""
+
+    reclaims: tuple[tuple[float, str], ...]  # (epoch, resourceName)
+    gc_usage_pct: int | None  # the LATEST image-GC line's usage / thresholds
+    gc_high_pct: int | None
+    gc_low_pct: int | None
+
+
+def read_hostfs(path: str = HOSTFS_PATH) -> HostFs:
+    """`statvfs` of the archive directory; unread on any error."""
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return HostFs(None, None)
+    return HostFs(st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize)
+
+
+def parse_kubelet(text: str) -> KubeletPressure:
+    """The kubelet journal's eviction attempts and its latest image-GC
+    threshold line. Pure. A box with no kubelet parses as quiet."""
+    reclaims: list[tuple[float, str]] = []
+    gc: tuple[int, int, int] | None = None
+    for line in text.splitlines():
+        m = _KUBE_RECLAIM_RE.match(line)
+        if m:
+            try:
+                ts = datetime.fromisoformat(m.group(1)).timestamp()
+            except ValueError:
+                continue
+            reclaims.append((ts, m.group(2)))
+            continue
+        g = _KUBE_GC_RE.search(line)
+        if g:
+            gc = (int(g.group(1)), int(g.group(2)), int(g.group(3)))
+    if gc is None:
+        return KubeletPressure(tuple(reclaims), None, None, None)
+    return KubeletPressure(tuple(reclaims), *gc)
+
+
+def read_kubelet_window(hours: int = HOSTFS_WINDOW_H) -> KubeletPressure | None:
+    """The kubelet's journal over the window; `None` when it could not be
+    read. No kubelet unit at all reads as an empty journal, i.e. quiet."""
+    try:
+        proc = subprocess.run(
+            [
+                "journalctl",
+                "-u",
+                KUBELET_UNIT,
+                "-o",
+                "short-iso",
+                "--no-pager",
+                "--since",
+                f"-{hours}h",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return parse_kubelet(proc.stdout)
+
+
+def _gb_b(n: int) -> str:
+    return f"{n / 1e9:,.0f} GB"
+
+
+def host_fs_line(fs: HostFs, kube: KubeletPressure | None, window_h: int = HOSTFS_WINDOW_H) -> str:
+    """The one line that reads the shared filesystem against the HOST's limit.
+
+    Standing half: free of size and used%, from `statvfs` -- `df`'s numbers,
+    not QA's daily sample. Kubelet half: eviction attempts in the window with
+    the resource and the first/last time, and the latest image-GC line's
+    usage against its high threshold, with the distance from HERE to that
+    threshold in GB, signed -- the number the user acts on.
+    """
+    if fs.free_b is None or fs.size_b is None or fs.size_b <= 0:
+        standing = f"{HOSTFS_PATH} fs unread"
+        used_pct = None
+    else:
+        used_pct = 100.0 * (fs.size_b - fs.free_b) / fs.size_b
+        standing = f"{_gb_b(fs.free_b)} free of {_gb_b(fs.size_b)} ({used_pct:.1f}% used)"
+    if kube is None:
+        k = f"{window_h}h: kubelet journal UNREAD (no claim about evictions)"
+    elif not kube.reclaims:
+        k = f"{window_h}h: kubelet quiet (0 eviction attempts)"
+    else:
+        names = sorted({r for _, r in kube.reclaims})
+        first = datetime.fromtimestamp(kube.reclaims[0][0], UTC).strftime("%m-%d %H:%MZ")
+        last = datetime.fromtimestamp(kube.reclaims[-1][0], UTC).strftime("%H:%MZ")
+        k = (
+            f"{window_h}h: {len(kube.reclaims)} kubelet eviction attempt(s) on "
+            f"{'/'.join(names)}, {first} -> {last}"
+        )
+    if kube is not None and kube.gc_high_pct is not None:
+        k += f"; image GC: usage {kube.gc_usage_pct}% vs high {kube.gc_high_pct}%"
+        if used_pct is not None and fs.size_b is not None and fs.free_b is not None:
+            over_b = (fs.size_b - fs.free_b) - fs.size_b * kube.gc_high_pct / 100
+            k += (
+                f" -- {'ABOVE' if over_b >= 0 else 'below'} the kubelet's threshold by "
+                f"{_gb_b(abs(int(over_b)))} (frees to {kube.gc_low_pct}%)"
+            )
+    return f"{standing} | {k}"
+
+
 def judge(
     unit: str,
     svc: dict[str, str],
@@ -2383,6 +2522,10 @@ def main() -> None:
     print(
         f"{'HOSTMEM':<10} {'(host)':<{width}}  "
         f"{host_memory_line(read_kernel_oom_window(), units, read_hostmem())}",
+        flush=True,
+    )
+    print(
+        f"{'HOSTFS':<10} {'(host)':<{width}}  {host_fs_line(read_hostfs(), read_kubelet_window())}",
         flush=True,
     )
     drift = drift_report()
