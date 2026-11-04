@@ -3913,6 +3913,35 @@ Format: what happened → root cause → error type → prevention tier
     clean day 446). An instrument that records a field "so the classes can
     be told apart" is unfinished until something tells them apart.
 
+155. **2026-11-04 08:15Z -- the poly ETA weighted today's remainder by the
+    DEAD run's walls: an instrument whose baseline is "the latest run" reads
+    a failed run as a baseline, and the failure that produced it was in a
+    ledger the instrument never opened.** `prior_market_wall` took each
+    market's latest `poly_sweep_log` wall inside 30h -- on 11-04 that was
+    the 11-03 run, whose 7,871 tails all stopped 410 (#154), so every wall
+    was the prices leg alone: 243 min summed against 378-398 on 11-01/11-02,
+    p90 1.26 s vs 4.6-5.0 s. The pace scale, meant to absorb a flat rate
+    difference, opened at x3.41 and walked to x1.78 by 6,400, because the
+    missing tail is not a flat share of the wall (the open, trade-heavy
+    markets lose the most and run first), so the line read LOW the whole
+    leg (`~256 min left` at 6,000 against `~475` at the window rate; the
+    done line settles which). Nothing broke: the ETA is advisory. The
+    shape is the finding: the sweep already RECORDS why 11-03 is not a
+    prior (`poly_tail_stops.status`), QA had just learned to read that
+    column (770d184), and the ETA loader stood one table over reading the
+    walls as if every run were the same kind of run. Fix: `load_prior`
+    walks the lookback back a day at a time past any day whose stop ledger
+    carries a class outside the absorbed {429, 408} (the set now owned by
+    the sweep, imported by QA -- one definition of "a clean run") and names
+    the refusal on the line (`11-03 refused: 7871 x 410`); with no clean
+    run in 7 days it falls back to the tagged mean rate. 4 tests, the
+    refusal arm red-verified by a mutant that refuses nothing. Rule: **a
+    baseline chosen by RECENCY inherits every failure mode of the run it
+    picks; before weighting by "the previous run", ask what record says
+    that run was the kind of run this one is, and read it -- the ledger
+    that disqualifies a run usually exists already, written for a
+    different reader.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
