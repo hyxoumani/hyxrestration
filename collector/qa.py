@@ -592,6 +592,21 @@ TAPE_SWEEP_STALL_H = 26.0
 # ~15h into the next. 48h is two full cycles -- the first one the absorber
 # needs, the second so a single skipped or aborted run is not read as rot.
 POLY_TAIL_ABSORB_GRACE_H = 48.0
+#: The tail-stop status classes the #81 absorber was MEASURED on: every one
+#: of the 3,418 stops over 2026-09-06..11-02 carried 429 or 408 (measured
+#: 2026-11-04 02:25Z). A class outside this set has a different remedy, which
+#: is why `trades_tail` records the status instead of only logging it -- and
+#: until this check nothing read the column: on 2026-11-03 all 7,871 stops
+#: carried 410 (Data API v1 retired, mistakes #154) and the run filed
+#: `errors: 0`.
+POLY_TAIL_STOP_CLASSES = frozenset({429, 408})
+#: Stops per sweep day the absorber's evidence covers: the worst clean day in
+#: the same window was 446 (2026-10-01), median ~25. Above this the daily
+#: re-fetch argument is unmeasured -- this is the edge of the evidence, not
+#: a loss model; the 11-03 retirement would have read 7,871.
+POLY_TAIL_STOP_BUDGET = 1000
+#: One sweep cadence: at the 10:00Z QA the prior day's stops are 25h+ old.
+POLY_TAIL_STOP_WINDOW_H = 24.0
 
 _failures: list[str] = []
 _skipped: list[str] = []
@@ -2578,6 +2593,7 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
 
     qa_tape_coverage(conn, now)
     qa_poly_tail_absorbed(conn, now)
+    qa_poly_tail_stop_classes(conn, now)
     qa_econ_resolution(conn, now)
     return pull_age_d
 
@@ -2696,6 +2712,56 @@ def qa_poly_tail_absorbed(conn, now: datetime) -> None:
         f"{len(rows)} truncated market(s) past the {POLY_TAIL_ABSORB_GRACE_H:g}h grace "
         f"all absorbed — {len(deeper)} out-fetched (thinnest margin +{deepest} prints), "
         f"{len(revisited)} re-visited by a later run at the same depth",
+    )
+
+
+def qa_poly_tail_stop_classes(conn, now: datetime) -> None:
+    """The stop ledger's STATUS column, read: the #81 absorber (next sweep
+    re-fetches a truncated tail) is licensed only for the classes it was
+    measured on and at the rate it was measured at. A new class is a new
+    failure with its own remedy (#154: 410 on every tail, 0 trades, errors
+    0); the absorbed classes past the measured band are the absorber
+    being asked for something nobody checked it can do. Both FAIL and the
+    detail names the class. `qa_poly_tail_absorbed` cannot see either: it
+    waits out a grace and then reads depth, and an endpoint-wide failure
+    re-visits every market at the same (zero) depth (#98)."""
+    name = "polymarket tail stops in the absorbed classes and band"
+    rows = conn.execute(
+        """
+        SELECT status, count(*) FROM poly_tail_stops
+        WHERE stopped_at >= ? - INTERVAL (?) HOUR
+        GROUP BY status ORDER BY 2 DESC
+        """,
+        [now, POLY_TAIL_STOP_WINDOW_H],
+    ).fetchall()
+    total = sum(n for _, n in rows)
+    by_class = ", ".join(f"{s if s is not None else 'none'} x{n}" for s, n in rows)
+    foreign = [(s, n) for s, n in rows if s not in POLY_TAIL_STOP_CLASSES]
+    if foreign:
+        check(
+            name,
+            False,
+            f"{sum(n for _, n in foreign)} of {total} stop(s) in the last "
+            f"{POLY_TAIL_STOP_WINDOW_H:g}h carry a status outside the absorbed "
+            f"classes {sorted(POLY_TAIL_STOP_CLASSES)}: {by_class} -- a class the "
+            f"next-sweep re-fetch was never measured to absorb",
+        )
+        return
+    if total > POLY_TAIL_STOP_BUDGET:
+        check(
+            name,
+            False,
+            f"{total} stop(s) in the last {POLY_TAIL_STOP_WINDOW_H:g}h ({by_class}) "
+            f"against a {POLY_TAIL_STOP_BUDGET} band edge (worst measured clean day "
+            f"446) -- the absorber is unmeasured at this rate",
+        )
+        return
+    check(
+        name,
+        True,
+        f"{total} stop(s) in the last {POLY_TAIL_STOP_WINDOW_H:g}h"
+        + (f" ({by_class})" if rows else "")
+        + f", budget {POLY_TAIL_STOP_BUDGET}",
     )
 
 

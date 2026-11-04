@@ -1701,3 +1701,14 @@ trades with `errors: 0` (mistakes #154); QA's `poly trade tail fresh
 (< 20h old)` now reads the tail's own endpoint (clean 1.5-6h at 10:00Z,
 one dead run ~25.5h; the first 36h budget passed the dead run). Contract:
 `https://data-api.polymarket.com/v2/openapi.json`.
+Since 2026-11-04 QA also READS the stop ledger's `status` column
+(`qa_poly_tail_stop_classes`, "polymarket tail stops in the absorbed
+classes and band"): the #81 absorber was measured on 429/408 only
+(3,418 stops, 2026-09-06..11-02, nothing else; `POLY_TAIL_STOP_CLASSES`),
+so any other class in the last 24h FAILS and is named, and the absorbed
+classes past `POLY_TAIL_STOP_BUDGET` = 1,000/day (worst clean day 446 on
+10-01, median ~25) FAIL as the edge of the evidence, not a loss model. The
+11-03 run would have read `7871 of 7871 ... 410 x7871`; the freshness
+check sees only a TOTAL tail death, this one a partial failure or a new
+class on the first day. Live baseline for the v2 endpoint, 2026-11-04
+02:25Z: one tail 134 prints in 0.26 s, 0 stops.

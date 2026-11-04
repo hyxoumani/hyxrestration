@@ -3905,6 +3905,13 @@ Format: what happened → root cause → error type → prevention tier
     endpoint whatever `errors` says -- and a run that beats its wall band by
     a third is as much a finding as one that breaches it: read the band
     from both sides.**
+    Follow-up 2026-11-04: the status column `trades_tail` records "because
+    the classes have different remedies" had NO READER -- the ledger held
+    only 429/408 for 58 days and then 7,871 x 410 and nothing compared the
+    two. `qa_poly_tail_stop_classes` now fails on any class outside the
+    measured set and on a count past the measured band (1,000/day; worst
+    clean day 446). An instrument that records a field "so the classes can
+    be told apart" is unfinished until something tells them apart.
 
 ## Pattern analysis (Step 5)
 
