@@ -4010,6 +4010,34 @@ Format: what happened → root cause → error type → prevention tier
     cannot be detected by the pass it blocks; only the launcher sees it,
     and only the journal/digest carries it to the user.
 
+158. **2026-11-05 09:56Z -- this pass held `hyxstream.duckdb` for 88.2 s
+    from an ad-hoc read-only attach and cost `collector.streamd` a 78.2 s
+    stall (6 failed flushes, 16,311 rows pending, 0 spilled, 0 lost).**
+    The attach was the right helper (`store.held_attach`, ledgered, hold
+    measured at the holder) and three of its four queries were bounded
+    reads of the new EXP-2007 tables (~0.2 s); the fourth was a
+    `max(recv_ts)` + filtered `count(*)` over `book_events` -- 6.86 BILLION
+    rows, no partition, no limit -- added to "see that books still land".
+    The stream's own stats line already carried that answer
+    (`kalshi_books_events` rising), and the heartbeat table I had just
+    opened was BUILT to carry it (`alive` TRUE on 147 of 240 book-minutes).
+    QA's 10:00Z `streamd flush stalls` check named the holder exactly
+    (`held by hyxlab-autoloop.service pid 1922676, hold >= 62s`), and the
+    holder's own reading (88.2 s) is the longer one, as #92/#103 say it
+    must be. Classification: `unbounded-adhoc-read` -- the #102 rule
+    ("know that you are buying that exclusion now") was followed for the
+    attach and forgotten for the query inside it; the cost of an attach is
+    the cost of its LONGEST query, and a full-table aggregate on the live
+    stream archive is never cheap. Rule: **an ad-hoc read of the live
+    stream archive carries a bounded predicate on `recv_ts` (or reads a
+    table that is small by construction) -- never `count(*)`/`max()` over
+    `book_events`/`stream_trades`/`stream_ticker`; and when the question is
+    "is data landing", read the daemon's stats line or the heartbeat table,
+    which exist so that nobody has to attach.** Also: DuckDB's `now()` is
+    the box's LOCAL clock (CST) against naive-UTC `recv_ts`, so the
+    `now() - interval 15 minute` count returned 6 hours of rows (90.7M) --
+    a second reason the number was worthless.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

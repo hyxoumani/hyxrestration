@@ -97,6 +97,15 @@
   multiple of the reporter's MEASURED max (0.335 s over 1,996 runs -> 15 s)
   and under `cadence - LOCK_WAIT_S` (`tests/test_systemd_units.py` derives
   the set from the timers, so a new 5-min unit must name its own).
+- An ad-hoc read attach costs the writer its LONGEST query, and on the
+  stream archive a full-table aggregate is a minute: `max(recv_ts)` +
+  `count(*)` over `book_events` (6.86B rows) held `hyxstream.duckdb` 88.2 s
+  on 2026-11-05 09:56Z and cost streamd a 78 s stall (mistakes #158).
+  Bound every predicate on `recv_ts`, or read a table that is small by
+  construction (`stream_heartbeats`, `stream_subscriptions`, `stream_gaps`);
+  "is data landing" is answered by the stats line or `alive`, never by an
+  attach. DuckDB `now()` is the box's LOCAL clock against naive-UTC
+  `recv_ts`: a `now() - interval` bound is 6 h off here.
 - A lock held ACROSS an operation is held only if the operation cannot
   drop it, and on POSIX any `close()` does. DuckDB's file lock is an
   `fcntl` record lock, and POSIX releases every record lock a process
