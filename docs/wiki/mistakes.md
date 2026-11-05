@@ -4038,6 +4038,33 @@ Format: what happened → root cause → error type → prevention tier
     `now() - interval 15 minute` count returned 6 hours of rows (90.7M) --
     a second reason the number was worthless.
 
+159. **2026-11-05 14:40Z -- QA's headroom model called `data/raw_frames` a
+    PLATEAU one day early, and the writer's first production prune had no
+    journal line to land in.** `qa._raw_frames_growth` returned 0 growth at
+    `held >= RAW_RETAIN_DAYS` (14), but `RawFrameWriter.prune` removes a
+    day directory only when `name < cutoff` with `cutoff = today - 14 d`:
+    the directory dated exactly 14 days ago STANDS until the next day, so a
+    full window is 15 directories (14 closed + the running day). Read live
+    on 11-05 with 14 held: the 10:00Z line said `0.00 raw_frames (14 of 14
+    days held, plateau)` while the 11-06 day (~15-17 GB, the per-day band
+    12-19 GB over 10-24..11-04) still had to land before the first prune on
+    11-07 -- on a disk the same line dated 3 days from full. And the prune
+    itself was unobservable: the writer counts `errors`/`last_error`/
+    `pruned` on its own thread and never raises, and `streamd` never called
+    `raw.stats()` -- neither stats publisher carried a raw field, so a
+    15 GB `rmtree` that failed (or succeeded) would have printed nothing
+    (the #54 rule: the line's absence is the only proof there is, and
+    there was no line to be absent). Classification: `model-boundary-off-
+    by-one` + `uninstrumented-cleanup`. Fix: `rawframes.held_day_dirs`
+    names the plateau (retain + 1), the QA model plateaus there and the
+    label says `N of 15 day dirs held`; `Daemon.report_stats()` merges the
+    writer's counters (+ `raw_last_error`) into both stats publishers.
+    Regression tests red against both reverts; the prune walked on the
+    live calendar (11-06 keeps 10-23, 11-07 removes it). Rule: **a model
+    of a retention window reads the pruner's comparison, not its constant
+    -- an exclusive cutoff holds N+1; and a cleanup that counts its own
+    errors is instrumented only when a publisher renders the count.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

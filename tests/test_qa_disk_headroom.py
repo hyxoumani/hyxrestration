@@ -157,8 +157,12 @@ def _raw_day(raw: Path, day: str, size: int) -> None:
 def test_raw_frames_add_a_days_frames_per_day_until_the_window_is_full(tmp_path):
     """Measured 2026-10-25: 13-17 GB/day of wire with 3 of 14 days held --
     the model's largest term. It is the newest COMPLETE day (today's is
-    partial), and once RETAIN_DAYS directories exist the prune makes it a
-    plateau: zero, not negative and not still growing."""
+    partial), and once `held_day_dirs(RETAIN_DAYS)` = 15 directories exist
+    the prune makes it a plateau: zero, not negative and not still growing.
+    Not 14: the prune's cutoff is exclusive, so the running day stands
+    beside 14 closed ones -- read live 2026-11-05 with 14 held, the model
+    saying plateau and one more ~15 GB day still to land before the first
+    prune (11-07)."""
     raw = tmp_path / "raw_frames"
     now = qa.datetime(2026, 10, 25, 20, 0, tzinfo=qa.UTC)
     assert qa._raw_frames_growth(raw, 14, now) == (0.0, 0)
@@ -167,9 +171,11 @@ def test_raw_frames_add_a_days_frames_per_day_until_the_window_is_full(tmp_path)
     _raw_day(raw, "2026-10-23", 6 * GB)
     _raw_day(raw, "2026-10-24", 17 * GB)
     assert qa._raw_frames_growth(raw, 14, now) == (17 * GB, 3)
-    for i in range(11):  # 10-12 .. 10-22: the window is full at 14
+    for i in range(11):  # 10-12 .. 10-22: 14 held, still filling
         _raw_day(raw, f"2026-10-{12 + i:02d}", 10 * GB)
-    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 14)
+    assert qa._raw_frames_growth(raw, 14, now) == (17 * GB, 14)
+    _raw_day(raw, "2026-10-11", 10 * GB)  # the 15th: the window is full
+    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 15)
 
 
 def test_raw_frames_are_a_term_of_the_model(tmp_path, monkeypatch):
@@ -182,7 +188,7 @@ def test_raw_frames_are_a_term_of_the_model(tmp_path, monkeypatch):
 
     _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
     detail = "\n".join(lines)
-    assert "+ 4.00 raw_frames (2 of 14 days held, filling)" in detail, detail
+    assert "+ 4.00 raw_frames (2 of 15 day dirs held, filling)" in detail, detail
     assert "burn 12.00 GB/day" in detail, detail  # 1 live + 7 copies + 4 raw
 
 

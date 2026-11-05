@@ -651,3 +651,12 @@
   shared disk is the USER's call; enumerate first (`du -sx -BG`, then
   `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
   price our own reflinked slots with `btrfs filesystem du`, never `du`.
+- A retention window's plateau is the PRUNER's comparison, not its
+  constant: `RawFrameWriter.prune` drops `name < today - RETAIN_DAYS`, so
+  with 14 it holds 15 day directories (14 closed + the running day) and
+  the first prune of a directory lands the day AFTER it turns 14 days old
+  (`rawframes.held_day_dirs`, mistakes #159). A model that plateaus at the
+  constant is one day's frames (~15 GB) short. The writer counts its own
+  prune errors and never raises; the stream stats line carries
+  `raw_pruned_days`/`raw_errors`/`raw_last_error` since 2026-11-05 -- grep
+  the journal for `raw_pruned_days': 1` on 11-07 to prove the first prune.

@@ -860,6 +860,22 @@ class Daemon:
         # Per-connection minute heartbeats + subscription log (EXP-2007).
         self._hb = HeartbeatBook(store)
 
+    def report_stats(self) -> dict:
+        """The dict both stats publishers render: the daemon's counters plus
+        the raw-frame writer's (`raw_written/dropped/errors/queued_bytes/
+        pruned_days`, and `raw_last_error` when one is set). The writer
+        counts its errors and never raises -- `prune` runs `rmtree` on the
+        writer thread -- so without this merge a failed or successful prune
+        of a 15 GB day directory left NO journal line (the writer's first
+        production prune is due 2026-11-07, on a disk 3 days from full)."""
+        raw = getattr(self, "raw", None)  # `__new__`-assembled Daemons (tests)
+        if raw is None:
+            return self.stats
+        merged: dict = {**self.stats, **raw.stats()}
+        if raw.last_error:
+            merged["raw_last_error"] = raw.last_error
+        return merged
+
     @property
     def hb(self) -> HeartbeatBook:
         """Built on first use when `__init__` did not run (tests assemble a
@@ -1599,7 +1615,7 @@ class Daemon:
             now = asyncio.get_event_loop().time()
             if now - last_stats >= STATS_SECS:
                 sock, throttled = self.sock_throttle.note()
-                _log(stats_line("", self.stats, out.rows, sock))
+                _log(stats_line("", self.report_stats(), out.rows, sock))
                 if throttled:
                     # Its own line, so a grep for the word finds the PERIOD
                     # it landed in, not every stats line ever printed.
@@ -1878,7 +1894,7 @@ class Daemon:
             # the daemon is going down, which is exactly what they should say.
             self.hb.roll_partial()
             self._final_drain()
-            _log(stats_line("shutdown; ", self.stats, None, None))
+            _log(stats_line("shutdown; ", self.report_stats(), None, None))
 
 
 def main() -> None:

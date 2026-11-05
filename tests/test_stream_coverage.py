@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import gzip
+import inspect
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -22,7 +23,7 @@ import pytest
 
 from collector import streamd
 from collector.bookcov import BookCoverage
-from collector.rawframes import RawFrameWriter, _codec
+from collector.rawframes import RawFrameWriter, _codec, held_day_dirs
 from collector.venues import kalshi_ws
 from hyxlab.streamstore import (
     _COLS,
@@ -673,6 +674,47 @@ def test_raw_frame_retention_prunes_only_old_day_directories(tmp_path):
     assert left == ["2026-10-09", "2026-10-23", "notes"]
     assert w.stats()["raw_pruned_days"] == 2
     assert RawFrameWriter(tmp_path, retain_days=None).prune() == []
+
+
+def test_the_plateau_is_retain_days_plus_the_running_day(tmp_path):
+    """`prune` keeps the directory dated exactly RETAIN_DAYS ago (the cutoff
+    is exclusive), so a full window is 15 directories with the default 14 --
+    `held_day_dirs` is the number a capacity model must plateau at. Walked
+    on the live calendar: on 11-06 the 10-23 directory (14 days old) still
+    stands; it goes on 11-07."""
+    assert held_day_dirs(14) == 15
+    assert held_day_dirs(None) is None
+    for name in ("2026-10-23", "2026-10-24", "2026-11-06"):
+        (tmp_path / name).mkdir()
+    w = RawFrameWriter(tmp_path, retain_days=14)
+    assert w.prune(datetime(2026, 11, 6, 0, 5, tzinfo=UTC)) == []
+    assert w.prune(datetime(2026, 11, 7, 0, 5, tzinfo=UTC)) == ["2026-10-23"]
+    assert w.prune(datetime(2026, 11, 7, 23, 55, tzinfo=UTC)) == []
+
+
+def test_the_stats_line_carries_the_raw_writers_counters_and_last_error(tmp_path):
+    """Both stats publishers render `Daemon.report_stats()`, which merges the
+    writer's counters: a prune (or a prune that failed, counted on the writer
+    thread and never raised) has a journal line. Without a writer the dict
+    is the daemon's own."""
+    store = StreamStore(tmp_path / "s.duckdb")
+    d = streamd.Daemon(store, {})
+    d.stats["kalshi_trades"] = 3
+    assert d.report_stats() == {"kalshi_trades": 3}
+    (tmp_path / "raw" / "2020-01-01").mkdir(parents=True)
+    w = RawFrameWriter(tmp_path / "raw", retain_days=14)
+    d = streamd.Daemon(store, {}, raw=w)
+    d.stats["kalshi_trades"] = 3
+    assert w.prune() == ["2020-01-01"]
+    got = d.report_stats()
+    assert got["kalshi_trades"] == 3 and got["raw_pruned_days"] == 1
+    assert "raw_last_error" not in got
+    w.last_error = "prune: PermissionError: x"
+    assert d.report_stats()["raw_last_error"] == "prune: PermissionError: x"
+    src = inspect.getsource(streamd)
+    assert src.count("stats_line(") == 3
+    assert src.count('stats_line("", self.report_stats()') == 1
+    assert src.count('stats_line("shutdown; ", self.report_stats()') == 1
 
 
 def test_the_writer_thread_prunes_at_start(tmp_path):

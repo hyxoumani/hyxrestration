@@ -31,6 +31,7 @@ import duckdb
 from collector.backup import DBS, backup_one
 from collector.poly_sweep import TAIL_STOP_CLASSES
 from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
+from collector.rawframes import held_day_dirs as raw_held_day_dirs
 from collector.venues import alfred
 from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run, run_completed_at
@@ -1738,7 +1739,11 @@ DISK_SERIES_WINDOW_D = 14.0
 #: directories pruned past `RAW_RETAIN_DAYS`, so a PLATEAU once the window is
 #: full and a day's frames of growth per day until then. Measured 2026-10-25:
 #: 13-17 GB/day, 3 of 14 days held -- the model's largest term and, until
-#: this pass, absent from it (mistakes #139).
+#: this pass, absent from it (mistakes #139). The window is FULL at
+#: `held_day_dirs(RAW_RETAIN_DAYS)` = 15 directories, not 14: the prune's
+#: cutoff is exclusive, so the running day stands beside 14 closed ones
+#: (read 2026-11-05 with 14 held and the model saying plateau, one day's
+#: ~15 GB before the first production prune on 11-07).
 RAW_FRAMES_DIR = "data/raw_frames"
 #: How long the slot-sharing measurement may take before the model falls back
 #: to full copies. Measured 2026-10-25 on 14 slots / 534 GB nominal: seconds.
@@ -1799,7 +1804,7 @@ def _raw_frames_growth(
     if not days:
         return 0.0, 0
     held = len(days)
-    if held >= retain_days:
+    if held >= (raw_held_day_dirs(retain_days) or 0):
         return 0.0, held
     today = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
     complete = [p for p in days if p.name < today]
@@ -1965,7 +1970,7 @@ def qa_disk_headroom(
         )
         raw_how = (
             f"{raw_rate / 1e9:.2f} raw_frames"
-            f" ({raw_held} of {RAW_RETAIN_DAYS} days held"
+            f" ({raw_held} of {raw_held_day_dirs(RAW_RETAIN_DAYS)} day dirs held"
             f"{', filling' if raw_rate > 0 else ', plateau'})"
         )
         model = None

@@ -59,6 +59,17 @@ RETAIN_DAYS = 14
 PRUNE_SECS = 3600.0
 
 
+def held_day_dirs(retain_days: int | None) -> int | None:
+    """How many `<YYYY-MM-DD>` directories the prune leaves standing once
+    the window is full: `retain_days` CLOSED days plus the running day.
+    `prune` removes a directory dated MORE than `retain_days` before now
+    (`name < cutoff`), so the directory dated exactly `retain_days` ago is
+    kept until the next day -- with the default 14 the plateau is 15 day
+    directories, and a model that calls 14 held a plateau is one day's
+    frames (~15 GB) short. None when nothing is pruned."""
+    return None if retain_days is None else retain_days + 1
+
+
 def _codec() -> tuple[str, Any]:
     """(extension, opener(path) -> binary writable file in APPEND mode).
 
