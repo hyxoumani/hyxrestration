@@ -34,7 +34,7 @@ PHASE1_OPEN = {
 def test_phase1_is_books_only_and_the_lists_stay_clean():
     w = load_watchlist()
     book, polled = w["kalshi_book_series"], w["kalshi_series"]
-    assert PHASE1 <= set(book)
+    assert set(book) >= PHASE1
     assert not PHASE1 & set(polled), "a series in kalshi_series would start the REST collector polling it"
     assert len(book) == len(set(book))
     assert not set(book) & set(polled)
@@ -44,7 +44,7 @@ def test_phase1_is_books_only_and_the_lists_stay_clean():
 def test_a_phase1_series_reaches_the_daemons_book_universe(tmp_path):
     w = load_watchlist()
     d = streamd.Daemon(StreamStore(tmp_path / "s.duckdb"), w)
-    assert PHASE1 <= set(d._book_series())
+    assert set(d._book_series()) >= PHASE1
     assert len(d._book_series()) == len(set(w["kalshi_series"]) | set(w["kalshi_book_series"]))
 
 
