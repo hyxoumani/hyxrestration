@@ -1825,23 +1825,42 @@ def _record_free(series: Path, now: datetime, free: int) -> None:
         fh.write(json.dumps({"ts": now.isoformat(), "free": int(free)}) + "\n")
 
 
-def _fs_burn(
-    series: Path, now: datetime, free: int, window_d: float = DISK_SERIES_WINDOW_D
-) -> tuple[float | None, float]:
-    """Bytes/day the FILESYSTEM is losing, from its own free-space series, as
-    `(rate, span_days)`.
+#: A sample-to-sample RISE in free space larger than this share of the
+#: earlier sample resets the series: everything older describes a disk that no
+#: longer exists. The burn is the WORST rate over the window, so without the
+#: reset a deletion inside the window is netted into every older sample's rate
+#: and the check prints the optimistic number for as long as the window is
+#: (measured 2026-11-05: the user freed 339 GB at 14:25Z, 241 -> 572 GB; the
+#: 11-06 run would have read ~30 GB/day over 12 d against a ~70 GB/day burn
+#: on both sides of the step). The 11-02 -> 11-03 kubelet image GC (+24 GB,
+#: +6.7%) is noise under this, and the next day's rate read the same either way.
+DISK_RISE_RESET_FRAC = 0.10
+#: Two samples a day apart by the clock are a few seconds either side of 1.0 d
+#: by the run's own start time, and `age < 1.0` dropped the youngest one on
+#: the early side (the 11-03 line read its live pace "over 2.0d" with a day-old
+#: sample present). A day old is a day old to within the timer's jitter.
+SAMPLE_DAY_SLACK_D = 300.0 / 86400.0
 
-    The rate is the WORST over every sample at least a day old inside the
-    window, not the average over the window: a step in the burn must show
-    from its first day, and an average over 14 quiet days hides it for two
-    weeks. `None` when no sample is a day old yet -- a sub-day delta is the
-    sampling period wearing the quantity's name (mistakes #92) -- with the
-    oldest age available as the span, so the caller can say how young.
-    """
-    best: float | None = None
-    span = 0.0
+
+def _fs_samples(
+    series: Path, now: datetime, free: int, window_d: float = DISK_SERIES_WINDOW_D
+) -> list[tuple[float, int]]:
+    """`(age_days, free)` for every sample inside the window, oldest first,
+    truncated to the samples at or after the youngest reset rise
+    (`DISK_RISE_RESET_FRAC`). The live reading `free` is the series' youngest
+    point for the reset -- it is recorded only AFTER the rate is taken, so a
+    rise since the last sample is otherwise invisible on the very day it
+    matters. Empty when the series does not exist."""
+    rows = _fs_rows(series, now, window_d)
+    reset = _fs_reset_index(rows + [(0.0, free)])
+    return rows[reset:]
+
+
+def _fs_rows(series: Path, now: datetime, window_d: float) -> list[tuple[float, int]]:
+    """Every parseable `(age_days, free)` inside the window, oldest first."""
+    rows: list[tuple[float, int]] = []
     if not series.exists():
-        return None, span
+        return rows
     for line in series.read_text().splitlines():
         try:
             rec = json.loads(line)
@@ -1852,8 +1871,55 @@ def _fs_burn(
         age = (now - ts).total_seconds() / 86400.0
         if age <= 0 or age > window_d:
             continue
+        rows.append((age, then_free))
+    rows.sort(key=lambda r: -r[0])
+    return rows
+
+
+def _fs_reset_index(rows: list[tuple[float, int]]) -> int:
+    """Index of the first sample AFTER the youngest reset rise, 0 if none."""
+    idx = 0
+    for i in range(1, len(rows)):
+        prev, cur = rows[i - 1][1], rows[i][1]
+        if prev > 0 and cur - prev > DISK_RISE_RESET_FRAC * prev:
+            idx = i
+    return idx
+
+
+def _fs_reset(
+    series: Path, now: datetime, free: int, window_d: float = DISK_SERIES_WINDOW_D
+) -> tuple[int, float] | None:
+    """`(rise_bytes, age_days)` of the youngest reset rise inside the window --
+    the age is the first post-rise point's, 0.0 when that is the live reading
+    `free` -- or None when there is none."""
+    rows = _fs_rows(series, now, window_d) + [(0.0, free)]
+    i = _fs_reset_index(rows)
+    if not i:
+        return None
+    return rows[i][1] - rows[i - 1][1], rows[i][0]
+
+
+def _fs_burn(
+    series: Path, now: datetime, free: int, window_d: float = DISK_SERIES_WINDOW_D
+) -> tuple[float | None, float]:
+    """Bytes/day the FILESYSTEM is losing, from its own free-space series, as
+    `(rate, span_days)`.
+
+    The rate is the WORST over every sample at least a day old inside the
+    window, not the average over the window: a step in the burn must show
+    from its first day, and an average over 14 quiet days hides it for two
+    weeks. The mirror case is a step in FREE SPACE: a deletion nets into every
+    older sample's rate, so the series restarts at a reset rise
+    (`DISK_RISE_RESET_FRAC`) and older samples do not vote. `None` when no
+    retained sample is a day old yet -- a sub-day delta is the sampling period
+    wearing the quantity's name (mistakes #92) -- with the oldest retained age
+    as the span, so the caller can say how young.
+    """
+    best: float | None = None
+    span = 0.0
+    for age, then_free in _fs_samples(series, now, free, window_d):
         span = max(span, age)
-        if age < 1.0:
+        if age < 1.0 - SAMPLE_DAY_SLACK_D:
             continue
         rate = (then_free - free) / age
         best = rate if best is None else max(best, rate)
@@ -1873,17 +1939,8 @@ def _fs_burn_latest(
     """
     best_age: float | None = None
     rate: float | None = None
-    if not series.exists():
-        return None, 0.0
-    for line in series.read_text().splitlines():
-        try:
-            rec = json.loads(line)
-            ts = datetime.fromisoformat(rec["ts"])
-            then_free = int(rec["free"])
-        except (ValueError, KeyError, TypeError):
-            continue
-        age = (now - ts).total_seconds() / 86400.0
-        if age < 1.0 or age > window_d:
+    for age, then_free in _fs_samples(series, now, free, window_d):
+        if age < 1.0 - SAMPLE_DAY_SLACK_D:
             continue
         if best_age is None or age < best_age:
             best_age = age
@@ -2004,6 +2061,12 @@ def qa_disk_headroom(
         series = Path(DISK_SERIES if series is None else series)
         fs_rate, fs_span = _fs_burn(series, now, free)
         latest_rate, latest_age = _fs_burn_latest(series, now, free)
+        reset = _fs_reset(series, now, free)
+        reset_how = (
+            f"; series reset by a +{reset[0] / 1e9:.0f} GB rise {reset[1]:.1f}d ago"
+            if reset is not None
+            else ""
+        )
         _record_free(series, now, free)
         if fs_rate is not None:
             burn = fs_rate
@@ -2015,16 +2078,17 @@ def qa_disk_headroom(
                 else ""
             )
             source = (
-                f" measured on the filesystem over {fs_span:.1f}d{latest}"
+                f" measured on the filesystem over {fs_span:.1f}d{latest}{reset_how}"
                 f" (rotation model {model / 1e9:.2f} GB/day = {model_how})"
                 if model is not None
-                else f" measured on the filesystem over {fs_span:.1f}d{latest} (no rotation model)"
+                else f" measured on the filesystem over {fs_span:.1f}d{latest}{reset_how}"
+                " (no rotation model)"
             )
         else:
             burn = model
             source = (
                 f" = {model_how}, measured over {span:.1f}d;"
-                f" free-space series {fs_span:.1f}d young, not yet a rate"
+                f" free-space series {fs_span:.1f}d young, not yet a rate{reset_how}"
                 if model is not None
                 else ""
             )

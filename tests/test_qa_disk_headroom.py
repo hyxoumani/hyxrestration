@@ -415,11 +415,93 @@ def test_samples_outside_the_window_do_not_vote(tmp_path):
 
 
 def test_a_filesystem_being_freed_is_not_filling(tmp_path, monkeypatch):
+    """A slow drain (+2.6% over two days, under the reset share) is a disk that
+    is not filling; a step larger than the share is a reset instead."""
     db = _live(tmp_path, "a", 1 * GB)
     bdir = tmp_path / "backups"
     _rotation(bdir, "a", [1 * GB, 2 * GB])
     monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB))
-    _sample(qa.DISK_SERIES, 2.0, 700 * GB)
+    _sample(qa.DISK_SERIES, 2.0, 780 * GB)
     failed, lines = _run(dbs=[db], backup_dir=bdir, min_days=1e9)
     assert failed == set()
     assert "filesystem not filling over 2.0d" in "\n".join(lines)
+
+
+def test_a_rise_in_free_space_resets_the_series_so_a_deletion_is_not_netted_into_the_burn(
+    tmp_path,
+):
+    """The 2026-11-05 shape: 70 GB/day for twelve days, then the user frees
+    339 GB, then 70 GB/day again. The max over the whole window nets the
+    deletion into every older sample and reads ~30 GB/day; samples older than
+    a reset rise describe a disk that no longer exists and do not vote."""
+    series = tmp_path / "s.jsonl"
+    now = qa.datetime.now(qa.UTC)
+    _sample(series, 4.0, 400 * GB)
+    _sample(series, 3.0, 330 * GB)
+    _sample(series, 2.0, 260 * GB)
+    _sample(series, 1.0, 600 * GB)  # +340 GB, the reset rise
+    rate, span = qa._fs_burn(series, now, 530 * GB)
+    assert rate == pytest.approx(70 * GB, rel=0.01)
+    assert span == pytest.approx(1.0, abs=0.01)
+    assert qa._fs_reset(series, now, 530 * GB) == (340 * GB, pytest.approx(1.0, abs=0.01))
+
+
+def test_a_small_rise_is_noise_and_does_not_reset(tmp_path):
+    """The 11-02 -> 11-03 kubelet image GC: +24 GB on 357 GB (+6.7%) is under
+    the reset share, and the worst day-old sample still carries the burn."""
+    series = tmp_path / "s.jsonl"
+    now = qa.datetime.now(qa.UTC)
+    _sample(series, 3.0, 420 * GB)
+    _sample(series, 2.0, 357 * GB)
+    _sample(series, 1.0, 381 * GB)
+    rate, span = qa._fs_burn(series, now, 307 * GB)
+    assert qa._fs_reset(series, now, 307 * GB) is None
+    assert rate == pytest.approx(74 * GB, rel=0.01) and span == pytest.approx(3.0, abs=0.01)
+
+
+def test_after_a_reset_with_no_day_old_sample_the_line_names_the_rise(tmp_path, monkeypatch):
+    """The morning after the deletion: the only post-rise sample is sub-day, so
+    the model is the burn and the line says why the series cannot speak."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(560 * GB))
+    _sample(qa.DISK_SERIES, 2.0, 300 * GB)
+    _sample(qa.DISK_SERIES, 1.0, 241 * GB)
+    _sample(qa.DISK_SERIES, 0.8, 572 * GB)
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=90.0)
+    detail = "\n".join(lines)
+    assert "burn 8.00 GB/day = 1.00 live + 7.00 backups" in detail
+    assert "series 0.8d young, not yet a rate; series reset by a +331 GB rise 0.8d ago" in detail
+
+
+def test_a_day_old_sample_is_a_day_old_to_within_the_timers_jitter(tmp_path):
+    """Two 10:00Z runs a few seconds apart on the clock: the youngest sample
+    is 0.9999 d old and must vote (the 11-03 line read its pace 'over 2.0d')."""
+    series = tmp_path / "s.jsonl"
+    now = qa.datetime.now(qa.UTC)
+    _sample(series, 2.0, 820 * GB)
+    _sample(series, 1.0 - 30 / 86400, 810 * GB)
+    rate, age = qa._fs_burn_latest(series, now, 800 * GB)
+    assert age == pytest.approx(1.0, abs=0.001)
+    assert rate == pytest.approx(10 * GB, rel=0.01)
+
+
+def test_a_rise_since_the_last_sample_resets_on_the_day_it_lands(tmp_path, monkeypatch):
+    """The 11-06 10:00Z shape exactly: twelve falling samples, the last one
+    241 GB, and the LIVE reading 565 GB. The live reading is recorded only
+    after the rate is taken, so without it as the series' youngest point the
+    run would read the whole window's max (~30 GB/day over 12 d) and print
+    the optimistic number for a day. It is a reset: no retained sample, the
+    model is the burn, and the line names the rise."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(565 * GB))
+    for d, free in ((12.0, 922), (3.0, 381), (2.0, 307), (1.0, 241)):
+        _sample(qa.DISK_SERIES, d, free * GB)
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=90.0)
+    detail = "\n".join(lines)
+    assert "burn 8.00 GB/day = 1.00 live + 7.00 backups" in detail
+    assert "series 0.0d young, not yet a rate; series reset by a +324 GB rise 0.0d ago" in detail
+    assert "measured on the filesystem" not in detail

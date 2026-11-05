@@ -660,3 +660,13 @@
   prune errors and never raises; the stream stats line carries
   `raw_pruned_days`/`raw_errors`/`raw_last_error` since 2026-11-05 -- grep
   the journal for `raw_pruned_days': 1` on 11-07 to prove the first prune.
+- A worst-over-window rate assumes the quantity is MONOTONE inside the
+  window. `qa._fs_burn` (max burn over 14 d of free-space samples) nets
+  a deletion into every older sample: the 11-06 run would have printed
+  30 GB/day over 12 d the morning after the user freed 339 GB, against
+  ~70 GB/day on both sides of the step (mistakes #160). Samples before a
+  rise above `DISK_RISE_RESET_FRAC` do not vote, the LIVE reading is the
+  series' last point for that test (the series is appended after the
+  rate is read), and the line says `series reset by a +N GB rise`. The
+  day after a cleanup, the model is the burn; the measured burn returns
+  the day after that.

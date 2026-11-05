@@ -4064,6 +4064,37 @@ Format: what happened → root cause → error type → prevention tier
     of a retention window reads the pruner's comparison, not its constant
     -- an exclusive cutoff holds N+1; and a cleanup that counts its own
     errors is instrumented only when a publisher renders the count.**
+160. **2026-11-05 20:45Z -- QA's headroom burn would have netted the user's
+    +339 GB deletion into twelve days of samples and printed 30 GB/day
+    against a ~70 GB/day burn on both sides of the step.** `qa._fs_burn` is
+    the MAX rate over every day-old sample in a 14-day window -- built so a
+    step UP in the burn shows from its first day (#139 era). The mirror
+    step, a rise in FREE space, has the opposite effect under the same max:
+    every sample older than the deletion carries `(then_free - free) / age`
+    with the deletion subtracted, and the max among them is the oldest,
+    most-diluted one. Simulated on the real series for the 11-06 10:00Z run
+    at 565 GB free: `29.7 GB/day over 12.0d`, horizon 19 d; the pre-step
+    line read 70.18 and the post-step pace is the same tenants. Verdict
+    unaffected (FAIL either way), the printed burn 2.3x optimistic for a day
+    -- and the one day the line reads first after a USER cleared the disk is
+    the day it is read. Two more in the same lens: (a) the live reading is
+    appended to the series AFTER the rate is taken, so a reset keyed on the
+    series alone cannot see a rise that landed since the last sample -- the
+    first implementation here missed exactly the 11-06 case, caught by
+    simulating that run against the real file before shipping; (b) `age <
+    1.0` dropped the youngest sample when the run started seconds before
+    yesterday's did (the 11-03 line read its live pace `over 2.0d` with a
+    day-old sample present). Classification: `asymmetric-step-handling` +
+    `instrument-blind-to-its-own-latest-reading`. Fix: samples before the
+    youngest rise above `DISK_RISE_RESET_FRAC` (10% of the earlier point;
+    the 11-02->03 image GC's +6.7% stays noise) do not vote, with the live
+    reading as the series' youngest point; the line says `series reset by
+    a +N GB rise Xd ago`; a day old is a day old to within 5 min of timer
+    jitter. Mutants red on all five tests. Rule: **a max over a window
+    assumes the quantity is monotone inside it; name the step in the
+    OTHER direction and restart the window there -- and a rate taken
+    against a series that is written after the read must include the
+    reading as the series' last point.**
 
 ## Pattern analysis (Step 5)
 
