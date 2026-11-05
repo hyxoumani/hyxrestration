@@ -134,8 +134,19 @@ def test_a_read_only_attach_excludes_the_writer_from_the_open_until_the_close(pr
     proc = _writer(repo, probe_db, runtime)
     try:
         time.sleep(1.0)  # let the writer prove the file is writable first
-        opened = time.time()
-        conn = duck_connect(str(probe_db), read_only=True)
+        # The writer reopens in a tight loop, so OUR open can land on one of its
+        # brief holds and be refused: the same exclusion, the other way round.
+        # Retry; `opened` is stamped on the attempt that succeeded.
+        conn = None
+        deadline = time.time() + 5.0
+        while conn is None:
+            opened = time.time()
+            try:
+                conn = duck_connect(str(probe_db), read_only=True)
+            except Exception:
+                if time.time() >= deadline:
+                    raise
+                time.sleep(0.02)
         # DELIBERATELY IDLE. The claim is that the OPEN excludes, so the
         # connection must not run a single query in this window.
         time.sleep(IDLE_BEFORE_QUERY_S)
