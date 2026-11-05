@@ -4094,7 +4094,16 @@ Format: what happened → root cause → error type → prevention tier
     assumes the quantity is monotone inside it; name the step in the
     OTHER direction and restart the window there -- and a rate taken
     against a series that is written after the read must include the
-    reading as the series' last point.**
+    reading as the series' last point.** Class swept the same pass (reports.md
+    rule), the other window readers in `qa.py`: `_rotation_growth` is
+    first-vs-last over slot sizes of archives nothing deletes from (no
+    `DELETE`/vacuum in streamstore/store, slots 122 -> 201 GB monotone
+    10-30..11-05) and is printed beside the measurement, never over it;
+    the sweep-shrink tripwire's prior-10d max is the baseline a one-day
+    enumeration spike only RAISES (the conservative side, absorbed by the
+    0.75 ratio by design); the batch budget's per-unit max wall is the
+    verdict's worst case by intent and a step DOWN is re-measured as a new
+    band (ops.md). One instance, three reasoned.
 
 ## Pattern analysis (Step 5)
 
