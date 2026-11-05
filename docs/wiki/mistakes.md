@@ -3978,6 +3978,38 @@ Format: what happened → root cause → error type → prevention tier
     resource the same day, starting with the one the rule was first learned
     on.**
 
+157. **2026-11-04 14:15Z -> 2026-11-05 02:15Z -- three consecutive autoloop
+    runs were filed as launcher CRASHES (`RECENT hyxlab-autoloop.service 3x
+    in 24h ... exit-code/1 x3`) while nothing in the repo had broken: the
+    box's Claude OAuth session had lapsed.** Each run printed one line,
+    `Failed to authenticate: OAuth session expired and could not be
+    refreshed`, and exited 1 at the first `claude -p` call, 0.4 s of CPU;
+    18 hours of the ladder (the 11-04 poly done line, the 10:00Z QA read,
+    the kalshi done line) went unread and no status entry says why. The
+    usage-limit refusal had been given exactly this treatment on 2026-10-24
+    (sentinel in the kept output -> exit 75, the refusal named as a USER
+    item), and the comment above that code said "nothing in this repo can
+    fix a usage limit" -- true of a login too, and the working mode's own
+    text names "a user-only credential" as the one thing a pass stops FOR
+    and NAMES. Nobody asked what else `claude -p` can refuse with. Fix:
+    `scripts/autoloop.sh` greps the kept output for the auth sentinel as
+    well (`Failed to authenticate|OAuth session expired|Not logged in|run
+    /login`) and exits 75 with `claude REFUSED (expired credential, a USER
+    item: re-authenticate claude on this box -- no pass can; the timer is
+    the retry)`; `tests/test_autoloop_budget.py` drives the real script
+    against a fake claude that prints the venue's line; shipped by RENAME
+    while PID 1099938 (this run's own launcher) held the old inode (#123).
+    Classification: `incomplete-generalisation` -- a refusal class was
+    handled by its first instance rather than by its SHAPE (child exits 1
+    with a one-line reason the repo cannot act on). Rule: **when a child's
+    exit status is overloaded (1 = any failure), enumerate the REASONS it
+    prints for the ones that are not yours to fix, and file each as the
+    user item it is -- the digest's RECENT line reads `exit-code/75` as a
+    skip and `exit-code/1` as a crash, and a crash is what the next pass
+    will spend its budget chasing.** Corollary: an expired credential
+    cannot be detected by the pass it blocks; only the launcher sees it,
+    and only the journal/digest carries it to the user.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

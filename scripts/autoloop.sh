@@ -42,6 +42,16 @@
 # and `collector.breadth` already use for "declined, try again later", and
 # the one `collector.health` documents as a skip, not a crash. Any other
 # non-zero exit still passes through unchanged.
+#
+# An expired credential is the same shape with a different owner. When the
+# box's OAuth session has lapsed, `claude -p` prints `Failed to authenticate:
+# OAuth session expired and could not be refreshed` and exits 1 at the first
+# call; three consecutive runs (2026-11-04 14:15Z, 20:15Z, 2026-11-05 02:15Z)
+# were filed `exit-code/1 x3` as a launcher crash while nothing in this repo
+# had broken and nothing in it can log back in (mistakes #157). That is the
+# working mode's "user-only credential -- stop and NAME it", so the launcher
+# names it: the same sentinel grep against the kept output, exit 75, with
+# the line that says whose item it is.
 set -euo pipefail
 
 main() {
@@ -79,6 +89,11 @@ main() {
   local limit_line
   if limit_line=$(grep -m1 -E "hit your (weekly|usage|session|daily|monthly) limit|usage limit" "$capture"); then
     echo "[autoloop] claude REFUSED (usage limit, a USER item; the timer is the retry): ${limit_line} -- exit 75 (EX_TEMPFAIL), not ${rc}"
+    return 75
+  fi
+  local auth_line
+  if auth_line=$(grep -m1 -E "Failed to authenticate|OAuth session expired|Not logged in|run /login" "$capture"); then
+    echo "[autoloop] claude REFUSED (expired credential, a USER item: re-authenticate claude on this box -- no pass can; the timer is the retry): ${auth_line} -- exit 75 (EX_TEMPFAIL), not ${rc}"
     return 75
   fi
   return "$rc"

@@ -38,6 +38,7 @@ case "${FAKE_MODE:-hang}" in
   hang) exec sleep 60 ;;
   exit) exit "${FAKE_RC:-0}" ;;
   limit) echo "You've hit your weekly limit · resets 1pm (America/Chicago)"; exit 1 ;;
+  auth) echo "Failed to authenticate: OAuth session expired and could not be refreshed"; exit 1 ;;
   rewrite) cat "$FAKE_REWRITE" > "$FAKE_SCRIPT"; exit 0 ;;
 esac
 """
@@ -139,6 +140,22 @@ def test_usage_limit_refusal_is_filed_as_a_skip_not_a_crash(root: Path) -> None:
     plain = _run(root, {"FAKE_MODE": "exit", "FAKE_RC": "1"})
     assert plain.returncode == 1, plain.stderr
     assert "REFUSED" not in plain.stdout
+
+
+def test_expired_credential_refusal_is_filed_as_a_user_item_not_a_crash(root: Path) -> None:
+    """With the box's OAuth session lapsed, `claude -p` prints one line and
+    exits 1 at the first call; 2026-11-04 14:15Z, 20:15Z and 11-05 02:15Z all
+    reached the digest as `exit-code/1 x3` -- a launcher crash, to the reader
+    -- while the only fix was a login nobody in this repo can do (mistakes
+    #157). The launcher names the owner and exits 75, exactly as it does for
+    the usage limit; the kept output carries the venue's own line."""
+    proc = _run(root, {"FAKE_MODE": "auth"})
+    assert proc.returncode == 75, (proc.stdout, proc.stderr)
+    assert "claude REFUSED (expired credential, a USER item" in proc.stdout
+    assert "OAuth session expired" in proc.stdout, "the refusal line itself must reach the journal"
+    assert "exit 75 (EX_TEMPFAIL), not 1" in proc.stdout
+    kept = (root / "data" / "autoloop.last.out").read_text()
+    assert "Failed to authenticate" in kept
 
 
 def test_lock_holder_skips(root: Path) -> None:

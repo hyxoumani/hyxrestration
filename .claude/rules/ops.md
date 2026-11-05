@@ -470,6 +470,14 @@
   checks `date +%s` against it before arming a wakeup; under 30 min left,
   commit what is in flight and end clean -- the 6h timer is the armed next
   turn.
+- `claude -p` exits 1 for every refusal it cannot act on -- usage limit
+  (2026-10-24) and an expired OAuth session (`Failed to authenticate: OAuth
+  session expired and could not be refreshed`, 3 runs 11-04 14:15Z..11-05
+  02:15Z, mistakes #157) -- and the digest's RECENT line reads a 1 as a
+  crash. `scripts/autoloop.sh` greps the kept output (`data/autoloop.last.
+  out`) for both sentinels and exits 75 with the owner named. A new refusal
+  line is a new sentinel there, not a launcher bug to chase; the fix for an
+  expired session is the USER's login on this box, which no pass can do.
 - A running shell script is read from disk BY OFFSET as it executes, so
   editing it in place edits the process. bash discards its read buffer
   before forking an external command and re-reads from the file when the
