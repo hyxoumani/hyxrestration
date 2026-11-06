@@ -920,7 +920,7 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   against ~8k/h before. The buffer fill rate is ~2x `BUFFER_ROWS_PER_S`
   while it stays in the top-50, so SPILL_CAP is ~12 min of firehose, not ~27.
 - **Stream coverage expansion (branch `coverage-expansion`, 2026-10-23,
-  NOT yet promoted).** Books for `kalshi_book_series` (books-only: the REST
+  promoted 2026-10-23 12:45Z).** Books for `kalshi_book_series` (books-only: the REST
   collector never reads the key) beside `kalshi_series`, sharded at
   `kalshi_book_shard_max` markets per connection (`collector/bookcov.py`;
   shards > 0 store `sid + idx * SHARD_SID_STRIDE`); the set follows
@@ -970,6 +970,40 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   the two steps (7.0 and 5.3 GB) on a ~1.5 GB/h baseline. The capacity decision (stream
   retention purge, drop hyxstream from the 7-slot rotation -- now known to
   buy nothing -- or an off-box backup) is user-gated.
+- **WS book adds, phase 1 (hylshi EXP-2070; merged + promoted 2026-11-06
+  14:04:45Z by the user, stream restarted, shadow deferred).** 14 series
+  appended to `kalshi_book_series` -- KXBALLONDOR, KXFEDDECISION, KXUECLGAME,
+  KXUEFANLGAME, KXUELGAME, KXMLB, KXNFL1H, KXNFLTOTAL, KXNFL1QSPREAD,
+  KXNFL1HSPREAD, KXLALIGABTTS, KXNFLTD, KXNFLPASSTDS, KXNFLPASSYDS -- books
+  only, so the REST collector and the shadow universe (`kalshi_series`) do
+  not move. Prediction (hylshi `research/ws-adds-2026-11-05.md`, fit on the
+  97 booked series, LOO p50 x1.25 / p90 x1.59): 19.4M book rows/day,
+  1.23 GB/day (p90 1.96), +1,614 open tickers, 18-19 connections, walk p50
+  <= ~125 s. **First boot read (14:04-14:20Z):** `9636 open tickers across
+  111 series on 20 connection(s)` (vs 7,644 on the last 97-series walk,
+  +1,992 = 1.23x the census add on a Thursday with UCL/UEL/NFL game-day
+  series open; one shard more than predicted, since 9,636 / 500 rounds up
+  to 20); first walk `125.3s (14:18:00 -> 14:20:05), 9627 tickers`
+  against a 24h pre-promote p50 105.3 / p90 119.8 -- AT the predicted
+  bound, and it now ends ~5 s PAST the collector's :X5 tick, which the
+  `RECONCILE_OFFSET_S = 180` design (V2-378) chose to avoid; the one
+  overlapped cycle (14:20Z) paid `kalshi_429: 2, fetch_s 32.8`, inside its
+  sweep-hour band. The pre-registered read for the 20:15Z run: :X5 cycles'
+  `kalshi_429`/`fetch_s` vs :X0 cycles' over the post-promote hours; a
+  :X5 excess moves the knob to ~170 (`HYXLAB_RECONCILE_OFFSET_S`, the
+  research note's own lever), and no excess leaves it. Book-event rate
+  4,593/s over the first full 5-min interval vs 4,223/s pre-promote the
+  same hour (+9%, within the venue's hour-to-hour swing; yesterday's boot
+  with 97 series ran ~6,700/s at this hour). anon 237 MB, `arena_mb`
+  58/73, `sock_throttled` 0, `raw_dropped` 0, `raw_errors` 0. Remaining
+  checks (the note's list): the sibling's `tools.collector_pass_budget`
+  headroom p50 over a post-promote-only window (its 24h read at 14:15Z,
+  mostly pre-promote: -0.8 s to the trade line); Sunday 11-08 peak 5-min
+  book rate vs the 14.2k mean / 29k upper (phase 2 waits on it); the next
+  partition nightly's manifest rows within x1.59 of the JSON; a week of
+  `tools.disk_ledger` (<= 2 GB/day up); shadow events/poll unchanged. The
+  hylshi dated-subscriptions row (`lake/subscriptions_dated.jsonl`,
+  `applies_from 2026-11-06T14:04:45`) is committed there.
 - Initial 60-day retention capture COMPLETE 2026-07-07: 35,144 markets,
   2.6M candles. `python -m hyxlab.sweep --doctor` = health check for
   BOTH archives (includes mirror tripwire + stream counts/size).
