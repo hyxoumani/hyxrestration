@@ -647,7 +647,10 @@
   (196 reclaim attempts by 09:05Z, argocd evicted in a loop) while QA read
   `free 381 GB` and 5 days (mistakes #156). Read the digest's `HOSTFS`
   line: free/size/used% from `statvfs`, the window's eviction attempts,
-  and the signed distance to the kubelet's threshold. What to delete on the
+  and the signed distance to the kubelet's threshold -- read from the
+  kubelet's CONFIG (`/var/lib/kubelet/config.yaml`, defaults 85/80) when
+  the window has no GC line, because the kubelet logs its threshold only
+  while usage is above it (mistakes #163). What to delete on the
   shared disk is the USER's call; enumerate first (`du -sx -BG`, then
   `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
   price our own reflinked slots with `btrfs filesystem du`, never `du`.

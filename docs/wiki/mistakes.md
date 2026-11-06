@@ -4173,6 +4173,33 @@ Format: what happened → root cause → error type → prevention tier
     lower") has two conclusions; the fixture that adds where the world
     subtracts is green against the wrong one.**
 
+163. **2026-11-06 15:15Z -- the HOSTFS line took the kubelet's threshold
+    from the kubelet's JOURNAL, and the kubelet logs the threshold only
+    while it is ABOVE it.** `parse_kubelet` read `highThreshold=85` off the
+    latest `image_gc_manager` line in the 24h window, and that line exists
+    only while usage is over the high threshold; the 11-05 14:11-14:21Z GC
+    lines aged out of the window at ~14:25Z today and the pace clause fell
+    through to its other branch: the 15:15Z digest read `kubelet quiet (0
+    eviction attempts) | pace: net burn 29 GB/day ..., full in 18.5 d` with
+    the threshold -- 85% of the device, 234 GB away -- 8.1 days out. The
+    instrument built for #156 ("the host's binding limit was in no line of
+    ours") lost that limit exactly on the days it exists to count down, and
+    kept it only while the host was already evicting: the #100 shape (a
+    detector that selects on who was alive to write the row) on a config
+    constant. The threshold is CONFIGURATION, not an event:
+    `imageGCHighThresholdPercent` / `imageGCLowThresholdPercent` in
+    `/var/lib/kubelet/config.yaml` (world-readable here; this box's file
+    sets neither, so the kubelet's documented defaults 85 / 80 apply, which
+    is what every logged line said). Fixed in `collector.health`:
+    `read_kubelet_config` carries the configured pair into
+    `KubeletPressure`, the line reads the logged threshold when the window
+    has one and the configured one otherwise (`image GC: high 85% configured
+    (no GC line in 24h) -- below the kubelet's threshold by 234 GB`), and
+    makes no claim when there is neither; the live line now reads
+    `threshold in 8.1 d`. Rule: **a limit read off a log line is known only
+    while the thing is logging, and a threshold is logged only on the wrong
+    side of it. Read a limit from where it is SET; let the log confirm it.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
