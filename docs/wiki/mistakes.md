@@ -4200,6 +4200,42 @@ Format: what happened → root cause → error type → prevention tier
     while the thing is logging, and a threshold is logged only on the wrong
     side of it. Read a limit from where it is SET; let the log confirm it.**
 
+164. **2026-11-06 20:30Z -- the raw-frames term of QA's disk model called a
+    full retention window a PLATEAU, and the prune it was counting on
+    frees nothing on this host.** `qa._raw_frames_growth` returned 0.0
+    once `held_day_dirs(14)` = 15 directories stood, reasoning that from
+    then on every day the writer adds is paid by the day the prune
+    unlinks; the 10:00Z QA line read `0.00 raw_frames (15 of 15 day dirs
+    held, plateau)` and summed the rotation model to 14.33 GB/day. The
+    filesystem's own hourly ceilings fell 55-66 GB/day across the same
+    day, and the stream archive's slot-to-slot growth (13.4 GB/day) plus
+    `hyxlab.duckdb` (0.35) left ~45 unexplained. The sibling's own
+    `tools/disk_ledger.py` names the mechanism in its docstring, and
+    `stat` confirms it: every raw file is HARD-LINKED into the hylshi
+    lake's archive (`st_nlink` 2 on 48 of 48 files in `2026-10-23`, the
+    day the 11-07 first prune drops; nominal 429 GB for a 218 GB tree),
+    so `unlink` drops a link count and 0 bytes. Raw frames are a
+    ~17 GB/day permanent burn (until the lake's own retention), the
+    model's largest term, printed as zero. The rest of the host's burn by
+    the ledger's mtime bytes for the complete day 11-05: lake canonical
+    8.1, partitions 4.9, rfq 4.7, worktrees 3.5, the sibling's backups
+    4.7, Steam 2.0 -- ~62 GB/day in all, matching the ceilings. Fix:
+    `_raw_frames_growth` stats the OLDEST held day (the prune's next
+    victim) and keeps the newest complete day's bytes as the rate while
+    any of its files is linked elsewhere, returning the linked count so
+    the label says `oldest day hard-linked x48, the prune frees nothing`;
+    2 tests red-verified by a mutant that drops the clause. Rule: **a
+    retention plateau is a claim that the delete FREES the bytes, and
+    `unlink` only ever promises to drop a name. Before modelling a
+    rotation as net zero, `stat` the file the rotation will drop and read
+    `st_nlink` -- a second link is another tenant's copy, charged to
+    nobody.** Corollary to #139's reflink rule from the other side: there
+    a shared extent made a full-size copy nearly free; here a shared
+    inode makes a delete nearly free, and both are invisible to `du`
+    and `stat -c %s`. The ops bullet on #159's 15-directory plateau is
+    amended rather than replaced: the count is right and the plateau is
+    not.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

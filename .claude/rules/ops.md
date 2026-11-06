@@ -689,6 +689,14 @@
   prune errors and never raises; the stream stats line carries
   `raw_pruned_days`/`raw_errors`/`raw_last_error` since 2026-11-05 -- grep
   the journal for `raw_pruned_days': 1` on 11-07 to prove the first prune.
+  The plateau is a count of DIRECTORIES, not of bytes: every raw file is
+  hard-linked into the sibling's lake (`st_nlink` 2, measured 2026-11-06
+  on all 48 files of the day the first prune drops), so the prune frees
+  0 B and raw frames stay a ~17 GB/day burn, the model's largest term
+  (mistakes #164). `qa._raw_frames_growth` stats the oldest held day and
+  the headroom line says `oldest day hard-linked xN, the prune frees
+  nothing`; before calling any rotation net zero, read `st_nlink` on the
+  file it drops.
 - A worst-over-window rate assumes the quantity is MONOTONE inside the
   window. `qa._fs_burn` (max burn over 14 d of free-space samples) nets
   a deletion into every older sample: the 11-06 run would have printed

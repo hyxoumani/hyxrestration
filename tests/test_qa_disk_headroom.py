@@ -165,17 +165,44 @@ def test_raw_frames_add_a_days_frames_per_day_until_the_window_is_full(tmp_path)
     prune (11-07)."""
     raw = tmp_path / "raw_frames"
     now = qa.datetime(2026, 10, 25, 20, 0, tzinfo=qa.UTC)
-    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 0)
+    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 0, 0)
     _raw_day(raw, "2026-10-25", 5 * GB)  # only the running day: a floor
-    assert qa._raw_frames_growth(raw, 14, now) == (5 * GB, 1)
+    assert qa._raw_frames_growth(raw, 14, now) == (5 * GB, 1, 0)
     _raw_day(raw, "2026-10-23", 6 * GB)
     _raw_day(raw, "2026-10-24", 17 * GB)
-    assert qa._raw_frames_growth(raw, 14, now) == (17 * GB, 3)
+    assert qa._raw_frames_growth(raw, 14, now) == (17 * GB, 3, 0)
     for i in range(11):  # 10-12 .. 10-22: 14 held, still filling
         _raw_day(raw, f"2026-10-{12 + i:02d}", 10 * GB)
-    assert qa._raw_frames_growth(raw, 14, now) == (17 * GB, 14)
+    assert qa._raw_frames_growth(raw, 14, now) == (17 * GB, 14, 0)
     _raw_day(raw, "2026-10-11", 10 * GB)  # the 15th: the window is full
-    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 15)
+    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 15, 0)
+
+
+def test_a_hard_linked_oldest_day_keeps_raw_frames_a_burn(tmp_path):
+    """Measured 2026-11-06: the sibling's lake hard-links every raw file
+    (`st_nlink` 2 on all 48 of `2026-10-23`), so the prune's unlink drops a
+    link count and frees 0 B. A full window is a plateau only if the day the
+    prune drops next is NOT linked; linked, the newest complete day's bytes
+    stay the rate, and the count of linked files is published so the label
+    can say why (mistakes #164)."""
+    raw = tmp_path / "raw_frames"
+    now = qa.datetime(2026, 11, 6, 20, 0, tzinfo=qa.UTC)
+    first = qa.datetime(2026, 10, 23, tzinfo=qa.UTC)
+    for i in range(15):  # 10-23 .. 11-06: the window is full
+        day = (first + qa.timedelta(days=i)).strftime("%Y-%m-%d")
+        _raw_day(raw, day, 10 * GB)
+    _raw_day(raw, "2026-11-05", 17 * GB)  # the newest COMPLETE day
+    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 15, 0)
+    oldest = sorted(p for p in raw.iterdir())[0]
+    assert oldest.name == "2026-10-23"
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    os.link(oldest / "00-books.jsonl.zst", lake / "2026-10-23-books.zst")
+    assert qa._raw_frames_growth(raw, 14, now) == (17 * GB, 15, 1)
+    # A linked day that is NOT the oldest is not the prune's next victim.
+    os.unlink(lake / "2026-10-23-books.zst")
+    os.link(raw / "2026-11-01" / "00-books.jsonl.zst", lake / "x.zst")
+    assert qa._raw_frames_growth(raw, 14, now) == (0.0, 15, 0)
 
 
 def test_raw_frames_are_a_term_of_the_model(tmp_path, monkeypatch):
@@ -190,6 +217,26 @@ def test_raw_frames_are_a_term_of_the_model(tmp_path, monkeypatch):
     detail = "\n".join(lines)
     assert "+ 4.00 raw_frames (2 of 15 day dirs held, filling)" in detail, detail
     assert "burn 12.00 GB/day" in detail, detail  # 1 live + 7 copies + 4 raw
+
+
+def test_a_hard_linked_raw_window_is_labelled_in_the_model(tmp_path, monkeypatch):
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    raw = tmp_path / "raw_frames"
+    for i in range(15):
+        _raw_day(raw, f"2000-01-{i + 1:02d}", 4 * GB)
+    _raw_day(raw, "2999-01-01", 1 * GB)
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
+    assert "+ 0.00 raw_frames (16 of 15 day dirs held, plateau)" in "\n".join(lines)
+    os.link(raw / "2000-01-01" / "00-books.jsonl.zst", tmp_path / "linked.zst")
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
+    detail = "\n".join(lines)
+    assert (
+        "+ 4.00 raw_frames (16 of 15 day dirs held, oldest day hard-linked x1,"
+        " the prune frees nothing)"
+    ) in detail, detail
+    assert "burn 12.00 GB/day" in detail, detail
 
 
 def test_headroom_is_a_horizon_so_it_can_fail_and_recover(tmp_path):

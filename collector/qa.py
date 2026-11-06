@@ -1790,22 +1790,44 @@ def _slot_exclusive_bytes(backup_dir: Path) -> tuple[int, int] | None:
     return exclusive, nominal
 
 
+def _raw_frames_linked(day_dir: Path) -> int:
+    """Files under `day_dir` with a second hard link (`st_nlink > 1`). The
+    prune UNLINKS; a byte the lake has linked stays on the disk."""
+    n = 0
+    for f in day_dir.iterdir():
+        try:
+            if f.is_file() and f.stat().st_nlink > 1:
+                n += 1
+        except OSError:
+            continue
+    return n
+
+
 def _raw_frames_growth(
     raw_dir: Path, retain_days: int, now: datetime | None = None
-) -> tuple[float, int]:
-    """Bytes/day `raw_dir` is still ADDING, with the number of day directories
-    it holds. Zero once `retain_days` are held (the prune makes it a plateau);
-    until then the newest COMPLETE day's bytes, or the running day's as a
-    floor when no day has closed yet -- a partial day understates, and the
-    label says so through the held count."""
+) -> tuple[float, int, int]:
+    """Bytes/day `raw_dir` is still ADDING, the number of day directories it
+    holds, and how many files of the OLDEST held day are hard-linked
+    elsewhere. Zero once `retain_days` are held (the prune makes it a
+    plateau) -- UNLESS the day the prune drops next is hard-linked, when the
+    unlink frees nothing and the newest complete day's bytes stay the rate.
+    MEASURED 2026-11-06 20:30Z: every file of `raw_frames/2026-10-23` (48 of
+    48) has `st_nlink` 2 -- the sibling's lake links each raw file into its
+    archive -- so the 11-07 first prune drops 6 GB of links and 0 B of disk,
+    while the model printed `0.00 raw_frames (15 of 15 day dirs held,
+    plateau)` against a ~17 GB/day writer (mistakes #164). Until the window
+    is full the rate is the newest COMPLETE day's bytes, or the running
+    day's as a floor when no day has closed yet -- a partial day
+    understates, and the label says so through the held count."""
     if not raw_dir.is_dir():
-        return 0.0, 0
+        return 0.0, 0, 0
     days = sorted(p for p in raw_dir.iterdir() if p.is_dir())
     if not days:
-        return 0.0, 0
+        return 0.0, 0, 0
     held = len(days)
-    if held >= (raw_held_day_dirs(retain_days) or 0):
-        return 0.0, held
+    linked = _raw_frames_linked(days[0])
+    if held >= (raw_held_day_dirs(retain_days) or 0) and not linked:
+        return 0.0, held, 0
     today = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
     complete = [p for p in days if p.name < today]
     day = complete[-1] if complete else days[-1]
@@ -1816,7 +1838,7 @@ def _raw_frames_growth(
                 size += f.stat().st_size
         except OSError:
             continue
-    return float(size), held
+    return float(size), held, linked
 
 
 def _record_free(series: Path, now: datetime, free: int) -> None:
@@ -2022,13 +2044,18 @@ def qa_disk_headroom(
             same_fs = False
 
         rate, span = _rotation_growth(live, backup_dir)
-        raw_rate, raw_held = _raw_frames_growth(
+        raw_rate, raw_held, raw_linked = _raw_frames_growth(
             Path(RAW_FRAMES_DIR if raw_dir is None else raw_dir), RAW_RETAIN_DAYS
         )
+        if raw_linked:
+            # The prune drops a LINK; the lake keeps the bytes (mistakes #164).
+            raw_state = f"oldest day hard-linked x{raw_linked}, the prune frees nothing"
+        else:
+            raw_state = "filling" if raw_rate > 0 else "plateau"
         raw_how = (
             f"{raw_rate / 1e9:.2f} raw_frames"
             f" ({raw_held} of {raw_held_day_dirs(RAW_RETAIN_DAYS)} day dirs held"
-            f"{', filling' if raw_rate > 0 else ', plateau'})"
+            f", {raw_state})"
         )
         model = None
         model_how = ""

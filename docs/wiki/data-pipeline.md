@@ -991,7 +991,14 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   sweep-hour band. The pre-registered read for the 20:15Z run: :X5 cycles'
   `kalshi_429`/`fetch_s` vs :X0 cycles' over the post-promote hours; a
   :X5 excess moves the knob to ~170 (`HYXLAB_RECONCILE_OFFSET_S`, the
-  research note's own lever), and no excess leaves it. Book-event rate
+  research note's own lever), and no excess leaves it. **READ 2026-11-06
+  20:15Z, CLOSED -- no excess, the knob stays at 180.** Sweep-hour arm
+  (14:20-16:19Z, 12+12 cycles): :X5 mean 2.00 x 429 / fetch 33.2 s vs :X0
+  2.25 / 34.1. Sweep-IDLE arm (18:30-20:15Z, the kalshi sweep's done line
+  landed 18:30:01Z; 11+11 cycles): :X5 0 x 429 / fetch 22.7 s vs :X0 0 /
+  22.8 -- identical to the tenth of a second, with every walk's last 5 s
+  overlapping the :X5 tick. The REST collector's cost on the shared
+  budget is the sweep's, not the walk's (#146's shape again). Book-event rate
   4,593/s over the first full 5-min interval vs 4,223/s pre-promote the
   same hour (+9%, within the venue's hour-to-hour swing; yesterday's boot
   with 97 series ran ~6,700/s at this hour). anon 237 MB, `arena_mb`
