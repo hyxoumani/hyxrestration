@@ -945,6 +945,21 @@ def host_memory_line(
 HOSTFS_WINDOW_H = 24
 HOSTFS_PATH = "data"
 KUBELET_UNIT = "kubelet"
+# The kubelet logs its image-GC thresholds ONLY while usage is above the high
+# one, so a reader that takes the threshold from the journal window has it
+# exactly when the host is already evicting and loses it the day the window
+# quiets -- the 11-06 15:15Z digest read `full in 18.5 d` with the threshold
+# ~8 d away (the 11-05 GC lines had just aged out of 24h). The standing
+# threshold is CONFIGURATION: `imageGCHighThresholdPercent` /
+# `imageGCLowThresholdPercent` in the kubelet's config file, kubelet defaults
+# 85 / 80 when the keys are absent (this box's file carries neither). A
+# readable config file is the claim that a kubelet is configured here; its
+# absence makes no claim, and the journal's own line, when present, wins.
+KUBELET_CONFIG_PATH = "/var/lib/kubelet/config.yaml"
+KUBELET_GC_DEFAULT_HIGH_PCT = 85
+KUBELET_GC_DEFAULT_LOW_PCT = 80
+_KUBE_CFG_HIGH_RE = re.compile(r"^imageGCHighThresholdPercent:\s*(\d+)\s*$", re.M)
+_KUBE_CFG_LOW_RE = re.compile(r"^imageGCLowThresholdPercent:\s*(\d+)\s*$", re.M)
 _KUBE_RECLAIM_RE = re.compile(
     r'^(\S+) .*"Eviction manager: attempting to reclaim" resourceName="([^"]+)"'
 )
@@ -970,6 +985,18 @@ class KubeletPressure:
     gc_usage_pct: int | None  # the LATEST image-GC line's usage / thresholds
     gc_high_pct: int | None
     gc_low_pct: int | None
+    cfg_high_pct: int | None = None  # the CONFIGURED thresholds; None = config unread
+    cfg_low_pct: int | None = None
+
+    @property
+    def high_pct(self) -> int | None:
+        """The threshold the line reads: the journal's when it logged one in
+        the window, else the configured one, else none."""
+        return self.gc_high_pct if self.gc_high_pct is not None else self.cfg_high_pct
+
+    @property
+    def low_pct(self) -> int | None:
+        return self.gc_low_pct if self.gc_high_pct is not None else self.cfg_low_pct
 
 
 def read_hostfs(path: str = HOSTFS_PATH) -> HostFs:
@@ -981,9 +1008,31 @@ def read_hostfs(path: str = HOSTFS_PATH) -> HostFs:
     return HostFs(st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize)
 
 
-def parse_kubelet(text: str) -> KubeletPressure:
+def parse_kubelet_config(text: str) -> tuple[int, int]:
+    """The configured image-GC thresholds from a kubelet config file's text;
+    kubelet defaults for keys the file does not set. Pure."""
+    h = _KUBE_CFG_HIGH_RE.search(text)
+    lo = _KUBE_CFG_LOW_RE.search(text)
+    return (
+        int(h.group(1)) if h else KUBELET_GC_DEFAULT_HIGH_PCT,
+        int(lo.group(1)) if lo else KUBELET_GC_DEFAULT_LOW_PCT,
+    )
+
+
+def read_kubelet_config(path: str = KUBELET_CONFIG_PATH) -> tuple[int, int] | None:
+    """The configured thresholds, or `None` when there is no readable config
+    (no kubelet here, or not ours to read): no claim about a threshold."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return parse_kubelet_config(fh.read())
+    except OSError:
+        return None
+
+
+def parse_kubelet(text: str, config: tuple[int, int] | None = None) -> KubeletPressure:
     """The kubelet journal's eviction attempts and its latest image-GC
-    threshold line. Pure. A box with no kubelet parses as quiet."""
+    threshold line, plus the configured thresholds when the caller read
+    them. Pure. A box with no kubelet parses as quiet."""
     reclaims: list[tuple[float, str]] = []
     gc: tuple[int, int, int] | None = None
     for line in text.splitlines():
@@ -998,9 +1047,10 @@ def parse_kubelet(text: str) -> KubeletPressure:
         g = _KUBE_GC_RE.search(line)
         if g:
             gc = (int(g.group(1)), int(g.group(2)), int(g.group(3)))
+    cfg = (None, None) if config is None else config
     if gc is None:
-        return KubeletPressure(tuple(reclaims), None, None, None)
-    return KubeletPressure(tuple(reclaims), *gc)
+        return KubeletPressure(tuple(reclaims), None, None, None, *cfg)
+    return KubeletPressure(tuple(reclaims), *gc, *cfg)
 
 
 def read_kubelet_window(hours: int = HOSTFS_WINDOW_H) -> KubeletPressure | None:
@@ -1026,7 +1076,7 @@ def read_kubelet_window(hours: int = HOSTFS_WINDOW_H) -> KubeletPressure | None:
         return None
     if proc.returncode != 0:
         return None
-    return parse_kubelet(proc.stdout)
+    return parse_kubelet(proc.stdout, read_kubelet_config())
 
 
 # The distance to the threshold is a level; what the user acts on is a TIME,
@@ -1251,13 +1301,16 @@ def host_fs_line(
             f"{'/'.join(names)}, {first} -> {last}"
         )
     over_b = None
-    if kube is not None and kube.gc_high_pct is not None:
-        k += f"; image GC: usage {kube.gc_usage_pct}% vs high {kube.gc_high_pct}%"
+    if kube is not None and kube.high_pct is not None:
+        if kube.gc_high_pct is not None:
+            k += f"; image GC: usage {kube.gc_usage_pct}% vs high {kube.gc_high_pct}%"
+        else:
+            k += f"; image GC: high {kube.cfg_high_pct}% configured (no GC line in {window_h}h)"
         if used_pct is not None and fs.size_b is not None and fs.free_b is not None:
-            over_b = int((fs.size_b - fs.free_b) - fs.size_b * kube.gc_high_pct / 100)
+            over_b = int((fs.size_b - fs.free_b) - fs.size_b * kube.high_pct / 100)
             k += (
                 f" -- {'ABOVE' if over_b >= 0 else 'below'} the kubelet's threshold by "
-                f"{_gb_b(abs(over_b))} (frees to {kube.gc_low_pct}%)"
+                f"{_gb_b(abs(over_b))} (frees to {kube.low_pct}%)"
             )
     return f"{standing} | {k} | {fs_pace_text(pace, fs, over_b, window_h)}"
 

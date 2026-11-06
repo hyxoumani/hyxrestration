@@ -1763,6 +1763,45 @@ def test_a_quiet_kubelet_and_an_unread_one_are_different_lines() -> None:
     assert "below the kubelet's threshold by 115 GB" in roomy
 
 
+def test_a_quiet_window_still_reads_the_configured_threshold() -> None:
+    """The kubelet logs its thresholds only while ABOVE them (11-06 15:15Z:
+    `full in 18.5 d` with the threshold ~8 d away, the GC lines aged out)."""
+    roomy = health.HostFs(free_b=400_000_000_000, size_b=1_900_000_000_000)
+    quiet = health.parse_kubelet("", config=(85, 80))
+    line = health.host_fs_line(roomy, quiet, _PACE)
+    assert (
+        "| 24h: kubelet quiet (0 eviction attempts); image GC: high 85% configured"
+        " (no GC line in 24h) -- below the kubelet's threshold by 115 GB (frees to 80%) | "
+    ) in line
+    assert line.endswith("threshold in 2.0 d")
+
+
+def test_a_logged_threshold_wins_over_the_configured_one() -> None:
+    kube = health.parse_kubelet(KUBELET_LINES, config=(70, 60))
+    assert (kube.high_pct, kube.low_pct) == (85, 80)
+    assert "usage 85% vs high 85%" in health.host_fs_line(_FS, kube)
+
+
+def test_no_config_and_no_gc_line_makes_no_threshold_claim() -> None:
+    quiet = health.host_fs_line(_FS, health.parse_kubelet(""), _PACE)
+    assert "threshold" not in quiet.split(" | ")[1] and quiet.endswith("full in 4.9 d")
+
+
+def test_kubelet_config_thresholds_default_when_the_keys_are_absent(tmp_path) -> None:
+    # This box's file sets neither key (read 2026-11-06); the kubelet's defaults apply.
+    assert health.parse_kubelet_config("kind: KubeletConfiguration\ncgroupDriver: systemd\n") == (
+        85,
+        80,
+    )
+    assert health.parse_kubelet_config(
+        "imageGCHighThresholdPercent: 90\nimageGCLowThresholdPercent: 70\n"
+    ) == (90, 70)
+    assert health.read_kubelet_config(str(tmp_path / "absent.yaml")) is None
+    f = tmp_path / "config.yaml"
+    f.write_text("imageGCHighThresholdPercent: 75\n")
+    assert health.read_kubelet_config(str(f)) == (75, 80)
+
+
 def test_every_fs_term_moves_the_line() -> None:
     """Perturbation (#95): bump each term and the line must change."""
     kube = health.parse_kubelet(KUBELET_LINES)
@@ -1781,6 +1820,10 @@ def test_every_fs_term_moves_the_line() -> None:
         )
         assert health.host_fs_line(_FS, bumped) != base, field
     assert health.host_fs_line(_FS, kube, window_h=48) != base
+    quiet = health.parse_kubelet("", config=(85, 80))
+    qbase = health.host_fs_line(_FS, quiet)
+    assert health.host_fs_line(_FS, dataclasses.replace(quiet, cfg_high_pct=86)) != qbase
+    assert health.host_fs_line(_FS, dataclasses.replace(quiet, cfg_low_pct=81)) != qbase
     # The pace half: every FsPace field the clause reads, and its three states.
     base = health.host_fs_line(_FS, kube, _PACE)
     for field, bump in (("span_h", 1.0), ("burn_b_per_day", 1e9), ("reset_b", 10**9)):
