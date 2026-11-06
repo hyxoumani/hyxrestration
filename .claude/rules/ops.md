@@ -652,20 +652,31 @@
   `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
   price our own reflinked slots with `btrfs filesystem du`, never `du`.
   The `HOSTFS` line's `pace:` clause is the TIME to that threshold, from the
-  collector's 5-min `fs_free_b=` field read as HOURLY FLOORS: a temporary
-  file can only lower a free-space reading, so the hour's minimum is the
-  churn-free floor (the raw series rises 1-35 GB between consecutive samples
-  dozens of times a day). The pace is the NET fall between the medians of
-  the three oldest and three youngest floors, restarted only at a floor
-  rising by more than QA's `DISK_RISE_RESET_FRAC` (10%) -- the floor is also
-  FREED 2-25 GB several times a day (image GC, slot rotation) and those
-  recur, so they net into the burn rather than resetting it; the clause
-  names the largest in-span rise, because a sub-10% deletion inside the span
-  reads as a small or negative net for ~12h (11-05 19Z, +30 GB). Under 6h of
-  span the clause is `unresolved`, never a number. Replay a new instrument
-  over the window it will live in BEFORE shipping its first reading: the
-  1 GB-reset version shipped at 02:40Z read `unresolved` at 18 of 24
-  three-hourly checkpoints of the prior 72h (mistakes #161).
+  collector's 5-min `fs_free_b=` field read as HOURLY CEILINGS: a temporary
+  file can only LOWER a free-space reading, so the hour's MAXIMUM is the
+  sample with the fewest temporaries present. The first cut took the hour's
+  MINIMUM from the same premise -- it pictured the churn as momentary rises
+  -- and the churn is DIPS: 15-30 GB gone and back inside 5-15 min in the
+  sweep hours (11-06 05:21 569.9 -> 05:30 551.8 -> 05:40 564.9 GB; 07:06
+  562.0 -> 07:30 535.8 -> 07:35 552.8 -> 07:45 532.6 -> 07:55 548.4), so the
+  minimum WAS the churn: hour-to-hour minima moved sd 10.6 GB, maxima 4.9;
+  the 07Z minimum sat 41 GB under its neighbours', the maximum 2.3; at short
+  post-reset spans the minima read 132 and 103 GB/day where the maxima read
+  85 and 70 around QA's ~70 (mistakes #162). Before choosing min or max of a
+  window, LOOK at the raw series around a dozen of its jumps and name the
+  sign of the churn. The pace is the NET fall between the median ceiling of
+  the three oldest and of the three youngest (the median ELEMENT, time and
+  value together -- separate medians pair one hour's value with another's
+  instant), restarted only at a ceiling rising by more than QA's
+  `DISK_RISE_RESET_FRAC` (10%) -- the disk is also FREED 2-25 GB a few times
+  a day (image GC, slot rotation) and those recur, so they net into the burn
+  rather than resetting it; the clause names the largest in-span rise,
+  because a sub-10% deletion inside the span reads as a small or negative
+  net for ~12h (11-05 19Z, +30 GB). Under 6h of span the clause is
+  `unresolved`, never a number. Replay a new instrument over the window it
+  will live in BEFORE shipping its first reading: the 1 GB-reset version
+  shipped at 02:40Z read `unresolved` at 18 of 24 three-hourly checkpoints
+  of the prior 72h (mistakes #161); ceilings resolve 22 of 25.
 - A retention window's plateau is the PRUNER's comparison, not its
   constant: `RawFrameWriter.prune` drops `name < today - RETAIN_DAYS`, so
   with 14 it holds 15 day directories (14 closed + the running day) and

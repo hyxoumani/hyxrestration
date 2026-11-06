@@ -4133,6 +4133,46 @@ Format: what happened → root cause → error type → prevention tier
     read at, and count how often it says nothing. One reading that looks
     right is the instrument's own favourable sample.**
 
+162. **2026-11-06 08:30Z -- the HOSTFS pace clause read the hour's MINIMUM
+    as the churn-free reading; the churn is dips, so the minimum WAS the
+    churn.** The premise was right and written down twice ("a temporary file
+    can only LOWER a free-space reading") and the conclusion drawn from it
+    was inverted: if temporaries only lower the reading, the sample with the
+    FEWEST temporaries is the hour's MAXIMUM, and the minimum is the moment
+    the most of them existed. The design pictured the churn as momentary
+    RISES (the test fixture ADDED 35 GB to samples and asserted the floor
+    stood), because the raw series "rises 1-35 GB between consecutive
+    samples" -- true, and every one of those rises is the END of a dip.
+    Measured 2026-11-06 over the same 96h / 1,151 samples: in the sweep
+    hours free space goes 15-30 GB down and back inside 5-15 min (05:21
+    569.9 -> 05:30 551.8 -> 05:40 564.9 GB; 07:06 562.0 -> 07:30 535.8 ->
+    07:35 552.8 -> 07:45 532.6 -> 07:55 548.4), the same hours the day before
+    (07:00 252.1 -> 07:10 242.8 -> 07:40 237.5 -> 08:06 242.5), no sample
+    above the trend between its neighbours; intra-hour max-min is 14-28 GB
+    at 01, 02, 05, 07, 08, 09Z and ~2 GB (one hour of burn) at 19-23Z.
+    Hour-to-hour, minima moved with sd 10.6 GB and maxima 4.9; the 07Z
+    minimum sat 41 GB under its neighbours' and the maximum 2.3; of the "22
+    floor rises above 1 GB in 96h" that #161 counted as recurring frees, the
+    ceilings show 5. Over a full 24h span the two agree within ~5 GB/day
+    (both endpoints sit in the same hour-of-day, so the churn cancels), which
+    is why the first-day readings looked right; at the short post-reset
+    spans the clause exists for, the minima read 132 and 103 GB/day where
+    the maxima read 85 and 70 around QA's ~70. A second wart surfaced in the
+    rewrite: the endpoint took the median of the three TIMES and the median
+    of the three VALUES separately, so with a low middle hour it paired one
+    hour's value with another's instant and the span was off by an hour --
+    the endpoint is now the median ELEMENT. Fixed in `collector.health`
+    (`hourly_ceilings`; ops rule rewritten). The dips themselves are not
+    attributed: nothing of ours (`*.duckdb.tmp` 12 KB, no file >300 MB
+    written in 40 min under /home) -- a 15-min sampler of the sibling's lake
+    and research dirs and /tmp was flat; the writer is in a root-only tree
+    (kubelet images / container layers) or gone before `find` runs. Rule:
+    **when a statistic is chosen to suppress churn, name the SIGN of the
+    churn from the raw series first -- a dozen of its jumps, by eye -- and
+    then say which extreme the churn can reach. A true premise ("can only
+    lower") has two conclusions; the fixture that adds where the world
+    subtracts is green against the wrong one.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

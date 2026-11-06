@@ -107,7 +107,6 @@ import time as _time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from statistics import median
 
 from collector.qa import DISK_RISE_RESET_FRAC, STANDING_SKIPS, _load_state, _prior_run
 from collector.qa import QA_RUN_CHECK as QA_UNREAD_CHECK
@@ -1040,29 +1039,42 @@ def read_kubelet_window(hours: int = HOSTFS_WINDOW_H) -> KubeletPressure | None:
 # (#160); (b) transient files CHURN free space by 1-35 GB between
 # consecutive 5-min samples dozens of times a day (a sibling's DuckDB spill
 # written then unlinked, image GC), so any per-sample rule is noise; and (c)
-# the disk is FREED a little several times a day -- 22 rises of the hourly
-# floor above 1 GB in 96h (kubelet image GC under its eviction loop, backup
-# slots rotating, spills), 2-25 GB each -- and those recur, so they belong
-# in the NET burn the horizon needs, not in a reset. A transient file can
-# only LOWER a reading, so each hour's MINIMUM is the churn-free floor; the
-# pace is the fall between the median of the oldest `FS_PACE_END_K` floors
-# and the median of the youngest (one hour whose floor sits a spill low
-# cannot carry an endpoint), restarted only at a floor that rises by more
-# than `DISK_RISE_RESET_FRAC` of the previous one -- QA's own rule for a
+# the disk is FREED a little several times a day (kubelet image GC under its
+# eviction loop, backup slots rotating, spills), 2-25 GB each -- and those
+# recur, so they belong in the NET burn the horizon needs, not in a reset.
+# A transient file can only LOWER a reading, so the hour's MAXIMUM is the
+# sample taken with the fewest temporaries present -- the churn-free
+# CEILING. The first cut (e3eb5e1, 11-06 02:40Z) took the hour's MINIMUM
+# from the same premise, modelling the churn as momentary RISES; measured
+# 2026-11-06 08:30Z over the same 96h, the churn is DIPS -- 15-30 GB gone and
+# back inside 5-15 min in the sweep hours (05:21 569.9 -> 05:30 551.8 ->
+# 05:40 564.9 GB; 07:06 562.0 -> 07:30 535.8 -> 07:35 552.8 -> 07:45 532.6 ->
+# 07:55 548.4), the same hours the day before -- so the minimum IS the
+# churn: hour-to-hour, minima moved with sd 10.6 GB and maxima 4.9 GB, the
+# 07Z minimum sat 41 GB under its neighbours' and the maximum 2.3, and at
+# short post-reset spans the minima read 132 and 103 GB/day where the
+# maxima read 85 and 70 around QA's ~70 (mistakes #162). The pace is the
+# fall between the median of the oldest `FS_PACE_END_K` ceilings and the
+# median of the youngest (one hour whose ceiling sits low cannot carry an
+# endpoint), restarted only at a ceiling that rises by more than
+# `DISK_RISE_RESET_FRAC` of the previous one -- QA's own rule for a
 # deletion -- and named when it does. Replayed over the 72h before shipping:
 # a 1 GB reset read `unresolved` at 18 of 24 three-hourly checkpoints
 # (mistakes #161); the 10% reset resolves at 20 of 24 and reads 47-99 GB/day
 # around QA's daily ~70. Its blind side is a deletion UNDER 10% inside the
 # span (the +30 GB step of 11-05 19Z read as "not filling" for ~12h), so the
-# clause carries the largest in-span floor rise beside the net pace: a net
+# clause carries the largest in-span ceiling rise beside the net pace: a net
 # that is small or negative next to a rise of its own size is that rise.
+# The ceiling's own blind side, by construction: a file deleted and
+# re-created INSIDE one hour reads as the deleted moment -- absent from the
+# 96h measured (no sample above the trend between its neighbours).
 FS_PACE_WINDOW_H = HOSTFS_WINDOW_H
 COLLECT_UNIT = "hyxlab-collect.service"
-#: Hours of post-reset span under which no rate is printed. One hour's floor
-#: can sit ~20 GB below its neighbours' (a spill present all hour); over 6h
-#: that is the size of the ~60 GB/day signal, over 24h a quarter of it.
+#: Hours of post-reset span under which no rate is printed. One hour's
+#: ceiling can sit ~20 GB below its neighbours' (a spill present all hour);
+#: over 6h that is the size of the ~60 GB/day signal, over 24h a quarter.
 FS_PACE_MIN_H = 6.0
-#: Floors at each end whose median is the endpoint.
+#: Ceilings at each end whose median is the endpoint.
 FS_PACE_END_K = 3
 _FS_FREE_RE = re.compile(r"fs_free_b=(\d+)")
 
@@ -1071,13 +1083,13 @@ _FS_FREE_RE = re.compile(r"fs_free_b=(\d+)")
 class FsPace:
     """The filesystem's filling pace from the collector's own samples. Pure data.
 
-    `hours` is the count of post-reset hourly floors, `span_h` the time between
-    the endpoint medians (first to last floor when there are too few for a
-    median). `burn_b_per_day` is the NET fall per day, None when the span is
-    under `FS_PACE_MIN_H` (too short to be a rate), and may be <= 0 (not
-    filling). `reset_b` is the rise of the youngest hourly floor the pace was
+    `hours` is the count of post-reset hourly ceilings, `span_h` the time
+    between the endpoint medians (first to last ceiling when there are too few
+    for a median). `burn_b_per_day` is the NET fall per day, None when the span
+    is under `FS_PACE_MIN_H` (too short to be a rate), and may be <= 0 (not
+    filling). `reset_b` is the rise of the youngest hourly ceiling the pace was
     taken AFTER (a deletion), None when the window holds none. `rise_b` is the
-    largest floor-to-floor rise INSIDE the span, None when no floor rose.
+    largest ceiling-to-ceiling rise INSIDE the span, None when none rose.
     """
 
     n: int
@@ -1117,16 +1129,16 @@ def read_fs_free_series(hours: int = FS_PACE_WINDOW_H) -> list[tuple[float, int]
     return parse_fs_free_series(text) if text is not None else None
 
 
-def hourly_floors(samples: list[tuple[float, int]]) -> list[tuple[float, int]]:
-    """Each clock hour's minimum free reading with the instant it was taken,
-    oldest first. Pure."""
-    floors: dict[int, tuple[float, int]] = {}
+def hourly_ceilings(samples: list[tuple[float, int]]) -> list[tuple[float, int]]:
+    """Each clock hour's MAXIMUM free reading with the instant it was taken,
+    oldest first: the sample with the fewest temporaries present. Pure."""
+    ceils: dict[int, tuple[float, int]] = {}
     for ts, free in samples:
         h = int(ts) // 3600
-        cur = floors.get(h)
-        if cur is None or free < cur[1]:
-            floors[h] = (ts, free)
-    return [floors[h] for h in sorted(floors)]
+        cur = ceils.get(h)
+        if cur is None or free > cur[1]:
+            ceils[h] = (ts, free)
+    return [ceils[h] for h in sorted(ceils)]
 
 
 def _read_fs_pace(hours: int = FS_PACE_WINDOW_H) -> FsPace | None:
@@ -1140,37 +1152,39 @@ def fs_pace(
     reset_frac: float = DISK_RISE_RESET_FRAC,
     end_k: int = FS_PACE_END_K,
 ) -> FsPace:
-    """Net pace over the hourly floors at or after the youngest reset (a floor
-    higher than the previous hour's by more than `reset_frac` of it), between
-    the medians of the `end_k` oldest and youngest floors. Pure."""
-    floors = hourly_floors(samples)
+    """Net pace over the hourly ceilings at or after the youngest reset (a
+    ceiling higher than the previous hour's by more than `reset_frac` of it),
+    between the medians of the `end_k` oldest and youngest ceilings. Pure."""
+    ceils = hourly_ceilings(samples)
     start = 0
     reset = None
-    for i in range(1, len(floors)):
-        prev, cur = floors[i - 1][1], floors[i][1]
+    for i in range(1, len(ceils)):
+        prev, cur = ceils[i - 1][1], ceils[i][1]
         if prev > 0 and cur - prev > reset_frac * prev:
             start, reset = i, cur - prev
-    floors = floors[start:]
-    rise = max((b[1] - a[1] for a, b in zip(floors, floors[1:], strict=False)), default=0)
+    ceils = ceils[start:]
+    rise = max((b[1] - a[1] for a, b in zip(ceils, ceils[1:], strict=False)), default=0)
     rise_b = rise if rise > 0 else None
-    if len(floors) < 2:
-        return FsPace(len(samples), len(floors), 0.0, None, reset, rise_b)
-    if len(floors) < 2 * end_k:
-        span_h = (floors[-1][0] - floors[0][0]) / 3600.0
-        return FsPace(len(samples), len(floors), span_h, None, reset, rise_b)
-    old, young = floors[:end_k], floors[-end_k:]
-    t0, f0 = median(t for t, _ in old), median(f for _, f in old)
-    t1, f1 = median(t for t, _ in young), median(f for _, f in young)
+    if len(ceils) < 2:
+        return FsPace(len(samples), len(ceils), 0.0, None, reset, rise_b)
+    if len(ceils) < 2 * end_k:
+        span_h = (ceils[-1][0] - ceils[0][0]) / 3600.0
+        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b)
+    # The endpoint is the one ceiling whose VALUE is the median, time and value
+    # together: medians taken separately pair a low middle hour's neighbour's
+    # value with the middle hour's instant, and the span is wrong by an hour.
+    t0, f0 = sorted(ceils[:end_k], key=lambda c: c[1])[end_k // 2]
+    t1, f1 = sorted(ceils[-end_k:], key=lambda c: c[1])[end_k // 2]
     span_h = (t1 - t0) / 3600.0
     if span_h < min_h:
-        return FsPace(len(samples), len(floors), span_h, None, reset, rise_b)
+        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b)
     burn = (f0 - f1) / ((t1 - t0) / 86400.0)
-    return FsPace(len(samples), len(floors), span_h, burn, reset, rise_b)
+    return FsPace(len(samples), len(ceils), span_h, burn, reset, rise_b)
 
 
 def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: int) -> str:
     """The pace clause of the HOSTFS line: the net burn with its span, the
-    reset it follows and the largest floor rise inside it, and the days to
+    reset it follows and the largest ceiling rise inside it, and the days to
     the kubelet's threshold (below it) or to full (above it or with no
     threshold read). Every state names itself."""
     if pace is None:
@@ -1179,16 +1193,16 @@ def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: 
         return f"pace: no fs_free_b samples in {window_h}h"
     reset = f" since a +{_gb_b(pace.reset_b)} rise" if pace.reset_b is not None else ""
     rise = (
-        f"; largest in-span floor rise +{_gb_b(pace.rise_b)}"
+        f"; largest in-span ceiling rise +{_gb_b(pace.rise_b)}"
         if pace.rise_b is not None and pace.rise_b >= 10**9
         else ""
     )
     if pace.burn_b_per_day is None:
         return (
-            f"pace: unresolved ({pace.hours} hourly floor(s) over {pace.span_h:.1f}h{reset},"
+            f"pace: unresolved ({pace.hours} hourly ceiling(s) over {pace.span_h:.1f}h{reset},"
             f" under {FS_PACE_MIN_H:g}h)"
         )
-    span = f"over {pace.span_h:.1f}h of hourly floors{reset}"
+    span = f"over {pace.span_h:.1f}h of hourly ceilings{reset}"
     if pace.burn_b_per_day <= 0:
         return f"pace: not filling (net) {span}{rise}"
     burn = f"pace: net burn {_gb_b(int(pace.burn_b_per_day))}/day {span}"
