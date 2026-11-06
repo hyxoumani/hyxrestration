@@ -1029,18 +1029,170 @@ def read_kubelet_window(hours: int = HOSTFS_WINDOW_H) -> KubeletPressure | None:
     return parse_kubelet(proc.stdout)
 
 
+# The distance to the threshold is a level; what the user acts on is a TIME,
+# and a time needs a rate. The kubelet crossed on 2026-11-04 at ~70 GB/day of
+# shared burn while QA's daily sample said 5 days to ITS floor (mistakes
+# #156); the collector prints `fs_free_b=` every 5 minutes, so the pace over
+# the last day is in the journal at hour resolution already. Two things make
+# the raw series unusable as endpoints, both measured 2026-11-06 over 72h /
+# 865 samples: (a) a rise is a deletion, not a negative burn (#160) -- the
+# user's +292 GB at 14:25Z and a +33 GB step at 18:40Z, which at 5.9% is
+# under QA's 10% reset and netted a 57 GB/day burn to "not filling"; and (b)
+# transient files CHURN free space by 1-35 GB between consecutive 5-min
+# samples dozens of times a day (a sibling's DuckDB spill written then
+# unlinked, image GC), so any per-sample reset rule resets every hour. A
+# transient file can only LOWER a reading, so each hour's MINIMUM is the
+# churn-free floor of free space: under pure burn the hourly minima fall
+# monotonically, and a minimum that rises over the previous hour's is a real
+# freeing (a deletion, a backup slot rotating, the raw_frames prune) -- the
+# pace restarts there and the line says so. Even so the floor of one hour
+# can sit a spill lower than its neighbours', so a pace is a rate only over
+# a span long enough for the burn to outweigh that (`FS_PACE_MIN_H`); under
+# it the clause is unresolved, never a number.
+FS_PACE_WINDOW_H = HOSTFS_WINDOW_H
+COLLECT_UNIT = "hyxlab-collect.service"
+#: Hours of post-reset span under which no rate is printed. Churn within one
+#: hour's floor is up to ~35 GB; over 6h at the measured ~60 GB/day that is
+#: the signal's own size, and over 24h a sixth of it.
+FS_PACE_MIN_H = 6.0
+#: An hourly minimum higher than the previous hour's by more than this is a
+#: freeing, not noise: the floor of an hour cannot be raised by a temporary.
+FS_PACE_RESET_B = 1_000_000_000
+_FS_FREE_RE = re.compile(r"fs_free_b=(\d+)")
+
+
+@dataclass(frozen=True)
+class FsPace:
+    """The filesystem's filling pace from the collector's own samples. Pure data.
+
+    `hours` is the count of post-reset hourly floors, `span_h` the time between
+    the first and the last of them. `burn_b_per_day` is None when the span is
+    under `FS_PACE_MIN_H` (too short to be a rate) and may be <= 0 (not
+    filling). `reset_b` is the rise of the youngest hourly floor the pace was
+    taken AFTER, None when the window holds none.
+    """
+
+    n: int
+    hours: int
+    span_h: float
+    burn_b_per_day: float | None
+    reset_b: int | None
+
+
+def parse_fs_free_series(stdout: str) -> list[tuple[float, int]]:
+    """(epoch_s, free_b) per collector cycle line carrying `fs_free_b=N`,
+    oldest first. `fs_free_b=None` (statvfs failed that cycle) is skipped."""
+    out = []
+    for ts, rec in _journal_json(stdout):
+        msg = rec.get("MESSAGE")
+        m = _FS_FREE_RE.search(msg) if isinstance(msg, str) else None
+        if m is not None:
+            out.append((ts, int(m.group(1))))
+    return sorted(out)
+
+
+def read_fs_free_series(hours: int = FS_PACE_WINDOW_H) -> list[tuple[float, int]] | None:
+    """The collector's free-space samples over the window; None when the
+    journal could not be read (distinct from a window with no cycles)."""
+    text = _journal_hourly(
+        [
+            "-u",
+            COLLECT_UNIT,
+            "--grep=fs_free_b=",
+            "-o",
+            "json",
+            "--output-fields=MESSAGE,__REALTIME_TIMESTAMP",
+        ],
+        hours,
+    )
+    return parse_fs_free_series(text) if text is not None else None
+
+
+def hourly_floors(samples: list[tuple[float, int]]) -> list[tuple[float, int]]:
+    """Each clock hour's minimum free reading with the instant it was taken,
+    oldest first. Pure."""
+    floors: dict[int, tuple[float, int]] = {}
+    for ts, free in samples:
+        h = int(ts) // 3600
+        cur = floors.get(h)
+        if cur is None or free < cur[1]:
+            floors[h] = (ts, free)
+    return [floors[h] for h in sorted(floors)]
+
+
+def _read_fs_pace(hours: int = FS_PACE_WINDOW_H) -> FsPace | None:
+    series = read_fs_free_series(hours)
+    return fs_pace(series) if series is not None else None
+
+
+def fs_pace(
+    samples: list[tuple[float, int]],
+    min_h: float = FS_PACE_MIN_H,
+    reset_b: int = FS_PACE_RESET_B,
+) -> FsPace:
+    """Pace over the hourly floors at or after the youngest reset (a floor
+    higher than the previous hour's by more than `reset_b`). Pure."""
+    floors = hourly_floors(samples)
+    start = 0
+    reset = None
+    for i in range(1, len(floors)):
+        rise = floors[i][1] - floors[i - 1][1]
+        if rise > reset_b:
+            start, reset = i, rise
+    floors = floors[start:]
+    if len(floors) < 2:
+        return FsPace(len(samples), len(floors), 0.0, None, reset)
+    span_s = floors[-1][0] - floors[0][0]
+    span_h = span_s / 3600.0
+    if span_h < min_h:
+        return FsPace(len(samples), len(floors), span_h, None, reset)
+    burn = (floors[0][1] - floors[-1][1]) / (span_s / 86400.0)
+    return FsPace(len(samples), len(floors), span_h, burn, reset)
+
+
+def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: int) -> str:
+    """The pace clause of the HOSTFS line: the burn with its span and reset,
+    and the days to the kubelet's threshold (below it) or to full (above it
+    or with no threshold read). Every state names itself."""
+    if pace is None:
+        return f"pace: collect journal UNREAD over {window_h}h"
+    if pace.n == 0:
+        return f"pace: no fs_free_b samples in {window_h}h"
+    reset = f" since a +{_gb_b(pace.reset_b)} rise" if pace.reset_b is not None else ""
+    if pace.burn_b_per_day is None:
+        return (
+            f"pace: unresolved ({pace.hours} hourly floor(s) over {pace.span_h:.1f}h{reset},"
+            f" under {FS_PACE_MIN_H:g}h)"
+        )
+    span = f"over {pace.span_h:.1f}h of hourly floors{reset}"
+    if pace.burn_b_per_day <= 0:
+        return f"pace: not filling {span}"
+    burn = f"pace: burn {pace.burn_b_per_day / 1e9:.1f} GB/day {span}"
+    if fs.free_b is None:
+        return burn
+    if over_b is not None and over_b < 0:
+        return f"{burn}, threshold in {-over_b / pace.burn_b_per_day:.1f} d"
+    return f"{burn}, full in {fs.free_b / pace.burn_b_per_day:.1f} d"
+
+
 def _gb_b(n: int) -> str:
     return f"{n / 1e9:,.0f} GB"
 
 
-def host_fs_line(fs: HostFs, kube: KubeletPressure | None, window_h: int = HOSTFS_WINDOW_H) -> str:
+def host_fs_line(
+    fs: HostFs,
+    kube: KubeletPressure | None,
+    pace: FsPace | None = None,
+    window_h: int = HOSTFS_WINDOW_H,
+) -> str:
     """The one line that reads the shared filesystem against the HOST's limit.
 
     Standing half: free of size and used%, from `statvfs` -- `df`'s numbers,
     not QA's daily sample. Kubelet half: eviction attempts in the window with
     the resource and the first/last time, and the latest image-GC line's
     usage against its high threshold, with the distance from HERE to that
-    threshold in GB, signed -- the number the user acts on.
+    threshold in GB, signed. Pace half: the collector's measured burn with
+    the days to that threshold -- the number the user acts on.
     """
     if fs.free_b is None or fs.size_b is None or fs.size_b <= 0:
         standing = f"{HOSTFS_PATH} fs unread"
@@ -1060,15 +1212,16 @@ def host_fs_line(fs: HostFs, kube: KubeletPressure | None, window_h: int = HOSTF
             f"{window_h}h: {len(kube.reclaims)} kubelet eviction attempt(s) on "
             f"{'/'.join(names)}, {first} -> {last}"
         )
+    over_b = None
     if kube is not None and kube.gc_high_pct is not None:
         k += f"; image GC: usage {kube.gc_usage_pct}% vs high {kube.gc_high_pct}%"
         if used_pct is not None and fs.size_b is not None and fs.free_b is not None:
-            over_b = (fs.size_b - fs.free_b) - fs.size_b * kube.gc_high_pct / 100
+            over_b = int((fs.size_b - fs.free_b) - fs.size_b * kube.gc_high_pct / 100)
             k += (
                 f" -- {'ABOVE' if over_b >= 0 else 'below'} the kubelet's threshold by "
-                f"{_gb_b(abs(int(over_b)))} (frees to {kube.gc_low_pct}%)"
+                f"{_gb_b(abs(over_b))} (frees to {kube.gc_low_pct}%)"
             )
-    return f"{standing} | {k}"
+    return f"{standing} | {k} | {fs_pace_text(pace, fs, over_b, window_h)}"
 
 
 def judge(
@@ -2527,7 +2680,8 @@ def main() -> None:
         flush=True,
     )
     print(
-        f"{'HOSTFS':<10} {'(host)':<{width}}  {host_fs_line(read_hostfs(), read_kubelet_window())}",
+        f"{'HOSTFS':<10} {'(host)':<{width}}  "
+        f"{host_fs_line(read_hostfs(), read_kubelet_window(), _read_fs_pace())}",
         flush=True,
     )
     drift = drift_report()

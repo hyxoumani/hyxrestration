@@ -651,6 +651,15 @@
   shared disk is the USER's call; enumerate first (`du -sx -BG`, then
   `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
   price our own reflinked slots with `btrfs filesystem du`, never `du`.
+  The `HOSTFS` line's `pace:` clause is the TIME to that threshold, from the
+  collector's 5-min `fs_free_b=` field read as HOURLY FLOORS: a temporary
+  file can only lower a free-space reading, so the hour's minimum is the
+  churn-free floor, a floor that rises over the previous hour's is a real
+  freeing and restarts the pace (named in the clause), and under 6h of
+  span the clause is `unresolved`, never a number. The raw 5-min series is
+  not a rate: it rises 1-35 GB between consecutive samples dozens of times
+  a day (siblings' spills, image GC), and its endpoints read the 11-05
+  57 GB/day burn as "not filling" across two deletion steps.
 - A retention window's plateau is the PRUNER's comparison, not its
   constant: `RawFrameWriter.prune` drops `name < today - RETAIN_DAYS`, so
   with 14 it holds 15 day directories (14 closed + the running day) and

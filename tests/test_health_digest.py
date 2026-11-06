@@ -20,6 +20,7 @@ reason `qa_record_path` exists at all.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import io
 import json
 import re
@@ -822,7 +823,13 @@ def test_the_journal_read_asks_for_the_field_it_filters_on():
     BACK, so a list without MESSAGE_ID makes every record arrive missing the key
     the parser branches on -- and the section reports a clean box, silently."""
     src = (REPO / "collector/health.py").read_text()
-    fields = re.search(r'"--output-fields=([A-Z_,a-z]+)"', src).group(1).split(",")
+    # The read in question is the one that MATCHES on MESSAGE_ID server-side;
+    # other journal reads in the module carry their own field lists.
+    m = re.search(
+        r'f"MESSAGE_ID=\{UNIT_FAILURE_MESSAGE_ID\}".*?"--output-fields=([A-Z_,a-z]+)"', src, re.S
+    )
+    assert m is not None
+    fields = m.group(1).split(",")
     assert "MESSAGE_ID" in fields and "USER_UNIT" in fields
     assert "__REALTIME_TIMESTAMP" in fields
 
@@ -1055,7 +1062,11 @@ def test_a_signal_death_carries_no_exit_status():
 def test_the_journal_read_asks_for_the_exit_record_and_its_join_key():
     src = (REPO / "collector/health.py").read_text()
     assert 'f"MESSAGE_ID={UNIT_EXIT_MESSAGE_ID}"' in src
-    fields = re.search(r'"--output-fields=([A-Z_,a-z]+)"', src).group(1).split(",")
+    m = re.search(
+        r'f"MESSAGE_ID=\{UNIT_FAILURE_MESSAGE_ID\}".*?"--output-fields=([A-Z_,a-z]+)"', src, re.S
+    )
+    assert m is not None
+    fields = m.group(1).split(",")
     assert {"USER_INVOCATION_ID", "EXIT_CODE", "EXIT_STATUS"} <= set(fields)
 
 
@@ -1716,25 +1727,30 @@ KUBELET_LINES = """\
 2026-11-04T09:00:50+00:00 hyz kubelet[1270]: I1104 03:00:50.318162    1270 eviction_manager.go:381] "Eviction manager: attempting to reclaim" resourceName="ephemeral-storage"
 """
 _FS = health.HostFs(free_b=275_000_000_000, size_b=1_900_000_000_000)
+# The 2026-11-06 02:20Z production reading: 8 hourly floors since the +30 GB
+# rise of the 19Z floor (a deletion that was not ours), 56.6 GB/day.
+_PACE = health.FsPace(n=288, hours=8, span_h=6.4167, burn_b_per_day=56.63e9, reset_b=30_441_439_232)
 
 
 def test_the_fs_line_reads_the_kubelet_against_the_filesystem() -> None:
     kube = health.parse_kubelet(KUBELET_LINES)
     assert [r for _, r in kube.reclaims] == ["ephemeral-storage"] * 3
     assert (kube.gc_usage_pct, kube.gc_high_pct, kube.gc_low_pct) == (85, 85, 80)
-    line = health.host_fs_line(_FS, kube)
+    line = health.host_fs_line(_FS, kube, _PACE)
     assert line.startswith("275 GB free of 1,900 GB (85.5% used) | 24h: 3 kubelet eviction")
     assert "attempt(s) on ephemeral-storage, 11-04 07:16Z -> 09:00Z" in line
-    assert line.endswith(
+    assert (
         "; image GC: usage 85% vs high 85% -- ABOVE the kubelet's threshold by 10 GB (frees to 80%)"
-    )
+        " | pace: burn 56.6 GB/day over 6.4h of hourly floors since a +30 GB rise, full in 4.9 d"
+    ) in line
+    assert line.endswith("full in 4.9 d")
 
 
 def test_a_quiet_kubelet_and_an_unread_one_are_different_lines() -> None:
     quiet = health.host_fs_line(_FS, health.parse_kubelet(""))
     unread = health.host_fs_line(_FS, None)
-    assert quiet.endswith("| 24h: kubelet quiet (0 eviction attempts)")
-    assert unread.endswith("| 24h: kubelet journal UNREAD (no claim about evictions)")
+    assert "| 24h: kubelet quiet (0 eviction attempts) |" in quiet
+    assert "| 24h: kubelet journal UNREAD (no claim about evictions) |" in unread
     blind = health.host_fs_line(health.HostFs(None, None), health.parse_kubelet(KUBELET_LINES))
     assert blind.startswith("data fs unread |") and "threshold by" not in blind
     # Below the threshold is said as below, with the distance.
@@ -1763,6 +1779,148 @@ def test_every_fs_term_moves_the_line() -> None:
         )
         assert health.host_fs_line(_FS, bumped) != base, field
     assert health.host_fs_line(_FS, kube, window_h=48) != base
+    # The pace half: every FsPace field the clause reads, and its three states.
+    base = health.host_fs_line(_FS, kube, _PACE)
+    for field, bump in (("span_h", 1.0), ("burn_b_per_day", 1e9), ("reset_b", 10**9)):
+        bumped = dataclasses.replace(_PACE, **{field: getattr(_PACE, field) + bump})
+        assert health.host_fs_line(_FS, kube, bumped) != base, field
+    assert health.host_fs_line(_FS, kube, dataclasses.replace(_PACE, reset_b=None)) != base
+    assert health.host_fs_line(_FS, kube, None) != base
+    assert health.host_fs_line(_FS, kube, health.fs_pace([])) != base
+
+
+# The pace clause itself. Real 5-min cadence, real churn shape: a sibling's
+# spill file written then unlinked inside one hour moves free space by tens of
+# GB and back, and must not move the hourly floor or the pace.
+# --------------------------------------------------------------------------
+_T0 = 1_793_898_000.0  # 2026-11-05 17:00Z: hour-aligned, so each floor is a whole hour
+# Under pure burn an hour's floor is its LAST sample, so N hours of samples
+# span (N - 1)h plus 55 min of floors.
+
+
+def _series(hours: float, burn_gb_day: float, start_gb: float = 600.0, step_s: float = 300.0):
+    n = int(hours * 3600 / step_s)
+    return [
+        (_T0 + i * step_s, int((start_gb - burn_gb_day * i * step_s / 86400.0) * 1e9))
+        for i in range(n + 1)
+    ]
+
+
+def test_fs_free_series_parses_the_collectors_json_lines() -> None:
+    lines = "\n".join(
+        [
+            json.dumps(
+                {
+                    "__REALTIME_TIMESTAMP": "1793931329530163",
+                    "MESSAGE": "[collect] 2026-11-06T02:15:29+00:00 {...} fs_free_b=577187274752",
+                }
+            ),
+            json.dumps({"__REALTIME_TIMESTAMP": "1793931029530163", "MESSAGE": "x fs_free_b=None"}),
+            json.dumps(
+                {"__REALTIME_TIMESTAMP": "1793930729530163", "MESSAGE": "fs_free_b=577287274752"}
+            ),
+            "not json",
+        ]
+    )
+    got = health.parse_fs_free_series(lines)
+    assert got == [(1793930729.530163, 577287274752), (1793931329.530163, 577187274752)]
+    assert health.parse_fs_free_series("") == []
+
+
+def test_hourly_floors_are_immune_to_churn_inside_the_hour() -> None:
+    clean = _series(12, 60.0)
+    churned = list(clean)
+    # A 35 GB spill unlinked 20 minutes after it appeared, twice, and a 290 GB
+    # momentary over-read: none of them can LOWER a floor, so none move it.
+    # Mid-hour, so the hour's natural minimum (its last sample) is untouched; churn
+    # over an hour's END shifts the floor to an earlier instant, by the burn of
+    # the churn's duration -- the jitter `FS_PACE_MIN_H` is sized against.
+    for i in (3, 4, 5, 6, 63, 64, 65, 100):
+        ts, free = churned[i]
+        churned[i] = (ts, free + 35_000_000_000 if i != 100 else free + 290_000_000_000)
+    assert health.hourly_floors(churned) == health.hourly_floors(clean)
+    pace = health.fs_pace(churned)
+    assert pace.reset_b is None and pace.hours == 13
+    assert pace.burn_b_per_day is not None and abs(pace.burn_b_per_day / 1e9 - 60.0) < 0.5
+    assert 11.0 < pace.span_h <= 12.0
+
+
+def test_a_rise_in_the_floor_restarts_the_pace_and_is_named() -> None:
+    before = _series(12, 60.0, start_gb=300.0)
+    # The user deletes 290 GB; the burn continues at 60 from the new level.
+    after = [
+        (ts + 12 * 3600 + 300, free + 290_000_000_000)
+        for ts, free in _series(8, 60.0, start_gb=270.0)
+    ]
+    pace = health.fs_pace(before + after)
+    # Floor to floor, the 290 GB rise reads an hour of burn (2.5 GB) short.
+    assert pace.reset_b is not None and 284.0 < pace.reset_b / 1e9 < 290.0
+    # The hour of the deletion still holds the pre-deletion 12:00 sample as its
+    # floor, so the reset is read at the NEXT floor: 8 post-reset hours, 13..20.
+    assert pace.hours == 8 and pace.burn_b_per_day is not None
+    assert abs(pace.burn_b_per_day / 1e9 - 60.0) < 0.5
+    # The endpoint method would have read this as not filling at all.
+    assert before[0][1] < after[-1][1]
+    # A floor that rises by LESS than the reset bound is burn jitter, not a reset.
+    jitter = list(before)
+    ts, free = jitter[7 * 12]
+    jitter[7 * 12 : 8 * 12] = [(t, f + 900_000_000) for t, f in jitter[7 * 12 : 8 * 12]]
+    assert health.fs_pace(jitter).reset_b is None
+
+
+def test_a_short_span_is_unresolved_not_a_number() -> None:
+    short = health.fs_pace(_series(3, 60.0))
+    assert short.burn_b_per_day is None and short.hours == 4 and 2.0 < short.span_h < 3.0
+    assert health.fs_pace(_series(0.5, 60.0)).hours == 1
+    assert health.fs_pace([]) == health.FsPace(0, 0, 0.0, None, None)
+    flat = health.fs_pace(_series(12, 0.0))
+    assert flat.burn_b_per_day == 0.0
+    freeing = health.fs_pace(_series(12, -2.0))
+    assert freeing.burn_b_per_day is not None and freeing.burn_b_per_day < 0
+
+
+def test_the_pace_clause_names_every_state() -> None:
+    kube = health.parse_kubelet(KUBELET_LINES)
+    roomy = health.HostFs(free_b=400_000_000_000, size_b=1_900_000_000_000)
+    # Below the threshold: days to the threshold (115 GB away at 56.6/day).
+    assert health.host_fs_line(roomy, kube, _PACE).endswith(
+        "pace: burn 56.6 GB/day over 6.4h of hourly floors since a +30 GB rise, threshold in 2.0 d"
+    )
+    # Above it: days to FULL. No kubelet line at all: days to full too.
+    assert health.host_fs_line(_FS, kube, _PACE).endswith("full in 4.9 d")
+    assert health.host_fs_line(_FS, None, _PACE).endswith("full in 4.9 d")
+    assert health.host_fs_line(_FS, kube, None).endswith("| pace: collect journal UNREAD over 24h")
+    assert health.host_fs_line(_FS, kube, health.fs_pace([])).endswith(
+        "| pace: no fs_free_b samples in 24h"
+    )
+    assert health.host_fs_line(_FS, kube, health.fs_pace(_series(3, 60.0))).endswith(
+        "| pace: unresolved (4 hourly floor(s) over 2.1h, under 6h)"
+    )
+    assert health.host_fs_line(_FS, kube, health.fs_pace(_series(12, -2.0))).endswith(
+        "| pace: not filling over 12.0h of hourly floors"
+    )
+    no_reset = dataclasses.replace(_PACE, reset_b=None)
+    assert "since a" not in health.host_fs_line(_FS, kube, no_reset)
+    # An unread filesystem still gets the burn, with no horizon to divide into.
+    blind = health.host_fs_line(health.HostFs(None, None), kube, _PACE)
+    assert blind.endswith("| pace: burn 56.6 GB/day over 6.4h of hourly floors since a +30 GB rise")
+
+
+def test_the_digest_prints_the_pace_from_the_one_renderer(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(health, "read_kernel_oom_window", lambda: None)
+    monkeypatch.setattr(health, "read_hostmem", lambda: _hm())
+    monkeypatch.setattr(health, "read_hostfs", lambda: _FS)
+    monkeypatch.setattr(health, "read_kubelet_window", lambda: health.parse_kubelet(KUBELET_LINES))
+    monkeypatch.setattr(health, "read_fs_free_series", lambda hours=24: _series(12, 60.0))
+    health.main()
+    out = capsys.readouterr().out
+    hostfs = [ln for ln in out.splitlines() if ln.startswith("HOSTFS")]
+    assert (
+        len(hostfs) == 1
+        and "pace: burn 60.0 GB/day over 11.1h of hourly floors, full in 4.6 d" in hostfs[0]
+    )
 
 
 def test_the_live_fs_reader_never_raises_and_the_digest_prints_it(

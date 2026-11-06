@@ -3977,6 +3977,17 @@ Format: what happened → root cause → error type → prevention tier
     rule is written for one resource (RAM, #152), apply it to every shared
     resource the same day, starting with the one the rule was first learned
     on.**
+    Follow-up 2026-11-06 02:40Z: the line carried a DISTANCE (GB to the
+    threshold) and no TIME, and the user acts on the time. Now
+    `host_fs_line` ends with a pace clause from the collector's own 5-min
+    `fs_free_b=` field over 24h -- read as HOURLY FLOORS (a transient file
+    can only lower a reading, so the hour's minimum is churn-free; measured
+    over 72h / 865 samples the raw series rises 1-35 GB between consecutive
+    samples dozens of times a day, and its endpoints read a 57 GB/day burn as
+    "not filling" across the user's +292 GB and a +33 GB step) with a reset
+    at any floor that rises >1 GB over the previous hour's, unresolved under
+    6h of span. First reading: `burn 56.6 GB/day over 6.4h of hourly floors
+    since a +30 GB rise, threshold in 4.9 d`.
 
 157. **2026-11-04 14:15Z -> 2026-11-05 02:15Z -- three consecutive autoloop
     runs were filed as launcher CRASHES (`RECENT hyxlab-autoloop.service 3x
