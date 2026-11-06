@@ -1729,7 +1729,9 @@ KUBELET_LINES = """\
 _FS = health.HostFs(free_b=275_000_000_000, size_b=1_900_000_000_000)
 # The 2026-11-06 02:20Z production reading: 8 hourly floors since the +30 GB
 # rise of the 19Z floor (a deletion that was not ours), 56.6 GB/day.
-_PACE = health.FsPace(n=288, hours=8, span_h=6.4167, burn_b_per_day=56.63e9, reset_b=30_441_439_232)
+_PACE = health.FsPace(
+    n=288, hours=8, span_h=6.4167, burn_b_per_day=56.63e9, reset_b=30_441_439_232, rise_b=None
+)
 
 
 def test_the_fs_line_reads_the_kubelet_against_the_filesystem() -> None:
@@ -1741,7 +1743,7 @@ def test_the_fs_line_reads_the_kubelet_against_the_filesystem() -> None:
     assert "attempt(s) on ephemeral-storage, 11-04 07:16Z -> 09:00Z" in line
     assert (
         "; image GC: usage 85% vs high 85% -- ABOVE the kubelet's threshold by 10 GB (frees to 80%)"
-        " | pace: burn 56.6 GB/day over 6.4h of hourly floors since a +30 GB rise, full in 4.9 d"
+        " | pace: net burn 57 GB/day over 6.4h of hourly floors since a +30 GB rise, full in 4.9 d"
     ) in line
     assert line.endswith("full in 4.9 d")
 
@@ -1782,6 +1784,15 @@ def test_every_fs_term_moves_the_line() -> None:
     # The pace half: every FsPace field the clause reads, and its three states.
     base = health.host_fs_line(_FS, kube, _PACE)
     for field, bump in (("span_h", 1.0), ("burn_b_per_day", 1e9), ("reset_b", 10**9)):
+        bumped = dataclasses.replace(_PACE, **{field: getattr(_PACE, field) + bump})
+        assert health.host_fs_line(_FS, kube, bumped) != base, field
+    with_rise = dataclasses.replace(_PACE, rise_b=5 * 10**9)
+    assert health.host_fs_line(_FS, kube, with_rise) != base
+    for field, bump in (("rise_b", 10**9),):
+        _PACE_R = with_rise
+        bumped = dataclasses.replace(_PACE_R, **{field: getattr(_PACE_R, field) + bump})
+        assert health.host_fs_line(_FS, kube, bumped) != health.host_fs_line(_FS, kube, _PACE_R)
+    for field, bump in ():
         bumped = dataclasses.replace(_PACE, **{field: getattr(_PACE, field) + bump})
         assert health.host_fs_line(_FS, kube, bumped) != base, field
     assert health.host_fs_line(_FS, kube, dataclasses.replace(_PACE, reset_b=None)) != base
@@ -1840,39 +1851,58 @@ def test_hourly_floors_are_immune_to_churn_inside_the_hour() -> None:
         churned[i] = (ts, free + 35_000_000_000 if i != 100 else free + 290_000_000_000)
     assert health.hourly_floors(churned) == health.hourly_floors(clean)
     pace = health.fs_pace(churned)
-    assert pace.reset_b is None and pace.hours == 13
+    assert pace.reset_b is None and pace.rise_b is None and pace.hours == 13
     assert pace.burn_b_per_day is not None and abs(pace.burn_b_per_day / 1e9 - 60.0) < 0.5
-    assert 11.0 < pace.span_h <= 12.0
+    # Endpoints are medians of three floors: 1:55 and 11:55 of a 0..12h series.
+    assert abs(pace.span_h - 10.0) < 0.01
 
 
-def test_a_rise_in_the_floor_restarts_the_pace_and_is_named() -> None:
+def test_one_low_floor_at_an_end_does_not_carry_the_endpoint() -> None:
+    """Measured 2026-11-06: one hour's floor can sit ~20 GB under its
+    neighbours' (a spill present the whole hour). As an endpoint of a 12h span
+    that is +40 GB/day of error; the median of three ends ignores it."""
+    series = _series(12, 60.0)
+    low = [(t, f - 20_000_000_000 if 11 * 3600 <= t - _T0 < 12 * 3600 else f) for t, f in series]
+    pace = health.fs_pace(low)
+    assert pace.burn_b_per_day is not None and abs(pace.burn_b_per_day / 1e9 - 60.0) < 0.5
+
+
+def test_a_deletion_restarts_the_pace_and_a_recurring_free_does_not() -> None:
     before = _series(12, 60.0, start_gb=300.0)
-    # The user deletes 290 GB; the burn continues at 60 from the new level.
+    # The user deletes 290 GB (97% of free); the burn continues at 60 from there.
     after = [
         (ts + 12 * 3600 + 300, free + 290_000_000_000)
-        for ts, free in _series(8, 60.0, start_gb=270.0)
+        for ts, free in _series(10, 60.0, start_gb=270.0)
     ]
     pace = health.fs_pace(before + after)
-    # Floor to floor, the 290 GB rise reads an hour of burn (2.5 GB) short.
+    # Floor to floor, the rise reads an hour of burn (2.5 GB) short; the hour
+    # of the deletion still holds the pre-deletion 12:00 sample as its floor,
+    # so the reset is read at the NEXT floor: 10 post-reset hours, 13..22,
+    # whose end medians (14:55, 21:55) span 7h -- over the 6h floor.
     assert pace.reset_b is not None and 284.0 < pace.reset_b / 1e9 < 290.0
-    # The hour of the deletion still holds the pre-deletion 12:00 sample as its
-    # floor, so the reset is read at the NEXT floor: 8 post-reset hours, 13..20.
-    assert pace.hours == 8 and pace.burn_b_per_day is not None
+    assert pace.hours == 10 and pace.burn_b_per_day is not None
     assert abs(pace.burn_b_per_day / 1e9 - 60.0) < 0.5
     # The endpoint method would have read this as not filling at all.
     assert before[0][1] < after[-1][1]
-    # A floor that rises by LESS than the reset bound is burn jitter, not a reset.
-    jitter = list(before)
-    ts, free = jitter[7 * 12]
-    jitter[7 * 12 : 8 * 12] = [(t, f + 900_000_000) for t, f in jitter[7 * 12 : 8 * 12]]
-    assert health.fs_pace(jitter).reset_b is None
+    # A 15 GB free (5% of 300) is what image GC and a slot rotation do several
+    # times a day: it stays INSIDE the span, nets into the burn (25 GB of fall
+    # over the 10h medians less 15 freed = 24 GB/day net), and is named.
+    freed = [(t, f + 15_000_000_000 if t - _T0 >= 7 * 3600 else f) for t, f in before]
+    p2 = health.fs_pace(freed)
+    assert p2.reset_b is None and p2.rise_b is not None
+    assert 12.0 < p2.rise_b / 1e9 < 15.1
+    assert p2.burn_b_per_day is not None and abs(p2.burn_b_per_day / 1e9 - 24.0) < 0.5
+    assert p2.burn_b_per_day is not None and 0 < p2.burn_b_per_day < 60e9
 
 
 def test_a_short_span_is_unresolved_not_a_number() -> None:
     short = health.fs_pace(_series(3, 60.0))
     assert short.burn_b_per_day is None and short.hours == 4 and 2.0 < short.span_h < 3.0
     assert health.fs_pace(_series(0.5, 60.0)).hours == 1
-    assert health.fs_pace([]) == health.FsPace(0, 0, 0.0, None, None)
+    assert health.fs_pace([]) == health.FsPace(0, 0, 0.0, None, None, None)
+    # Six floors (5h of samples) is enough for two medians but not for 6h.
+    six = health.fs_pace(_series(5, 60.0))
+    assert six.hours == 6 and six.burn_b_per_day is None and abs(six.span_h - 3.0) < 0.01
     flat = health.fs_pace(_series(12, 0.0))
     assert flat.burn_b_per_day == 0.0
     freeing = health.fs_pace(_series(12, -2.0))
@@ -1884,7 +1914,7 @@ def test_the_pace_clause_names_every_state() -> None:
     roomy = health.HostFs(free_b=400_000_000_000, size_b=1_900_000_000_000)
     # Below the threshold: days to the threshold (115 GB away at 56.6/day).
     assert health.host_fs_line(roomy, kube, _PACE).endswith(
-        "pace: burn 56.6 GB/day over 6.4h of hourly floors since a +30 GB rise, threshold in 2.0 d"
+        "pace: net burn 57 GB/day over 6.4h of hourly floors since a +30 GB rise, threshold in 2.0 d"
     )
     # Above it: days to FULL. No kubelet line at all: days to full too.
     assert health.host_fs_line(_FS, kube, _PACE).endswith("full in 4.9 d")
@@ -1897,13 +1927,28 @@ def test_the_pace_clause_names_every_state() -> None:
         "| pace: unresolved (4 hourly floor(s) over 2.1h, under 6h)"
     )
     assert health.host_fs_line(_FS, kube, health.fs_pace(_series(12, -2.0))).endswith(
-        "| pace: not filling over 12.0h of hourly floors"
+        "| pace: not filling (net) over 10.0h of hourly floors"
     )
     no_reset = dataclasses.replace(_PACE, reset_b=None)
     assert "since a" not in health.host_fs_line(_FS, kube, no_reset)
+    # An in-span rise is named after the horizon; under 1 GB it is jitter and silent.
+    risen = dataclasses.replace(_PACE, rise_b=30_000_000_000)
+    assert health.host_fs_line(_FS, kube, risen).endswith(
+        "full in 4.9 d; largest in-span floor rise +30 GB"
+    )
+    assert "in-span" not in health.host_fs_line(_FS, kube, dataclasses.replace(_PACE, rise_b=10**8))
+    # The 2026-11-06 03:10Z production line: a sub-10% deletion inside a short
+    # post-reset span reads as not filling, and the clause shows the rise.
+    live = dataclasses.replace(_PACE, burn_b_per_day=-3e10, rise_b=30_441_439_232)
+    assert health.host_fs_line(_FS, kube, live).endswith(
+        "not filling (net) over 6.4h of hourly floors since a +30 GB rise;"
+        " largest in-span floor rise +30 GB"
+    )
     # An unread filesystem still gets the burn, with no horizon to divide into.
     blind = health.host_fs_line(health.HostFs(None, None), kube, _PACE)
-    assert blind.endswith("| pace: burn 56.6 GB/day over 6.4h of hourly floors since a +30 GB rise")
+    assert blind.endswith(
+        "| pace: net burn 57 GB/day over 6.4h of hourly floors since a +30 GB rise"
+    )
 
 
 def test_the_digest_prints_the_pace_from_the_one_renderer(
@@ -1919,7 +1964,7 @@ def test_the_digest_prints_the_pace_from_the_one_renderer(
     hostfs = [ln for ln in out.splitlines() if ln.startswith("HOSTFS")]
     assert (
         len(hostfs) == 1
-        and "pace: burn 60.0 GB/day over 11.1h of hourly floors, full in 4.6 d" in hostfs[0]
+        and "pace: net burn 60 GB/day over 10.0h of hourly floors, full in 4.6 d" in hostfs[0]
     )
 
 

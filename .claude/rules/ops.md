@@ -654,12 +654,18 @@
   The `HOSTFS` line's `pace:` clause is the TIME to that threshold, from the
   collector's 5-min `fs_free_b=` field read as HOURLY FLOORS: a temporary
   file can only lower a free-space reading, so the hour's minimum is the
-  churn-free floor, a floor that rises over the previous hour's is a real
-  freeing and restarts the pace (named in the clause), and under 6h of
-  span the clause is `unresolved`, never a number. The raw 5-min series is
-  not a rate: it rises 1-35 GB between consecutive samples dozens of times
-  a day (siblings' spills, image GC), and its endpoints read the 11-05
-  57 GB/day burn as "not filling" across two deletion steps.
+  churn-free floor (the raw series rises 1-35 GB between consecutive samples
+  dozens of times a day). The pace is the NET fall between the medians of
+  the three oldest and three youngest floors, restarted only at a floor
+  rising by more than QA's `DISK_RISE_RESET_FRAC` (10%) -- the floor is also
+  FREED 2-25 GB several times a day (image GC, slot rotation) and those
+  recur, so they net into the burn rather than resetting it; the clause
+  names the largest in-span rise, because a sub-10% deletion inside the span
+  reads as a small or negative net for ~12h (11-05 19Z, +30 GB). Under 6h of
+  span the clause is `unresolved`, never a number. Replay a new instrument
+  over the window it will live in BEFORE shipping its first reading: the
+  1 GB-reset version shipped at 02:40Z read `unresolved` at 18 of 24
+  three-hourly checkpoints of the prior 72h (mistakes #161).
 - A retention window's plateau is the PRUNER's comparison, not its
   constant: `RawFrameWriter.prune` drops `name < today - RETAIN_DAYS`, so
   with 14 it holds 15 day directories (14 closed + the running day) and

@@ -3977,17 +3977,11 @@ Format: what happened → root cause → error type → prevention tier
     rule is written for one resource (RAM, #152), apply it to every shared
     resource the same day, starting with the one the rule was first learned
     on.**
-    Follow-up 2026-11-06 02:40Z: the line carried a DISTANCE (GB to the
-    threshold) and no TIME, and the user acts on the time. Now
+    Follow-up 2026-11-06 02:40Z / 03:30Z: the line carried a DISTANCE (GB
+    to the threshold) and no TIME, and the user acts on the time. Now
     `host_fs_line` ends with a pace clause from the collector's own 5-min
-    `fs_free_b=` field over 24h -- read as HOURLY FLOORS (a transient file
-    can only lower a reading, so the hour's minimum is churn-free; measured
-    over 72h / 865 samples the raw series rises 1-35 GB between consecutive
-    samples dozens of times a day, and its endpoints read a 57 GB/day burn as
-    "not filling" across the user's +292 GB and a +33 GB step) with a reset
-    at any floor that rises >1 GB over the previous hour's, unresolved under
-    6h of span. First reading: `burn 56.6 GB/day over 6.4h of hourly floors
-    since a +30 GB rise, threshold in 4.9 d`.
+    `fs_free_b=` field over 24h, read as HOURLY FLOORS with a 10% reset and
+    median-of-three endpoints (the first cut's 1 GB reset is #161).
 
 157. **2026-11-04 14:15Z -> 2026-11-05 02:15Z -- three consecutive autoloop
     runs were filed as launcher CRASHES (`RECENT hyxlab-autoloop.service 3x
@@ -4115,6 +4109,29 @@ Format: what happened → root cause → error type → prevention tier
     0.75 ratio by design); the batch budget's per-unit max wall is the
     verdict's worst case by intent and a step DOWN is re-measured as a new
     band (ops.md). One instance, three reasoned.
+
+161. **2026-11-06 02:40Z -- the HOSTFS pace clause shipped against ONE
+    favourable window.** The first cut reset the pace at any hourly floor
+    rising by more than 1 GB ("a floor cannot be raised by a temporary, so a
+    rise is a freeing") and was read once, on the 02:15Z line, where it said
+    `burn 56.6 GB/day over 6.4h since a +30 GB rise, threshold in 4.9 d` --
+    a plausible number, promoted and pushed. Replayed over the previous 72h
+    at three-hourly checkpoints, the same rule read `unresolved` at 18 of 24
+    (post-reset spans of 0-3.3h), because the disk is FREED 2-25 GB several
+    times a day -- 22 floor rises above 1 GB in 96h: kubelet image GC under
+    its eviction loop, backup slots rotating, spills -- and each one
+    restarted the clock. Those frees recur, so they belong in the NET burn
+    the horizon needs; only a deletion (QA's 10% rule, #160) should reset.
+    With that rule the replay resolves at 20 of 24 and reads 47-99 GB/day
+    around QA's daily ~70 -- and its blind side is now written on the line
+    (a sub-10% deletion inside the span reads as a small/negative net for
+    ~12h, so the clause carries the largest in-span floor rise). The 1 GB
+    choice was the #93/#160 lesson applied too eagerly: a rise IS not a
+    burn, but neither is every rise a reset. Rule: **a new instrument is
+    read against the window it will LIVE in before its first number is
+    published -- replay it over the last 72h at the cadence the digest is
+    read at, and count how often it says nothing. One reading that looks
+    right is the instrument's own favourable sample.**
 
 ## Pattern analysis (Step 5)
 
