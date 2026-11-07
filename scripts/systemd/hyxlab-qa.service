@@ -69,6 +69,8 @@ MemoryMax=12G
 # last reader. Reports only; never fails the unit (scripts/cgmem.sh).
 ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+# EXP-2203: the disk-headroom check counts the backup slots where they live.
+Environment=HYXLAB_BACKUP_DIR=/home/devs/hyx-backups
 # The one directory both worktrees must agree on. `reports/` is a REAL
 # directory in each tree (unlike data/.env/.secrets, which the stable tree
 # symlinks back to the dev tree), so a cwd-relative report path splits the

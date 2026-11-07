@@ -34,4 +34,9 @@ MemoryMax=1G
 # last reader. Reports only; never fails the unit (scripts/cgmem.sh).
 ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+# EXP-2203: the rotated copies live OUTSIDE every git work tree, so one
+# `git clean -x` here cannot take the tape and all its copies together.
+# Same btrfs subvolume as data/ (st_dev 38), so the staged copy still lands
+# by rename (one reflink, no disk cost). Same disk is NOT off-host.
+Environment=HYXLAB_BACKUP_DIR=/home/devs/hyx-backups
 ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.backup

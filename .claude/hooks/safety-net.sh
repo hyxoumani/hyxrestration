@@ -19,6 +19,10 @@ BLOCKED_PATTERNS=(
   'git push.*-f '
   'git reset --hard'
   'git clean -fd'
+  # EXP-2203: -x/-X reaches the ignored data/ tree (the live tape). The line
+  # above only matched the literal `-fd...`; this one matches the flag in any
+  # spelling (-xfd, -dfx, -f -d -x, -X).
+  'git( +-C +[^ ]+)? +clean( +-[a-zA-Z]+)* +-[a-zA-Z]*[xX]'
   'git checkout -- \.'
   'git restore \.'
   '> /dev/sda'

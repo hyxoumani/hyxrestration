@@ -56,6 +56,16 @@ real archive, reflink intact — fractionally faster than `copyfile`).
 
 Default destination is data/backups (guards corruption and
 fat-finger deletion, not disk loss).
+
+EXP-2203: data/ is git-ignored (`/data/`), so `git clean -fd` spares it,
+but `git clean -fdx` deletes data/ whole -- the live hyxstream.duckdb AND
+every rotated copy of it under data/backups, together. A backup that
+shares its source's deletion command is not a backup. The deployed unit
+therefore sets HYXLAB_BACKUP_DIR to a directory OUTSIDE any git work tree
+on the SAME btrfs subvolume (the staged copy still lands by rename, one
+reflink, no disk cost), and `main` warns whenever the destination sits
+inside a work tree. Same disk is still not off-host: this closes the
+`git clean` failure mode only, not disk death.
 """
 
 from __future__ import annotations
@@ -123,6 +133,30 @@ def _transfer(src: Path, dst: Path) -> None:
 
 def _same_device(a: Path, b: Path) -> bool:
     return a.stat().st_dev == b.stat().st_dev
+
+
+#: Highest directory `enclosing_git_worktree` walks up to (None = `/`).
+#: Tests set it, since their tmp dirs may themselves sit inside a checkout.
+GIT_CEILING: Path | None = None
+
+
+def enclosing_git_worktree(path: Path, ceiling: Path | None = None) -> Path | None:
+    """The git work tree `path` sits inside (symlinks resolved), or None.
+
+    A `.git` entry (dir for a checkout, file for a linked worktree) in
+    `path` or any parent up to `ceiling` marks a work tree whose
+    `git clean -x` reaches `path`. Resolving first matters: data/backups
+    as a symlink to a dir outside the tree is NOT reachable (git clean
+    removes the link, never follows it).
+    """
+    p = Path(path).resolve()
+    top = None if ceiling is None else Path(ceiling).resolve()
+    for d in (p, *p.parents):
+        if (d / ".git").exists():
+            return d
+        if top is not None and d == top:
+            break
+    return None
 
 
 def backup_one(src: str | Path, dest_dir: Path, retries: int = 30) -> BackupResult | None:
@@ -212,6 +246,14 @@ def main() -> None:
     args = ap.parse_args()
     dest = Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
+    tree = enclosing_git_worktree(dest, GIT_CEILING)
+    if tree is not None:
+        print(
+            f"[backup] WARNING: dest {dest.resolve()} is inside the git work tree"
+            f" {tree}: one `git clean -x` there deletes these copies together"
+            f" with their source. Set HYXLAB_BACKUP_DIR outside it (EXP-2203).",
+            flush=True,
+        )
     reset_attach_waits()
     for db in DBS:
         res = backup_one(db, dest)
