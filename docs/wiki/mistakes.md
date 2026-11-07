@@ -4236,6 +4236,38 @@ Format: what happened → root cause → error type → prevention tier
     amended rather than replaced: the count is right and the plateau is
     not.
 
+165. **2026-11-07 02:40Z -- QA's disk-headroom horizon counted days to a
+    FULL disk for 13 days after the kubelet proved the disk fails at 85%
+    used.** #156 (11-04) found the host's binding limit -- the kubelet's
+    image-GC high threshold, ~300 GB free on this 2 TB device, evictions
+    above it -- and built the digest's `HOSTFS` line to read it; #163
+    (11-06) made that line read the threshold from the kubelet's config.
+    QA's `archive disk headroom`, the DAILY record and the check that
+    `#156` itself quoted as reading `free 381 GB` and 5 days while the
+    kubelet evicted, was left computing `days = free / burn` to zero
+    bytes free: this morning's line read `38 d to full` against a disk
+    the kubelet will start evicting on in ~7 d at QA's own-tenant burn.
+    The FAIL verdict hid it -- the check was already red on the 90-day
+    floor, so the wrong horizon cost nothing visible -- which is the
+    #104 shape: a defect under a standing failure is invisible until the
+    failure clears. Fix: `qa_disk_headroom` takes `kubelet_cfg`, reads
+    the configured high threshold through `health.read_kubelet_config`
+    (the digest's source; a local import, since `health` imports `qa`),
+    and the horizon is the nearer of days-to-full and
+    days-to-threshold, both printed (`16 d to full, 7 d to the kubelet's
+    85% threshold (209 GB above)`, live dry run 02:35Z); the not-filling
+    arm fails when usage is already PAST the threshold (the kubelet
+    evicts on the level); no readable config prints `no kubelet config
+    (horizon to full only)`, never a silent 85; one `_kubelet_clause`
+    renderer for both arms (#95). 5 tests; the two verdict branches
+    red-verified by mutant, each landing checked with `cmp`. Rule: **when
+    an instrument learns the binding limit of a shared resource, every
+    reader of that resource that publishes a horizon must be re-bounded
+    to it the same pass -- the digest's new line and the daily record's
+    old `to full` are two readers, and the record is the one a reader
+    months later sees.** Mirror of #156's own rule ("the tightest tenant")
+    applied to the second reader it named and did not fix.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

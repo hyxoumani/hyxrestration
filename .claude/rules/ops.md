@@ -650,7 +650,15 @@
   and the signed distance to the kubelet's threshold -- read from the
   kubelet's CONFIG (`/var/lib/kubelet/config.yaml`, defaults 85/80) when
   the window has no GC line, because the kubelet logs its threshold only
-  while usage is above it (mistakes #163). What to delete on the
+  while usage is above it (mistakes #163). QA's `archive disk headroom`
+  horizon counted days to FULL for 13 days after that crossing (the
+  digest had the threshold, the daily record did not); since 2026-11-07
+  it is the NEARER of days-to-full and days-to-that-threshold from the
+  same config, printed as both (`16 d to full, 7 d to the kubelet's 85%
+  threshold (209 GB above)`), and a disk already PAST the threshold
+  fails even while it is not filling (mistakes #165). A horizon on a
+  shared resource is bounded by its tightest tenant's limit, never by
+  the resource's last unit. What to delete on the
   shared disk is the USER's call; enumerate first (`du -sx -BG`, then
   `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
   price our own reflinked slots with `btrfs filesystem du`, never `du`.

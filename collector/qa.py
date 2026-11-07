@@ -2005,8 +2005,19 @@ def qa_disk_headroom(
     min_days: float = HEADROOM_MIN_DAYS,
     series: str | Path | None = None,
     raw_dir: str | Path | None = None,
+    kubelet_cfg: str | Path | None = None,
 ) -> None:
     """Will the filesystem holding the archives still be there in `min_days`?
+
+    "There" is bounded by the TIGHTEST tenant of the shared filesystem, not by
+    its last byte: the kubelet evicts pods on `ephemeral-storage` once usage
+    crosses its configured image-GC high threshold (85% here, ~300 GB free on
+    a 2 TB device), and it crossed on 2026-11-04 while this check's horizon
+    counted days to FULL (mistakes #156, #165). The horizon is therefore the
+    nearer of days-to-full and days-to-that-threshold, read from the
+    kubelet's config file (`kubelet_cfg`; the digest's source, #163). No
+    readable config is no kubelet, so the horizon is to full and the line
+    says so.
 
     Bounded as a HORIZON rather than a level, so it tracks the failure it is
     named for and can go green again. A rate also catches the shape a constant
@@ -2028,8 +2039,10 @@ def qa_disk_headroom(
         ok, detail = False, "no archive present to measure"
     else:
         root = live[0].parent
-        free = shutil.disk_usage(root).free
+        usage = shutil.disk_usage(root)
+        free = usage.free
         footprint = sum(p.stat().st_size for p in live)
+        kube_high, kube_above = _kubelet_headroom(usage.total, free, kubelet_cfg)
 
         # The rotation costs the burn ONLY while it shares the filesystem it
         # would exhaust. Off-box -- the standing user item -- it costs this
@@ -2130,20 +2143,60 @@ def qa_disk_headroom(
                 f" free {free / 1e9:.0f} GB vs {footprint / 1e9:.0f} GB live"
             )
         elif burn <= 0:
-            ok = True
+            # A disk not filling is still failing if it is already past the
+            # tightest tenant's threshold: the kubelet evicts on the LEVEL.
+            ok = kube_above is None or kube_above > 0
             detail = (
                 f"free {free / 1e9:.0f} GB; filesystem not filling over {fs_span:.1f}d"
                 if fs_rate is not None
                 else f"free {free / 1e9:.0f} GB; archives not growing over {span:.1f}d"
-            )
+            ) + _kubelet_clause(kube_high, kube_above, None)
         else:
             days = free / burn
-            ok = days > min_days
+            kube_days = None if kube_above is None else max(0.0, kube_above / burn)
+            horizon = days if kube_days is None else min(days, kube_days)
+            ok = horizon > min_days
             detail = (
-                f"{days:.0f} d to full (floor {min_days:.0f}) —"
+                f"{days:.0f} d to full{_kubelet_clause(kube_high, kube_above, kube_days)}"
+                f" (floor {min_days:.0f}) —"
                 f" free {free / 1e9:.0f} GB, burn {burn / 1e9:.2f} GB/day{source}"
             )
     check("archive disk headroom", ok, detail)
+
+
+def _kubelet_headroom(
+    total: int, free: int, cfg: str | Path | None
+) -> tuple[int | None, float | None]:
+    """`(high_pct, bytes_above_threshold)` for the kubelet's image-GC high
+    threshold on a filesystem of `total` bytes with `free` free; `(None,
+    None)` when no kubelet config is readable (no kubelet here, or not ours
+    to read) -- no claim, never a default. `bytes_above` is signed: negative
+    means usage is already past the threshold and the kubelet is evicting.
+    The config is the source, not the kubelet's journal, which names the
+    threshold only while usage is above it (mistakes #163)."""
+    # Local import: `collector.health` imports this module for the digest.
+    from collector.health import KUBELET_CONFIG_PATH, read_kubelet_config
+
+    thresholds = read_kubelet_config(str(KUBELET_CONFIG_PATH if cfg is None else cfg))
+    if thresholds is None or total <= 0:
+        return None, None
+    high = thresholds[0]
+    threshold_free = total * (100 - high) / 100.0
+    return high, free - threshold_free
+
+
+def _kubelet_clause(high: int | None, above: float | None, days: float | None) -> str:
+    """The kubelet half of the headroom line, in ONE place for both branches:
+    the days to its threshold (when a burn exists) and the signed distance,
+    or the absence of a kubelet. Never empty -- a reader must see which
+    bound the horizon is against."""
+    if high is None or above is None:
+        return ", no kubelet config (horizon to full only)"
+    side = "above" if above > 0 else "PAST"
+    dist = f"{abs(above) / 1e9:.0f} GB {side} the kubelet's {high}% eviction threshold"
+    if days is None:
+        return f"; {dist}"
+    return f", {days:.0f} d to the kubelet's {high}% threshold ({abs(above) / 1e9:.0f} GB {side})"
 
 
 def _largest_gap(conn, table: str, col: str, lo: datetime) -> tuple | None:

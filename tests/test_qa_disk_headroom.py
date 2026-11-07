@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from collector import backup, qa
+from collector import backup, health, qa
 
 GB = 10**9
 # Captured before the autouse fixture replaces it, for the parser's own test.
@@ -24,11 +24,12 @@ _REAL_SLOT_DU = qa._slot_exclusive_bytes
 
 
 class _Usage:
-    """`shutil.disk_usage`'s free field, pinned, so a horizon test does not
-    depend on how much room the machine running it happens to have."""
+    """`shutil.disk_usage`'s free and total fields, pinned, so a horizon test
+    does not depend on how much room the machine running it happens to have."""
 
-    def __init__(self, free: int) -> None:
+    def __init__(self, free: int, total: int = 2000 * 10**9) -> None:
         self.free = free
+        self.total = total
 
 
 def _rotation(backup_dir: Path, stem: str, sizes: list[int], day0: float = 1.0e9) -> None:
@@ -352,6 +353,9 @@ def test_no_constant_size_ceiling_survives_anywhere_in_qa():
 def _series_in_tmp(tmp_path, monkeypatch):
     """Never let a test append to the repo's own `reports/qa/disk_free.jsonl`."""
     monkeypatch.setattr(qa, "DISK_SERIES", tmp_path / "series" / "disk_free.jsonl")
+    # Nor read this box's kubelet config: no kubelet is the default, and a
+    # test that wants one writes its own file and passes `kubelet_cfg`.
+    monkeypatch.setattr(health, "KUBELET_CONFIG_PATH", str(tmp_path / "no-kubelet.yaml"))
     # The repo's own `data/raw_frames` and `btrfs filesystem du` must never
     # reach a test: an empty raw dir and an unmeasured sharing (full copies)
     # are the defaults; tests that want the measured arm say so.
@@ -552,3 +556,94 @@ def test_a_rise_since_the_last_sample_resets_on_the_day_it_lands(tmp_path, monke
     assert "burn 8.00 GB/day = 1.00 live + 7.00 backups" in detail
     assert "series 0.0d young, not yet a rate; series reset by a +324 GB rise 0.0d ago" in detail
     assert "measured on the filesystem" not in detail
+
+
+# ---------------------------------------------------------------------------
+# The tightest tenant (2026-11-07, mistakes #165). The kubelet evicts pods at
+# its image-GC high threshold, ~300 GB free on this 2 TB device, and crossed
+# it on 11-04 while this check counted days to FULL.
+
+
+def _kube_cfg(tmp_path: Path, body: str = "apiVersion: kubelet.config.k8s.io/v1beta1\n") -> Path:
+    cfg = tmp_path / "kubelet.yaml"
+    cfg.write_text(body)
+    return cfg
+
+
+def test_the_horizon_is_the_nearer_of_full_and_the_kubelet_threshold(tmp_path, monkeypatch):
+    """8 GB/day against 800 GB free of 2,000 GB: 100 d to full, but the
+    kubelet's 85% threshold sits at 300 GB free, 500 GB away -- 62 d. A
+    90-day floor that passed to full fails to the threshold, and the line
+    prints BOTH so the old headline stays comparable. The config here names
+    no threshold, so the kubelet's default 85 is the one read (this box)."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB, 2000 * GB))
+
+    failed, lines = _run(dbs=[db], backup_dir=bdir, min_days=90.0)
+    assert failed == set()
+    assert "no kubelet config (horizon to full only)" in "\n".join(lines)
+
+    failed, lines = _run(dbs=[db], backup_dir=bdir, min_days=90.0, kubelet_cfg=_kube_cfg(tmp_path))
+    text = "\n".join(lines)
+    assert failed == {"archive disk headroom"}
+    assert "100 d to full" in text
+    assert "62 d to the kubelet's 85% threshold (500 GB above)" in text
+
+
+def test_a_configured_threshold_is_the_one_read(tmp_path, monkeypatch):
+    """`imageGCHighThresholdPercent: 90` -> 200 GB free is the line; 800 GB
+    free is 600 GB above it, 75 d at 8 GB/day."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB, 2000 * GB))
+    cfg = _kube_cfg(tmp_path, "imageGCHighThresholdPercent: 90\nimageGCLowThresholdPercent: 80\n")
+
+    failed, lines = _run(dbs=[db], backup_dir=bdir, min_days=70.0, kubelet_cfg=cfg)
+    assert failed == set()
+    assert "75 d to the kubelet's 90% threshold (600 GB above)" in "\n".join(lines)
+
+
+def test_past_the_threshold_fails_even_when_the_disk_is_not_filling(tmp_path, monkeypatch):
+    """The kubelet evicts on the LEVEL. A shrinking archive on a disk already
+    past 85% used is a disk in eviction, whatever its burn says."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [2 * GB, 1 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(200 * GB, 2000 * GB))
+
+    failed, lines = _run(dbs=[db], backup_dir=bdir)
+    assert failed == set()
+    assert "not growing" in "\n".join(lines)
+
+    failed, lines = _run(dbs=[db], backup_dir=bdir, kubelet_cfg=_kube_cfg(tmp_path))
+    text = "\n".join(lines)
+    assert failed == {"archive disk headroom"}
+    assert "not growing" in text
+    assert "100 GB PAST the kubelet's 85% eviction threshold" in text
+
+
+def test_a_missing_kubelet_config_is_no_claim_not_a_default(tmp_path, monkeypatch):
+    """An unreadable config path is no kubelet: the horizon is to full and
+    the line says so, never a silent 85."""
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    monkeypatch.setattr(qa.shutil, "disk_usage", lambda _p: _Usage(800 * GB, 2000 * GB))
+
+    failed, lines = _run(
+        dbs=[db], backup_dir=bdir, min_days=90.0, kubelet_cfg=tmp_path / "absent.yaml"
+    )
+    assert failed == set()
+    assert "no kubelet config (horizon to full only)" in "\n".join(lines)
+
+
+def test_the_kubelet_clause_is_rendered_in_one_place():
+    """Both branches of the check (filling, not filling) go through
+    `_kubelet_clause`; a second renderer is how a field goes missing from
+    one arm (mistakes #95)."""
+    src = inspect.getsource(qa.qa_disk_headroom)
+    assert src.count("_kubelet_clause(") == 2
+    assert "kubelet's" not in src.replace("kubelet's config", "").split('"""')[2]
