@@ -905,7 +905,16 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   the shadow's 20s read poll (kernel-measured hold p50 0.167s), each
   parking the buffer a full `FLUSH_SECS` behind a sub-second reader, and
   the rate doubled every ~2 days with event volume (17 -> 81/day, ~20
-  min/day of archive lag). The flusher comes back in 2s after the FIRST
+  min/day of archive lag). **The doubling stopped**: 10-30..11-08 the
+  stream journal's `flush FAILED` lines run 114, 81, 146, 179, 151, 131,
+  124, 142, 150, 150 per day -- a plateau, and the arithmetic of two
+  independent periodic processes: the shadow's hold averages 0.36 s per
+  20 s poll (`held_s_total` 8,697 s / 24,010 polls on its 20:12Z line,
+  `held_s_max` 5.46 s) against 5,760 flushes/day, ~1.8% x 5,760 ~ 105
+  expected; the observed 140-150 includes the hold's tail. Every episode
+  closes on the 2 s retry (span 4-5 s, `spilled 0`), so the standing cost
+  is ~5 min/day of archive lag and zero rows. A day that leaves this band
+  without a `books_held` move is the finding; a day inside it is nominal. The flusher comes back in 2s after the FIRST
   refusal of an episode and returns to the period if that fails too, so a
   long holder costs one extra ~20ms attach attempt. The record carries
   `retry_s` when the early retry closed it; `qa._hold_phrase` reads a
@@ -1006,7 +1015,39 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   checks (the note's list): the sibling's `tools.collector_pass_budget`
   headroom p50 over a post-promote-only window (its 24h read at 14:15Z,
   mostly pre-promote: -0.8 s to the trade line); Sunday 11-08 peak 5-min
-  book rate vs the 14.2k mean / 29k upper (phase 2 waits on it); the next
+  book rate vs the 14.2k mean / 29k upper (phase 2 waits on it) -- **READ
+  2026-11-08 20:30Z, with the late slate (21:25Z kickoffs, SNF 01:20Z)
+  still to land: the two arms of the prediction DISAGREE.** (a) The
+  LOAD arm holds: peak 10-min frames/s from `raw_written` deltas 16,103
+  at Sun 02:55Z (Saturday night, NOT the NFL window) and 15,119 at the
+  18Z kickoff hour, vs the model's 14,164 mean / 28,956 upper -- 1.14x
+  the mean arm, 0.56 of the upper; peak book events/s 12,495 (5-min);
+  anon 376-406 MB all day (`rss_anon_mb`), far under the 1.45 GiB mean
+  arm; `sock_throttled` 0, 0 GAP lines in the 18-20Z peak. (b) The
+  ROWS arm is blown: one ledgered 6.45 s read-only attach (bounded on
+  `recv_ts`, `split_part(market_id,'-',1)` as the series) over the 24h
+  11-07 20:16Z -> 11-08 20:16Z found **43.3M book rows for the 14 added
+  series, 2.2x the 19.4M/day prediction and 1.4x its p90 (x1.59), with
+  only two in-game hours in the window** -- 520.0M rows total (99% of
+  the counter's 525.4M events over the same span), so the add is 8.3% of
+  the day's rows. By hour: Saturday night 0.13-0.28M/h (0.4-0.7%),
+  Sunday pre-kickoff 12-17Z 0.6-4.1M/h (8-25%), **18Z 12.47M (39.1% of
+  the hour), 19Z 9.82M (36.0%)** -- KXNFLTOTAL 4.36M, KXNFL1HSPREAD
+  2.66M, KXNFLTD 2.33M, KXNFLPASSYDS 1.37M in the 18Z hour. Why the arms
+  disagree: the load model prices TOTAL frames (the added series are a
+  minority of the weekend-night peak, which other series drive) while
+  the rows fit priced the add from manifests (ticker rows, prints) and
+  cannot see in-game book CHURN -- a 1H spread or TD-scorer book
+  re-quotes on every snap. A full NFL Sunday (~9 in-game hours at
+  10-12M/h) puts the add near 80-100M rows / 5-6 GB on game day alone,
+  i.e. the rows-per-series x1.59 p90 is a weekday multiplier. **For the
+  sibling's phase 2 gate** (hylshi `research/ws-adds-2026-11-05.md`
+  §4, "after one weekend read"): the load arm says go, the rows arm says
+  the NFL in-game series (KXNFL1HTOTAL, KXNFL1QTOTAL in phase 2) will
+  each cost several x their fit on Sundays; price them on this read, not
+  on the manifest fit. Disk: +2.75 GB in this 24h at 63.4 B/row, ~6% of
+  the HOSTFS gross burn (47 GB/day) -- not the disk driver. The late
+  slate's hours are the 22:20Z pass's read; the next
   partition nightly's manifest rows within x1.59 of the JSON; a week of
   `tools.disk_ledger` (<= 2 GB/day up); shadow events/poll unchanged. The
   hylshi dated-subscriptions row (`lake/subscriptions_dated.jsonl`,
