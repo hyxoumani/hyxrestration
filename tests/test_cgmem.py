@@ -97,15 +97,52 @@ def test_missing_counters_print_as_unknown_and_never_fail(tmp_path):
     assert "=0" not in line, line
 
 
+def _own_cgroup_dir() -> Path:
+    rel = next(
+        ln[3:] for ln in Path("/proc/self/cgroup").read_text().splitlines() if ln.startswith("0::")
+    )
+    return Path("/sys/fs/cgroup" + rel)
+
+
 def test_default_resolves_the_callers_own_cgroup():
     """Production passes no argument: the dir comes from /proc/self/cgroup.
-    This process's cgroup is real, so the line must carry its counters."""
+
+    The line is judged against the FILESYSTEM, not against an assumption
+    about where the suite runs. This test used to assert `events=?` never
+    appears, i.e. that the CALLER's cgroup has the memory controller. That
+    holds inside a systemd unit (production) and inside a capped slot, and
+    is false in an interactive shell whose leaf cgroup has no controllers
+    delegated -- e.g. `.../app-org.chromium.Chromium-NNNN.scope/init.scope`,
+    whose parent's `cgroup.subtree_control` is empty. promote.sh runs the
+    full suite from exactly such a shell, so the old assertion refused
+    promotes on 2026-11-06 and 2026-11-08 with the script behaving correctly
+    (it printed `?` for a file that does not exist, as designed). EXP-2305.
+    """
     p = _run()
     assert p.returncode == 0, p.stderr
     (line,) = p.stdout.splitlines()
-    assert line.startswith("[cgmem] dir=/sys/fs/cgroup/"), line
-    assert " events=?" not in line, f"own cgroup has no memory.events: {line}"
-    assert " oom_kill=" in line and " peak=" in line, line
+    own = _own_cgroup_dir()
+    assert line.startswith(f"[cgmem] dir={own} "), (own, line)
+    events = own / "memory.events"
+    if events.is_file():
+        # The production case: every counter in the real file reaches the line,
+        # with its real value (a presence scan would pass a dropped value, #95).
+        assert " events=?" not in line, f"memory.events exists but was not read: {line}"
+        for ln in events.read_text().splitlines():
+            key, val = ln.split()
+            if key in ("max", "oom", "oom_kill"):  # monotone or rarely-moving
+                assert f" {key}=" in line, (key, line)
+            if key == "oom_kill":
+                # oom_kill can only rise, and only on a kill in this cgroup.
+                got = int(line.split(" oom_kill=")[1].split()[0])
+                assert got <= int(events.read_text().split("oom_kill ")[1].split()[0]), line
+    else:
+        # A real cgroup without the memory controller: a stated unknown, never
+        # a fabricated zero and never a failure.
+        assert " events=? " in line, line
+        assert " oom_kill=" not in line, line
+    peak = own / "memory.peak"
+    assert (" peak=? " in line) == (not peak.is_file()), (peak, line)
 
 
 PRESSURE = (

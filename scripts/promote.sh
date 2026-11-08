@@ -43,10 +43,38 @@ set -euo pipefail
 DEV=/home/devs/workspace/hyxrestration
 STABLE=/home/devs/workspace/hyxrestration-stable
 
+usage() {
+    cat <<'EOF'
+Usage: scripts/promote.sh [--restart-all] [--restart-young] [--defer=UNIT[,UNIT]] [--units-only]
+
+Promote dev main -> the stable worktree: full dev-tree suite, fast-forward
+stable, sync deps, install units, restart daemons whose code moved.
+
+  --restart-all        restart every daemon even if its code did not move
+  --restart-young      restart hyxlab-shadow even if its run still owes panel days
+  --defer=UNIT[,UNIT]  promote, but leave the named daemon(s) on old code
+  --units-only         re-install unit files and reload; no tests, no ff, no restart
+  -h, --help           print this and exit 0 without doing anything
+EOF
+}
+
 FORCE_RESTART=0
 RESTART_YOUNG=0
 UNITS_ONLY=0
 DEFER=""
+# UNKNOWN FLAGS REFUSE, BEFORE ANYTHING RUNS (EXP-2305). This loop used to
+# have no `*)` arm, so any word it did not know was silently dropped and the
+# script went on to a FULL promote: on 2026-11-08 `promote.sh --help` ran the
+# dev-tree suite and would have fast-forwarded stable and restarted daemons had
+# a test not been red. Both arms exit here, ahead of the `cd`, the tests and
+# every systemctl call; tests/test_promote_usage.py runs them in a sandbox.
+for arg in "$@"; do
+    case "$arg" in
+        -h|--help) usage; exit 0 ;;
+        --restart-all|--restart-young|--units-only|--defer=?*) ;;
+        *) echo "promote.sh: unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    esac
+done
 for arg in "$@"; do
     case "$arg" in
         --restart-all) FORCE_RESTART=1 ;;
