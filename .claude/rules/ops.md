@@ -721,3 +721,15 @@
   rate is read), and the line says `series reset by a +N GB rise`. The
   day after a cleanup, the model is the burn; the measured burn returns
   the day after that.
+- A retry ladder's budget is a GUESS about another process's hold, and
+  the ladder's ledger says when the guess goes stale. `hyxlab-signals`
+  (04:40Z, by design 25 min into the poly sweep) read the GDELT watermark
+  through `open_retry`'s 58 s ladder OUTSIDE `data/writer.lock`, while
+  the sweep's done lines printed a worst write-burst hold of 69-81 s
+  every routine day; the signals ledger read `budget_frac` 0.10 -> 0.90
+  across nine contended runs and the unit died at 1.0 on 2026-11-08
+  (mistakes #167). A reader that is already in the writer club (it takes
+  the flock to write seconds later) takes the flock to READ too: a
+  queue waits exactly as long as the holder holds. For a reader that is
+  not, size the budget from the holder's MEASURED worst hold, and treat
+  a `budget_frac` that climbs run over run as the alarm it is.

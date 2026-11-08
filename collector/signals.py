@@ -2,9 +2,13 @@
 
     python -m collector.signals [--db data/hyxlab.duckdb] [--gdelt-hours 25]
 
-Pattern: fetch everything over the network FIRST (no store open), then
-write in one brief flock+open_retry burst — a signals pull must never
-hold the archive lock across network I/O (review H1 discipline).
+Pattern: one brief flocked read-only open for the GDELT watermark, then
+fetch everything over the network (no store open), then write in one
+brief flock+open_retry burst — a signals pull must never hold the
+archive lock across network I/O (review H1 discipline). BOTH opens sit
+inside `data/writer.lock` (mistakes #167): the poly sweep's write bursts
+on this file outlast `open_retry`'s ladder, and the flock is the queue
+that waits exactly as long as the holder holds.
 
 PER-SERIES FETCH RECORD (EXP-1360). `fetch_alfred` swallows every
 per-series failure — three attempts, a print, and the series is simply
@@ -161,14 +165,29 @@ def main() -> None:
     # holds it twice a day -- here, and read-write inside the flock below
     # -- so both holds are measured and printed after the release (#96,
     # #102); until 2026-10-16 both were bare `open_retry`, charged to nobody.
+    # Under the writer flock as well (mistakes #167): this timer fires
+    # 04:40Z, 25 min INTO the poly sweep, whose write bursts on this file
+    # hold it for a measured 69-81 s on a routine day (377 s on 11-01) --
+    # longer than `open_retry`'s 58 s ladder. A reader outside the flock
+    # races that burst on a budget; a reader inside it is QUEUED behind
+    # it, which is what the flock exists to do. The wait was 6-52 s on 9
+    # of the 13 days before 11-08, when the ladder was exhausted and the
+    # unit died with the day's pull unfetched. The flock is released
+    # before any HTTP below (the H1 discipline is unchanged).
     reset_attach_waits()
-    with held_open(args.db, read_only=True) as store:
+    with open(LOCK_FILE, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        note_holder(LOCK_FILE)
         try:
-            last_news = store.conn.execute(
-                "SELECT max(knowable_at) FROM news_items WHERE source='gdelt'"
-            ).fetchone()[0]
-        except duckdb.CatalogException:
-            last_news = None
+            with held_open(args.db, read_only=True) as store:
+                try:
+                    last_news = store.conn.execute(
+                        "SELECT max(knowable_at) FROM news_items WHERE source='gdelt'"
+                    ).fetchone()[0]
+                except duckdb.CatalogException:
+                    last_news = None
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
     vintage_date = now.date()
     fetched, outcomes = fetch_alfred(sess, today=vintage_date)

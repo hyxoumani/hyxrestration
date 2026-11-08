@@ -4268,6 +4268,44 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+167. **2026-11-08 04:40Z -- `hyxlab-signals` died with exit 1 at its
+    read-only watermark open: `open_retry`'s 58 s ladder (30 x 2 s) was
+    exhausted against the poly sweep's write burst on `hyxlab.duckdb`,
+    and the day's ALFRED + GDELT pull was never fetched.** The timer is
+    documented as overlapping the sweep ("04:40 UTC ... overlaps poly
+    sweep which starts 04:15") and the sweep's own done lines put its
+    WORST hold at 69-81 s on every routine day since the coverage
+    expansion (78.8 / 377.2 / 69.2 / 9.3 / 78.5 / 69.9 / 72.4 / 80.8 s,
+    10-31..11-07) -- so the unit's budget was below its counterpart's
+    measured hold for two weeks, and the signals ledger watched it
+    close: contended on 9 of the 13 runs 10-26..11-07, waits 6 / 10 /
+    18 / 18 / 24 / 28 / 36 / 44 / 52 s, `budget_frac` up to 0.90 on
+    10-31, then 1.0 on 11-08. The write burst already sits inside
+    `data/writer.lock`, the flock the collector, both sweeps, tradepass
+    and migrate serialize on; the watermark READ did not, on the
+    reasoning that readers do not take the flock -- true for QA and the
+    sims, which are not in the writer club and have their own budgets,
+    and wrong for a unit that holds the file read-write thirty seconds
+    later anyway. A reader OUTSIDE the flock races the burst on a
+    budget; a reader INSIDE it is queued behind the burst and waits
+    exactly as long as the holder holds, with no number to guess. The
+    04:40Z collector cycle paid the same hold as a 78 s wall (27 s at
+    04:45Z) and survived only because its flock wait is 240 s. Fix:
+    both signals opens inside the flock, released before any HTTP (H1
+    unchanged); `test_main_reads_the_watermark_inside_the_writer_flock`
+    probes the lock from a second descriptor at each `held_open` and
+    asserts refused/refused, then free after `main` -- red against the
+    old module. Rule: **a retry ladder is a guess about how long someone
+    else holds, and the ladder's own ledger says when the guess is
+    going stale (`budget_frac` climbing run over run). When the holder
+    is a process this repo already serializes with, queue on its lock
+    instead of guessing; when it is not, size the budget from the
+    holder's measured worst hold, which the holder's done line prints
+    every day.** The lost day costs nothing durable: GDELT resumes from
+    the stored watermark and ALFRED diffs against stored values, so the
+    unit was started by hand after the promote (the digest's FAILED line
+    clears on that run).
+
 166. **2026-11-08 02:15Z -- the HOSTFS pace clause read `net burn 22
     GB/day ... threshold in 8.4 d` over a day whose gross fall was ~62-73
     GB/day, because a 59 GB cleanup arrived in three steps each under the

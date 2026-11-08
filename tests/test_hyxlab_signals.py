@@ -133,3 +133,51 @@ def test_main_measures_both_holds_on_the_collectors_file(tmp_path, monkeypatch, 
     assert len(lines) == 1, out
     assert "on hyxlab.duckdb 2 attaches" in lines[0], lines[0]
     assert "held 2 for" in lines[0] and "0 unmeasured" in lines[0], lines[0]
+
+
+def test_main_reads_the_watermark_inside_the_writer_flock(tmp_path, monkeypatch):
+    """Mistakes #167: the 04:40Z signals timer fires 25 min into the poly
+    sweep, whose write bursts hold `hyxlab.duckdb` 69-81 s on a routine day
+    -- longer than `open_retry`'s 58 s ladder. The watermark read used to
+    attach OUTSIDE `data/writer.lock`, racing that burst on a budget it
+    exhausted on 2026-11-08 (exit 1, the day's pull lost). Both opens must
+    now happen with the flock HELD, so the read queues behind the burst.
+    Probed from a second descriptor: `flock` locks belong to the open file
+    description, so a sibling `open()` in this process is refused exactly
+    as another process would be."""
+    import errno
+    import fcntl
+
+    from collector import signals
+
+    db = tmp_path / "hyxlab.duckdb"
+    Store(db).close()
+    lock_file = tmp_path / "writer.lock"
+    monkeypatch.setattr(signals, "LOCK_FILE", str(lock_file))
+    monkeypatch.setattr(signals, "fetch_alfred", lambda sess, today=None: ({}, {}))
+    monkeypatch.setattr(signals, "record_fetch", lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt"])
+
+    real_held_open = signals.held_open
+    flocked_at_open: list[bool] = []
+
+    def probing_held_open(*a, **kw):
+        with open(lock_file, "a") as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as e:
+                assert e.errno in (errno.EWOULDBLOCK, errno.EAGAIN)
+                flocked_at_open.append(True)
+            else:
+                fcntl.flock(probe, fcntl.LOCK_UN)
+                flocked_at_open.append(False)
+        return real_held_open(*a, **kw)
+
+    monkeypatch.setattr(signals, "held_open", probing_held_open)
+    signals.main()
+    # Two opens (watermark read-only, then the write burst), both flocked.
+    assert flocked_at_open == [True, True], flocked_at_open
+    # And released: the lock is free once main returns.
+    with open(lock_file, "a") as probe:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(probe, fcntl.LOCK_UN)
