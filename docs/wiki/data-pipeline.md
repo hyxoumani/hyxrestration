@@ -499,10 +499,10 @@ nothing. This one asks the question those passes deferred three times:
 
 - **Nothing notifies.** No smtp, no webhook, no mail, no push client —
   zero hits across `*.py`, `*.sh`, `*.service`, `*.timer`.
-  `collector.backup` defaults `--dest` to `data/backups`, and
-  `HYXLAB_BACKUP_DIR` (the documented off-box hook, named in the unit's
-  own Description) is set nowhere, so even the backups stay on the disk
-  they protect.
+  `collector.backup` defaults `--dest` to `data/backups`; since
+  2026-11-08 (EXP-2203) the backup and QA units set `HYXLAB_BACKUP_DIR=
+  /home/devs/hyx-backups` -- outside every git work tree but on the SAME
+  btrfs subvolume, so the backups still stay on the disk they protect.
 - **One thing leaves, and it carries only prose.** `scripts/autoloop.sh`
   pushes to `origin main` every six hours. `/data/` and `/reports/` are
   gitignored — rooted, deliberately — so no checker's *output* can ride
@@ -1702,8 +1702,13 @@ ingestion behind a `FeatureView` as-of API.
   attempt (collector/signals.py).
 - `hyxlab-backup.timer` (03:30 UTC): holding a read-only DuckDB attach
   excludes writers → consistent file copy; 7-slot weekday rotation in
-  data/backups (local tier); point HYXLAB_BACKUP_DIR at a mount for
-  off-box (standing user item). Since 2026-10-16 the attach goes through
+  `/home/devs/hyx-backups` since 2026-11-08 (EXP-2203: outside any git
+  work tree, so one `git clean -fdx` cannot take the tape and its copies
+  together; `data/backups` is a symlink there; same btrfs subvolume, the
+  staged copy still lands by rename; `scripts/clean_guard.sh` keeps an
+  empty nested repo at `data/.git` so `git clean -x` needs `-ff` to reach
+  data/); point HYXLAB_BACKUP_DIR at a mount for off-box (standing user
+  item). Since 2026-10-16 the attach goes through
   `hyxlab.store.held_attach` (30 x 2.0s, the same budget the hand-rolled
   ladder had), so `hold` on the per-file journal line IS the ledger's
   `held_s` -- timed from the open to the close, recorded in `finally` --
