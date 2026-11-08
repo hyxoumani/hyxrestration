@@ -1046,8 +1046,15 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   the NFL in-game series (KXNFL1HTOTAL, KXNFL1QTOTAL in phase 2) will
   each cost several x their fit on Sundays; price them on this read, not
   on the manifest fit. Disk: +2.75 GB in this 24h at 63.4 B/row, ~6% of
-  the HOSTFS gross burn (47 GB/day) -- not the disk driver. The late
-  slate's hours are the 22:20Z pass's read; the next
+  the HOSTFS gross burn (47 GB/day) -- not the disk driver. **Late-slate read 21:23Z (1.01 s ledgered attach, landed
+  between flushes, no stall entry):** 20Z 7.66M added of 28.63M (26.8%;
+  KXNFLTOTAL 4.04M, KXNFLTD 1.85M, KXNFLPASSYDS 1.47M), 21Z first 22 min
+  2.15M of 9.16M (23.5%) as the 21:25Z games kick off -- so the in-game
+  share holds at a quarter to two fifths of every NFL hour, and the
+  18-20Z total for the add is 29.95M in three hours, 1.5x the whole
+  daily prediction; peak 10-min frames/s 12,101 at 20:05Z, anon 378-396
+  MB, 0 GAP/WARNING 20-21Z. The 21Z-05Z remainder is the 11-09 02:15Z
+  run's read if wanted (one bounded attach); the next
   partition nightly's manifest rows within x1.59 of the JSON; a week of
   `tools.disk_ledger` (<= 2 GB/day up); shadow events/poll unchanged. The
   hylshi dated-subscriptions row (`lake/subscriptions_dated.jsonl`,
