@@ -174,9 +174,16 @@ def main() -> None:
     # of the 13 days before 11-08, when the ladder was exhausted and the
     # unit died with the day's pull unfetched. The flock is released
     # before any HTTP below (the H1 discipline is unchanged).
+    # The flock wait is timed because the attach ledger CANNOT see it:
+    # `open_retry`'s clock starts after the flock is won, so a queued open
+    # reads `0 contended` however long it stood in the queue (the poly
+    # sweep learnt the same on 2026-10-23, `flush_lock_min`).
     reset_attach_waits()
+    lock_wait_s: dict[str, float] = {}
     with open(LOCK_FILE, "a") as lock:
+        t_l = time.monotonic()
         fcntl.flock(lock, fcntl.LOCK_EX)
+        lock_wait_s["read"] = time.monotonic() - t_l
         note_holder(LOCK_FILE)
         try:
             with held_open(args.db, read_only=True) as store:
@@ -203,7 +210,9 @@ def main() -> None:
         items, missing = fetch_gdelt(sess, start, now)
 
     with open(LOCK_FILE, "a") as lock:
+        t_l = time.monotonic()
         fcntl.flock(lock, fcntl.LOCK_EX)
+        lock_wait_s["write"] = time.monotonic() - t_l
         note_holder(LOCK_FILE)
         try:
             with held_open(args.db) as store:
@@ -224,6 +233,16 @@ def main() -> None:
     # (#95), never a format string over the block's keys.
     print(
         attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[signals]"), flush=True
+    )
+    print(lock_wait_line(lock_wait_s), flush=True)
+
+
+def lock_wait_line(lock_wait_s: dict[str, float]) -> str:
+    """The seconds this pull stood in the `data/writer.lock` queue before
+    each of its two opens -- the number the attach ledger's `contended`
+    count no longer carries (#167). One renderer (#95)."""
+    return "[signals] writer.lock waits: " + ", ".join(
+        f"{k} {lock_wait_s.get(k, float('nan')):.1f}s" for k in ("read", "write")
     )
 
 

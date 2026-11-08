@@ -181,3 +181,52 @@ def test_main_reads_the_watermark_inside_the_writer_flock(tmp_path, monkeypatch)
     with open(lock_file, "a") as probe:
         fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(probe, fcntl.LOCK_UN)
+
+
+def test_main_prints_its_writer_lock_queue_waits(tmp_path, monkeypatch, capsys):
+    """#167's second half: once the opens queue on the flock, `open_retry`'s
+    ledger reads `0 contended` however long the queue was -- its clock
+    starts after the flock is won. The pull prints both waits itself, and
+    the number is the wait, not a constant: hold the flock from a second
+    descriptor for a moment and the read wait must show it."""
+    import fcntl
+    import os
+    import threading
+    import time
+
+    from collector import signals
+
+    db = tmp_path / "hyxlab.duckdb"
+    Store(db).close()
+    lock_file = tmp_path / "writer.lock"
+    lock_file.touch()
+    monkeypatch.setattr(signals, "LOCK_FILE", str(lock_file))
+    monkeypatch.setattr(signals, "fetch_alfred", lambda sess, today=None: ({}, {}))
+    monkeypatch.setattr(signals, "record_fetch", lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt"])
+
+    hold_s = 0.6
+    holder = os.open(lock_file, os.O_WRONLY | os.O_APPEND)  # a second open-file description
+    fcntl.flock(holder, fcntl.LOCK_EX)
+
+    def release_later():
+        time.sleep(hold_s)
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
+
+    threading.Thread(target=release_later, daemon=True).start()
+    signals.main()
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.startswith("[signals] writer.lock waits:")]
+    assert len(lines) == 1, out
+    read_s = float(lines[0].split("read ")[1].split("s")[0])
+    assert read_s >= hold_s * 0.8, lines[0]
+    assert ", write " in lines[0], lines[0]
+
+
+def test_lock_wait_line_renders_both_opens():
+    from collector.signals import lock_wait_line
+
+    assert lock_wait_line({"read": 0.04, "write": 12.26}) == (
+        "[signals] writer.lock waits: read 0.0s, write 12.3s"
+    )
