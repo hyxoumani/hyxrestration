@@ -4268,6 +4268,39 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+166. **2026-11-08 02:15Z -- the HOSTFS pace clause read `net burn 22
+    GB/day ... threshold in 8.4 d` over a day whose gross fall was ~62-73
+    GB/day, because a 59 GB cleanup arrived in three steps each under the
+    10% reset.** #162 chose the reset on a SINGLE hourly-ceiling rise above
+    `DISK_RISE_RESET_FRAC` of the previous one and accepted that a smaller
+    deletion nets into the burn (the +30 GB of 11-05 19Z, named via the
+    `largest in-span ceiling rise` clause). Between 00:15Z and 01:30Z a
+    sibling's autodev deleted its agent worktrees (`workspace/hylshi/
+    .claude/worktrees` 67 -> 8 GB; the three windows' only directory
+    mtimes are those worktrees) as +19.9, +21.3 and +7.4 GB on the 5-min
+    series -- 48.6 GB, 10.8% of free, in 70 minutes -- and no single
+    ceiling rose by 10%, so the span kept its 23h and the horizon moved
+    from 2.3 d to 8.4 d while the raw series between steps fell at the
+    same 0.3-0.5 GB per 5 min as before. The clause's `largest in-span
+    rise +24 GB` was true and said nothing about the sum. Fix (`collector.
+    health`): `FsPace.freed_b` sums the in-span ceiling rises at or above
+    `FS_PACE_RISE_FLOOR_B` (1 GB; below is jitter), `gross_b_per_day` adds
+    them back over the span, and the clause prints both horizons --
+    `net burn 22 GB/day ... threshold in 8.4 d; in-span ceiling rises +38
+    GB (largest +24 GB), gross burn 62 GB/day -> threshold in 3.0 d` (live
+    02:35Z) -- the net assuming the frees recur, the gross assuming they
+    do not, matching the sibling's own mtime ledger at ~62 GB/day. A
+    ceiling reads a free net of that hour's burn, so the gross is a lower
+    bound (test fixture: 15 GB freed reads +12.5). Not a reset tuning:
+    lowering the fraction trades this miss for #162's false resets, and
+    summing steps against the same 10% would have missed this one by 1.5
+    GB. Rule: **a threshold that classifies ONE event cannot classify a
+    sequence of them; when the reader's decision (recurring churn vs
+    one-off cleanup) is not knowable from the series, publish the number
+    under each hypothesis rather than letting a heuristic pick the
+    story.** 4 assertions added, each landing checked by hand against
+    the live line.
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

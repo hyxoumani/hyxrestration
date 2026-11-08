@@ -1118,6 +1118,16 @@ def read_kubelet_window(hours: int = HOSTFS_WINDOW_H) -> KubeletPressure | None:
 # The ceiling's own blind side, by construction: a file deleted and
 # re-created INSIDE one hour reads as the deleted moment -- absent from the
 # 96h measured (no sample above the trend between its neighbours).
+# The reset's blind side is a cleanup split into steps: 2026-11-08 00:20Z,
+# 01:10Z and 01:30Z a sibling deleted 59 GB of agent worktrees as +19.9,
+# +21.3 and +7.4 GB, each under 10% of ~450 GB free, and the clause read
+# `net burn 22 GB/day ... threshold in 8.4 d` over a day whose gross fall was
+# ~73 GB/day (threshold in 2.5 d). The largest rise (+24 GB) said nothing of
+# the sum. So the clause carries the SUM of in-span ceiling rises at or
+# above `FS_PACE_RISE_FLOOR_B` and the GROSS burn it implies (net + freed /
+# span) with the gross horizon: the net assumes the frees recur, the gross
+# assumes they do not, and the reader is handed both rather than a reset
+# heuristic deciding which story a one-off cleanup tells.
 FS_PACE_WINDOW_H = HOSTFS_WINDOW_H
 COLLECT_UNIT = "hyxlab-collect.service"
 #: Hours of post-reset span under which no rate is printed. One hour's
@@ -1126,6 +1136,8 @@ COLLECT_UNIT = "hyxlab-collect.service"
 FS_PACE_MIN_H = 6.0
 #: Ceilings at each end whose median is the endpoint.
 FS_PACE_END_K = 3
+#: A ceiling-to-ceiling rise under this is jitter: not named, not summed.
+FS_PACE_RISE_FLOOR_B = 10**9
 _FS_FREE_RE = re.compile(r"fs_free_b=(\d+)")
 
 
@@ -1140,6 +1152,9 @@ class FsPace:
     filling). `reset_b` is the rise of the youngest hourly ceiling the pace was
     taken AFTER (a deletion), None when the window holds none. `rise_b` is the
     largest ceiling-to-ceiling rise INSIDE the span, None when none rose.
+    `freed_b` is the SUM of in-span rises at or above `FS_PACE_RISE_FLOOR_B`
+    (0 when none): what deletions gave back inside the span, which the net
+    burn has already subtracted.
     """
 
     n: int
@@ -1148,6 +1163,15 @@ class FsPace:
     burn_b_per_day: float | None
     reset_b: int | None
     rise_b: int | None
+    freed_b: int = 0
+
+    @property
+    def gross_b_per_day(self) -> float | None:
+        """The fall per day with the in-span frees added back: the pace the
+        disk fills at if nothing is deleted again. None while the net is."""
+        if self.burn_b_per_day is None or self.span_h <= 0:
+            return None
+        return self.burn_b_per_day + self.freed_b / (self.span_h / 24.0)
 
 
 def parse_fs_free_series(stdout: str) -> list[tuple[float, int]]:
@@ -1213,13 +1237,15 @@ def fs_pace(
         if prev > 0 and cur - prev > reset_frac * prev:
             start, reset = i, cur - prev
     ceils = ceils[start:]
-    rise = max((b[1] - a[1] for a, b in zip(ceils, ceils[1:], strict=False)), default=0)
+    rises = [b[1] - a[1] for a, b in zip(ceils, ceils[1:], strict=False)]
+    rise = max(rises, default=0)
     rise_b = rise if rise > 0 else None
+    freed_b = sum(r for r in rises if r >= FS_PACE_RISE_FLOOR_B)
     if len(ceils) < 2:
-        return FsPace(len(samples), len(ceils), 0.0, None, reset, rise_b)
+        return FsPace(len(samples), len(ceils), 0.0, None, reset, rise_b, freed_b)
     if len(ceils) < 2 * end_k:
         span_h = (ceils[-1][0] - ceils[0][0]) / 3600.0
-        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b)
+        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b, freed_b)
     # The endpoint is the one ceiling whose VALUE is the median, time and value
     # together: medians taken separately pair a low middle hour's neighbour's
     # value with the middle hour's instant, and the span is wrong by an hour.
@@ -1227,16 +1253,19 @@ def fs_pace(
     t1, f1 = sorted(ceils[-end_k:], key=lambda c: c[1])[end_k // 2]
     span_h = (t1 - t0) / 3600.0
     if span_h < min_h:
-        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b)
+        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b, freed_b)
     burn = (f0 - f1) / ((t1 - t0) / 86400.0)
-    return FsPace(len(samples), len(ceils), span_h, burn, reset, rise_b)
+    return FsPace(len(samples), len(ceils), span_h, burn, reset, rise_b, freed_b)
 
 
 def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: int) -> str:
     """The pace clause of the HOSTFS line: the net burn with its span, the
     reset it follows and the largest ceiling rise inside it, and the days to
     the kubelet's threshold (below it) or to full (above it or with no
-    threshold read). Every state names itself."""
+    threshold read). When in-span rises summed to a GB or more, the clause
+    also prices the GROSS burn (net + what those rises gave back) and its
+    horizon, so a cleanup split into sub-reset steps cannot read as a slower
+    disk. Every state names itself."""
     if pace is None:
         return f"pace: collect journal UNREAD over {window_h}h"
     if pace.n == 0:
@@ -1244,7 +1273,7 @@ def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: 
     reset = f" since a +{_gb_b(pace.reset_b)} rise" if pace.reset_b is not None else ""
     rise = (
         f"; largest in-span ceiling rise +{_gb_b(pace.rise_b)}"
-        if pace.rise_b is not None and pace.rise_b >= 10**9
+        if pace.rise_b is not None and pace.rise_b >= FS_PACE_RISE_FLOOR_B
         else ""
     )
     if pace.burn_b_per_day is None:
@@ -1253,6 +1282,17 @@ def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: 
             f" under {FS_PACE_MIN_H:g}h)"
         )
     span = f"over {pace.span_h:.1f}h of hourly ceilings{reset}"
+    gross = pace.gross_b_per_day
+    if pace.freed_b >= FS_PACE_RISE_FLOOR_B and gross is not None and gross > 0:
+        # The sum of frees and the pace without them, each with its horizon.
+        rise = (
+            f"; in-span ceiling rises +{_gb_b(pace.freed_b)} (largest"
+            f" +{_gb_b(pace.rise_b or 0)}), gross burn {_gb_b(int(gross))}/day"
+        )
+        if fs.free_b is not None and over_b is not None and over_b < 0:
+            rise += f" -> threshold in {-over_b / gross:.1f} d"
+        elif fs.free_b is not None:
+            rise += f" -> full in {fs.free_b / gross:.1f} d"
     if pace.burn_b_per_day <= 0:
         return f"pace: not filling (net) {span}{rise}"
     burn = f"pace: net burn {_gb_b(int(pace.burn_b_per_day))}/day {span}"

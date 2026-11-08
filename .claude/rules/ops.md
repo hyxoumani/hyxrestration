@@ -684,7 +684,13 @@
   rather than resetting it; the clause names the largest in-span rise,
   because a sub-10% deletion inside the span reads as a small or negative
   net for ~12h (11-05 19Z, +30 GB). Under 6h of span the clause is
-  `unresolved`, never a number. Replay a new instrument over the window it
+  `unresolved`, never a number. A cleanup that lands in STEPS each under
+  the 10% reset nets in unseen (11-08 00:20-01:30Z: a sibling's worktrees,
+  +19.9/+21.3/+7.4 GB, horizon 2.3 d -> 8.4 d; mistakes #166), so the
+  clause also sums the in-span rises and prices the GROSS burn with its
+  own horizon (`in-span ceiling rises +38 GB (largest +24 GB), gross burn
+  62 GB/day -> threshold in 3.0 d`): net assumes the frees recur, gross
+  assumes they do not; act on the nearer one. Replay a new instrument over the window it
   will live in BEFORE shipping its first reading: the 1 GB-reset version
   shipped at 02:40Z read `unresolved` at 18 of 24 three-hourly checkpoints
   of the prior 72h (mistakes #161); ceilings resolve 22 of 25.

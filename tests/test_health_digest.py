@@ -1835,9 +1835,11 @@ def test_every_fs_term_moves_the_line() -> None:
         _PACE_R = with_rise
         bumped = dataclasses.replace(_PACE_R, **{field: getattr(_PACE_R, field) + bump})
         assert health.host_fs_line(_FS, kube, bumped) != health.host_fs_line(_FS, kube, _PACE_R)
-    for field, bump in ():
-        bumped = dataclasses.replace(_PACE, **{field: getattr(_PACE, field) + bump})
-        assert health.host_fs_line(_FS, kube, bumped) != base, field
+    # The summed frees and the gross they imply: each GB changes the line.
+    with_freed = dataclasses.replace(with_rise, freed_b=12 * 10**9)
+    assert health.host_fs_line(_FS, kube, with_freed) != health.host_fs_line(_FS, kube, with_rise)
+    bumped = dataclasses.replace(with_freed, freed_b=with_freed.freed_b + 10**9)
+    assert health.host_fs_line(_FS, kube, bumped) != health.host_fs_line(_FS, kube, with_freed)
     assert health.host_fs_line(_FS, kube, dataclasses.replace(_PACE, reset_b=None)) != base
     assert health.host_fs_line(_FS, kube, None) != base
     assert health.host_fs_line(_FS, kube, health.fs_pace([])) != base
@@ -1947,6 +1949,12 @@ def test_a_deletion_restarts_the_pace_and_a_recurring_free_does_not() -> None:
     assert p2.reset_b is None and p2.rise_b is not None
     assert 12.0 < p2.rise_b / 1e9 < 15.1
     assert p2.burn_b_per_day is not None and abs(p2.burn_b_per_day / 1e9 - 24.0) < 0.5
+    # ... and the gross adds the free back. A ceiling sees the free net of
+    # that hour's burn (12.5 of the 15 GB), so the gross reads 24 + 12.5 /
+    # 10h = 54 GB/day: a lower bound on the pace without the deletion.
+    assert p2.freed_b == p2.rise_b
+    assert p2.gross_b_per_day is not None and abs(p2.gross_b_per_day / 1e9 - 54.0) < 0.5
+    assert pace.freed_b == 0 and pace.gross_b_per_day == pace.burn_b_per_day
     assert p2.burn_b_per_day is not None and 0 < p2.burn_b_per_day < 60e9
 
 
@@ -1954,7 +1962,8 @@ def test_a_short_span_is_unresolved_not_a_number() -> None:
     short = health.fs_pace(_series(3, 60.0))
     assert short.burn_b_per_day is None and short.hours == 4 and abs(short.span_h - 3.0) < 0.01
     assert health.fs_pace(_series(0.5, 60.0)).hours == 1
-    assert health.fs_pace([]) == health.FsPace(0, 0, 0.0, None, None, None)
+    assert health.fs_pace([]) == health.FsPace(0, 0, 0.0, None, None, None, 0)
+    assert health.fs_pace([]).gross_b_per_day is None
     # Six ceilings (5h of samples) is enough for two medians but not for 6h.
     six = health.fs_pace(_series(5, 60.0))
     assert six.hours == 6 and six.burn_b_per_day is None and abs(six.span_h - 3.0) < 0.01
@@ -1999,6 +2008,23 @@ def test_the_pace_clause_names_every_state() -> None:
         "not filling (net) over 6.4h of hourly ceilings since a +30 GB rise;"
         " largest in-span ceiling rise +30 GB"
     )
+    # The 2026-11-08 02:15Z production line: a sibling deleted 59 GB of agent
+    # worktrees in three steps (+19.9, +21.3, +7.4 GB), each under the 10%
+    # reset, and the net read 22 GB/day / 8.4 d. The sum and the gross pace
+    # it implies are named, each GB of free moving the line.
+    split = dataclasses.replace(
+        _PACE, span_h=23.1, burn_b_per_day=22e9, reset_b=None, rise_b=24e9, freed_b=38e9
+    )
+    gross_h = health.host_fs_line(_FS, kube, split)
+    assert gross_h.endswith(
+        "net burn 22 GB/day over 23.1h of hourly ceilings, full in 12.5 d;"
+        " in-span ceiling rises +38 GB (largest +24 GB), gross burn 61 GB/day -> full in 4.5 d"
+    ), gross_h
+    assert "gross burn" in health.host_fs_line(_FS, health.parse_kubelet(""), split)
+    # A net that is NEGATIVE next to in-span frees still prices the gross.
+    neg = dataclasses.replace(split, burn_b_per_day=-5e9)
+    assert "not filling (net)" in health.host_fs_line(_FS, kube, neg)
+    assert "gross burn 34 GB/day" in health.host_fs_line(_FS, kube, neg)
     # An unread filesystem still gets the burn, with no horizon to divide into.
     blind = health.host_fs_line(health.HostFs(None, None), kube, _PACE)
     assert blind.endswith(
