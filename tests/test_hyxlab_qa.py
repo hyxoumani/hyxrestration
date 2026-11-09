@@ -2406,8 +2406,14 @@ def test_one_stale_nws_station_trips_the_per_station_check(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "nws stations each fresh (< 20 min old)" in failed
     assert "nws forecasts fresh (< 20 min old)" not in failed  # the blind spot, pinned
-    # `NOW` is fixed at import; a long suite ages the row a minute or two.
-    assert re.search(r"STALE AUS 9[5-9] min", out), out
+    # `NOW` is fixed at import, so the row has aged by however long the suite
+    # has run since -- 5+ min on a full run (the 9[5-9] pattern this carried
+    # read `100 min` under an 8.5-min suite, 2026-11-09). Bound it by the
+    # clock, not by a literal.
+    aged_min = 95 + (datetime.now(UTC) - NOW).total_seconds() / 60
+    m = re.search(r"STALE AUS (\d+) min", out)
+    assert m, out
+    assert 95 <= int(m.group(1)) <= aged_min + 1, (m.group(0), aged_min)
 
 
 def test_all_nws_stations_fresh_passes_the_per_station_check(tmp_path):
