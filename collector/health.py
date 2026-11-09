@@ -1355,6 +1355,196 @@ def host_fs_line(
     return f"{standing} | {k} | {fs_pace_text(pace, fs, over_b, window_h)}"
 
 
+# --- RAWFRAMES: the raw-frame writer's burn BY CHANNEL, against its own past --
+# `data/raw_frames/<day>/<HH>-<channel>.jsonl.zst` is the archive's largest
+# single burn (~17 GB/day in the 11-03..11-06 band, mistakes #164: the prune
+# frees nothing because the sibling's lake hard-links every file) and its
+# drift is invisible to every other line: QA's headroom model carries ONE
+# number for it (the newest complete day), HOSTFS reads the filesystem's net.
+# On 2026-11-07 13-16Z the market-wide `ticker` channel doubled (5.6-6.0 ->
+# 10.6 / 11.8 GB/day) while `books` moved 10%, and the split was read by hand
+# -- a `find -printf` over the day directories -- on four consecutive passes
+# before anyone could say which channel it was. The read is a `stat` per file
+# (~100 files a day), no DB attached, so it belongs in the digest: the newest
+# COMPLETE day per channel against the median of the complete days before it
+# (a median over `RAW_BASELINE_DAYS` = 7 straddles a weekend and lands on a
+# weekday; the word is STEP, not DRIFT -- `DRIFT:` is the unit-file headline), and the RUNNING day's hours so far against the SAME hour files of
+# the day before and of the same weekday a week before -- a step that holds
+# against both is not a weekend effect.
+RAW_FRAMES_DIR = "data/raw_frames"
+RAW_BASELINE_DAYS = 7
+#: A channel this far over its baseline median is named a STEP on the line.
+RAW_DRIFT_FRAC = 0.5
+_RAW_FILE_RE = re.compile(r"^(\d\d)-([a-z]+)\.jsonl\.zst$")
+
+
+@dataclass(frozen=True)
+class RawDay:
+    """One day directory's bytes by channel and by (hour, channel). Pure data."""
+
+    day: str  # YYYY-MM-DD
+    by_channel: dict[str, int]
+    by_hour: dict[tuple[str, str], int]  # (HH, channel) -> bytes
+
+    @property
+    def total_b(self) -> int:
+        return sum(self.by_channel.values())
+
+    def hours_subset(self, hours: set[str]) -> dict[str, int]:
+        """Bytes by channel over the given hour files only."""
+        out: dict[str, int] = {}
+        for (hh, ch), n in self.by_hour.items():
+            if hh in hours:
+                out[ch] = out.get(ch, 0) + n
+        return out
+
+
+def read_raw_day(day_dir: Path) -> RawDay | None:
+    """`stat` every frame file of one day directory; None when unreadable."""
+    by_channel: dict[str, int] = {}
+    by_hour: dict[tuple[str, str], int] = {}
+    try:
+        entries = list(day_dir.iterdir())
+    except OSError:
+        return None
+    for f in entries:
+        m = _RAW_FILE_RE.match(f.name)
+        if m is None:
+            continue
+        try:
+            n = f.stat().st_size
+        except OSError:
+            continue
+        hh, ch = m.group(1), m.group(2)
+        by_channel[ch] = by_channel.get(ch, 0) + n
+        by_hour[(hh, ch)] = by_hour.get((hh, ch), 0) + n
+    return RawDay(day_dir.name, by_channel, by_hour)
+
+
+def read_raw_frames(raw_dir: str | Path | None = None) -> list[RawDay] | None:
+    """Every held day directory, oldest first; None when the tree is unreadable.
+    The running day is included and is told apart by name -- the renderer
+    owns the complete/running split. `raw_dir` defaults to `RAW_FRAMES_DIR`
+    at CALL time, so the test suite's sidecar redirect reaches it."""
+    root = Path(RAW_FRAMES_DIR if raw_dir is None else raw_dir)
+    try:
+        dirs = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return None
+    days = [d for d in (read_raw_day(p) for p in dirs) if d is not None]
+    return days
+
+
+def _median_int(values: list[int]) -> int:
+    s = sorted(values)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) // 2
+
+
+def _gb(n: int) -> str:
+    return f"{n / 1e9:.1f}"
+
+
+def _channels_text(bytes_by_ch: dict[str, int], hide_zero: bool = True) -> str:
+    parts = []
+    for ch in sorted(bytes_by_ch, key=lambda c: -bytes_by_ch[c]):
+        if hide_zero and bytes_by_ch[ch] < 5e7:  # under 0.05 GB prints as 0.0
+            continue
+        parts.append(f"{ch} {_gb(bytes_by_ch[ch])}")
+    return ", ".join(parts) or "no channel over 0.05 GB"
+
+
+def _pct(n: int, base: int) -> str:
+    if base <= 0:
+        return "n/a"
+    return f"{100.0 * (n - base) / base:+.0f}%"
+
+
+def raw_frames_line(
+    days: list[RawDay] | None,
+    now: datetime,
+    baseline_days: int = RAW_BASELINE_DAYS,
+    drift_frac: float = RAW_DRIFT_FRAC,
+) -> str:
+    """The one renderer for the RAWFRAMES line.
+
+    Complete half: the newest complete day's total and per-channel GB, each
+    channel against the median of the up-to-`baseline_days` complete days
+    before it, naming a STEP on any channel more than `drift_frac` over. Running
+    half: today's hour files so far (by the hours that exist, not the clock)
+    against the same hour files of yesterday and of the same weekday one week
+    back, per channel -- the two comparisons that tell a weekend from a step.
+    Every unread state says so instead of printing a zero.
+    """
+    if days is None:
+        return f"{RAW_FRAMES_DIR} UNREAD (no claim about the raw burn)"
+    today = now.strftime("%Y-%m-%d")
+    complete = [d for d in days if d.day < today]
+    running = next((d for d in days if d.day == today), None)
+    if not complete:
+        head = f"no complete day held ({len(days)} day dir(s))"
+    else:
+        newest = complete[-1]
+        base = complete[-1 - baseline_days : -1]
+        head = f"{newest.day[5:]}: {_gb(newest.total_b)} GB ({_channels_text(newest.by_channel)})"
+        if not base:
+            head += " -- no earlier complete day to compare"
+        else:
+            medians = {
+                ch: _median_int([d.by_channel.get(ch, 0) for d in base]) for ch in newest.by_channel
+            }
+            med_total = _median_int([d.total_b for d in base])
+            drift = sorted(
+                (
+                    ch
+                    for ch, n in newest.by_channel.items()
+                    if medians[ch] > 0 and n > medians[ch] * (1 + drift_frac)
+                ),
+                key=lambda c: -newest.by_channel[c],
+            )
+            head += (
+                f" vs median of {len(base)} prior day(s) {_gb(med_total)} GB"
+                f" ({_channels_text(medians)})"
+            )
+            if drift:
+                head += f" -- STEP over +{drift_frac:.0%}: " + ", ".join(
+                    f"{ch} {_pct(newest.by_channel[ch], medians[ch])}" for ch in drift
+                )
+            else:
+                head += f" -- no channel over +{drift_frac:.0%}"
+    if running is None:
+        tail = f"today {today[5:]}: no hour file yet"
+    else:
+        # The newest hour file is still being appended to; a comparison that
+        # includes it reads a partial hour against three complete ones.
+        all_hours = {hh for hh, _ in running.by_hour}
+        hours = all_hours - {max(all_hours)} if all_hours else set()
+        closed = running.hours_subset(hours)
+        closed_total = sum(closed.values())
+        if not hours:
+            tail = f"today {today[5:]}: no closed hour yet"
+        else:
+            tail = f"today through {max(hours)}Z: {_gb(closed_total)} GB ({_channels_text(closed)})"
+        by_day = {d.day: d for d in days}
+        for label, back in (("1 d", 1), ("7 d", 7)) if hours else ():
+            ref_day = (now - timedelta(days=back)).strftime("%Y-%m-%d")
+            ref = by_day.get(ref_day)
+            if ref is None:
+                tail += f"; same hours {label} ago: not held"
+                continue
+            sub = ref.hours_subset(hours)
+            tot = sum(sub.values())
+            per = ", ".join(
+                f"{ch} {_pct(closed.get(ch, 0), sub.get(ch, 0))}"
+                for ch in sorted(closed, key=lambda c: -closed[c])
+                if sub.get(ch, 0) >= 5e7
+            )
+            tail += f"; same hours {label} ago {_gb(tot)} GB: total {_pct(closed_total, tot)}" + (
+                f" ({per})" if per else ""
+            )
+    return f"{head} | {tail}"
+
+
 def judge(
     unit: str,
     svc: dict[str, str],
@@ -2813,6 +3003,10 @@ def main() -> None:
     print(
         f"{'HOSTFS':<10} {'(host)':<{width}}  "
         f"{host_fs_line(read_hostfs(), read_kubelet_window(), _read_fs_pace())}",
+        flush=True,
+    )
+    print(
+        f"{'RAWFRAMES':<10} {'(host)':<{width}}  {raw_frames_line(read_raw_frames(), now)}",
         flush=True,
     )
     drift = drift_report()

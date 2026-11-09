@@ -711,6 +711,12 @@
   the headroom line says `oldest day hard-linked xN, the prune frees
   nothing`; before calling any rotation net zero, read `st_nlink` on the
   file it drops.
+  The burn's SPLIT is the digest's `RAWFRAMES` line (newest complete day by
+  channel vs the median of the 7 before it, `STEP` over +50%; the running
+  day's closed hours vs the same hour files 1 d and 7 d back): the 11-07
+  ticker-channel doubling was read by hand on four passes before it had a
+  name. Read the line, never `du` the day directory, before calling a
+  raw-frame step a weekend effect.
 - A worst-over-window rate assumes the quantity is MONOTONE inside the
   window. `qa._fs_burn` (max burn over 14 d of free-space samples) nets
   a deletion into every older sample: the 11-06 run would have printed

@@ -1007,8 +1007,21 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   frames raw would cut ~3 GB/day on weekdays and ~6 on game weekends -- but
   the raw files are hard-linked into the sibling's lake, so their scope is
   the sibling's input and a USER/sibling decision, not this lab's to change
-  unilaterally. Re-read the per-channel split (a `find -printf` over the day
-  dir, no attach) before calling any raw-frame step a weekend effect.
+  unilaterally. Since 2026-11-09 08:15Z the digest reads the split: the
+  `RAWFRAMES` line (`collector.health.raw_frames_line`, a `stat` per file,
+  no attach) prints the newest complete day by channel against the median
+  of the 7 complete days before it (a median that straddles a weekend lands
+  on a weekday) naming a `STEP` on any channel over +50%, then the running
+  day's CLOSED hours against the same hour files 1 d and 7 d back -- a step
+  that holds against both is not a weekend effect. First reading, 08:30Z:
+  `11-08: 26.1 GB (books 13.3, ticker 11.8, trades 0.9) vs median of 7 prior
+  day(s) 17.4 GB (books 11.1, ticker 5.9, trades 0.8) -- STEP over +50%: ticker +100%
+  | today through 07Z: 8.2 GB; same hours 1 d ago 9.9 GB: total -17% (ticker
+  -26%); same hours 7 d ago 4.5 GB: total +79% (books +70%, ticker +112%)` --
+  Monday 11-09 00-07Z ticker ran +23..+55% over the same Friday hours and
+  ~2x the prior Monday, so the weekend step decays with a residual uplift
+  (books +70% vs 11-02 is the EXP-2070 add, promoted 11-06). Read that line
+  before calling any raw-frame step a weekend effect.
 - **WS book adds, phase 1 (hylshi EXP-2070; merged + promoted 2026-11-06
   14:04:45Z by the user, stream restarted, shadow deferred).** 14 series
   appended to `kalshi_book_series` -- KXBALLONDOR, KXFEDDECISION, KXUECLGAME,

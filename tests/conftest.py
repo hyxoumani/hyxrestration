@@ -44,6 +44,7 @@ tempfile.tempdir = str(PYTEST_TMP_ROOT)
 #: someone adds the twelfth one.
 SIDECAR_CONSTANTS: tuple[tuple[str, str], ...] = (
     ("collector.collect", "SKIP_LOG"),
+    ("collector.health", "RAW_FRAMES_DIR"),
     ("collector.qa", "BACKUP_DIR"),
     ("collector.qa", "COLLECT_SKIP_LOG"),
     ("collector.qa", "COLLECT_SPOOL_DIR"),
