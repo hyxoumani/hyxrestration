@@ -739,3 +739,14 @@
   queue waits exactly as long as the holder holds. For a reader that is
   not, size the budget from the holder's MEASURED worst hold, and treat
   a `budget_frac` that climbs run over run as the alarm it is.
+- A daemon that PUBLISHES its own hold on a shared file has handed the
+  digest a series, and a series nobody differences is a reading nobody
+  took. `hyxlab-shadow`'s 300 s line carried `held_s_total`/`held_n` for
+  17 days while its per-poll hold on `hyxstream.duckdb` climbed 0.085 s
+  -> 0.46 s (the stream's `flush FAILED` 22 -> 150/day was filed as a
+  plateau; mistakes #169). The climb is ~0.27 s of per-attach scan setup
+  over a 9B-row table growing 100M rows/day -- the archive's size, not the
+  poll's rows -- so it does not stop. Read the digest's `SHADOWHOLD` line
+  (hold/poll now vs the 7 d window's start, `CLIMB` at x1.25, flush
+  collisions by holder); the levers are the poll period (amortises the
+  constant) and the archive layout, neither taken yet.

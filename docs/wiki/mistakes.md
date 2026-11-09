@@ -4268,6 +4268,44 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+169. **2026-11-09 20:40Z -- `hyxlab-shadow`'s per-poll read hold on
+    `hyxstream.duckdb` climbed 0.085 s (10-20) -> 0.43-0.48 s (11-08/09),
+    5x, and the stream's `flush FAILED` lines (its 15 s flush refused by
+    the shadow's 20 s poll, 2 s retry, nothing spilled) went 22/day
+    (10-01..10-23) -> 140-180/day (since 11-01), while no digest line
+    named either and the status page had filed the collisions as a
+    "plateau at 150/day".** The shadow PUBLISHES the hold on every 300 s
+    line (`stream_holds` `held_n`/`held_s_total`, cumulative) -- the
+    reading was in the journal for 17 days and differenced by nobody;
+    the stall ledger closes each episode at `fails 1, 3.3 s` and so looks
+    clean per event. Measured from a subprocess through `held_attach`
+    (read-only, the shadow's own `memory_limit`/`threads`): the attach is
+    a flat ~0.02 s (`open_s_total` / n, unchanged since 10-29); the poll
+    query over 40 s of rows is 0.43-0.48 s for 117-158k rows with the scan
+    pruned to exactly those rows; a count-only over 40 s vs 160 s is
+    0.287 s vs 0.256 s (a CONSTANT) while the fetch grows ~0.8 us/row --
+    so the hold is ~0.27 s of per-attach scan setup over a 9.02B-row table
+    growing ~100M rows/day (the 10-23 coverage expansion, 20x) plus the
+    rows. The climb is the ARCHIVE's size; it does not stop. Collision
+    arithmetic: 5,760 flushes/day x hold/20 s -> 22/day at 0.076 s,
+    ~130/day at 0.45 s, matching both eras. Fix: digest `SHADOWHOLD`
+    line (`collector.health.parse_shadow_hold`, `tests/test_health_
+    shadowhold.py`, 5 tests incl. a #95 perturbation test): hold/poll and
+    duty over the last 6h, the same at the 7d window's start with the
+    ratio (`CLIMB` at x1.25) and ms/poll/day, and the stream's 24h
+    `flush FAILED` count split by holder PID (shadow vs other). First
+    reading: `0.458 s/poll over 1,015 polls (2.2% duty) | 0.275 s/poll at
+    11-02 20:22Z, x1.67 = CLIMB (+26 ms/poll/day) | flush FAILED 24h: 166
+    (shadow 164, other 2)`. NOT changed: the poll period (a shadow-run
+    parameter; 60 s would cut the duty ~2.6x by amortising the constant)
+    or the archive layout -- named as the levers. Rule: **a daemon that
+    publishes its own hold on a shared file has handed the digest a
+    series, and a series nobody differences is a reading nobody took;
+    the per-event instrument (stall ledger: `fails 1`) cannot see a
+    climb that is only visible across weeks. Difference every cumulative
+    hold counter against its own past before calling its collisions a
+    plateau.** Twin of #167's `budget_frac` rule, one file over.
+
 168. **2026-11-09 10:33Z -- the DNS-outage entry wrote "its established
     shards keep flowing" about the stream daemon, and the 14:15Z pass's
     first fix then over-claimed the other way: "dead air 5.2..15.2 min"
