@@ -4322,7 +4322,18 @@ Format: what happened → root cause → error type → prevention tier
     that a reader must check the name against the code before trusting
     it, because the misnomer survives every grep.** The 10Z hour is the
     measured loss; nothing recovers it (the sidecar holds rows the daemon
-    received, and it received none).
+    received, and it received none). Addendum, 15:50Z the same day: the
+    LOW tier's first bar was 50% of the 24h MEDIAN, and by evening the
+    digest named a routine Monday's 09:01Z round LOW (48%, 0 GAP lines)
+    -- the stream is diurnal, hourly minima 138% at 00Z down to 48% at
+    09Z, so a global bar fires on every quiet morning. The bar is now
+    the LOWER of the median received over the 6 rounds before and the 6
+    after (itself excluded; the lower side so a sharp step does not name
+    the first round past its edge): the outage round reads 35% of its
+    neighbours, 09:01Z reads ~87% and is gone. The DEAD tier stays on
+    the day's median on purpose -- a long dead stretch must not lower
+    its own bar. A threshold on a diurnal series is a threshold on the
+    hour it was tuned in.
 
 167. **2026-11-08 04:40Z -- `hyxlab-signals` died with exit 1 at its
     read-only watermark open: `open_retry`'s 58 s ladder (30 x 2 s) was

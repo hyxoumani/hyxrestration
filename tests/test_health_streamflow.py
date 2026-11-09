@@ -57,8 +57,8 @@ def test_received_is_the_delta_of_the_counters_and_low_rounds_are_named() -> Non
     assert line.startswith(
         "24h: 6 rounds, median 2,000,000 events received/round, last tick 70,676 rows "
         "(stats every 300 s nominal, widest 315 s) | no round under 10% | "
-        "LOW 1 round(s) under 50%: 11-09 10:29Z 25% (books 83k, ticker 83k, trades 83k, poly 83k; "
-        "GAP lines 19 in round, 20 next)"
+        "LOW 1 round(s) under 50% of their neighbours: 11-09 10:29Z 25% of its neighbours "
+        "(25% of the day; books 83k, ticker 83k, trades 83k, poly 83k; GAP lines 19 in round, 20 next)"
     )
 
 
@@ -186,3 +186,22 @@ def test_every_field_of_the_reading_perturbs_the_line() -> None:
     ]
     for v in variants:
         assert health.stream_flow_line(health.StreamFlow(**v)) != ref
+
+
+def test_a_quiet_diurnal_hour_is_not_low_but_a_dip_against_its_neighbours_is() -> None:
+    """2026-11-09: a routine Monday's 08-09Z rounds ran 48-50% of the 24h
+    median; a day-median tier named 09:01Z LOW with 0 GAP lines. The bar is
+    each round's neighbours. Night rounds at 3M, morning at 1M (33% of the
+    day's... the day's median lands between), one morning round at 0.4M."""
+    night = [(m, 3_000_000) for m in range(0, 60, 5)]
+    morning = [(60 + m, 1_000_000) for m in range(0, 60, 5)]
+    morning[6] = (morning[6][0], 400_000)  # 40% of its neighbours, 13-20% of the day
+    cum, lines = 0, []
+    for m, v in night + morning:
+        cum += v
+        lines.append(_stats(f"2026-11-09T{m // 60:02d}:{m % 60:02d}:00+00:00", cum, 1000))
+    flow = health.parse_stream_flow(lines)
+    assert flow is not None
+    assert [f"{r.at:%H:%M}" for r in flow.low] == ["01:30"]
+    assert flow.low[0].local == 1_000_000
+    assert flow.dead == ()  # 400k is 13% of a 3M day median: a dip, not dead air

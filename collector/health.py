@@ -105,7 +105,7 @@ import re
 import subprocess
 import sys
 import time as _time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -676,9 +676,16 @@ def sock_throttle_line(c: CgMem, periods: list[ThrottlePeriod] | None) -> str:
 
 #: streamd's `STATS_SECS`, pinned here like SOCKTHR_PERIOD_S (no daemon import).
 STREAMFLOW_PERIOD_S = 300.0
-#: A round under this fraction of the window's median received events is LOW
-#: (24h on 2026-11-09: p10 1.39M, median 1.98M, the outage round 0.49M = 25%).
+#: A round under this fraction of its NEIGHBOURS' median (the
+#: `STREAMFLOW_LOCAL_ROUNDS` rounds either side, itself excluded) is LOW. The
+#: comparison is local because the stream is diurnal: on 2026-11-09, a routine
+#: Monday, the quiet 08-09Z rounds sat at 48-50% of the 24h median and a
+#: global 50% tier named 09:01Z LOW with 0 GAP lines, while the real outage
+#: round (10:29Z) was 23% of the day and 37% of its neighbours. A local
+#: median hides nothing a global one shows -- the DEAD tier below stays on
+#: the day's median precisely so a long dead stretch cannot lower its own bar.
 STREAMFLOW_LOW_FRAC = 0.50
+STREAMFLOW_LOCAL_ROUNDS = 6
 #: A round under this fraction is dead air across the period; the same floor
 #: applied to the last-tick row count marks a dead INSTANT.
 STREAMFLOW_DEAD_FRAC = 0.10
@@ -715,6 +722,10 @@ class FlowRound:
     #: GAP lines inside the round, (at - period, at], and in the next period.
     gaps_in_period: int
     gaps_after: int
+    #: The LOW tier's bar: the lower of the median received over the
+    #: `STREAMFLOW_LOCAL_ROUNDS` rounds before and the same after (itself
+    #: excluded). 0 when the round has no neighbour.
+    local: int = 0
 
 
 @dataclass(frozen=True)
@@ -772,6 +783,7 @@ def parse_stream_flow(
     period_s: float = STREAMFLOW_PERIOD_S,
     dead_frac: float = STREAMFLOW_DEAD_FRAC,
     low_frac: float = STREAMFLOW_LOW_FRAC,
+    local_rounds: int = STREAMFLOW_LOCAL_ROUNDS,
 ) -> StreamFlow | None:
     """Pure: the unit's `-o short-iso` lines -> its flow reading, or None when
     the window holds fewer than two stats lines (one line has no delta).
@@ -822,7 +834,16 @@ def parse_stream_flow(
             run = []
     if run:
         episodes.append(DeadEpisode(tuple(run), period_s))
-    low = tuple(r for r in rounds if med_r * dead_frac <= r.received < med_r * low_frac)
+    with_local: list[FlowRound] = []
+    for i, r in enumerate(rounds):
+        # The LOWER of the two sides' medians, so a diurnal step (night 3x
+        # the morning) does not name the first round after the edge.
+        before = sorted(x.received for x in rounds[max(0, i - local_rounds) : i])
+        after = sorted(x.received for x in rounds[i + 1 : i + 1 + local_rounds])
+        sides = [side[len(side) // 2] for side in (before, after) if side]
+        with_local.append(replace(r, local=min(sides) if sides else 0))
+    rounds = with_local
+    low = tuple(r for r in rounds if med_r * dead_frac <= r.received < r.local * low_frac)
     dead_ticks = tuple(r for r in rounds if r.last_tick < med_t * dead_frac)
     return StreamFlow(
         len(rounds),
@@ -914,13 +935,14 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
         parts.append(f"no round under {dead_pct}")
     if flow.low:
         lows = "; ".join(
-            f"{r.at:%m-%d %H:%M}Z {r.received / max(flow.median_received, 1):.0%} "
-            f"({_split(r)}; GAP lines {r.gaps_in_period} in round, {r.gaps_after} next)"
+            f"{r.at:%m-%d %H:%M}Z {r.received / max(r.local, 1):.0%} of its neighbours "
+            f"({r.received / max(flow.median_received, 1):.0%} of the day; {_split(r)}; "
+            f"GAP lines {r.gaps_in_period} in round, {r.gaps_after} next)"
             for r in flow.low
         )
-        parts.append(f"LOW {len(flow.low)} round(s) under {low_pct}: {lows}")
+        parts.append(f"LOW {len(flow.low)} round(s) under {low_pct} of their neighbours: {lows}")
     else:
-        parts.append(f"no round under {low_pct}")
+        parts.append(f"no round under {low_pct} of its neighbours")
     if flow.dead_ticks:
         ticks = ", ".join(f"{r.at:%H:%M:%S}Z {r.last_tick} rows" for r in flow.dead_ticks)
         parts.append(
