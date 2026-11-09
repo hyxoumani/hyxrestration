@@ -954,6 +954,202 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
     return f"{head} | " + " | ".join(parts)
 
 
+# --- SHADOWHOLD: the shadow's hold on the stream archive, and its climb ------
+# Measured 2026-11-09 (status 20:15Z pass): `hyxlab-shadow`'s per-poll
+# read-only hold on `hyxstream.duckdb` was 0.085 s on 10-20 and 0.43 s on
+# 11-09, a steady climb that began at the 10-23 coverage expansion and never
+# stopped, while the stream's `flush FAILED` lines (its 15 s flush refused by
+# the shadow's 20 s poll) went 22/day -> 150/day. No digest line named either.
+# The attach is a flat ~0.02 s; a count-only probe showed a ~0.27 s CONSTANT
+# per poll independent of rows returned (the scan's setup over a 9.0B-row
+# table that grows ~100M rows/day), plus ~0.8 us per row fetched -- so the
+# climb is the ARCHIVE's size, not the poll's. The shadow publishes the
+# reading itself (`stream_holds={...}` on every 300 s line: `held_n`,
+# `held_s_total`, cumulative); this line differences it, so a hold that
+# climbs is read as the alarm it is (the #167 rule for `budget_frac`).
+SHADOWHOLD_UNIT = "hyxlab-shadow.service"
+SHADOWHOLD_WINDOW_H = 7 * 24
+#: The recent reading is over this many hours of lines (the oldest reading
+#: is the first as-many hours the window holds).
+SHADOWHOLD_RECENT_H = 6
+#: now / oldest at or above this is a CLIMB.
+SHADOWHOLD_CLIMB_RATIO = 1.25
+_SHADOWHOLD_LINE_RE = re.compile(r"python\[(\d+)\]: \[shadow\] .* stream_holds=(\{.*\})\s*$")
+_FLUSH_FAILED_RE = re.compile(r"\[streamd\] \S+ flush FAILED \(.*?\bPID (\d+)\b")
+
+
+@dataclass(frozen=True)
+class HoldReading:
+    """Hold per poll and duty cycle over one span of a single shadow run."""
+
+    start: datetime
+    end: datetime
+    polls: int
+    held_s: float
+
+    @property
+    def per_poll_s(self) -> float:
+        return self.held_s / self.polls
+
+    @property
+    def duty(self) -> float:
+        wall = (self.end - self.start).total_seconds()
+        return self.held_s / wall if wall > 0 else 0.0
+
+
+@dataclass(frozen=True)
+class ShadowHold:
+    recent: HoldReading
+    oldest: HoldReading | None
+    pids: frozenset[int]
+    #: The stream's `flush FAILED` lines in the collision window, split by
+    #: whether the holder PID was a shadow process.
+    collisions_shadow: int
+    collisions_other: int
+
+    @property
+    def climb(self) -> float | None:
+        if self.oldest is None or self.oldest.per_poll_s <= 0:
+            return None
+        return self.recent.per_poll_s / self.oldest.per_poll_s
+
+
+def _hold_samples(lines: list[str]) -> tuple[list[tuple[datetime, int, float]], set[int]]:
+    samples: list[tuple[datetime, int, float]] = []
+    pids: set[int] = set()
+    for line in lines:
+        ts = _short_iso_ts(line)
+        if ts is None:
+            continue
+        m = _SHADOWHOLD_LINE_RE.search(line)
+        if not m:
+            continue
+        try:
+            holds = json.loads(m.group(2))
+        except ValueError:
+            continue
+        if not isinstance(holds, dict) or "held_n" not in holds:
+            continue
+        pids.add(int(m.group(1)))
+        samples.append((ts, int(holds["held_n"]), float(holds["held_s_total"])))
+    samples.sort(key=lambda s: s[0])
+    return samples, pids
+
+
+def _reading(samples: list[tuple[datetime, int, float]]) -> HoldReading | None:
+    """Difference the cumulative counters pairwise; a counter that FALLS is a
+    restart and that pair yields nothing (the next run's zero is not a hold)."""
+    polls = 0
+    held = 0.0
+    start = end = None
+    for (t0, n0, s0), (t1, n1, s1) in zip(samples, samples[1:], strict=False):
+        if n1 < n0 or s1 < s0:
+            continue
+        polls += n1 - n0
+        held += s1 - s0
+        start = t0 if start is None else start
+        end = t1
+    if polls <= 0 or start is None or end is None:
+        return None
+    return HoldReading(start, end, polls, held)
+
+
+def parse_shadow_hold(
+    shadow_lines: list[str] | str,
+    stream_lines: list[str] | str,
+    now: datetime,
+    recent_h: int = SHADOWHOLD_RECENT_H,
+) -> ShadowHold | None:
+    """Pure: the shadow unit's `stream_holds=` lines (the whole window) and the
+    stream unit's `flush FAILED` lines (the collision window) -> the reading,
+    or None when the recent span has no pair of lines to difference."""
+    if isinstance(shadow_lines, str):
+        shadow_lines = shadow_lines.splitlines()
+    if isinstance(stream_lines, str):
+        stream_lines = stream_lines.splitlines()
+    samples, pids = _hold_samples(shadow_lines)
+    if not samples:
+        return None
+    recent = _reading([s for s in samples if (now - s[0]).total_seconds() <= recent_h * 3600])
+    if recent is None:
+        return None
+    first = samples[0][0]
+    oldest_s = [s for s in samples if (s[0] - first).total_seconds() <= recent_h * 3600]
+    oldest = _reading(oldest_s)
+    if oldest is not None and oldest.end > recent.start:
+        oldest = None  # the window is shorter than two spans: nothing to compare
+    shadow_n = other_n = 0
+    for line in stream_lines:
+        m = _FLUSH_FAILED_RE.search(line)
+        if m is None or _short_iso_ts(line) is None:
+            continue
+        if int(m.group(1)) in pids:
+            shadow_n += 1
+        else:
+            other_n += 1
+    return ShadowHold(recent, oldest, frozenset(pids), shadow_n, other_n)
+
+
+def read_shadow_hold(
+    now: datetime | None = None,
+    unit: str = SHADOWHOLD_UNIT,
+    stream_unit: str = STREAMFLOW_UNIT,
+    hours: int = SHADOWHOLD_WINDOW_H,
+    collision_hours: int = STREAMFLOW_WINDOW_H,
+) -> ShadowHold | None | str:
+    """Two journal reads; "unreadable" when either failed."""
+    shadow = _journal_hourly(
+        ["-u", unit, "--utc", "--grep=stream_holds=", "-o", "short-iso"], hours
+    )
+    stream = _journal_hourly(
+        ["-u", stream_unit, "--utc", "--grep=flush FAILED", "-o", "short-iso"], collision_hours
+    )
+    if shadow is None or stream is None:
+        return "unreadable"
+    return parse_shadow_hold(shadow, stream, now or datetime.now(UTC))
+
+
+def shadow_hold_line(
+    hold: ShadowHold | None | str,
+    hours: int = SHADOWHOLD_WINDOW_H,
+    collision_hours: int = STREAMFLOW_WINDOW_H,
+) -> str:
+    """Render: hold per poll and duty over the recent span, the same at the
+    window's start with the ratio (`CLIMB` at or above the threshold), then
+    the stream's flush collisions in the collision window by holder."""
+    if hold == "unreadable":
+        return f"{hours}h: journal unreadable"
+    if hold is None:
+        return (
+            f"{hours}h: no pair of stream_holds lines in the last {SHADOWHOLD_RECENT_H}h "
+            "(unit down, or the journal rotated)"
+        )
+    assert isinstance(hold, ShadowHold)
+    r = hold.recent
+    head = (
+        f"hold on hyxstream.duckdb: {r.per_poll_s:.3f} s/poll over {r.polls:,} polls in the last "
+        f"{SHADOWHOLD_RECENT_H}h ({r.duty:.1%} duty)"
+    )
+    if hold.oldest is None:
+        trend = f"no span {SHADOWHOLD_RECENT_H}h earlier in the {hours}h window to compare"
+    else:
+        o = hold.oldest
+        ratio = hold.climb or 0.0
+        tag = "CLIMB" if ratio >= SHADOWHOLD_CLIMB_RATIO else "flat"
+        days = max((r.end - o.start).total_seconds() / 86400, 1e-9)
+        slope = (r.per_poll_s - o.per_poll_s) / days
+        trend = (
+            f"{o.per_poll_s:.3f} s/poll at {o.start:%m-%d %H:%M}Z, x{ratio:.2f} = {tag} "
+            f"({slope * 1000:+.0f} ms/poll/day)"
+        )
+    total = hold.collisions_shadow + hold.collisions_other
+    coll = (
+        f"stream flush FAILED {collision_hours}h: {total} "
+        f"(shadow {hold.collisions_shadow}, other {hold.collisions_other})"
+    )
+    return f"{head} | {trend} | {coll}"
+
+
 # --- OOM attribution -------------------------------------------------------
 # Measured 2026-09-07, after `result=oom-kill` on hyxlab-poly-sweep cost a
 # whole pass in kernel forensics to interpret. `Result=oom-kill` names the
@@ -3320,6 +3516,10 @@ def main() -> None:
     )
     print(
         f"{'STREAMFLOW':<10} {STREAMFLOW_UNIT:<{width}}  {stream_flow_line(read_stream_flow())}",
+        flush=True,
+    )
+    print(
+        f"{'SHADOWHOLD':<10} {SHADOWHOLD_UNIT:<{width}}  {shadow_hold_line(read_shadow_hold(now))}",
         flush=True,
     )
     drift = drift_report()
