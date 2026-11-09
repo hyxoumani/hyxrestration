@@ -236,9 +236,7 @@ def _allowed_series(db: str, categories: list[str] | None) -> dict[str, str]:
     # so even a "short read burst" excludes a capture cycle for its length
     # -- measured and published (#91, #96).
     with held_attach(db, read_only=True) as con:
-        rows = con.execute(
-            "SELECT ticker, category FROM series WHERE venue='kalshi'"
-        ).fetchall()
+        rows = con.execute("SELECT ticker, category FROM series WHERE venue='kalshi'").fetchall()
     cats = None if categories is None else set(categories)
     return {t: (c or "") for t, c in rows if cats is None or (c or "") in cats}
 
@@ -256,9 +254,7 @@ def _export_archived_ids(db: str, out_path: str) -> int:
             f"COPY (SELECT market_id FROM markets WHERE venue='kalshi')"
             f" TO '{out_path}' (FORMAT PARQUET)"
         )
-        return con.execute(
-            "SELECT count(*) FROM markets WHERE venue='kalshi'"
-        ).fetchone()[0]
+        return con.execute("SELECT count(*) FROM markets WHERE venue='kalshi'").fetchone()[0]
 
 
 def diff_missing(
@@ -299,9 +295,7 @@ def diff_missing(
         with held_attach(stream_db, read_only=True) as con:
             con.execute("CREATE TEMP TABLE _allowed(series VARCHAR, category VARCHAR)")
             if allowed:
-                con.executemany(
-                    "INSERT INTO _allowed VALUES (?, ?)", list(allowed.items())
-                )
+                con.executemany("INSERT INTO _allowed VALUES (?, ?)", list(allowed.items()))
             excl = ""
             params: list = [cutoff]
             if exclude_series_like:
@@ -323,9 +317,7 @@ def diff_missing(
                 FROM s JOIN _allowed al ON al.series = s.series
                 WHERE s.last_ts <= ?{excl}
             """
-            total = con.execute(
-                base.format(cols="count(*)"), params
-            ).fetchone()[0]
+            total = con.execute(base.format(cols="count(*)"), params).fetchone()[0]
             # Split against the DEFAULT production exclusion list even when
             # `exclude_series_like` is unset, so a CLI-default run still
             # shows which part of the deficit is excluded-by-design. When
@@ -334,9 +326,7 @@ def diff_missing(
             # today's behaviour, unchanged.
             excluded_by_prefix = 0
             if EXCLUDED_SERIES_PREFIXES:
-                prefix_cond = " OR ".join(
-                    "s.series LIKE ?" for _ in EXCLUDED_SERIES_PREFIXES
-                )
+                prefix_cond = " OR ".join("s.series LIKE ?" for _ in EXCLUDED_SERIES_PREFIXES)
                 excluded_by_prefix = con.execute(
                     base.format(cols="count(*)") + f" AND ({prefix_cond})",
                     [*params, *[f"{p}%" for p in EXCLUDED_SERIES_PREFIXES]],
@@ -395,8 +385,11 @@ def work_order(
     now = now or datetime.now(UTC)
     ordered = sorted(
         missing,
-        key=lambda m: (time_to_purge_days(m.last_trade_ts, now, horizon_days),
-                       m.series, m.market_id),
+        key=lambda m: (
+            time_to_purge_days(m.last_trade_ts, now, horizon_days),
+            m.series,
+            m.market_id,
+        ),
     )
     if not max_per_series:
         return ordered, []
@@ -503,7 +496,9 @@ def record_holes(
         return 0
     mod = _load_ledger_tool(tool_path)
     state = mod.load_state(state_path)
-    state = mod.acknowledge(findings, state, note=note or "recorded by collector.reconcile (EXP-934)")
+    state = mod.acknowledge(
+        findings, state, note=note or "recorded by collector.reconcile (EXP-934)"
+    )
     mod.save_state(state, state_path)
     return len(findings)
 
@@ -560,7 +555,7 @@ def bounded_batches(batches: list[list[str]], cap: int | None) -> list[list[str]
     """
     if not cap:
         return batches
-    return [b[i:i + cap] for b in batches for i in range(0, len(b), cap)]
+    return [b[i : i + cap] for b in batches for i in range(0, len(b), cap)]
 
 
 def candle_request_cost(start_ts: int, end_ts: int, period_interval: int = 60) -> int:
@@ -678,7 +673,11 @@ def reconcile(
                     # A truncated tape is NOT 'ok' (EXP-931): trades_swept is
                     # what the retro-pass reads to decide what to revisit.
                     swept.append(
-                        (ticker, len(rows), "truncated" if truncated else ("ok" if rows else "empty"))
+                        (
+                            ticker,
+                            len(rows),
+                            "truncated" if truncated else ("ok" if rows else "empty"),
+                        )
                     )
                 except requests.HTTPError as e:
                     code = e.response.status_code if e.response is not None else "?"
@@ -749,26 +748,41 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="hyxlab archive reconciliation (EXP-934)")
     ap.add_argument("--db", default=DEFAULT_DB)
     ap.add_argument("--stream-db", default=DEFAULT_STREAM_DB)
-    ap.add_argument("--categories", nargs="*", default=DEFAULT_CATEGORIES,
-                    help="series categories in scope (default: the sweep allowlist)")
-    ap.add_argument("--all-categories", action="store_true",
-                    help="ignore the allowlist (includes Sports/Politics/Entertainment, "
-                         "which are a standing USER-CONFIRMED exclusion)")
-    ap.add_argument("--exclude-series", default=None,
-                    help="SQL LIKE pattern of series to skip, e.g. 'KXMVE%%'")
+    ap.add_argument(
+        "--categories",
+        nargs="*",
+        default=DEFAULT_CATEGORIES,
+        help="series categories in scope (default: the sweep allowlist)",
+    )
+    ap.add_argument(
+        "--all-categories",
+        action="store_true",
+        help="ignore the allowlist (includes Sports/Politics/Entertainment, "
+        "which are a standing USER-CONFIRMED exclusion)",
+    )
+    ap.add_argument(
+        "--exclude-series", default=None, help="SQL LIKE pattern of series to skip, e.g. 'KXMVE%%'"
+    )
     ap.add_argument("--grace-days", type=int, default=GRACE_DAYS)
     ap.add_argument("--horizon-days", type=int, default=PURGE_HORIZON_DAYS)
     ap.add_argument("--scan-limit", type=int, default=SCAN_LIMIT)
-    ap.add_argument("--max-per-series", type=int, default=MAX_PER_SERIES,
-                    help="per-ITEM budget; 0 = unbounded")
+    ap.add_argument(
+        "--max-per-series", type=int, default=MAX_PER_SERIES, help="per-ITEM budget; 0 = unbounded"
+    )
     ap.add_argument("--max-markets", type=int, default=None)
     ap.add_argument("--max-requests", type=int, default=None)
     ap.add_argument("--max-minutes", type=float, default=None)
-    ap.add_argument("--metadata-only", action="store_true",
-                    help="settlement metadata only, no candles/trades (~1/500 the requests)")
+    ap.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="settlement metadata only, no candles/trades (~1/500 the requests)",
+    )
     ap.add_argument("--dry-run", action="store_true", help="census + cost, no HTTP, no writes")
-    ap.add_argument("--probe-horizon", action="store_true",
-                    help="re-derive the purge horizon live (10 requests) and exit")
+    ap.add_argument(
+        "--probe-horizon",
+        action="store_true",
+        help="re-derive the purge horizon live (10 requests) and exit",
+    )
     ap.add_argument("--ledger-state", default=LEDGER_STATE)
     ap.add_argument("--summary", default=SUMMARY_PATH)
     args = ap.parse_args(argv)
@@ -777,21 +791,28 @@ def main(argv: list[str] | None = None) -> int:
     reset_attach_waits()
 
     if args.probe_horizon:
-        print(f"purge-horizon probe ({datetime.now(UTC):%Y-%m-%dT%H:%MZ}), "
-              f"module constant = {PURGE_HORIZON_DAYS}d")
+        print(
+            f"purge-horizon probe ({datetime.now(UTC):%Y-%m-%dT%H:%MZ}), "
+            f"module constant = {PURGE_HORIZON_DAYS}d"
+        )
         for age, n in probe_horizon(now=now):
-            print(f"  close age {age:3d}d -> {n} markets returned"
-                  f"{'   PURGED' if n == 0 else ''}")
+            print(f"  close age {age:3d}d -> {n} markets returned{'   PURGED' if n == 0 else ''}")
         return 0
 
     cats = None if args.all_categories else args.categories
     missing, census = diff_missing(
-        db=args.db, stream_db=args.stream_db, categories=cats,
-        exclude_series_like=args.exclude_series, now=now,
-        grace_days=args.grace_days, scan_limit=args.scan_limit,
+        db=args.db,
+        stream_db=args.stream_db,
+        categories=cats,
+        exclude_series_like=args.exclude_series,
+        now=now,
+        grace_days=args.grace_days,
+        scan_limit=args.scan_limit,
     )
     order, deferred = work_order(
-        missing, now=now, horizon_days=args.horizon_days,
+        missing,
+        now=now,
+        horizon_days=args.horizon_days,
         max_per_series=args.max_per_series or None,
     )
     # `--max-markets` cuts the TAIL off the work order. That tail is unreached
@@ -804,18 +825,24 @@ def main(argv: list[str] | None = None) -> int:
         order = order[: args.max_markets]
 
     print(f"=== archive reconciliation (EXP-934) === {now.isoformat(timespec='seconds')}")
-    print(f"  archive: {census['archived_markets']} kalshi markets, "
-          f"{census['allowed_series']} series in scope")
+    print(
+        f"  archive: {census['archived_markets']} kalshi markets, "
+        f"{census['allowed_series']} series in scope"
+    )
     prefixes = "/".join(f"{p}*" for p in census["excluded_prefixes"]) or "(none)"
-    print(f"  MISSING (traded on the wire, absent from the archive): "
-          f"{census['missing_total']} "
-          f"(missing_excluded_by_prefix={census['missing_excluded_by_prefix']} "
-          f"= {prefixes} excluded-by-design in the production job; "
-          f"missing_in_scope={census['missing_in_scope']})")
+    print(
+        f"  MISSING (traded on the wire, absent from the archive): "
+        f"{census['missing_total']} "
+        f"(missing_excluded_by_prefix={census['missing_excluded_by_prefix']} "
+        f"= {prefixes} excluded-by-design in the production job; "
+        f"missing_in_scope={census['missing_in_scope']})"
+    )
     for cat, n in census["missing_by_category"].items():
         print(f"    {cat:<26} {n}")
-    print(f"  scanned {census['missing_scanned']} most-endangered; "
-          f"deferred by per-series cap: {len(deferred)}")
+    print(
+        f"  scanned {census['missing_scanned']} most-endangered; "
+        f"deferred by per-series cap: {len(deferred)}"
+    )
     _print_order(order, now, args.horizon_days)
     cost = plan_cost(order, metadata_only=args.metadata_only)
     print(f"  cost of this order: {cost}")
@@ -839,9 +866,14 @@ def main(argv: list[str] | None = None) -> int:
         return 75  # EX_TEMPFAIL
     try:
         summary = reconcile(
-            order, db=args.db, metadata_only=args.metadata_only,
-            max_markets=args.max_markets, max_requests=args.max_requests,
-            max_minutes=args.max_minutes, ledger_state=args.ledger_state, now=now,
+            order,
+            db=args.db,
+            metadata_only=args.metadata_only,
+            max_markets=args.max_markets,
+            max_requests=args.max_requests,
+            max_minutes=args.max_minutes,
+            ledger_state=args.ledger_state,
+            now=now,
         )
     finally:
         lock.close()

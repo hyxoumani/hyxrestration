@@ -32,7 +32,7 @@ def test_stats_line_carries_anon_rss_and_is_the_only_renderer(monkeypatch):
     monkeypatch.setattr(streamd, "glibc_arena_heaps", lambda: (76, 753.04))
     line = streamd.stats_line("", {"kalshi_trades": 2}, 150, "sock_throttled=441 (+0)")
     assert line == (
-        "stats {'kalshi_trades': 2} (flushed 150 this round)"
+        "stats {'kalshi_trades': 2} (last flush 150 rows)"
         " rss_anon_mb=123.5 arena_mb=753.0/76 sock_throttled=441 (+0)"
     )
     # Perturbation: the arena split reaches the line too.

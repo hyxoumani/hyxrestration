@@ -314,7 +314,11 @@ def stats_line(prefix: str, stats: dict, flushed: int | None, sock: str | None) 
     # glibc arena retention (memcap.glibc_arena_heaps) -- `arena_mb=<MiB>/<heaps>`.
     arena = glibc_arena_heaps()
     arena_s = "None" if arena is None else f"{arena[1]:.1f}/{arena[0]}"
-    flushed_s = "" if flushed is None else f" (flushed {flushed} this round)"
+    # `last flush`: the rows the flush tick just before this line landed --
+    # an INSTANT, not the period's total (the old label `flushed N this
+    # round` was read as a total; mistakes #168, #92). The period's
+    # received totals are the counters in `stats`, differenced by the reader.
+    flushed_s = "" if flushed is None else f" (last flush {flushed} rows)"
     sock_s = "" if sock is None else f" {sock}"
     return f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}"
 

@@ -97,6 +97,7 @@ from another unread verdict.
 
 from __future__ import annotations
 
+import ast
 import bisect
 import json
 import os
@@ -645,43 +646,72 @@ def sock_throttle_line(c: CgMem, periods: list[ThrottlePeriod] | None) -> str:
     return out
 
 
-# --- STREAMFLOW: did the stream LAND anything, round by round ---------------
-# The stream daemon's only end-to-end liveness number is on its own stats
-# line: `(flushed N this round)`, the rows that reached `hyxstream.duckdb`
-# in the `STATS_SECS` period the line closes. Every other instrument on the
-# unit is partial: GAP lines name one shard's rejoin, the stall ledger a
-# refused flush, CGMEM a cap -- none says "nothing arrived on any channel".
-# On 2026-11-09 the host's router dropped for ~14 min; every established
-# WS socket black-holed until its keepalive ping timed out, and the 10:24Z
-# and 10:29Z stats lines each read `flushed 20` against a 24h median of
-# ~106k. The 10:33Z pass read GAP lines up to 10:07Z and wrote "established
-# shards keep flowing" (mistakes #168). This block reads what the daemon
-# itself wrote: every round in the window, the median, and each round under
-# `STREAMFLOW_DEAD_FRAC` of it -- grouped into episodes, with the GAP lines
-# around each -- so a dead stream is a digest line, not a hand grep.
+# --- STREAMFLOW: did the stream RECEIVE anything, round by round ------------
+# The stream daemon's only end-to-end liveness numbers are on its own stats
+# line, printed every `STATS_SECS`: the cumulative RECEIVED counters in the
+# stats dict (`kalshi_books_events`, `kalshi_trades`, `kalshi_ticker`,
+# `poly_events`, ...) and `(last flush N rows)`, the rows the flush tick
+# just before the line landed. Every other instrument on the unit is
+# partial: GAP lines name a shard that has NOTICED it is dead, the stall
+# ledger a refused flush, CGMEM a cap -- none says "nothing arrived on any
+# channel". On 2026-11-09 the host's router dropped twice in ~17 min; every
+# established WS socket black-holed until its keepalive ping timed out, and
+# the 10:33Z pass read the GAP lines (last at 10:07Z) and wrote "established
+# shards keep flowing" while the 10:29:15Z stats line already said the round
+# received 25% of the median and its last tick landed 20 rows (mistakes
+# #168). This block reads what the daemon wrote: the received events per
+# round (the DIFFERENCE of consecutive lines' counters -- the quantity with
+# a span), the median, every round under `STREAMFLOW_LOW_FRAC` of it, and
+# the rounds whose last tick was dead (an INSTANT sample, said as one).
 #
-# Resolution (ops rule #93): a round is a SAMPLE. One dead round proves dead
-# air somewhere inside its period; `n` consecutive dead rounds prove at
-# least the span between the first and the last and at most that span plus
-# a period on each side. The line prints both bounds, never one number.
+# Two populations, named apart (#92: name a span a span). A round's received
+# total is the whole period; a round under `STREAMFLOW_DEAD_FRAC` is dead
+# air across most of it, and `n` consecutive dead rounds prove at least the
+# span between their line times and at most that plus a period either side
+# (#93). The last-tick count is one `FLUSH_SECS` tick at the round's END; 20
+# rows there proves the stream was dead AT THAT INSTANT and nothing about
+# the rest of the round -- the first cut of this block read the daemon's old
+# label `flushed N this round` as a round total and published "dead air
+# 5.2..15.2 min" for an outage whose rounds received 62% and 25%.
 
 #: streamd's `STATS_SECS`, pinned here like SOCKTHR_PERIOD_S (no daemon import).
 STREAMFLOW_PERIOD_S = 300.0
-#: A round under this fraction of the window's median flushed rows is dead air.
-#: 24h on 2026-11-09: p10 70,816, median 106,156 -- the two outage rounds
-#: were 20. The floor sits two orders of magnitude under the tail.
+#: A round under this fraction of the window's median received events is LOW
+#: (24h on 2026-11-09: p10 1.39M, median 1.98M, the outage round 0.49M = 25%).
+STREAMFLOW_LOW_FRAC = 0.50
+#: A round under this fraction is dead air across the period; the same floor
+#: applied to the last-tick row count marks a dead INSTANT.
 STREAMFLOW_DEAD_FRAC = 0.10
 STREAMFLOW_WINDOW_H = 24
 STREAMFLOW_UNIT = "hyxlab-stream.service"
+#: The stats-dict counters that count RECEIVED events (not drops, not
+#: bookkeeping). Missing keys read as 0, so an older line still parses.
+STREAMFLOW_RECV_KEYS = (
+    "kalshi_lifecycle",
+    "kalshi_trades",
+    "kalshi_ticker",
+    "kalshi_books_events",
+    "poly_events",
+    "poly_trades",
+)
 
-_STREAMFLOW_ROUND_RE = re.compile(r"\(flushed (\d+) this round\)")
+#: Both labels: `last flush N rows` (since 2026-11-09) and the misnamed
+#: `flushed N this round` the journal still holds for a day.
+_STREAMFLOW_LINE_RE = re.compile(
+    r" stats (\{.*\}) \((?:last flush (\d+) rows|flushed (\d+) this round)\)"
+)
 
 
 @dataclass(frozen=True)
-class DeadRound:
-    #: When the stats line printed -- the END of the round it reports.
+class FlowRound:
+    #: When the stats line printed -- the END of the round it closes.
     at: datetime
-    flushed: int
+    #: Received events, summed over STREAMFLOW_RECV_KEYS, since the previous line.
+    received: int
+    #: Rows the flush tick just before the line landed -- an instant, not a span.
+    last_tick: int
+    #: Per-key received deltas, for the LOW line's split.
+    by_key: dict[str, int]
     #: GAP lines inside the round, (at - period, at], and in the next period.
     gaps_in_period: int
     gaps_after: int
@@ -689,7 +719,7 @@ class DeadRound:
 
 @dataclass(frozen=True)
 class DeadEpisode:
-    rounds: tuple[DeadRound, ...]
+    rounds: tuple[FlowRound, ...]
     period_s: float
 
     @property
@@ -718,11 +748,22 @@ class DeadEpisode:
 @dataclass(frozen=True)
 class StreamFlow:
     rounds: int
-    median: int
+    median_received: int
+    median_tick: int
     #: Widest spacing between consecutive stats lines actually observed --
     #: the instrument's measured resolution, beside the nominal period.
     sample_gap_max_s: float | None
     dead: tuple[DeadEpisode, ...]
+    low: tuple[FlowRound, ...]
+    dead_ticks: tuple[FlowRound, ...]
+
+
+def _parse_stats_dict(text: str) -> dict | None:
+    try:
+        d = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return None
+    return d if isinstance(d, dict) else None
 
 
 def parse_stream_flow(
@@ -730,45 +771,68 @@ def parse_stream_flow(
     floor: datetime | None = None,
     period_s: float = STREAMFLOW_PERIOD_S,
     dead_frac: float = STREAMFLOW_DEAD_FRAC,
+    low_frac: float = STREAMFLOW_LOW_FRAC,
 ) -> StreamFlow | None:
     """Pure: the unit's `-o short-iso` lines -> its flow reading, or None when
-    the window holds no stats line at all (the renderer says so). `floor`
-    drops rounds from an earlier run of the daemon. Consecutive dead rounds
-    (no landed round between them) form one episode."""
+    the window holds fewer than two stats lines (one line has no delta).
+    `floor` drops lines from an earlier run; a counter that FALLS between two
+    lines is a restart inside the window and that pair yields no round."""
     if isinstance(lines, str):
         lines = lines.splitlines()
-    rounds: list[tuple[datetime, int]] = []
+    samples: list[tuple[datetime, dict[str, int], int]] = []
     gaps: list[datetime] = []
     for line in lines:
         ts = _short_iso_ts(line)
         if ts is None:
             continue
-        m = _STREAMFLOW_ROUND_RE.search(line)
+        m = _STREAMFLOW_LINE_RE.search(line)
         if m:
-            if floor is None or ts >= floor:
-                rounds.append((ts, int(m.group(1))))
+            if floor is not None and ts < floor:
+                continue
+            d = _parse_stats_dict(m.group(1))
+            if d is None:
+                continue
+            counters = {k: int(d.get(k, 0)) for k in STREAMFLOW_RECV_KEYS}
+            samples.append((ts, counters, int(m.group(2) or m.group(3))))
         elif _SOCKTHR_GAP_RE.search(line):
             gaps.append(ts)
+    samples.sort(key=lambda s: s[0])
+    rounds: list[FlowRound] = []
+    spacing: list[float] = []
+    for (t0, c0, _), (t1, c1, tick) in zip(samples, samples[1:], strict=False):
+        by_key = {k: c1[k] - c0[k] for k in STREAMFLOW_RECV_KEYS}
+        if any(v < 0 for v in by_key.values()):
+            continue  # counters reset: a restart between the two lines
+        spacing.append((t1 - t0).total_seconds())
+        before = sum(1 for g in gaps if g <= t1 and (t1 - g).total_seconds() < period_s)
+        after = sum(1 for g in gaps if 0 < (g - t1).total_seconds() <= period_s)
+        rounds.append(FlowRound(t1, sum(by_key.values()), tick, by_key, before, after))
     if not rounds:
         return None
-    rounds.sort()
-    counts = sorted(n for _, n in rounds)
-    median = counts[len(counts) // 2]
-    spacing = [(b - a).total_seconds() for (a, _), (b, _) in zip(rounds, rounds[1:], strict=False)]
-    cutoff = median * dead_frac
+    recv = sorted(r.received for r in rounds)
+    ticks = sorted(r.last_tick for r in rounds)
+    med_r, med_t = recv[len(recv) // 2], ticks[len(ticks) // 2]
     episodes: list[DeadEpisode] = []
-    run: list[DeadRound] = []
-    for at, n in rounds:
-        if n < cutoff:
-            before = sum(1 for g in gaps if g <= at and (at - g).total_seconds() < period_s)
-            after = sum(1 for g in gaps if 0 < (g - at).total_seconds() <= period_s)
-            run.append(DeadRound(at, n, before, after))
+    run: list[FlowRound] = []
+    for r in rounds:
+        if r.received < med_r * dead_frac:
+            run.append(r)
         elif run:
             episodes.append(DeadEpisode(tuple(run), period_s))
             run = []
     if run:
         episodes.append(DeadEpisode(tuple(run), period_s))
-    return StreamFlow(len(rounds), median, max(spacing) if spacing else None, tuple(episodes))
+    low = tuple(r for r in rounds if med_r * dead_frac <= r.received < med_r * low_frac)
+    dead_ticks = tuple(r for r in rounds if r.last_tick < med_t * dead_frac)
+    return StreamFlow(
+        len(rounds),
+        med_r,
+        med_t,
+        max(spacing) if spacing else None,
+        tuple(episodes),
+        low,
+        dead_ticks,
+    )
 
 
 def read_stream_flow(
@@ -778,7 +842,14 @@ def read_stream_flow(
     reads. Returns the string "unreadable" when journalctl failed -- a
     missing journal and an empty one are different findings."""
     text = _journal_hourly(
-        ["-u", unit, "--utc", r"--grep=flushed [0-9]+ this round|GAP \(", "-o", "short-iso"],
+        [
+            "-u",
+            unit,
+            "--utc",
+            r"--grep=\((last flush [0-9]+ rows|flushed [0-9]+ this round)\)|GAP \(",
+            "-o",
+            "short-iso",
+        ],
         hours,
     )
     if text is None:
@@ -790,37 +861,75 @@ def _mins(s: float) -> str:
     return f"{s / 60:.1f} min"
 
 
+def _k(n: int) -> str:
+    return f"{n / 1000:.0f}k" if n >= 10_000 else f"{n:,}"
+
+
+def _split(r: FlowRound) -> str:
+    return (
+        f"books {_k(r.by_key['kalshi_books_events'])}, ticker {_k(r.by_key['kalshi_ticker'])}, "
+        f"trades {_k(r.by_key['kalshi_trades'])}, poly {_k(r.by_key['poly_events'])}"
+    )
+
+
 def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WINDOW_H) -> str:
-    """Render the reading. Shapes: the window's rounds and median with the
-    dead episodes (bounds, GAP lines); `no round under ...` when clean;
-    `no stats lines` when the window is empty; `journal unreadable`."""
+    """Render the reading. Shapes: the window's rounds and medians, then the
+    dead episodes (span bounds, GAP lines), the LOW rounds (share of the
+    median with the channel split), and the dead last-tick INSTANTS; `no
+    round under ...` / `no dead tick` when clean; `no stats lines` when the
+    window is empty; `journal unreadable`."""
     if flow == "unreadable":
         return f"{hours}h: journal unreadable"
     if flow is None:
-        return f"{hours}h: no stats lines (unit down the whole window, or the journal rotated)"
+        return (
+            f"{hours}h: fewer than two stats lines "
+            "(unit down the whole window, or the journal rotated)"
+        )
     assert isinstance(flow, StreamFlow)
     widest = "?" if flow.sample_gap_max_s is None else f"{flow.sample_gap_max_s:.0f}"
     head = (
-        f"{hours}h: {flow.rounds} rounds, median {flow.median:,} rows/round "
-        f"(stats every {STREAMFLOW_PERIOD_S:.0f} s nominal, widest {widest} s)"
+        f"{hours}h: {flow.rounds} rounds, median {flow.median_received:,} events received/round, "
+        f"last tick {flow.median_tick:,} rows (stats every {STREAMFLOW_PERIOD_S:.0f} s nominal, "
+        f"widest {widest} s)"
     )
-    pct = f"{STREAMFLOW_DEAD_FRAC:.0%}"
-    if not flow.dead:
-        return f"{head} | no round under {pct} of the median"
-    parts = []
-    for ep in flow.dead:
-        n = len(ep.rounds)
-        rows = ", ".join(f"{r.flushed:,}" for r in ep.rounds)
+    dead_pct = f"{STREAMFLOW_DEAD_FRAC:.0%}"
+    low_pct = f"{STREAMFLOW_LOW_FRAC:.0%}"
+    parts: list[str] = []
+    if flow.dead:
+        eps = []
+        for ep in flow.dead:
+            shares = ", ".join(
+                f"{r.received / max(flow.median_received, 1):.0%}" for r in ep.rounds
+            )
+            eps.append(
+                f"{ep.first:%m-%d %H:%M}Z..{ep.last:%H:%M}Z {len(ep.rounds)} round(s) ({shares}): "
+                f"dead air {_mins(ep.dead_lower_s)}..{_mins(ep.dead_upper_s)}, GAP lines {ep.gaps}"
+            )
+        total = sum(len(ep.rounds) for ep in flow.dead)
         parts.append(
-            f"{ep.first:%m-%d %H:%M}Z..{ep.last:%H:%M}Z {n} round(s) ({rows} rows): "
-            f"dead air {_mins(ep.dead_lower_s)}..{_mins(ep.dead_upper_s)}, "
-            f"GAP lines {ep.gaps}"
+            f"DEAD-AIR {total} round(s) under {dead_pct} in {len(flow.dead)} episode(s): "
+            + "; ".join(eps)
         )
-    total = sum(len(ep.rounds) for ep in flow.dead)
-    return (
-        f"{head} | DEAD-AIR {total} round(s) under {pct} in {len(flow.dead)} episode(s): "
-        + "; ".join(parts)
-    )
+    else:
+        parts.append(f"no round under {dead_pct}")
+    if flow.low:
+        lows = "; ".join(
+            f"{r.at:%m-%d %H:%M}Z {r.received / max(flow.median_received, 1):.0%} "
+            f"({_split(r)}; GAP lines {r.gaps_in_period} in round, {r.gaps_after} next)"
+            for r in flow.low
+        )
+        parts.append(f"LOW {len(flow.low)} round(s) under {low_pct}: {lows}")
+    else:
+        parts.append(f"no round under {low_pct}")
+    if flow.dead_ticks:
+        ticks = ", ".join(f"{r.at:%H:%M:%S}Z {r.last_tick} rows" for r in flow.dead_ticks)
+        parts.append(
+            f"last tick dead (under {dead_pct} of the tick median) at "
+            f"{len(flow.dead_ticks)} instant(s): {ticks}"
+        )
+    else:
+        parts.append("no dead last tick")
+    return f"{head} | " + " | ".join(parts)
 
 
 # --- OOM attribution -------------------------------------------------------

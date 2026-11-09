@@ -4269,45 +4269,59 @@ Format: what happened → root cause → error type → prevention tier
     applied to the second reader it named and did not fix.
 
 168. **2026-11-09 10:33Z -- the DNS-outage entry wrote "its established
-    shards keep flowing" about the stream daemon while the daemon's own
-    stats lines, already in the journal, read `flushed 20 this round` at
-    10:24:05Z and again at 10:29:15Z against a 24h median of ~106,000.**
-    The pass read the stream's GAP lines (last at 10:07Z) and stopped;
-    the outage was not a resolver failure but the router dropping twice
-    (~10:12-10:25:44Z and 10:27:15-10:29:xZ, plus a 2-shard blip at
-    10:44Z): every established WS socket black-holed with no close frame
-    until its keepalive ping timed out (`sent 1011 keepalive ping
-    timeout` on all 20 kalshi shards, lifecycle, ticker, trades and
-    poly-books at 10:23:31Z and again 10:27:15-27Z), three shards then
-    met a `CERTIFICATE_VERIFY_FAILED: self-signed certificate` at
-    10:24:56Z (the router's captive page answering for the API host --
-    the signature of a router reboot, not a dead forwarder). Cost, read
-    from instruments that are not the GAP lines: 78 GAP lines in the
-    two dead rounds' periods; the 10Z raw-frame hour 13-21% under its
-    neighbours (books 283.9 vs 327.8 MB, ticker 101.4 vs 120.8, trades
-    9.4 vs 11.9), consistent with 8-12 min of dead air; the poly sweep
-    82 `ConnectionError`/`SSLError` markets 10:18-10:29Z (0-3 errors on
-    every other day this week) and the collector's single 10:15Z cycle
-    burning 10 min of transport retries, which swallowed the 10:20Z slot
-    too (snapshots 10:10:38 -> 10:26:39Z, 16 min; one exit 75). None of
-    that was in the 10:33Z line. Fix: the digest's `STREAMFLOW` line
-    (`collector.health.parse_stream_flow`/`stream_flow_line`,
-    `tests/test_health_streamflow.py`) -- every `flushed N this round`
-    in 24h, the median, each round under `STREAMFLOW_DEAD_FRAC` (10%)
-    grouped into episodes with the proven and possible dead-air bounds
-    (#93's rule: `n` consecutive dead rounds prove the span between
-    them and allow a period either side) and the GAP lines around them;
-    first live reading `280 rounds, median 106,996 ... DEAD-AIR 2
-    round(s) ... 10:24Z..10:29Z (20, 20 rows): dead air 5.2 min..15.2
-    min, GAP lines 78`. Rule: **a daemon's liveness is what it LANDED,
-    not what it logged about its connections. GAP lines are written by
-    a socket that has noticed it is dead, and a black-holed socket
-    notices nothing until its keepalive expires; the row count the
-    daemon prints every period is the only end-to-end number, and it
-    was already on disk when the wrong sentence was written. Before
-    writing "X kept working" about a unit, find the line X prints when
-    it works and read the last two.** The 10Z hour is the measured
-    loss; nothing recovers it (the sidecar holds rows the daemon
+    shards keep flowing" about the stream daemon, and the 14:15Z pass's
+    first fix then over-claimed the other way: "dead air 5.2..15.2 min"
+    from a field that was never a span.** The outage was not a resolver
+    failure but the router dropping twice (~10:12-10:25:44Z and
+    10:27:15-~10:29:40Z, plus a 2-shard blip at 10:44Z): every
+    established WS socket black-holed with no close frame until its
+    keepalive ping timed out (`sent 1011 keepalive ping timeout` on all
+    20 kalshi shards, lifecycle, ticker, trades and poly-books at
+    10:23:31Z and again 10:27:15-27Z), and three shards then met
+    `CERTIFICATE_VERIFY_FAILED: self-signed certificate` at 10:24:56Z
+    (the router's captive page answering for the API host -- a reboot,
+    not a dead forwarder). The 10:33Z pass read the GAP lines (last at
+    10:07Z) and stopped; the daemon's own stats lines, in the journal
+    since 10:24:05Z, said otherwise. Then the first STREAMFLOW cut read
+    the line's `(flushed N this round)` as the round's total and found
+    `20, 20` against a ~106k median -- but `out.rows` there is the LAST
+    15 s FLUSH TICK before the line, an instant; the stats dict's
+    cumulative received counters, differenced, say the two rounds
+    received 62% and 25% of the 24h median (1.98M events/round), and
+    the stall ledger shows the 84,398 held rows at 10:22:44Z landed 3.2 s
+    later. Measured cost, from instruments that are not GAP lines: 78
+    GAP lines across the two rounds; the 10Z raw-frame hour 13-21% under
+    its neighbours (books 283.9 vs 327.8 MB, ticker 101.4 vs 120.8,
+    trades 9.4 vs 11.9), consistent with ~5 min dead in two pieces; the
+    poly sweep 82 `ConnectionError`/`SSLError` markets 10:18-10:29Z (0-3
+    on every other day this week); the collector's 10:15Z cycle burned
+    10 min of transport retries, found the writer lock held with a 0 s
+    budget left and dropped its partial 509 snapshots (exit 75), so the
+    10:20Z slot never fired (snapshots 10:10:38 -> 10:26:39Z, 16 min).
+    Fix: the digest's `STREAMFLOW` line (`collector.health.
+    parse_stream_flow`/`stream_flow_line`, `tests/test_health_streamflow.
+    py`, 10 tests incl. perturbation and a counter-reset round): per
+    round the RECEIVED events (counter deltas over `STREAMFLOW_RECV_KEYS`,
+    a restart's falling counter yields no round), the median, rounds
+    under 10% as dead-air episodes with #93's two bounds, rounds under
+    50% as LOW with the channel split, and the last-tick count published
+    separately as an INSTANT; streamd's label renamed `(last flush N
+    rows)` with the parser accepting both for the day the journal holds
+    the old one. First live reading: `279 rounds, median 1,977,089
+    events received/round, last tick 107,759 rows ... | no round under
+    10% | LOW 1 round(s) under 50%: 11-09 10:29Z 25% (books 433k, ticker
+    30k, trades 7,624, poly 19k; GAP lines 39 in round, 39 next) | last
+    tick dead ... at 2 instant(s): 10:24:05Z 20 rows, 10:29:15Z 20 rows`.
+    Rule: **a daemon's liveness is what it RECEIVED, not what it logged
+    about its connections -- GAP lines are written by a socket that has
+    noticed it is dead, and a black-holed socket notices nothing until
+    its keepalive expires (here ~40 s after the last pong, ~4 min after
+    the first lost frames by the counters). And before differencing or
+    thresholding a field, find the assignment that writes it: `this
+    round` named a tick. #92 said name a span a span; the corollary is
+    that a reader must check the name against the code before trusting
+    it, because the misnomer survives every grep.** The 10Z hour is the
+    measured loss; nothing recovers it (the sidecar holds rows the daemon
     received, and it received none).
 
 167. **2026-11-08 04:40Z -- `hyxlab-signals` died with exit 1 at its
