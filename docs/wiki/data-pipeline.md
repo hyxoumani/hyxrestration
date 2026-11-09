@@ -979,6 +979,36 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   the two steps (7.0 and 5.3 GB) on a ~1.5 GB/h baseline. The capacity decision (stream
   retention purge, drop hyxstream from the 7-slot rotation -- now known to
   buy nothing -- or an off-box backup) is user-gated.
+- **Raw-frame burn drift: the TICKER channel doubled on 2026-11-07/08
+  (read 2026-11-09 02:15Z, no DB attached).** `data/raw_frames` per day:
+  17-18 GB on 11-03..11-06, then 23.9 GB (Sat 11-07) and 26.1 GB (Sun 11-08);
+  by channel the step is `ticker` 5.6-6.0 -> 10.6 / 11.8 GB/day, while `books`
+  moved 10.6-12.1 -> 12.4 / 13.3 (the EXP-2070 series are books-only and the
+  ticker subscription is market-wide, `subscribe_ticker()` with no filter, so
+  this is NOT the series add). The step lands 11-07 13Z-16Z (0.16 -> 0.62 GB/h)
+  and persists: 11-09 00-01Z read 0.68/0.62 GB/h against 0.50/0.40 on the same
+  Friday hours, and the prior weekend showed no bump (10-31 5.9, 11-01 5.6).
+  The stats counters agree: `kalshi_ticker` kept rose from 3-5M/h to 5-7M/h
+  and `kalshi_ticker_mve_dropped` from 1-2M/h to 5-7M/h over the same hours.
+  Sampled frame by frame from the files (stdlib zstd, `b'"KXMVE'` test):
+  11-08 19Z 12.14M frames / 6,093 MB uncompressed (745 MB on disk, ~8.2x),
+  50.3% KXMVE by count and 50.9% by bytes (508 B/frame vs 496 B); 11-06 19Z
+  6.05M frames, 38.9% KXMVE; 11-01 17Z (that day's 0.64 GB spike hour) 9.77M
+  frames, 74.7% KXMVE. So BOTH halves roughly doubled on the NFL weekend,
+  and the KXMVE parlay half -- which `streamd` drops before DuckDB
+  (`kalshi_ticker_include_mve` false) -- is ~half of a ~11-12 GB/day channel.
+  Consequences: (1) QA's `raw_frames` term is the newest complete day, so the
+  11-09 10:00Z headroom line will carry ~26 GB where the model had ~17, and
+  since the oldest day is hard-linked by the sibling's lake (mistakes #164)
+  the prune frees none of it -- the host's measured 41 GB/day net burn (3.4 d
+  to the kubelet threshold at 02:15Z) includes this +8; (2) the kept half is
+  also a DuckDB burn, ~7M rows/h x ~48 B = ~0.3 GB/h into `stream_ticker` at
+  the Sunday peak; (3) the LEVER is raw scope -- not writing KXMVE ticker
+  frames raw would cut ~3 GB/day on weekdays and ~6 on game weekends -- but
+  the raw files are hard-linked into the sibling's lake, so their scope is
+  the sibling's input and a USER/sibling decision, not this lab's to change
+  unilaterally. Re-read the per-channel split (a `find -printf` over the day
+  dir, no attach) before calling any raw-frame step a weekend effect.
 - **WS book adds, phase 1 (hylshi EXP-2070; merged + promoted 2026-11-06
   14:04:45Z by the user, stream restarted, shadow deferred).** 14 series
   appended to `kalshi_book_series` -- KXBALLONDOR, KXFEDDECISION, KXUECLGAME,
