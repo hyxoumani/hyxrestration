@@ -1651,6 +1651,20 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   collector's `wait_s` on that file rising in the same minutes -- lock
   contention, not drift; ~12-15 min per poly run, bounded by the leg.
 
+  **What those markets are (measured 2026-11-10, mistakes #173):** over
+  closes 10-01..10-07 each hourly crypto ladder lists 4.3-6.8k markets a
+  day and 87-99% of them never trade (KXHYPE 6,770 listed / 79 traded,
+  KXSOLE 6,800 / 92, KXETH 6,770 / 143, KXBTCD 4,292 / 549). An untraded
+  market's candlesticks response is one quote-only hourly row, and the
+  `/markets` listing already carries `volume_fp` (zero listing volume ->
+  trade-free candle on 60 of 60 sampled; candle volume == listing volume
+  on 15 of 15 traded). So the per-market 0.46 s is mostly paid for rows
+  that say nothing traded; skipping them is the open design option in
+  `status.md` (per-series first, KXHYPE/KXHYPED; fleet-wide only after
+  checking what hylshi reads from the untraded strikes' quotes).
+  The 'KXHYPE 4.9k' above is what a TRUNCATED run delivered, not what
+  the venue listed.
+
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.
 - Long background jobs: use `python -u` (buffered stdout hid 4h of
