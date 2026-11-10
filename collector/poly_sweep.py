@@ -465,7 +465,8 @@ def sweep(
             # every market FIRST seen closed on an incident day. Measured
             # 2026-10-21: 87 CLOB `500 Server Error` on prices-history from
             # 09:04Z, still landing as the loop crossed the open/closed
-            # boundary at 09:17Z (`prices_history` has no 5xx retry). The
+            # boundary at 09:17Z (`prices_history` had no 5xx retry until
+            # 2026-11-10; this branch now sees only an exhausted ladder). The
             # prices/trades it put in the batch before raising stay (the
             # watermark is max(ts), so a partial token is re-read tomorrow).
             del batch["infos"][n_i:]

@@ -4268,6 +4268,40 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+171. **2026-11-10 06:11Z on, read 08:20Z -- the running 04:15Z poly sweep
+    logged 291 `HTTPError ... 500 Server Error` on CLOB `prices-history` in
+    two hours (52 / 172 / 63 in 06Z / 07Z / 08Z-to-:15, ~17% of the markets
+    walked; 0 on 11-05/07/08/09, 25 on 11-06, 87 on 10-21), each one a
+    market that lost the day's prices AND its trade tail, because the raise
+    leaves `_fetch_market` before `trades_tail`.** `prices_history` was
+    `get` + `raise_for_status`, no ladder, and `poly_sweep`'s except-branch
+    comment had said so since the 10-21 fix (#131: "`prices_history` has no
+    5xx retry") -- a limit written into a comment and carried three weeks,
+    the #-rule "a limit written into a docstring is documentation, not a
+    deadline" applied to nobody. Measured before fixing: 238 of the 291
+    prefixes resolve in `markets` (one 0.25 s read-only attach), so 53 were
+    markets the archive had never seen and still has not; a live probe of 8
+    of the failed markets (64 requests, sweep's own parameters) drew 3 more
+    500s, body `{"error":"pg: connection pool timeout"}`, and the NEXT
+    request for the same token answered 200 with the full history every
+    time -- load shedding, transient at the scale of one request. Fix:
+    `polymarket.PRICES_5XX_BACKOFF_S = (1, 3, None)`, a per-request ladder
+    for 5xx only (a 400 is the over-30d span and raises at once), counted
+    as `prices_5xx` (inside `http_retries.total`, a spent allowance) and
+    `prices_5xx_exhausted` (outside it, a dropped market); 3 tests in
+    `tests/test_hyxlab_poly.py`, two red-verified by a diff-checked mutant
+    (`< 500` -> `< 600`). The loss itself was already bounded by #131's
+    branch (failed markets keep no info/stats row, watermarks re-read
+    prices tomorrow, the tail re-reads from the newest print) -- what the
+    ladder buys is the day, and the first-seen-closed market whose 7-day
+    closed lookback is the only window it will ever be offered in. Rule:
+    **when a code comment names the absence of a retry as the cause of an
+    incident, the incident's next occurrence is scheduled; before adding
+    the ladder, probe whether the fault is transient at the ladder's
+    timescale (one request here) -- a ladder against a deterministic 500
+    is pacing spent for nothing.** Class: carried note (#-family of #96's
+    hold-discipline docstring).
+
 170. **2026-11-09 10:19-10:27Z, read 11-10 02:30Z -- `hyxlab-breadth --once`
     died THREE times with a `requests.ConnectionError` traceback and exit 1
     (`Failed to start`, filed by the digest's RECENT line as `exit-code/1

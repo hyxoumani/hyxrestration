@@ -4,6 +4,7 @@ round-trips, YES-normalization of trades."""
 from datetime import UTC, datetime
 
 import pytest
+import requests
 
 from collector.venues import polymarket as poly
 from collector.venues.polymarket import (
@@ -688,3 +689,74 @@ def _stop_and_return(cond):
     has, and the sweep must archive both."""
     poly._TAIL_STOPS.append((cond, datetime.now(UTC), 120, 408))
     return []
+
+
+class _PricesResp:
+    def __init__(self, status, body=None):
+        self.status_code = status
+        self._body = body if body is not None else {"error": "pg: connection pool timeout"}
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Server Error", response=self)
+
+
+class _PricesSession:
+    """Answers `prices-history` with the queued statuses, then 200s."""
+
+    def __init__(self, statuses):
+        self.statuses = list(statuses)
+        self.calls = 0
+
+    def get(self, url, params=None, timeout=None):
+        assert url.endswith("/prices-history")
+        self.calls += 1
+        status = self.statuses.pop(0) if self.statuses else 200
+        return _PricesResp(status, {"history": [{"t": 1, "p": 0.5}]} if status == 200 else None)
+
+
+def test_prices_history_resends_a_5xx_and_counts_it(monkeypatch):
+    """The CLOB's `500 pg: connection pool timeout` clears on the next
+    request (probed 2026-11-10); unretried it dropped the market's prices
+    and its trade tail for the day -- 291 times in one sweep."""
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+    poly.reset_retry_counts()
+    sess = _PricesSession([500, 502])
+    assert poly.prices_history("tok", start_ts=1, end_ts=2, session=sess) == [{"t": 1, "p": 0.5}]
+    assert sess.calls == 3
+    assert slept == [b for b in poly.PRICES_5XX_BACKOFF_S if b is not None]
+    counts = poly.retry_counts()
+    assert counts["prices_5xx"] == 2
+    assert counts["prices_5xx_exhausted"] == 0
+    assert counts["total"] == 2  # a spent allowance reaches the published total
+
+
+def test_prices_history_exhausted_ladder_raises_and_is_counted_outside_total(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    poly.reset_retry_counts()
+    sess = _PricesSession([500] * 10)
+    with pytest.raises(requests.HTTPError):
+        poly.prices_history("tok", start_ts=1, end_ts=2, session=sess)
+    assert sess.calls == len(poly.PRICES_5XX_BACKOFF_S)
+    counts = poly.retry_counts()
+    assert counts["prices_5xx"] == len(poly.PRICES_5XX_BACKOFF_S) - 1
+    assert counts["prices_5xx_exhausted"] == 1
+    assert counts["total"] == counts["prices_5xx"]
+    poly.reset_retry_counts()
+    assert poly.retry_counts()["prices_5xx"] == 0
+    assert poly.retry_counts()["prices_5xx_exhausted"] == 0
+
+
+def test_prices_history_does_not_resend_a_4xx(monkeypatch):
+    """A 400 (span over ~30d) is a property of the request: one attempt."""
+    monkeypatch.setattr("time.sleep", lambda _s: pytest.fail("slept on a 4xx"))
+    poly.reset_retry_counts()
+    sess = _PricesSession([400])
+    with pytest.raises(requests.HTTPError):
+        poly.prices_history("tok", start_ts=1, end_ts=2, session=sess)
+    assert sess.calls == 1
+    assert poly.retry_counts()["total"] == 0

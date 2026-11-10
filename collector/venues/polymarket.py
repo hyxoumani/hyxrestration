@@ -80,7 +80,22 @@ from hyxlab.models import MarketInfo, Snapshot  # noqa: E402
 #: that does NOT retry, so the ALLOWANCE is one fewer than the length.
 KEYSET_BACKOFF_S: tuple[int | None, ...] = (5, 15, 45, None)
 
+#: Backoff schedule for one `prices_history` request answered 5xx; the
+#: trailing `None` is the attempt that does not retry (allowance 2). The CLOB
+#: sheds load as `500 {"error":"pg: connection pool timeout"}`: on 2026-11-10
+#: the 04:15Z sweep logged 291 of them from 06:11Z (0 on a routine day, 25 on
+#: 11-06, 87 on 10-21), and a live probe of 8 of those markets drew 3 more in
+#: 64 requests, each answered 200 by the very next request. Unretried, one
+#: 500 on either token raised out of the market's fetch BEFORE its trade
+#: tail, so the market lost the day's prices AND tail (53 of the 291 were
+#: markets the archive had never seen, and stayed unseen). Seconds, not the
+#: keyset's 5/15/45: this runs per token, ~11k times a run, and the fault
+#: clears in under a second.
+PRICES_5XX_BACKOFF_S: tuple[int | None, ...] = (1, 3, None)
+
 _KEYSET_RETRIES = 0
+_PRICES_5XX_RETRIES = 0
+_PRICES_5XX_EXHAUSTED = 0
 _KEYSET_WORST_FRAC = 0.0
 _KEYSET_RESTARTS = 0
 _TAIL_TRUNCATED = 0
@@ -150,13 +165,21 @@ def retry_counts() -> dict[str, int]:
         # The strictly worse subset: the tail came back with no prints at
         # all, so the market contributed nothing to the run.
         "tail_truncated_empty": _TAIL_TRUNCATED_EMPTY,
-        "total": _KEYSET_RETRIES,
+        # A spent allowance, so inside `total`: one per re-sent request.
+        "prices_5xx": _PRICES_5XX_RETRIES,
+        # Outside `total`: requests still 5xx after the whole ladder -- each
+        # one is a market the caller dropped, not a recovery.
+        "prices_5xx_exhausted": _PRICES_5XX_EXHAUSTED,
+        "total": _KEYSET_RETRIES + _PRICES_5XX_RETRIES,
     }
 
 
 def reset_retry_counts() -> None:
     global _KEYSET_RETRIES, _KEYSET_WORST_FRAC, _KEYSET_RESTARTS
     global _TAIL_TRUNCATED, _TAIL_TRUNCATED_EMPTY
+    global _PRICES_5XX_RETRIES, _PRICES_5XX_EXHAUSTED
+    _PRICES_5XX_RETRIES = 0
+    _PRICES_5XX_EXHAUSTED = 0
     _KEYSET_RETRIES = 0
     _KEYSET_WORST_FRAC = 0.0
     _KEYSET_RESTARTS = 0
@@ -373,7 +396,13 @@ def prices_history(
 ) -> list[dict[str, Any]]:
     """[{'t': epoch_s, 'p': price}] — probed 2026-07-07: ~60-day rolling
     retention (closed markets purge ~1-2 months after close; explicit
-    ranges older than ~60d return empty)."""
+    ranges older than ~60d return empty).
+
+    A 5xx is re-sent on `PRICES_5XX_BACKOFF_S` and counted; a 4xx (the
+    over-30d span's 400) is a property of the request and raises at once."""
+    import time
+
+    global _PRICES_5XX_RETRIES, _PRICES_5XX_EXHAUSTED
     sess = session or requests.Session()
     params: dict[str, Any] = {"market": token_id, "fidelity": fidelity_min}
     if start_ts is not None:
@@ -381,7 +410,15 @@ def prices_history(
         params["endTs"] = end_ts or int(datetime.now(UTC).timestamp())
     else:
         params["interval"] = "max"  # rolling ~30d window
-    resp = sess.get(f"{CLOB}/prices-history", params=params, timeout=30)
+    for backoff_s in PRICES_5XX_BACKOFF_S:
+        resp = sess.get(f"{CLOB}/prices-history", params=params, timeout=30)
+        if resp.status_code < 500:
+            break
+        if backoff_s is None:
+            _PRICES_5XX_EXHAUSTED += 1
+            break
+        _PRICES_5XX_RETRIES += 1
+        time.sleep(backoff_s)
     resp.raise_for_status()
     return resp.json().get("history", [])
 
