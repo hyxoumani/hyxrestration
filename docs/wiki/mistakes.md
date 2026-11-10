@@ -4268,6 +4268,51 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+173. **2026-09-20 -> 2026-11-10, read 11-10 20:25Z from `sweep_log` -- KXHYPE
+    and KXHYPED truncated at the per-series budget on EVERY kalshi sweep for
+    52 days, and "resumes next run" was true every day while the frontier
+    fell 29 days behind.** `sweep_series` stops at the first accepted
+    window past `MAX_MARKETS_PER_SERIES` (2,000 -> ~2,740-3,000 delivered),
+    logs `truncated`, prints `TRUNCATED ... resumes next run`. The two
+    hourly HYPE ladders list ~300 markets/hour (3,000 per 10 h of
+    close-time, 31 of 31 runs 10-10..11-10; 4,840 per 21 h on the thin
+    days), i.e. ~7.2k/day against ~2.9k delivered: each run covers 10 h
+    per 24 h elapsed, the lag (`swept_at - max_close`) grew +14.1 h/day
+    in a straight line from 12.7 h (KXHYPE, 09-20) to **690 h and 717 h**,
+    and at `PURGE_HORIZON_DAYS` (60 d, ~53 and ~51 days out: early
+    January) the resume floor clamps forward and ~58% of every day is lost
+    for good. This is EXP-1275 exactly -- found and fixed in August for six
+    series BY NAME (`SERIES_MAX_MARKETS`), with the sentence "resume cannot
+    outrun density" in the comment -- and the fix was a list, so a series
+    Kalshi listed a month later walked into the same hole with nothing to
+    notice: the done line says `truncated: 2` (the same 2 every day reads as
+    a constant, not a rate), the 10-15 wall-attribution entry recorded
+    "KXHYPED/KXHYPE 22.2/19.4 [min] truncated at budget" as a cost line,
+    `sweep ran in last 36h` counts `ok` rows, and the status page first
+    called them "CHRONIC" on 11-10 only because three OTHER series
+    truncated that day. Fix (instrument only, this pass):
+    `qa.qa_sweep_frontier` -- per series, FAIL when the newest 3 runs in
+    7 d all truncated, the lag GREW across the streak and stands over 48 h;
+    it prints each series' lag, h/day and days to the purge horizon (or
+    `PINNED`), and lists truncated-but-closing series beside it (11-10:
+    KXETH/KXETHD 14 h, KXSOLD 2 h after one run = the #172 catch-up, not a
+    failure). Repair passes (watermark untouched) are not readings. First
+    live reading: `2 series falling behind ... KXHYPE 690h behind, +14.1
+    h/day over 7 truncated run(s), reaches the 60 d purge horizon in 53 d;
+    KXHYPED 717h ... 51 d`. **The budget itself is NOT changed here and
+    the check will FAIL daily until it is decided** (status page, queue
+    item): keep-up needs ~8,000 each = +10k markets/day = +84 min of wall
+    (8.4 min/k) on runs already at 645-739 min of a 750 budget, and the
+    sibling's own screens mark the family `CLOSED (crypto; EXP-930)`; the
+    alternative is excluding it by name (-50 min/day). Nothing is lost
+    before ~2027-01-01 either way. Rule: **a fix that is a list of names
+    fixes the members and leaves the class; ship the detector for the
+    class in the same pass (#"fix the class"), because the next member
+    arrives without a commit. And a counter that prints the same nonzero
+    value every day is a RATE someone has not integrated: ask what
+    accumulates.** Suite 2535 -> **2544**; the growth condition red-verified
+    by a diffed mutant.
+
 172. **2026-11-09 10:18-10:31Z, read 11-10 14:15Z from the running kalshi
     sweep -- both daily sweeps WALKED THROUGH a ~13-min router/DNS drop.**
     Each client's transport ladder is seconds long (kalshi 2 s / 4 s), so a

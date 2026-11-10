@@ -2742,10 +2742,115 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
         check("gdelt news fresh (< 30h)", age_h < 30, f"age {age_h:.1f}h")
 
     qa_tape_coverage(conn, now)
+    qa_sweep_frontier(conn, now)
     qa_poly_tail_absorbed(conn, now)
     qa_poly_tail_stop_classes(conn, now)
     qa_econ_resolution(conn, now)
     return pull_age_d
+
+
+#: A series whose nightly sweep stops at its budget EVERY run is not "resuming
+#: next run" -- it is resuming a frontier that falls further behind each day.
+#: Window and streak for calling that: a week of runs, the newest three all
+#: truncated. One or two truncated runs are a catch-up day (2026-11-10: KXETH,
+#: KXETHD and KXSOLD after the 11-09 DNS deferral, 14 h behind and closing).
+FRONTIER_WINDOW_D = 7
+FRONTIER_MIN_STREAK = 3
+#: Below this lag a truncating series is still inside what one generous run
+#: recovers; above it and still growing, the budget is under the density.
+FRONTIER_LAG_FLOOR_H = 48.0
+
+
+def qa_sweep_frontier(conn, now: datetime) -> None:
+    """A truncated kalshi series must be CATCHING UP, not falling behind.
+
+    `sweep_series` stops at the per-series budget, logs `truncated` and
+    prints "resumes next run" -- true, and for a series that lists more
+    markets a day than the budget delivers it is true every day while the
+    frontier (`max_close`, where the next run resumes) recedes. Measured
+    2026-11-10 from `sweep_log`: KXHYPE and KXHYPED truncated on every run
+    since 09-20 (52 days), each run delivering 10 h of close-time (~3,000
+    markets at ~300 listed/hour) per 24 h elapsed, so the frontier fell
+    behind 14 h/day to 690 h and 717 h -- 29 and 30 days -- with nothing
+    reading it: the done line counts `truncated: 2`, and no check read the
+    lag. Past `sweep.PURGE_HORIZON_DAYS` the resume floor clamps forward and
+    the difference is lost for good, ~58% of every day (the EXP-1275 shape,
+    fixed in August for six series by name; these two were listed after).
+
+    Lag is `swept_at - max_close` on the series' own rows, so it needs no
+    clock but the writer's. Repair passes never move the watermark and are
+    not frontier readings. FAIL per series (never one pooled maximum) when
+    the newest `FRONTIER_MIN_STREAK` runs all truncated, the lag grew across
+    the streak and stands above `FRONTIER_LAG_FLOOR_H`; it keeps failing
+    until the budget is raised or the series is excluded on purpose.
+    """
+    from collector.sweep import PURGE_HORIZON_DAYS  # local: sweep is a heavy import
+
+    name = "kalshi sweep frontiers keep up with their series"
+    rows = conn.execute(
+        """
+        SELECT series, swept_at, max_close, status FROM sweep_log
+        WHERE swept_at > ? - INTERVAL (?) DAY AND max_close IS NOT NULL
+          AND coalesce(note, '') NOT LIKE 'repair pass%'
+        ORDER BY series, swept_at
+        """,
+        [now, FRONTIER_WINDOW_D],
+    ).fetchall()
+    by_series: dict[str, list[tuple[datetime, float, str]]] = {}
+    for series, swept_at, max_close, status in rows:
+        lag_h = (swept_at - max_close).total_seconds() / 3600
+        by_series.setdefault(series, []).append((swept_at, lag_h, status))
+
+    horizon_h = PURGE_HORIZON_DAYS * 24.0
+    receding: list[str] = []
+    truncating: list[str] = []
+    for series, runs in sorted(by_series.items()):
+        streak = 0
+        for _, _, status in reversed(runs):
+            if status != "truncated":
+                break
+            streak += 1
+        if not streak:
+            continue
+        first_at, first_lag, _ = runs[-streak]
+        last_at, last_lag, _ = runs[-1]
+        days = (last_at - first_at).total_seconds() / 86400
+        rate = (last_lag - first_lag) / days if days > 0 else 0.0
+        if streak < FRONTIER_MIN_STREAK or rate <= 0 or last_lag <= FRONTIER_LAG_FLOOR_H:
+            truncating.append(f"{series} {last_lag:.0f}h behind after {streak} truncated run(s)")
+            continue
+        if last_lag >= horizon_h:
+            fate = (
+                f"PINNED at the {PURGE_HORIZON_DAYS} d purge horizon,"
+                f" losing {rate:.1f} h of every day"
+            )
+        else:
+            fate = f"reaches the {PURGE_HORIZON_DAYS} d purge horizon in {(horizon_h - last_lag) / rate:.0f} d"
+        receding.append(
+            f"{series} {last_lag:.0f}h behind, +{rate:.1f} h/day over {streak} truncated run(s), {fate}"
+        )
+
+    if receding:
+        check(
+            name,
+            False,
+            f"{len(receding)} series falling behind their own listings: "
+            + "; ".join(receding)
+            + (f" | truncated but not receding: {'; '.join(truncating)}" if truncating else "")
+            + " — raise `sweep.SERIES_MAX_MARKETS` past the series' daily listing count,"
+            " or exclude it by name",
+        )
+        return
+    check(
+        name,
+        True,
+        f"{len(by_series)} series swept in {FRONTIER_WINDOW_D} d, none receding"
+        + (
+            f"; truncated: {'; '.join(truncating)}"
+            if truncating
+            else "; none truncated on its last run"
+        ),
+    )
 
 
 def qa_poly_tail_absorbed(conn, now: datetime) -> None:
