@@ -4268,6 +4268,43 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+172. **2026-11-09 10:18-10:31Z, read 11-10 14:15Z from the running kalshi
+    sweep -- both daily sweeps WALKED THROUGH a ~13-min router/DNS drop.**
+    Each client's transport ladder is seconds long (kalshi 2 s / 4 s), so a
+    unit of work failed fast and the loop took the next one into the same
+    dead network: the kalshi sweep burned 21 series in 5m19s (KXETH after
+    2,601 s of fetching; KXETHD untouched; 14,307 markets deferred), the
+    poly sweep 83 markets (`ConnectionError` 76, `SSLError` 5, `ReadTimeout`
+    2), each losing its prices and trade tail for the day. The 11-09 entry
+    priced the kalshi side as "a DEFERRAL, +40-50 min, still inside 12.5h";
+    measured on 11-10: KXETH and KXETHD each TRUNCATED at their 10,580
+    budget (two extra `truncated`, a second catch-up day owed), series 2000
+    reached at 14:03Z against 12:06-12:32Z on 11-04/05/06 (~1.5h behind), so
+    the run is headed for ~13.5h against the 12.5h budget and a QA
+    batch-budget FAIL on 11-11 that is this incident. 13 minutes of outage
+    cost a day and a half of recovery because nothing between the request
+    ladder (seconds) and the run (hours) could wait. Fix
+    (`collector.netwait.OutagePause`, both sweeps): on a transport error
+    (`ConnectionError`/`Timeout`, never an `HTTPError` -- the venue
+    answered) probe the hosts with a TCP handshake on 443 (the drop's first
+    four minutes were connect timeouts with the name still resolving, so
+    the boot gate's resolver probe is not enough; no HTTP, nothing the
+    venue rate-limits); only if one is UNREACHABLE wait, 15 min per pause
+    and 45 min per run, then re-run that series/market ONCE. Anything else
+    re-raises unchanged, and a spent run budget returns the loop to failing
+    fast so the `ABORT_CONSEC_ERRORS` breaker is still reachable on a
+    day-long outage. The poly retry first drops the rows the interrupted
+    market put in the batch. Both done lines carry `net_pauses: {n, healed,
+    recovered, waited_s}`. Rule: **a retry ladder has a timescale, and a
+    failure longer than the innermost ladder falls through to whichever
+    loop is next -- which "handles" it by consuming its work list. For each
+    nested loop ask what the longest outage it can outlast is; if the answer
+    jumps from seconds to "tomorrow's run", a bounded wait is missing in
+    between.** And a deferral's price is not the refetch alone: check it
+    against the per-unit budget it must fit through (14,000 > 10,580).
+    Suite 2525 -> **2535**; both sweep arms red-verified by diffed mutants
+    (retry removed; batch trim removed).
+
 171. **2026-11-10 06:11Z on, read 08:20Z -- the running 04:15Z poly sweep
     logged 291 `HTTPError ... 500 Server Error` on CLOB `prices-history` in
     two hours (52 / 172 / 63 in 06Z / 07Z / 08Z-to-:15, ~17% of the markets

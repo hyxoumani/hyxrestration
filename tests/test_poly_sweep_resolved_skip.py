@@ -316,3 +316,66 @@ def test_a_market_whose_fetch_raised_keeps_neither_its_gamma_nor_its_stats_row(
     assert stats == ["fine", "after"]
     assert swept == ["fine", "broke", "after"]
     assert prices == ["fine-y", "fine-n", "broke-y", "after-y", "after-n"]
+
+
+def test_an_outage_retry_does_not_archive_the_interrupted_markets_rows_twice(monkeypatch, tmp_path):
+    """The 2026-11-09 drop cost 83 markets their day. The retry re-runs the
+    whole market, so the rows its first token put in the batch before the
+    raise must be dropped first (mistakes #172)."""
+    import requests
+
+    from collector import netwait
+
+    monkeypatch.setattr(ps.time, "sleep", lambda s: None)
+    monkeypatch.setattr(netwait.time, "sleep", lambda s: None)
+    probes = iter([False, False, False] + [True] * 10)  # clob down; then both up
+    monkeypatch.setattr(netwait, "_reachable", lambda host, timeout_s=5.0: next(probes))
+    markets = [{"conditionId": f"o{i}", "closed": False} for i in range(3)]
+
+    class _Store:
+        def poly_price_watermarks(self):
+            return {}
+
+        def poly_resolved_complete(self):
+            return set()
+
+        def close(self):
+            pass
+
+    seen = []
+
+    def history(tok, *a, **k):
+        seen.append(tok)
+        if seen == ["y-o0", "n-o0", "y-o1", "n-o1"]:  # o1's second token, first try
+            raise requests.ConnectionError("Max retries exceeded")
+        return [tok]
+
+    flushed = {}
+
+    def fake_flush(db, batch):
+        flushed["prices"] = list(batch["prices"])
+        flushed["infos"] = list(batch["infos"])
+
+    monkeypatch.setattr(
+        ps.poly,
+        "iter_markets_by_volume",
+        lambda *a, **k: [] if k.get("closed") else list(markets),
+    )
+    monkeypatch.setattr(
+        ps.poly, "token_pair", lambda m: (f"y-{m['conditionId']}", f"n-{m['conditionId']}")
+    )
+    monkeypatch.setattr(ps.poly, "gamma_market_info", lambda m: (m["conditionId"],))
+    monkeypatch.setattr(ps.poly, "prices_history_range", history)
+    monkeypatch.setattr(ps.poly, "price_rows", lambda tok, cond, outcome, hist: list(hist))
+    monkeypatch.setattr(ps.poly, "trades_tail", lambda cond, session=None: [])
+    monkeypatch.setattr(ps.poly, "take_tail_stops", lambda: [])
+    monkeypatch.setattr(ps, "_flush", fake_flush)
+    monkeypatch.setattr(ps, "_open", lambda db: _Store())
+    monkeypatch.setattr(ps, "note_holder", lambda path: None)
+    monkeypatch.setattr(ps, "LOCK_FILE", str(tmp_path / "writer.lock"))
+    totals = ps.sweep("unused.duckdb", min_volume=0.0)
+
+    assert totals["errors"] == 0
+    assert totals["net_pauses"]["recovered"] == 1
+    assert flushed["prices"] == ["y-o0", "n-o0", "y-o1", "n-o1", "y-o2", "n-o2"]
+    assert flushed["infos"] == [("o0",), ("o1",), ("o2",)]

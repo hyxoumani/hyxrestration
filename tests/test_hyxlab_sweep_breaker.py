@@ -80,3 +80,41 @@ def test_scattered_errors_never_trip_the_breaker(monkeypatch):
     assert totals["errors"] == 50
     assert totals["errors"] > sweep_mod.ABORT_CONSEC_ERRORS
     assert calls["n"] == 100
+
+
+def test_an_outage_mid_run_costs_one_wait_not_every_series_behind_it(monkeypatch):
+    """2026-11-09: a 13-min drop burned 21 series in 5 min, each failing fast
+    into the same dead network. The loop now waits the outage out and re-runs
+    the series it interrupted (mistakes #172)."""
+    from collector import netwait
+
+    down = {"until": 3}  # probes that fail before the venue is back
+    calls = []
+
+    def probe(host, timeout_s=5.0):
+        down["until"] -= 1
+        return down["until"] < 0
+
+    def drops_once(db, ticker, days, sess, max_markets):
+        calls.append(ticker)
+        if calls == ["S000", "S001", "S002"]:
+            raise requests.ConnectionError("NameResolutionError")
+        return 1, 0, False
+
+    monkeypatch.setattr(netwait, "_reachable", probe)
+    monkeypatch.setattr(netwait.time, "sleep", lambda s: None)
+    store = _wire(monkeypatch, drops_once)
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+
+    assert calls.count("S002") == 2 and len(calls) == 101
+    assert totals["errors"] == 0 and totals["markets"] == 100
+    assert store.logged == []
+    assert totals["net_pauses"]["n"] == 1
+    assert totals["net_pauses"]["healed"] == 1
+    assert totals["net_pauses"]["recovered"] == 1
+
+
+def test_a_run_that_met_no_outage_says_so_on_its_done_line(monkeypatch):
+    _wire(monkeypatch, lambda db, ticker, days, sess, max_markets: (1, 0, False))
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+    assert totals["net_pauses"] == {"n": 0, "healed": 0, "recovered": 0, "waited_s": 0.0}

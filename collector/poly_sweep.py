@@ -27,10 +27,12 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 import duckdb
 import requests
 
+from collector.netwait import OutagePause
 from collector.venues import polymarket as poly
 from hyxlab.lockid import instance_lock_or_reason, note_holder
 from hyxlab.store import (
@@ -414,6 +416,10 @@ def sweep(
     # HTTPError and 4 ConnectionError under one integer. Keyed by class, a
     # rising total is actionable without a journal scrape.
     error_classes: dict[str, int] = {}
+    # The two hosts the per-market fetches call (Gamma is enumeration only).
+    pause = OutagePause(
+        [urlparse(u).hostname or "" for u in (poly.CLOB, poly.DATA_API)], tag="poly"
+    )
     t0 = time.monotonic()
     t_line = t0
     ids = [m.get("conditionId") or "" for m in markets]
@@ -441,6 +447,7 @@ def sweep(
         seg = segments["open" if i < n_open else "closed_skipped" if skip else "closed_fetched"]
         n_p, n_t = len(batch["prices"]), len(batch["trades"])
         n_i, n_s = len(batch["infos"]), len(batch["stats"])
+        n_ts = len(batch["tail_stops"])
         try:
             batch["infos"].append(poly.gamma_market_info(m))
             batch["stats"].append(
@@ -449,7 +456,17 @@ def sweep(
             if skip:
                 totals["skipped_resolved"] += 1
             else:
-                _fetch_market(sess, m, cond, pair, watermarks, now, batch)
+
+                def fetch(m=m, cond=cond, pair=pair, n_p=n_p, n_t=n_t, n_ts=n_ts) -> None:
+                    # Idempotent for the outage retry: a fetch that raised
+                    # after one token must not leave that token's rows in
+                    # the batch twice.
+                    del batch["prices"][n_p:]
+                    del batch["trades"][n_t:]
+                    del batch["tail_stops"][n_ts:]
+                    _fetch_market(sess, m, cond, pair, watermarks, now, batch)
+
+                pause.run(fetch, cond[:16])
         except Exception as exc:
             totals["errors"] += 1
             name = type(exc).__name__
@@ -523,6 +540,7 @@ def sweep(
     totals["n_tail_stops"] = batch["n_tail_stops"]
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["error_classes"] = error_classes
+    totals["net_pauses"] = pause.block()
     # The per-class retry/fault ledger this run spent. `tail_truncated` is
     # the population the `errors` total was structurally blind to -- ~80 per
     # run, absorbed by the next sweep. The COUNT alone could not re-check

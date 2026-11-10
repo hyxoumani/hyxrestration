@@ -28,10 +28,12 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 import duckdb
 import requests
 
+from collector.netwait import OutagePause
 from collector.venues import kalshi
 from hyxlab.lockid import instance_lock_or_reason, note_holder
 from hyxlab.store import (
@@ -722,6 +724,7 @@ def run_sweep(
         "aborted": False,
     }
     t0 = time.monotonic()
+    pause = OutagePause([urlparse(kalshi.BASE).hostname or ""], tag="sweep")
     consec_errors = 0
     consec_lock_skips = 0
     # ticker -> (wall seconds, markets). The run's budget (`qa.BATCH_RUN_BUDGET_H`,
@@ -750,7 +753,12 @@ def run_sweep(
                 if refetch_from is not None
                 else {}
             )
-            n_m, n_c, truncated = sweep_series(db, ticker, days, sess, budget, **repair_kw)
+            # An outage witnessed mid-series waits for the venue and re-runs
+            # the series once from its (unmoved) watermark; see OutagePause.
+            n_m, n_c, truncated = pause.run(
+                lambda t=ticker, b=budget, kw=repair_kw: sweep_series(db, t, days, sess, b, **kw),
+                ticker,
+            )
             totals["markets"] += n_m
             totals["candles"] += n_c
             totals["truncated"] += int(truncated)
@@ -824,6 +832,7 @@ def run_sweep(
                 f" | ~{eta_min:.0f} min left ({eta_tag})"
                 f" | {class_terms_tag(wall_by_class(series_wall))}"
             )
+    totals["net_pauses"] = pause.block()
     totals["tapes_skipped"] = _TAPES_SKIPPED
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["slowest"] = slowest_series(series_wall)

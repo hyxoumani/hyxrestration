@@ -146,3 +146,16 @@ verdict_audit.install()
 
 def pytest_sessionfinish(session, exitstatus):
     verdict_audit.report(session, exitstatus)
+
+
+@pytest.fixture(autouse=True)
+def _venues_reachable(monkeypatch):
+    """`netwait.OutagePause` probes the venue (a TCP handshake) when a sweep's
+    unit of work raises a transport error, and waits up to 15 min when the
+    probe fails. A sweep test that simulates such an error must not open a
+    socket to a real venue, nor sleep through a real outage on the dev box:
+    reachable by default = the pre-pause behaviour. A test of the pause
+    injects its own probe."""
+    from collector import netwait
+
+    monkeypatch.setattr(netwait, "_reachable", lambda host, timeout_s=5.0: True)
