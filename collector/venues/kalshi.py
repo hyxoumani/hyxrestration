@@ -113,6 +113,11 @@ def _log_429_headers(resp: Any, url: str) -> None:
 # refused/reset sockets. Deliberately NOT RequestException — that would also
 # swallow HTTPError and TooManyRedirects, which are answers, not lost packets.
 _TRANSPORT_ERRORS = (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+# Public name for callers that must CLASSIFY an exhausted ladder rather than
+# catch it: `collector.breadth --once` exits 75 (EX_TEMPFAIL) on these so the
+# digest files an unreachable venue beside the collector's `errors=N` cycle,
+# not beside a crash (mistakes #170). The ladder itself still re-raises.
+TRANSPORT_ERRORS = _TRANSPORT_ERRORS
 
 # THE 2026-09-21 CORRECTION. The comment above drew its line in the wrong
 # place: at whether a RESPONSE OBJECT EXISTS, which is a fact about Python's

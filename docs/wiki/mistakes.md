@@ -4268,6 +4268,34 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+170. **2026-11-09 10:19-10:27Z, read 11-10 02:30Z -- `hyxlab-breadth --once`
+    died THREE times with a `requests.ConnectionError` traceback and exit 1
+    (`Failed to start`, filed by the digest's RECENT line as `exit-code/1
+    x3`, the crash class) while the venue was unreachable in the router
+    outage (#168), where `collector.collect` filed the same outage as
+    `errors=N`, exit 0, and `scripts/autoloop.sh` files every refusal it
+    cannot act on as exit 75 with the owner named.** The 2026-10-07 fix
+    gave breadth an exit 75 for a LIVE lock holder and left the kalshi
+    transport ladder's exhausted re-raise (by design: "a persistent outage
+    must still fail the unit") to fall through to `raise` -- so the unit
+    failed, correctly, with the WRONG label. Breadth's universe is one
+    request chain (`fetch_universe`'s walk), so an unreachable venue leaves
+    nothing to write and nothing to isolate per series; the collector's
+    per-series `except` is why the same error reads as a cycle with errors
+    there. Fix: `kalshi.TRANSPORT_ERRORS` (public alias of the ladder's own
+    tuple -- one definition, the ladder re-raises it and breadth classifies
+    it), `collector.breadth` `--once` prints `skipped: venue unreachable
+    (<type>): <msg>` and exits 75 on it, everything else still raises; 4
+    tests in `tests/test_hyxlab_breadth.py`, the two branch tests
+    red-verified by a `sed` mutant whose landing was checked by `diff`
+    (2 lines). Rule: **an exit code is a CLASSIFICATION the digest reads
+    back, so the question for every path that re-raises "by design" is
+    not whether the unit should fail but which class the failure is in --
+    environmental refusals (lock held, venue unreachable, auth expired,
+    usage limit) are 75 with the owner named, and a traceback is for a
+    defect in the code that ran.** Sibling of #157 (autoloop's sentinels)
+    and of the 2026-10-07 lock-holder branch, one fault class over.
+
 169. **2026-11-09 20:40Z -- `hyxlab-shadow`'s per-poll read hold on
     `hyxstream.duckdb` climbed 0.085 s (10-20) -> 0.43-0.48 s (11-08/09),
     5x, and the stream's `flush FAILED` lines (its 15 s flush refused by

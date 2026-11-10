@@ -438,6 +438,22 @@ def main() -> None:
                     if named is not None:
                         print(f"[breadth] skipped: archive attach refused by {named}", flush=True)
                         sys.exit(75)  # EX_TEMPFAIL
+                    # The same rule one fault class over: the kalshi transport
+                    # ladder re-raises once its budget is spent (a persistent
+                    # outage must still fail the unit), and this walk is ONE
+                    # request chain, so an unreachable venue leaves nothing to
+                    # write. `collector.collect` isolates per series and files
+                    # the same outage as `errors=N`, exit 0; breadth filed it
+                    # as exit 1 + traceback three times in the 2026-11-09
+                    # 10:19-10:27Z router outage, which the digest reads as a
+                    # crash (mistakes #170). Exit 75 naming the venue instead.
+                    if isinstance(e, kalshi.TRANSPORT_ERRORS):
+                        print(
+                            f"[breadth] skipped: venue unreachable ({type(e).__name__}):"
+                            f" {str(e)[:200]}",
+                            flush=True,
+                        )
+                        sys.exit(75)  # EX_TEMPFAIL
                     raise
         finally:
             # The cycle's whole exclusion of the collector's file, through

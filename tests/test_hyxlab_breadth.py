@@ -564,6 +564,60 @@ def test_main_does_nothing_when_disabled(monkeypatch, capsys):
     assert "disabled" in capsys.readouterr().out
 
 
+def _run_once_failing_with(monkeypatch, exc):
+    monkeypatch.setenv(breadth.ENABLE_ENV, "1")
+    monkeypatch.setattr("sys.argv", ["breadth", "--once", "--db", "/nonexistent/x.duckdb"])
+
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(breadth, "collect_breadth_once", boom)
+    return breadth.main
+
+
+def test_an_unreachable_venue_is_a_skip_not_a_crash(monkeypatch, capsys):
+    """2026-11-09 10:19-10:27Z: the router outage left `fetch_universe`'s walk
+    with an exhausted transport ladder, and three `--once` runs died with a
+    traceback and exit 1 -- filed by the digest beside a crash -- while the
+    collector's per-series isolation filed the same outage as `errors=N`,
+    exit 0. Exit 75 names the venue, the one line the operator needs."""
+    err = requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='api.elections.kalshi.com')"
+    )
+    main = _run_once_failing_with(monkeypatch, err)
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 75
+    out = capsys.readouterr().out
+    assert "skipped: venue unreachable (ConnectionError)" in out
+    assert "api.elections.kalshi.com" in out
+    assert "Traceback" not in out
+
+
+def test_a_timeout_is_the_same_fault_class(monkeypatch, capsys):
+    main = _run_once_failing_with(monkeypatch, requests.exceptions.ReadTimeout("read timed out"))
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 75
+    assert "venue unreachable (ReadTimeout)" in capsys.readouterr().out
+
+
+def test_a_non_transport_failure_still_raises(monkeypatch):
+    """The carve-out is the transport tuple and nothing wider: a defect in
+    the cycle stays loud (exit 1 + traceback), as the lock-holder branch
+    already insists for a lock with no live holder."""
+    main = _run_once_failing_with(monkeypatch, ValueError("bad page"))
+    with pytest.raises(ValueError):
+        main()
+
+
+def test_the_carve_out_is_the_kalshi_clients_own_tuple():
+    """One definition: the ladder re-raises these, breadth classifies them."""
+    assert breadth.kalshi.TRANSPORT_ERRORS == kalshi._TRANSPORT_ERRORS
+    assert requests.exceptions.ConnectionError in kalshi.TRANSPORT_ERRORS
+    assert requests.exceptions.Timeout in kalshi.TRANSPORT_ERRORS
+
+
 def test_env_overrides_are_read_and_bad_values_fall_back(monkeypatch):
     assert breadth._env_int(breadth.TOP_N_ENV, 1000, {}) == 1000
     assert breadth._env_int(breadth.TOP_N_ENV, 1000, {breadth.TOP_N_ENV: "250"}) == 250
