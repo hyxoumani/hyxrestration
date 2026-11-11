@@ -910,7 +910,7 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
     widest = "?" if flow.sample_gap_max_s is None else f"{flow.sample_gap_max_s:.0f}"
     head = (
         f"{hours}h: {flow.rounds} rounds, median {flow.median_received:,} events received/round, "
-        f"last tick {flow.median_tick:,} rows (stats every {STREAMFLOW_PERIOD_S:.0f} s nominal, "
+        f"median last tick {flow.median_tick:,} rows (stats every {STREAMFLOW_PERIOD_S:.0f} s nominal, "
         f"widest {widest} s)"
     )
     dead_pct = f"{STREAMFLOW_DEAD_FRAC:.0%}"

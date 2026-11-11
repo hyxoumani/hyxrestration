@@ -55,7 +55,7 @@ def test_received_is_the_delta_of_the_counters_and_low_rounds_are_named() -> Non
     assert flow.low[0].gaps_in_period == 19 and flow.low[0].gaps_after == 20
     line = health.stream_flow_line(flow)
     assert line.startswith(
-        "24h: 6 rounds, median 2,000,000 events received/round, last tick 70,676 rows "
+        "24h: 6 rounds, median 2,000,000 events received/round, median last tick 70,676 rows "
         "(stats every 300 s nominal, widest 315 s) | no round under 10% | "
         "LOW 1 round(s) under 50% of their neighbours: 11-09 10:29Z 25% of its neighbours "
         "(25% of the day; books 83k, ticker 83k, trades 83k, poly 83k; GAP lines 19 in round, 20 next)"

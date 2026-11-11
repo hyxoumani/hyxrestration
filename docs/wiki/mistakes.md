@@ -4268,6 +4268,24 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+176. **2026-11-09 -> 2026-11-11 08:20Z -- the digest's STREAMFLOW head
+    printed `last tick 104,951 rows` for `StreamFlow.median_tick`, the
+    24h MEDIAN of the per-round last-tick samples, under a label that
+    reads as the newest tick.** Found 11-11 04:27Z: the clause sat at the
+    same digits across three reads 52 min apart while the journal's
+    newest stats line said `last flush 178101 rows`. Nothing was wrong
+    with the number -- it is the denominator of the `last tick dead
+    (under 10% of the tick median)` clause two fields to the right, and
+    that clause names it correctly -- but a reader checking "is data
+    landing now" got a day-old statistic that cannot move. Fix
+    (`collector.health.stream_flow_line`): the head says `median last
+    tick`. The pinned rendered string in `tests/test_health_streamflow.py`
+    was changed first and watched fail against the old renderer. Rule:
+    **a label on an aggregate carries the aggregation; a field name that
+    says `median_` in the dataclass and loses the word at the format
+    string has been renamed by the renderer.** Same family as #92 ("name
+    a span a span").
+
 175. **2026-11-07 -> 2026-11-11 02:35Z -- the urgent disk user item named
     `~/scratch/backupcap` (135 GB) and `~/scratch/polycap` (47 GB) as "the
     one pair you can approve without losing anything live", for four days
