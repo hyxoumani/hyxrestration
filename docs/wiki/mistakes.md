@@ -4268,6 +4268,37 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+177. **2026-10-20 -> 2026-11-11 08:45Z -- the raw-frame writer compressed
+    at zstd level 3 for 22 days, a level chosen for its speed against a
+    wire it outruns 280-fold, while raw frames were the largest term of
+    the disk burn (~17-21 GB/day, hard-linked into the lake so the prune
+    frees none of it, #164) and four passes filed that term as having no
+    lever of ours.** The 03:32Z write ledger said "the only term of ours
+    with a lever is raw frames (scope of what is written raw, or the lake
+    not retaining it), and both ends are the user's/sibling's decision"
+    -- it enumerated WHAT is written and WHO keeps it and never HOW. The
+    module's own comment had the number that should have prompted it:
+    "level 3 runs at hundreds of MB/s against an input of ~1-3 MB/s".
+    Measured on the busiest hour of 11-10 per channel (315 MB of each
+    file's own text, a block flush every 5 s of wire as the writer does;
+    the level-3 arm reproduces the on-disk ratio, x13.8 vs x14.0 books):
+    books 7.23% of raw at level 3 -> 5.05% at 9 (211 MB/s on one core),
+    ticker 12.05% -> 8.10%, trades 11.11% -> 9.35%; level 12 adds under
+    0.2 points at half the speed, level 19 runs at 3.4 MB/s against a
+    3.48 MB/s wire and cannot be used. The block flush costs nothing
+    (flush vs no-flush identical to two decimals). The compressor
+    releases the GIL: a spinning main thread kept 0.97 of its unloaded
+    rate beside either level. On 11-10's 21.2 GB that is ~14.7 GB, ~6.5
+    GB/day off a net burn of 31-41. Fix: `rawframes.ZSTD_LEVEL = 9` with
+    the table beside it; same container, default window, so every reader
+    (the sibling's included) decodes it unchanged, and an hour file that
+    straddles the restart is two frames at two levels. Rule: **"no lever"
+    on a cost is a claim about every parameter of the writer, not just
+    its scope and its retention -- before handing a burn to the user,
+    read the writer's constants and ask which were set before the cost
+    mattered. A default justified by headroom ("far more than the writer
+    needs") is headroom nobody has spent.**
+
 176. **2026-11-09 -> 2026-11-11 08:20Z -- the digest's STREAMFLOW head
     printed `last tick 104,951 rows` for `StreamFlow.median_tick`, the
     24h MEDIAN of the per-round last-tick samples, under a label that

@@ -43,10 +43,28 @@ from typing import Any, BinaryIO
 
 #: Queue budget in BYTES of frame text. Frames are ~150-600 B; at the
 #: coverage expansion's projected ~2-6k frames/s busy-hour rate this is
-#: ~10-60 s of wire, far more than the writer needs (zstd level 3 runs at
-#: hundreds of MB/s against an input of ~1-3 MB/s), so it fills only if the
+#: ~10-60 s of wire, far more than the writer needs (zstd level 9 runs at
+#: ~200 MB/s against an input of ~1-4 MB/s), so it fills only if the
 #: DISK stalls.
 QUEUE_BYTES = 64 * 1024 * 1024
+#: zstd level. MEASURED 2026-11-11 on the busiest hour of 11-10 per channel
+#: (315 MB of each file's own text, flushed to a block every 5 s of wire as
+#: the writer does; output as a share of raw, CPU MB/s on one core):
+#:
+#:     level   books          ticker         trades
+#:       3     7.23%   969    12.05%  713    11.11%  738
+#:       6     5.82%   326    10.69%  271    10.00%  260
+#:       9     5.05%   211     8.10%  221     9.35%  182
+#:      12     4.88%   105     8.01%  100     9.20%   76
+#:      19     4.15%   3.4     5.33%  3.0     7.89%  3.6
+#:
+#: 9 is the knee: -30% books, -33% ticker for ~2% of a core at the busiest
+#: hour's 3.5 MB/s; 12 buys nothing more and 19 cannot keep up with the wire.
+#: The compressor releases the GIL (a spinning main thread ran at 0.97 of
+#: its unloaded rate beside either level). These files are hard-linked into
+#: a second tree and never freed by the prune (mistakes #164), so the level
+#: is the only lever this writer has on their bytes (mistakes #177).
+ZSTD_LEVEL = 9
 #: How often open files are flushed to a decodable boundary. Bounds what a
 #: SIGKILL or power loss can take from the tail of each open file.
 FLUSH_SECS = 5.0
@@ -80,7 +98,7 @@ def _codec() -> tuple[str, Any]:
         from compression import zstd
 
         def open_stdlib_zstd(path: Path) -> BinaryIO:
-            return zstd.ZstdFile(path, "a", level=3)
+            return zstd.ZstdFile(path, "a", level=ZSTD_LEVEL)
 
         return "zst", open_stdlib_zstd
     except ImportError:

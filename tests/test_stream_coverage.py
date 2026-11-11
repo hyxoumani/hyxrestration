@@ -526,6 +526,34 @@ def test_raw_frames_rotate_hourly_per_channel_and_decode(tmp_path, codec):
     assert w.stats()["raw_written"] == 3 and w.stats()["raw_dropped"] == 0
 
 
+def test_the_default_codec_compresses_at_the_measured_level(tmp_path, monkeypatch):
+    """Mistakes #177: level 9 is the knee measured on the wire's own files
+    (books 7.23% -> 5.05% of raw, ticker 12.05% -> 8.10%). The opener must
+    hand the constant to the compressor, in append mode, and what it writes
+    must still decode as plain zstd."""
+    from compression import zstd
+
+    from collector import rawframes
+
+    assert rawframes.ZSTD_LEVEL == 9
+    seen = []
+    real = zstd.ZstdFile
+
+    def spy(path, mode, **kw):
+        seen.append((mode, kw))
+        return real(path, mode, **kw)
+
+    monkeypatch.setattr(zstd, "ZstdFile", spy)
+    monkeypatch.setattr(rawframes, "ZSTD_LEVEL", 7)  # the opener reads the constant
+    ext, opener = _codec()
+    path = tmp_path / f"x.jsonl.{ext}"
+    for chunk in (b"first\n", b"second\n"):  # two opens: a restart appends a frame
+        with opener(path) as fh:
+            fh.write(chunk)
+    assert seen == [("a", {"level": 7}), ("a", {"level": 7})]
+    assert zstd.decompress(path.read_bytes()) == b"first\nsecond\n"
+
+
 def test_raw_frames_drop_and_count_past_the_queue_budget(tmp_path):
     w = RawFrameWriter(tmp_path, queue_bytes=10)
     assert w.put("trades", "trades", RECV, "x" * 8)

@@ -939,7 +939,9 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   `stream_lifecycle` (KXMVE dropped unless `kalshi_{ticker,lifecycle}_include_mve`),
   gap channels `ticker`/`lifecycle`. Every Kalshi frame is also kept raw in
   `data/raw_frames/<date>/<HH>-<channel>.jsonl.zst` (`recv_ts\tconn\tframe`
-  per line, stdlib zstd). The insert path is now a staged CSV + `read_csv`
+  per line, stdlib zstd -- level 9 since 2026-11-11, measured -30% books /
+  -33% ticker against level 3 on the wire's own files, mistakes #177). The
+  insert path is now a staged CSV + `read_csv`
   (the stable venv has no pandas/pyarrow): FLUSH_ROWS_PER_S 7,100 -> 100,000.
   Buffer constants re-sized from a 10-min staging run (~4,200 rows/s):
   SPILL_CAP 2M (~8 min, memory-bound). Raw frames kept 14 days. Measured
