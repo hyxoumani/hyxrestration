@@ -4504,6 +4504,19 @@ Format: what happened → root cause → error type → prevention tier
     climb that is only visible across weeks. Difference every cumulative
     hold counter against its own past before calling its collisions a
     plateau.** Twin of #167's `budget_frac` rule, one file over.
+    **Mechanism read 2026-11-11 02:30Z (17 capped read probes, 8 s of hold
+    in total):** "scan setup" is DuckDB's lazy load of the table's
+    row-group metadata, once per attach -- `EXPLAIN` of the filtered count
+    alone costs 0.55 s and the execute after it 0.037 s; a second execute
+    on the same connection 0.036 s; `SELECT ... LIMIT 0` binds in 0.000 s;
+    with `statistics_propagation` disabled the plan is free and the first
+    scan pays instead (real poll body 0.39 s either way, 5 alternating
+    trials); a poll whose cursor is past the newest archived row returns
+    in 0.001 s (2 of 5 base trials) because the table-level stats prune it
+    before any row group is loaded; `close()` adds ~0.12 s. A `rowid >`
+    cursor is worse (1.04 s for zero rows). So no setting or predicate
+    removes it: the cost is 78.6k row groups x ~5 us and follows the row
+    count. The levers stand as named.
 
 168. **2026-11-09 10:33Z -- the DNS-outage entry wrote "its established
     shards keep flowing" about the stream daemon, and the 14:15Z pass's

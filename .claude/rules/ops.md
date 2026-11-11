@@ -749,4 +749,15 @@
   poll's rows -- so it does not stop. Read the digest's `SHADOWHOLD` line
   (hold/poll now vs the 7 d window's start, `CLIMB` at x1.25, flush
   collisions by holder); the levers are the poll period (amortises the
-  constant) and the archive layout, neither taken yet.
+  constant) and the archive layout, neither taken yet. The constant is
+  DuckDB loading the table's row-group metadata on a fresh attach (78.6k
+  groups at 9.66B rows, ~5 us each), measured 2026-11-11: the first
+  filtered statement pays it -- at PLAN time under statistics propagation
+  (`EXPLAIN` alone 0.55 s, the execute after it 0.04 s), at scan time with
+  that optimizer off (same total) -- and a cursor past the table's newest
+  row pays nothing (0.001 s, pruned on the table-level stats). `close()`
+  after a load is another ~0.12 s inside the hold. Refuted as levers:
+  `disabled_optimizers='statistics_propagation'` (0.39 vs 0.39 s on the
+  real poll body) and a `rowid >` cursor (1.04 s for zero rows). Time a
+  query's `EXPLAIN` apart from its execute before naming which half of a
+  hold is "the scan".
