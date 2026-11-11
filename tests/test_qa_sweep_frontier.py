@@ -32,7 +32,16 @@ def _run(tmp_path, rows):
         swept = NOW - timedelta(days=days_ago, hours=6)
         store.conn.execute(
             "INSERT INTO sweep_log VALUES (?,?,?,?,?,?,?,?)",
-            [series, swept, None, swept - timedelta(hours=lag_h), 3000, 10, status, *(note or [""])],
+            [
+                series,
+                swept,
+                None,
+                swept - timedelta(hours=lag_h),
+                3000,
+                10,
+                status,
+                *(note or [""]),
+            ],
         )
     qa.qa_sweep_frontier(store.conn, NOW)
     store.close()

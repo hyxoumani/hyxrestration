@@ -56,7 +56,9 @@ def _spilled_store(tmp_path, monkeypatch, n: int) -> StreamStore:
 
 def _seqs(tmp_path) -> list[int]:
     with duckdb.connect(str(tmp_path / "s.duckdb"), read_only=True) as conn:
-        return [r[0] for r in conn.execute("SELECT seq FROM stream_trades ORDER BY rowid").fetchall()]
+        return [
+            r[0] for r in conn.execute("SELECT seq FROM stream_trades ORDER BY rowid").fetchall()
+        ]
 
 
 def test_drain_never_parses_or_inserts_more_than_one_chunk(tmp_path, monkeypatch):

@@ -159,7 +159,9 @@ def test_an_untraded_market_is_recorded_and_marked_without_a_request(monkeypatch
     assert ("KXH-U", 0, "listing_untraded") in store.marks
     assert sorted(store.upserted) == ["KXH-T", "KXH-U"]
     assert store.watermark_writes == [T0 + timedelta(hours=5)]
-    assert (n_m, n_c, truncated) == (2, 1, False)
+    # the count returned is a cost: markets a request was spent on
+    assert (n_m, n_c, truncated) == (1, 1, False)
+    assert store.logs[-1][3] == 2, "sweep_log keeps the markets RECORDED"
     assert sweep_mod._UNTRADED_SKIPPED == 1
     assert "1 of 2 untraded by listing" in store.logs[-1][-1]
 
@@ -186,7 +188,7 @@ def test_a_fetch_budget_cut_is_logged_truncated_at_an_honest_watermark(monkeypat
     n_m, _, truncated = sweep_mod.sweep_series(
         "unused.duckdb", "KXH", 2, session=None, max_markets=2, skip_untraded=True
     )
-    assert truncated and n_m == 3
+    assert truncated and n_m == 2
     assert seen["candles"] == ["KXH-T1", "KXH-T2"]
     assert store.watermark_writes == [T0 + timedelta(hours=3)]
     assert store.logs[-1][-2] == "truncated"

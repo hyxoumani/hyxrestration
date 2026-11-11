@@ -169,4 +169,3 @@ def test_a_defer_without_the_service_suffix_is_the_same_unit(sandbox):
     p = run("--defer=hyxlab-stream,hyxlab-shadow")
     assert p.returncode not in (0, 2), (p.returncode, p.stderr)
     assert "python -m pytest tests/" in _ran(log), _ran(log)
-

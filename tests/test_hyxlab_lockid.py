@@ -73,7 +73,9 @@ def test_read_holder_reports_a_dead_holder_as_not_alive(tmp_path):
     lock = str(tmp_path / "writer.lock")
     # A pid that cannot be running the recorded command: pid 1 is init.
     Path(lockid.holder_path(lock)).write_text(
-        json.dumps({"pid": 1, "unit": "hyxlab-sweep.service", "cmd": "not-what-pid-1-runs", "at": "x"})
+        json.dumps(
+            {"pid": 1, "unit": "hyxlab-sweep.service", "cmd": "not-what-pid-1-runs", "at": "x"}
+        )
     )
     rec = lockid.read_holder(lock)
     assert rec is not None and rec["alive"] is False
@@ -169,9 +171,7 @@ def test_every_writer_names_itself_when_it_takes_the_lock(module):
     def names_writer_lock(lineno: int) -> bool:
         """Does an `open(...)` in the 5 lines above name the writer lock?"""
         window = lines[max(0, lineno - 6) : lineno]
-        return any(
-            "open(" in ln and ("LOCK_FILE" in ln or "lock_file" in ln) for ln in window
-        )
+        return any("open(" in ln and ("LOCK_FILE" in ln or "lock_file" in ln) for ln in window)
 
     acquires: list[int] = []
     notes: set[int] = set()

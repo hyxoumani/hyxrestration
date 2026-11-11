@@ -136,9 +136,7 @@ WRITER = "import duckdb,sys; duckdb.connect(sys.argv[1]).close()"
 
 def _writable_from_outside(db) -> bool:
     """True when another PROCESS can take `db` read-write right now."""
-    proc = subprocess.run(
-        [sys.executable, "-c", WRITER, str(db)], capture_output=True, timeout=120
-    )
+    proc = subprocess.run([sys.executable, "-c", WRITER, str(db)], capture_output=True, timeout=120)
     return proc.returncode == 0
 
 
@@ -174,8 +172,7 @@ def test_the_retry_ladder_holds_nothing_while_it_sleeps(tmp_path, monkeypatch):
         store.connect_retry(str(p), retries=3, delay=0.01)
     monkeypatch.undo()
     assert seen == [True, True], (
-        "the retry ladder slept holding an attach it had already opened:"
-        f" {seen}"
+        f"the retry ladder slept holding an attach it had already opened: {seen}"
     )
 
 

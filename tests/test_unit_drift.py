@@ -77,7 +77,9 @@ def test_a_shadowing_copy_is_caught_although_both_diffed_files_are_correct():
     a third. `FragmentPath` is the only field that names what was read."""
     d = judge(FragmentPath="/etc/systemd/user/hyxlab-probe.service")
     assert d.state == "SHADOWED"
-    assert "/etc/systemd/user" in d.detail, "the verdict must name the file the manager actually loaded"
+    assert "/etc/systemd/user" in d.detail, (
+        "the verdict must name the file the manager actually loaded"
+    )
 
 
 def test_a_loaded_unit_with_no_fragment_path_is_not_silently_ok():
@@ -201,7 +203,11 @@ def test_install_dir_is_the_directory_promote_sh_copies_into():
     moves, every drift verdict silently becomes SHADOWED against the old path,
     which is a checker that cries wolf on a healthy box."""
     script = (REPO / "scripts" / "promote.sh").read_text(encoding="utf-8")
-    installs = [ln.strip() for ln in script.splitlines() if "systemd/user" in ln and ln.strip().startswith("cp ")]
+    installs = [
+        ln.strip()
+        for ln in script.splitlines()
+        if "systemd/user" in ln and ln.strip().startswith("cp ")
+    ]
     assert len(installs) == 1, f"expected one unit-install line in promote.sh, got {installs}"
     dest = installs[0].split()[-1].rstrip("/")
     assert Path(dest.replace("~", str(Path.home()))) == health.INSTALL_DIR, (
@@ -221,7 +227,11 @@ def test_the_digest_prints_the_drift_section(capsys, monkeypatch):
     """The section must reach stdout: the digest's whole value is that the
     autoloop READS it (the egress pass's finding), so a verdict computed and not
     printed is the defect this module exists to answer."""
-    monkeypatch.setattr(health, "drift_report", lambda: [health.UnitDrift("hyxlab-probe.service", "DROP-IN", "o.conf")])
+    monkeypatch.setattr(
+        health,
+        "drift_report",
+        lambda: [health.UnitDrift("hyxlab-probe.service", "DROP-IN", "o.conf")],
+    )
     monkeypatch.setattr(health, "report", lambda now=None, failures=None: [])
     monkeypatch.setattr(health, "show", lambda unit: {})
     monkeypatch.setattr(health, "_load_state", lambda path: {})
@@ -293,7 +303,9 @@ def test_every_state_the_judge_can_emit_is_classified():
     about."""
     src = inspect.getsource(health.judge_drift)
     emitted = set(re.findall(r'UnitDrift\(\s*\n?\s*unit,\s*\n?\s*"([A-Z-]+)"', src))
-    emitted |= set(re.findall(r'"(SKIP|OK|SHADOWED|STALE-IN-MEMORY|DROP-IN|DRIFT|UNREADABLE)",', src))
+    emitted |= set(
+        re.findall(r'"(SKIP|OK|SHADOWED|STALE-IN-MEMORY|DROP-IN|DRIFT|UNREADABLE)",', src)
+    )
     assert {
         "SHADOWED",
         "STALE-IN-MEMORY",
@@ -303,7 +315,9 @@ def test_every_state_the_judge_can_emit_is_classified():
         "UNREADABLE",
         "PENDING-PROMOTE",
     } <= emitted, emitted
-    unclassified = emitted - set(health.NOT_A_FAULT) - set(health.REPAIRABLE) - set(health.UNREPAIRABLE)
+    unclassified = (
+        emitted - set(health.NOT_A_FAULT) - set(health.REPAIRABLE) - set(health.UNREPAIRABLE)
+    )
     assert not unclassified, f"judge_drift can emit {unclassified}, which no set classifies"
     assert not set(health.REPAIRABLE) & set(health.UNREPAIRABLE)
 
@@ -361,16 +375,22 @@ def test_the_digest_itself_still_exits_zero_and_the_subcommand_does_not(monkeypa
     """The report/gate split. `main()` stays a report -- a gate whose failure
     nothing reads is the defect `collector.health` exists to answer -- and
     `--drift-only` is a gate precisely BECAUSE promote.sh branches on it."""
-    monkeypatch.setattr(health, "drift_report", lambda: [health.UnitDrift("a.service", "DRIFT", "d")])
+    monkeypatch.setattr(
+        health, "drift_report", lambda: [health.UnitDrift("a.service", "DRIFT", "d")]
+    )
     monkeypatch.setattr(health, "report", lambda now=None, failures=None: [])
     monkeypatch.setattr(health, "show", lambda unit: {})
     monkeypatch.setattr(health, "_load_state", lambda path: {})
     assert health.cli([]) == 0
     assert health.cli(["--drift-only"]) == health.DRIFT_REPAIRABLE
-    assert health.cli(["--nonsense"]) == health.USAGE_ERROR, "an unknown flag must not read as clean"
-    assert health.USAGE_ERROR not in (health.DRIFT_CLEAN, health.DRIFT_REPAIRABLE, health.DRIFT_OPERATOR), (
-        "a mistyped flag sharing a drift code makes promote.sh explain a fault that does not exist"
+    assert health.cli(["--nonsense"]) == health.USAGE_ERROR, (
+        "an unknown flag must not read as clean"
     )
+    assert health.USAGE_ERROR not in (
+        health.DRIFT_CLEAN,
+        health.DRIFT_REPAIRABLE,
+        health.DRIFT_OPERATOR,
+    ), "a mistyped flag sharing a drift code makes promote.sh explain a fault that does not exist"
 
 
 def test_units_only_verifies_its_own_repair_and_exits_with_the_verdict():
@@ -391,7 +411,11 @@ def test_the_repair_installs_through_the_same_line_the_promote_does():
     """Two spellings of the destination is how INSTALL_DIR and the installer
     drift apart, which turns every verdict into SHADOWED on a healthy box
     (test_install_dir_is_the_directory_promote_sh_copies_into)."""
-    cps = [ln.strip() for ln in PROMOTE.splitlines() if ln.strip().startswith("cp ") and "systemd/user" in ln]
+    cps = [
+        ln.strip()
+        for ln in PROMOTE.splitlines()
+        if ln.strip().startswith("cp ") and "systemd/user" in ln
+    ]
     assert len(cps) == 1, f"expected exactly one unit-install line, got {cps}"
     assert PROMOTE.count("install_units() {") == 1
     assert PROMOTE.count("systemctl --user daemon-reload") == 1
@@ -402,7 +426,9 @@ def test_the_repair_does_not_gate_on_the_check_it_repairs():
     already match the repo. Gating the repair on it means it can only run on a
     box that does not need it -- the deadlock this line exists to keep out."""
     assert "test_unit_drift.py" not in UNITS_ONLY_CODE
-    assert "pytest tests/ " not in UNITS_ONLY_CODE, "the full suite is the gate on CODE, which this mode does not move"
+    assert "pytest tests/ " not in UNITS_ONLY_CODE, (
+        "the full suite is the gate on CODE, which this mode does not move"
+    )
     for gate in ("test_systemd_units.py", "test_systemd_verify.py"):
         assert gate in UNITS_ONLY_CODE, f"{gate} reads the files this mode installs"
 
@@ -530,9 +556,9 @@ def test_the_full_promote_verifies_the_install_it_just_did():
     units that did not take is the expensive way to find out."""
     full = PROMOTE.split("if ((UNITS_ONLY)); then", 1)[0] + PROMOTE.split("\nfi\n", 1)[-1]
     assert "--drift-only" in full, "the full promote must re-ask the judge after installing"
-    assert PROMOTE.rindex("collector.health --drift-only") < PROMOTE.index("systemctl --user restart"), (
-        "verify the units before paying for a daemon restart"
-    )
+    assert PROMOTE.rindex("collector.health --drift-only") < PROMOTE.index(
+        "systemctl --user restart"
+    ), "verify the units before paying for a daemon restart"
 
 
 # --------------------------------------------------------------------------
@@ -554,7 +580,9 @@ def test_shadowed_says_whether_the_box_is_actually_running_other_text():
     nights. `drift_report` has already read both files for the DRIFT arm, so
     separating them costs no I/O -- it was simply never said."""
     same = judge(VENDORED, FragmentPath="/etc/systemd/user/hyxlab-probe.service")
-    other = judge("[Unit]\nDescription=NOT OURS\n", FragmentPath="/etc/systemd/user/hyxlab-probe.service")
+    other = judge(
+        "[Unit]\nDescription=NOT OURS\n", FragmentPath="/etc/systemd/user/hyxlab-probe.service"
+    )
     assert same.state == other.state == "SHADOWED"
     assert "identical" in same.detail and "DIFFERS" not in same.detail
     assert "DIFFERS" in other.detail
@@ -590,7 +618,11 @@ def test_a_drop_in_verdict_names_the_directives_not_just_the_file():
     assert "RESET of the unit's command" in d.detail
 
     cap = health.judge_drift(
-        "hyxlab-probe.service", props(DropInPaths=conf), VENDORED, VENDORED, None,
+        "hyxlab-probe.service",
+        props(DropInPaths=conf),
+        VENDORED,
+        VENDORED,
+        None,
         {conf: "[Service]\nMemoryMax=2G\n"},
     )
     assert "MemoryMax" in cap.detail
@@ -651,7 +683,9 @@ def test_the_operator_remedy_points_at_a_procedure_that_exists():
 # `hyxprobe-inert.service`, which has no `[Install]`, read OK throughout.
 # --------------------------------------------------------------------------
 
-INSTALLABLE = "[Unit]\nDescription=probe\n[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n"
+INSTALLABLE = (
+    "[Unit]\nDescription=probe\n[Timer]\nOnCalendar=daily\n[Install]\nWantedBy=timers.target\n"
+)
 
 
 def judge_timer(loaded_text: str | None = INSTALLABLE, **over: str) -> health.UnitDrift:
@@ -730,7 +764,9 @@ def test_the_inert_state_is_repaired_by_the_script_not_handed_to_a_person():
     true, this promise becomes the "converts a detected fault into a green line"
     lie the unrepairable states are kept out of REPAIRABLE to avoid."""
     assert "INERT" in health.REPAIRABLE
-    assert health.drift_exit_code([judge_timer(UnitFileState="disabled")]) == health.DRIFT_REPAIRABLE
+    assert (
+        health.drift_exit_code([judge_timer(UnitFileState="disabled")]) == health.DRIFT_REPAIRABLE
+    )
 
 
 def test_the_expectation_is_read_from_the_repos_copy_not_the_loaded_one():
@@ -748,7 +784,9 @@ def test_every_installable_unit_in_this_repo_is_enabled_on_this_box():
     daemons) and every one of them must be wired up here. `drift_report` covers
     this too, but only as one `fault` among six states; named separately it says
     WHICH fault when a timer is switched off by hand."""
-    installable = [f.name for f in health.UNIT_DIR.glob("hyxlab-*") if health._wants_enabling(f.read_text())]
+    installable = [
+        f.name for f in health.UNIT_DIR.glob("hyxlab-*") if health._wants_enabling(f.read_text())
+    ]
     assert installable, "no vendored unit declares [Install]; this arm proves nothing"
     inert = [
         (u, health.show(u).get("UnitFileState"))

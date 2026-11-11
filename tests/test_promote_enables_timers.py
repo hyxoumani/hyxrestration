@@ -109,7 +109,7 @@ def _selected() -> tuple[list[str], list[str]]:
     end = body.index("systemctl --user enable --now", start)
     loop = body[start:end]
     script = (
-        f'DEV={shlex.quote(str(REPO))}\n'
+        f"DEV={shlex.quote(str(REPO))}\n"
         # Printed INSIDE the function: the arrays are `local` in promote.sh, and
         # reading them after it returns would report an empty set for every
         # possible selection rule -- a test that passes on no evidence.
@@ -159,7 +159,8 @@ def test_timer_backed_services_are_not_enabled():
     excludes them -- asserted here against the repo's actual timer-backed set."""
     _, svcs = _selected()
     backed = {
-        f"{t.stem}.service" for t in UNIT_DIR.glob("hyxlab-*.timer")
+        f"{t.stem}.service"
+        for t in UNIT_DIR.glob("hyxlab-*.timer")
         if (UNIT_DIR / f"{t.stem}.service").exists()
     }
     assert backed, "no timer-backed service in the repo; this arm proves nothing"
@@ -177,8 +178,5 @@ def test_a_daemon_is_enabled_but_not_started_by_the_repair():
     body = _install_units_body()
     now_lines = [ln for ln in body.splitlines() if "enable --now" in ln]
     assert len(now_lines) == 1 and "timers" in now_lines[0], now_lines
-    svc_lines = [
-        ln for ln in body.splitlines()
-        if "systemctl --user enable" in ln and "svcs" in ln
-    ]
+    svc_lines = [ln for ln in body.splitlines() if "systemctl --user enable" in ln and "svcs" in ln]
     assert len(svc_lines) == 1 and "--now" not in svc_lines[0], svc_lines

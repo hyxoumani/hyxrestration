@@ -237,7 +237,9 @@ os._exit(9)
 
 
 @pytest.mark.parametrize("off_device", [False, True], ids=["same-device", "off-device"])
-def test_a_clean_snapshot_never_inherits_an_older_runs_wal(monkeypatch, tmp_path, src, dest, off_device):
+def test_a_clean_snapshot_never_inherits_an_older_runs_wal(
+    monkeypatch, tmp_path, src, dest, off_device
+):
     if off_device:
         _force_off_device(monkeypatch)
     old = tmp_path / "old.duckdb"

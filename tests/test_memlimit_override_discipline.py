@@ -148,9 +148,7 @@ def _limit_setters() -> dict[str, tuple[int, list[tuple[int, str]]]]:
                     # A docstring that NAMES the hazard is how the hazard
                     # stays understood; only executed strings are code.
                     lines = [
-                        n.lineno
-                        for n in own
-                        if any(_SET_MEM.search(f) for f in _sql_strings(n))
+                        n.lineno for n in own if any(_SET_MEM.search(f) for f in _sql_strings(n))
                     ]
                     if lines:
                         calls = [
@@ -307,6 +305,5 @@ def test_the_shipped_override_site_carries_the_rule(spill_tmp):
 
     assert got is not None and mem == parse_size(DUCK_MEM)
     assert got == duck_spill_limit(mem, str(db)), (
-        "shadow's cap is not the one its OWN limit earns — the override"
-        " re-derivation regressed"
+        "shadow's cap is not the one its OWN limit earns — the override re-derivation regressed"
     )

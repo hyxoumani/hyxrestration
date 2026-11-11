@@ -216,7 +216,9 @@ def owning_entrypoints(writer_classes: set[str]) -> set[str]:
         reaching = {
             key
             for key, fn in funcs.items()
-            if any(_called_name(c) in writer_classes for c in ast.walk(fn) if isinstance(c, ast.Call))
+            if any(
+                _called_name(c) in writer_classes for c in ast.walk(fn) if isinstance(c, ast.Call)
+            )
         }
         changed = True
         while changed:
@@ -224,7 +226,9 @@ def owning_entrypoints(writer_classes: set[str]) -> set[str]:
             for key, fn in funcs.items():
                 if key in reaching:
                     continue
-                if any(_called_name(c) in reaching for c in ast.walk(fn) if isinstance(c, ast.Call)):
+                if any(
+                    _called_name(c) in reaching for c in ast.walk(fn) if isinstance(c, ast.Call)
+                ):
                     reaching.add(key)
                     changed = True
         if "main" in reaching:
@@ -306,9 +310,9 @@ def test_a_library_writer_has_no_entrypoint_of_its_own(rel):
     owns what it opens and cannot delegate the question."""
     assert rel in owned_db_writers(), f"{rel} is labelled LIBRARY but opens nothing"
     tree = ast.parse((ROOT / rel).read_text())
-    assert not any(
-        isinstance(n, ast.FunctionDef) and n.name == "main" for n in tree.body
-    ), f"{rel} is labelled LIBRARY but has a main() — it is an OWNER"
+    assert not any(isinstance(n, ast.FunctionDef) and n.name == "main" for n in tree.body), (
+        f"{rel} is labelled LIBRARY but has a main() — it is an OWNER"
+    )
 
 
 @pytest.mark.parametrize("rel", [k for k, (d, _) in ALLOWED.items() if d == "OWNER"])

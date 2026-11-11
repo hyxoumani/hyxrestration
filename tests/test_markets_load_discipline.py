@@ -129,10 +129,7 @@ def test_bounded_load_is_the_unfiltered_load_restricted(tmp_path):
     cheaper different one — and the empty id set must load nothing."""
     store = Store(tmp_path / "a.duckdb")
     store.upsert_markets(
-        [
-            MarketInfo(venue="kalshi", market_id=f"M{i}", title=f"t{i}", series="S")
-            for i in range(5)
-        ]
+        [MarketInfo(venue="kalshi", market_id=f"M{i}", title=f"t{i}", series="S") for i in range(5)]
         + [MarketInfo(venue="polymarket", market_id="M1", title="poly")]
     )
 

@@ -20,14 +20,37 @@ from hyxlab.streamstore import StreamStore
 from hyxlab.watchlist import load_watchlist
 
 PHASE1 = {
-    "KXBALLONDOR", "KXFEDDECISION", "KXUECLGAME", "KXUEFANLGAME", "KXUELGAME", "KXMLB", "KXNFL1H",
-    "KXNFLTOTAL", "KXNFL1QSPREAD", "KXNFL1HSPREAD", "KXLALIGABTTS", "KXNFLTD", "KXNFLPASSTDS", "KXNFLPASSYDS",
+    "KXBALLONDOR",
+    "KXFEDDECISION",
+    "KXUECLGAME",
+    "KXUEFANLGAME",
+    "KXUELGAME",
+    "KXMLB",
+    "KXNFL1H",
+    "KXNFLTOTAL",
+    "KXNFL1QSPREAD",
+    "KXNFL1HSPREAD",
+    "KXLALIGABTTS",
+    "KXNFLTD",
+    "KXNFLPASSTDS",
+    "KXNFLPASSYDS",
 }
 #: Open markets per series at the 2026-11-04 census, the plan's input.
 PHASE1_OPEN = {
-    "KXBALLONDOR": 80, "KXFEDDECISION": 50, "KXUECLGAME": 54, "KXUEFANLGAME": 156, "KXUELGAME": 54, "KXMLB": 30,
-    "KXNFL1H": 42, "KXNFLTOTAL": 285, "KXNFL1QSPREAD": 141, "KXNFL1HSPREAD": 225, "KXLALIGABTTS": 10, "KXNFLTD": 286,
-    "KXNFLPASSTDS": 64, "KXNFLPASSYDS": 137,
+    "KXBALLONDOR": 80,
+    "KXFEDDECISION": 50,
+    "KXUECLGAME": 54,
+    "KXUEFANLGAME": 156,
+    "KXUELGAME": 54,
+    "KXMLB": 30,
+    "KXNFL1H": 42,
+    "KXNFLTOTAL": 285,
+    "KXNFL1QSPREAD": 141,
+    "KXNFL1HSPREAD": 225,
+    "KXLALIGABTTS": 10,
+    "KXNFLTD": 286,
+    "KXNFLPASSTDS": 64,
+    "KXNFLPASSYDS": 137,
 }
 
 
@@ -35,7 +58,9 @@ def test_phase1_is_books_only_and_the_lists_stay_clean():
     w = load_watchlist()
     book, polled = w["kalshi_book_series"], w["kalshi_series"]
     assert set(book) >= PHASE1
-    assert not PHASE1 & set(polled), "a series in kalshi_series would start the REST collector polling it"
+    assert not PHASE1 & set(polled), (
+        "a series in kalshi_series would start the REST collector polling it"
+    )
     assert len(book) == len(set(book))
     assert not set(book) & set(polled)
     assert all(s.isalnum() and s == s.upper() for s in book)
@@ -52,7 +77,7 @@ def test_the_shard_plan_holds_phase1_at_the_configured_cap():
     w = load_watchlist()
     cap = w["kalshi_book_shard_max"]
     cov = BookCoverage(set(w["kalshi_series"]) | set(w["kalshi_book_series"]), cap)
-    base = 7349                                 # the live walk's open tickers, 2026-11-05T20:04Z
+    base = 7349  # the live walk's open tickers, 2026-11-05T20:04Z
     tickers = {f"KXHIGHNY-X{i}" for i in range(base)}
     tickers |= {f"{s}-X{i}" for s, n in PHASE1_OPEN.items() for i in range(n)}
     shards = cov.boot(tickers)
@@ -105,8 +130,16 @@ def test_a_phase1_market_is_subscribed_and_its_frames_reach_the_store(tmp_path, 
             d._kalshi_loop("books", lambda: kalshi_ws.subscribe_books(sorted(sh.assigned)), sh)
         )
         await inbox.put(json.dumps({"type": "subscribed", "id": 1, "msg": {"sid": 1}}))
-        await inbox.put(json.dumps({"type": "orderbook_snapshot", "sid": 1, "seq": 1,
-                                    "msg": {"market_ticker": ticker, "yes_dollars_fp": [["0.4000", "10.00"]]}}))
+        await inbox.put(
+            json.dumps(
+                {
+                    "type": "orderbook_snapshot",
+                    "sid": 1,
+                    "seq": 1,
+                    "msg": {"market_ticker": ticker, "yes_dollars_fp": [["0.4000", "10.00"]]},
+                }
+            )
+        )
         await asyncio.sleep(0.1)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

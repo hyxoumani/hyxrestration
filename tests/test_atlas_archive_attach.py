@@ -103,6 +103,7 @@ def test_exhausted_budget_names_the_live_holder_and_does_not_traceback(monkeypat
     hours by design. The report must say who has it and that waiting is
     the remedy, instead of handing over `IOException ... (PID 1106694)`
     and a duckdb.org URL, which is a path where a decision was owed."""
+
     def refuse(*a, **kw):
         raise duckdb.IOException(_HELD.format(pid=1))
 
@@ -126,6 +127,7 @@ def test_no_holder_is_the_opposite_verdict_and_says_so(monkeypatch, tmp_path):
     """Same exception class, opposite fact: nothing holds the lock, so
     waiting cannot help and the archive is genuinely unreachable. One
     verdict covering both is how a broken archive reads as a busy one."""
+
     def refuse(*a, **kw):
         raise duckdb.IOException("IO Error: Could not open database: permission denied")
 

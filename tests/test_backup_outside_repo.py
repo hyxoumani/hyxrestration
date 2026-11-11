@@ -47,8 +47,11 @@ def test_units_point_the_backups_outside_every_work_tree(unit):
     dest = _env_value(unit, "HYXLAB_BACKUP_DIR")
     assert dest is not None, f"{unit} must set HYXLAB_BACKUP_DIR (EXP-2203)"
     assert os.path.isabs(dest)
-    for tree in ("/home/devs/workspace/hyxrestration", "/home/devs/workspace/hyxrestration-stable",
-                 "/home/devs/workspace/hylshi"):
+    for tree in (
+        "/home/devs/workspace/hyxrestration",
+        "/home/devs/workspace/hyxrestration-stable",
+        "/home/devs/workspace/hylshi",
+    ):
         assert not (dest == tree or dest.startswith(tree + "/")), f"{dest} is inside {tree}"
 
 
@@ -114,8 +117,9 @@ def test_main_warns_only_for_an_in_tree_dest(tmp_path, monkeypatch, capsys):
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
     env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
-    return subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True,
-                          check=True)
+    return subprocess.run(
+        ["git", *args], cwd=cwd, env=env, capture_output=True, text=True, check=True
+    )
 
 
 @pytest.fixture
@@ -144,8 +148,10 @@ def test_with_the_guard_one_flag_clean_leaves_the_tape(repo_with_tape, flags):
     data = repo_with_tape / "data"
     assert subprocess.run(["bash", str(GUARD), "--check", str(data)]).returncode == 1
     subprocess.run(["bash", str(GUARD), str(data)], check=True, capture_output=True)
-    assert subprocess.run(["bash", str(GUARD), "--check", str(data)],
-                          capture_output=True).returncode == 0
+    assert (
+        subprocess.run(["bash", str(GUARD), "--check", str(data)], capture_output=True).returncode
+        == 0
+    )
     _git(repo_with_tape, "clean", flags)
     assert (data / "hyxstream.duckdb").read_bytes() == b"tape"
 
@@ -172,21 +178,28 @@ def test_a_symlinked_backup_dir_survives_clean_x(repo_with_tape, tmp_path):
 # -- the Claude-session hook, which now matches -x in any spelling ----------
 
 
-@pytest.mark.parametrize("cmd,blocked", [
-    ("git clean -fdx", True),
-    ("git clean -xfd", True),
-    ("git clean -dfx", True),
-    ("git clean -f -d -x", True),
-    ("git clean -fdX", True),
-    ("git -C /home/devs/workspace/hyxrestration clean -xdf", True),
-    ("git clean -n", False),
-    ("git status", False),
-])
+@pytest.mark.parametrize(
+    "cmd,blocked",
+    [
+        ("git clean -fdx", True),
+        ("git clean -xfd", True),
+        ("git clean -dfx", True),
+        ("git clean -f -d -x", True),
+        ("git clean -fdX", True),
+        ("git -C /home/devs/workspace/hyxrestration clean -xdf", True),
+        ("git clean -n", False),
+        ("git status", False),
+    ],
+)
 def test_the_session_hook_refuses_clean_x_in_any_spelling(cmd, blocked):
     if shutil.which("jq") is None:
         pytest.skip("jq not installed")
     import json
 
-    proc = subprocess.run(["bash", str(HOOK)], input=json.dumps({"tool_input": {"command": cmd}}),
-                          capture_output=True, text=True)
+    proc = subprocess.run(
+        ["bash", str(HOOK)],
+        input=json.dumps({"tool_input": {"command": cmd}}),
+        capture_output=True,
+        text=True,
+    )
     assert (proc.returncode == 2) is blocked, (cmd, proc.returncode, proc.stderr)

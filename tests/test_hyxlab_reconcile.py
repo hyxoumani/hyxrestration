@@ -136,68 +136,80 @@ def test_diff_finds_traded_markets_absent_from_the_archive(tmp_path):
     lab = _make_lab(
         tmp_path / "lab.duckdb",
         archived=["KXHIGHNY-26JUL10-B80.5"],
-        series={"KXHIGHNY": "Climate and Weather", "KXBTCD": "Crypto",
-                "KXMLBHR": "Sports"},
+        series={"KXHIGHNY": "Climate and Weather", "KXBTCD": "Crypto", "KXMLBHR": "Sports"},
     )
     old = NOW - timedelta(days=10)
     stream = _make_stream(
         tmp_path / "stream.duckdb",
-        [("KXHIGHNY-26JUL10-B80.5", old),      # archived -> not missing
-         ("KXHIGHNY-26JUL10-B82.5", old),      # missing, in scope
-         ("KXBTCD-26JUL10-T50", old),          # missing, in scope
-         ("KXMLBHR-26JUL10-T2", old),          # missing, OUT of scope (Sports)
-         ("KXHIGHNY-26AUG03-B90.5", NOW)],     # missing but inside the grace
+        [
+            ("KXHIGHNY-26JUL10-B80.5", old),  # archived -> not missing
+            ("KXHIGHNY-26JUL10-B82.5", old),  # missing, in scope
+            ("KXBTCD-26JUL10-T50", old),  # missing, in scope
+            ("KXMLBHR-26JUL10-T2", old),  # missing, OUT of scope (Sports)
+            ("KXHIGHNY-26AUG03-B90.5", NOW),
+        ],  # missing but inside the grace
     )
     missing, census = diff = rec.diff_missing(
-        db=lab, stream_db=stream,
-        categories=["Climate and Weather", "Crypto"], now=NOW,
+        db=lab,
+        stream_db=stream,
+        categories=["Climate and Weather", "Crypto"],
+        now=NOW,
     )
     assert census["missing_total"] == 2
-    assert {m.market_id for m in missing} == {
-        "KXHIGHNY-26JUL10-B82.5", "KXBTCD-26JUL10-T50"}
+    assert {m.market_id for m in missing} == {"KXHIGHNY-26JUL10-B82.5", "KXBTCD-26JUL10-T50"}
     assert census["missing_by_category"] == {"Climate and Weather": 1, "Crypto": 1}
     assert diff[1]["archived_markets"] == 1
 
 
 def test_diff_census_counts_the_whole_deficit_even_when_the_scan_is_capped(tmp_path):
     """A pass that reports only what it looked at is how a 12% hole hides."""
-    lab = _make_lab(tmp_path / "lab.duckdb", archived=[],
-                    series={"KXBTCD": "Crypto"})
+    lab = _make_lab(tmp_path / "lab.duckdb", archived=[], series={"KXBTCD": "Crypto"})
     stream = _make_stream(
         tmp_path / "stream.duckdb",
         [(f"KXBTCD-26JUL10-T{i}", NOW - timedelta(days=10 + i)) for i in range(20)],
     )
     missing, census = rec.diff_missing(
-        db=lab, stream_db=stream, categories=["Crypto"], now=NOW, scan_limit=5)
-    assert census["missing_total"] == 20        # exact
+        db=lab, stream_db=stream, categories=["Crypto"], now=NOW, scan_limit=5
+    )
+    assert census["missing_total"] == 20  # exact
     assert census["missing_scanned"] == 5 == len(missing)
     # and the 5 it kept are the 5 OLDEST, not an arbitrary 5
     assert [m.market_id for m in missing] == [f"KXBTCD-26JUL10-T{i}" for i in (19, 18, 17, 16, 15)]
 
 
 def test_exclude_series_pattern(tmp_path):
-    lab = _make_lab(tmp_path / "lab.duckdb", archived=[],
-                    series={"KXMVECROSS": "Exotics", "KXBTCD": "Crypto"})
+    lab = _make_lab(
+        tmp_path / "lab.duckdb", archived=[], series={"KXMVECROSS": "Exotics", "KXBTCD": "Crypto"}
+    )
     stream = _make_stream(
         tmp_path / "stream.duckdb",
-        [("KXMVECROSS-a-1", NOW - timedelta(days=5)),
-         ("KXBTCD-26JUL10-T50", NOW - timedelta(days=5))],
+        [
+            ("KXMVECROSS-a-1", NOW - timedelta(days=5)),
+            ("KXBTCD-26JUL10-T50", NOW - timedelta(days=5)),
+        ],
     )
-    _, census = rec.diff_missing(db=lab, stream_db=stream, now=NOW,
-                                categories=["Exotics", "Crypto"],
-                                exclude_series_like="KXMVE%")
+    _, census = rec.diff_missing(
+        db=lab,
+        stream_db=stream,
+        now=NOW,
+        categories=["Exotics", "Crypto"],
+        exclude_series_like="KXMVE%",
+    )
     assert census["missing_total"] == 1
 
 
 def _excl_split_dbs(tmp_path):
     """Two KXMVE legs + one Crypto market, all missing, all past the grace."""
-    lab = _make_lab(tmp_path / "lab.duckdb", archived=[],
-                    series={"KXMVECROSS": "Exotics", "KXBTCD": "Crypto"})
+    lab = _make_lab(
+        tmp_path / "lab.duckdb", archived=[], series={"KXMVECROSS": "Exotics", "KXBTCD": "Crypto"}
+    )
     stream = _make_stream(
         tmp_path / "stream.duckdb",
-        [("KXMVECROSS-a-1", NOW - timedelta(days=5)),
-         ("KXMVECROSS-a-2", NOW - timedelta(days=6)),
-         ("KXBTCD-26JUL10-T50", NOW - timedelta(days=5))],
+        [
+            ("KXMVECROSS-a-1", NOW - timedelta(days=5)),
+            ("KXMVECROSS-a-2", NOW - timedelta(days=6)),
+            ("KXBTCD-26JUL10-T50", NOW - timedelta(days=5)),
+        ],
     )
     return lab, stream
 
@@ -207,8 +219,9 @@ def test_census_splits_excluded_by_prefix_even_without_the_flag(tmp_path):
     census must show the split EITHER way, so a direct run can never print
     the excluded-by-design mass as if it were a coverage gap (EXP-1336)."""
     lab, stream = _excl_split_dbs(tmp_path)
-    _, census = rec.diff_missing(db=lab, stream_db=stream, now=NOW,
-                                categories=["Exotics", "Crypto"])
+    _, census = rec.diff_missing(
+        db=lab, stream_db=stream, now=NOW, categories=["Exotics", "Crypto"]
+    )
     assert census["missing_total"] == 3
     assert census["missing_excluded_by_prefix"] == 2
     assert census["missing_in_scope"] == 1
@@ -219,9 +232,13 @@ def test_census_split_with_the_pattern_passed_matches_todays_behavior(tmp_path):
     """With KXMVE% excluded up front (the production job's invocation),
     the excluded rows are already out of the total: in_scope == total."""
     lab, stream = _excl_split_dbs(tmp_path)
-    _, census = rec.diff_missing(db=lab, stream_db=stream, now=NOW,
-                                categories=["Exotics", "Crypto"],
-                                exclude_series_like="KXMVE%")
+    _, census = rec.diff_missing(
+        db=lab,
+        stream_db=stream,
+        now=NOW,
+        categories=["Exotics", "Crypto"],
+        exclude_series_like="KXMVE%",
+    )
     assert census["missing_total"] == 1
     assert census["missing_excluded_by_prefix"] == 0
     assert census["missing_in_scope"] == 1 == census["missing_total"]
@@ -229,13 +246,14 @@ def test_census_split_with_the_pattern_passed_matches_todays_behavior(tmp_path):
 
 def test_cli_census_line_prints_both_halves_of_the_split(tmp_path, capsys):
     lab, stream = _excl_split_dbs(tmp_path)
-    code = rec.main(["--db", lab, "--stream-db", stream, "--dry-run",
-                     "--categories", "Exotics", "Crypto"])
+    code = rec.main(
+        ["--db", lab, "--stream-db", stream, "--dry-run", "--categories", "Exotics", "Crypto"]
+    )
     out = capsys.readouterr().out
-    assert code == 2                       # dry run over a non-empty deficit
+    assert code == 2  # dry run over a non-empty deficit
     assert "missing_excluded_by_prefix=2" in out
     assert "missing_in_scope=1" in out
-    assert "KXMVE*" in out                 # names WHAT is excluded, not just counts
+    assert "KXMVE*" in out  # names WHAT is excluded, not just counts
     # The census's holds, rendered (2026-10-16): the collector's file twice
     # (series allowlist, archived-id export) and the stream archive once --
     # the GROUP BY over the whole trade tape, at the daemon that owns it.
@@ -278,8 +296,10 @@ def test_time_to_purge_uses_last_trade_as_a_conservative_close_estimate():
 def test_ordering_is_deterministic_across_runs():
     same_age = [_m("BBB-2", 10), _m("AAA-9", 10), _m("AAA-1", 10)]
     first = [m.market_id for m in rec.work_order(same_age, now=NOW, max_per_series=None)[0]]
-    second = [m.market_id for m in rec.work_order(list(reversed(same_age)), now=NOW,
-                                                  max_per_series=None)[0]]
+    second = [
+        m.market_id
+        for m in rec.work_order(list(reversed(same_age)), now=NOW, max_per_series=None)[0]
+    ]
     assert first == second == ["AAA-1", "AAA-9", "BBB-2"]
 
 
@@ -291,8 +311,10 @@ def test_ordering_is_deterministic_across_runs():
 def test_per_series_cap_stops_one_family_eating_the_whole_run():
     """6M same-age parlay legs must not crowd out a 3-market weather series."""
     huge = [_m(f"KXMVE-{i}", 20) for i in range(10)]
-    small = [rec.Missing(f"KXLOWTNYC-{i}", "KXLOWTNYC", "Climate and Weather",
-                         NOW - timedelta(days=19)) for i in range(3)]
+    small = [
+        rec.Missing(f"KXLOWTNYC-{i}", "KXLOWTNYC", "Climate and Weather", NOW - timedelta(days=19))
+        for i in range(3)
+    ]
     order, deferred = rec.work_order(huge + small, now=NOW, max_per_series=2)
     assert [m.series for m in order] == ["KXMVE", "KXMVE", "KXLOWTNYC", "KXLOWTNYC"]
     assert len(deferred) == 9
@@ -301,8 +323,7 @@ def test_per_series_cap_stops_one_family_eating_the_whole_run():
 
 
 def test_deferred_work_keeps_the_run_incomplete(tmp_path, monkeypatch):
-    lab = _make_lab(tmp_path / "lab.duckdb", archived=[],
-                    series={"KXBTCD": "Crypto"})
+    lab = _make_lab(tmp_path / "lab.duckdb", archived=[], series={"KXBTCD": "Crypto"})
     stream = _make_stream(
         tmp_path / "stream.duckdb",
         [(f"KXBTCD-26JUL10-T{i}", NOW - timedelta(days=10)) for i in range(4)],
@@ -312,12 +333,23 @@ def test_deferred_work_keeps_the_run_incomplete(tmp_path, monkeypatch):
     monkeypatch.setattr(rec.requests, "Session", lambda: sess)
     monkeypatch.setattr(rec, "LEDGER_STATE", str(tmp_path / "ledger.json"))
     monkeypatch.setattr("collector.sweep.LOCK_FILE", str(tmp_path / "writer.lock"))
-    code = rec.main([
-        "--db", lab, "--stream-db", stream, "--categories", "Crypto",
-        "--max-per-series", "2", "--metadata-only",
-        "--ledger-state", str(tmp_path / "ledger.json"),
-        "--summary", str(tmp_path / "summary.json"),
-    ])
+    code = rec.main(
+        [
+            "--db",
+            lab,
+            "--stream-db",
+            stream,
+            "--categories",
+            "Crypto",
+            "--max-per-series",
+            "2",
+            "--metadata-only",
+            "--ledger-state",
+            str(tmp_path / "ledger.json"),
+            "--summary",
+            str(tmp_path / "summary.json"),
+        ]
+    )
     assert code == 2, "unreached work must never exit 0"
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["complete"] is False
@@ -335,9 +367,15 @@ def test_deferred_work_keeps_the_run_incomplete(tmp_path, monkeypatch):
 
 
 def _repair_order(n: int = 3, days_ago: float = 10.0) -> list[rec.Missing]:
-    return [rec.Missing(f"KXHIGHNY-26JUL10-B8{i}.5", "KXHIGHNY",
-                        "Climate and Weather", NOW - timedelta(days=days_ago))
-            for i in range(n)]
+    return [
+        rec.Missing(
+            f"KXHIGHNY-26JUL10-B8{i}.5",
+            "KXHIGHNY",
+            "Climate and Weather",
+            NOW - timedelta(days=days_ago),
+        )
+        for i in range(n)
+    ]
 
 
 def test_repair_writes_markets_and_reports_a_measured_request_rate(tmp_path, monkeypatch):
@@ -346,9 +384,16 @@ def test_repair_writes_markets_and_reports_a_measured_request_rate(tmp_path, mon
     order = _repair_order()
     sess = _Session(alive={m.market_id for m in order}, lock_file=lock)
     monkeypatch.setattr("collector.sweep.LOCK_FILE", lock)
-    out = rec.reconcile(order, db=db, session=sess, lock_file=lock,
-                        ledger_state=str(tmp_path / "ledger.json"),
-                        pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    out = rec.reconcile(
+        order,
+        db=db,
+        session=sess,
+        lock_file=lock,
+        ledger_state=str(tmp_path / "ledger.json"),
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     assert out["repaired"] == 3 and out["purged"] == 0
     assert out["complete"] is True and out["remaining"] == 0
     assert out["requests"] == 1 + 2 * 3  # 1 metadata batch + candles+trades each
@@ -361,29 +406,47 @@ def test_repair_writes_markets_and_reports_a_measured_request_rate(tmp_path, mon
 
 def test_second_run_finds_nothing_new(tmp_path, monkeypatch):
     """Idempotency, end to end: repair, then re-diff the same archives."""
-    lab = _make_lab(tmp_path / "lab.duckdb", archived=[],
-                    series={"KXHIGHNY": "Climate and Weather"})
+    lab = _make_lab(
+        tmp_path / "lab.duckdb", archived=[], series={"KXHIGHNY": "Climate and Weather"}
+    )
     order = _repair_order()
-    stream = _make_stream(tmp_path / "stream.duckdb",
-                          [(m.market_id, m.last_trade_ts) for m in order])
+    stream = _make_stream(
+        tmp_path / "stream.duckdb", [(m.market_id, m.last_trade_ts) for m in order]
+    )
     lock = str(tmp_path / "writer.lock")
     monkeypatch.setattr("collector.sweep.LOCK_FILE", lock)
     sess = _Session(alive={m.market_id for m in order})
 
-    missing, census = rec.diff_missing(db=lab, stream_db=stream, now=NOW,
-                                       categories=["Climate and Weather"])
+    missing, census = rec.diff_missing(
+        db=lab, stream_db=stream, now=NOW, categories=["Climate and Weather"]
+    )
     assert census["missing_total"] == 3
-    first = rec.reconcile(rec.work_order(missing, now=NOW)[0], db=lab, session=sess,
-                          lock_file=lock, ledger_state=str(tmp_path / "l.json"),
-                          pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    first = rec.reconcile(
+        rec.work_order(missing, now=NOW)[0],
+        db=lab,
+        session=sess,
+        lock_file=lock,
+        ledger_state=str(tmp_path / "l.json"),
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     assert first["repaired"] == 3
 
-    missing2, census2 = rec.diff_missing(db=lab, stream_db=stream, now=NOW,
-                                         categories=["Climate and Weather"])
+    missing2, census2 = rec.diff_missing(
+        db=lab, stream_db=stream, now=NOW, categories=["Climate and Weather"]
+    )
     assert census2["missing_total"] == 0 and missing2 == []
-    second = rec.reconcile([], db=lab, session=sess, lock_file=lock,
-                           ledger_state=str(tmp_path / "l.json"),
-                           pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    second = rec.reconcile(
+        [],
+        db=lab,
+        session=sess,
+        lock_file=lock,
+        ledger_state=str(tmp_path / "l.json"),
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     assert (second["repaired"], second["purged"], second["complete"]) == (0, 0, True)
 
 
@@ -395,11 +458,21 @@ def test_requests_are_paced_between_batches(tmp_path, monkeypatch):
     sess = _Session(alive={m.market_id for m in order})
     slept: list[float] = []
     monkeypatch.setattr(rec.time, "sleep", lambda s: slept.append(s))
-    monkeypatch.setattr(kalshi, "batch_tickers",
-                        lambda t, *a, **k: [list(t[i:i + 2]) for i in range(0, len(t), 2)])
-    rec.reconcile(order, db=db, session=sess, lock_file=lock,
-                  ledger_state=str(tmp_path / "l.json"),
-                  pause_s=0.25, candles_pause_s=0.4, now=NOW)
+    monkeypatch.setattr(
+        kalshi,
+        "batch_tickers",
+        lambda t, *a, **k: [list(t[i : i + 2]) for i in range(0, len(t), 2)],
+    )
+    rec.reconcile(
+        order,
+        db=db,
+        session=sess,
+        lock_file=lock,
+        ledger_state=str(tmp_path / "l.json"),
+        pause_s=0.25,
+        candles_pause_s=0.4,
+        now=NOW,
+    )
     assert 0.25 in slept, "batches must be paced apart"
     assert slept.count(0.4) == 4, "one candle-pause per repaired market"
 
@@ -410,9 +483,16 @@ def test_reconcile_never_advances_a_watermark_or_writes_sweep_log(tmp_path, monk
     lock = str(tmp_path / "writer.lock")
     monkeypatch.setattr("collector.sweep.LOCK_FILE", lock)
     order = _repair_order()
-    rec.reconcile(order, db=db, session=_Session(alive={m.market_id for m in order}),
-                  lock_file=lock, ledger_state=str(tmp_path / "l.json"),
-                  pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    rec.reconcile(
+        order,
+        db=db,
+        session=_Session(alive={m.market_id for m in order}),
+        lock_file=lock,
+        ledger_state=str(tmp_path / "l.json"),
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     con = duckdb.connect(db, read_only=True)
     assert con.execute("SELECT count(*) FROM watermarks").fetchone()[0] == 0
     assert con.execute("SELECT count(*) FROM sweep_log").fetchone()[0] == 0
@@ -425,15 +505,18 @@ def test_reconcile_never_advances_a_watermark_or_writes_sweep_log(tmp_path, monk
 
 
 def test_ledger_findings_shape_and_growth_semantics():
-    purged = [rec.Missing("KXBTCD-26MAY01-T1", "KXBTCD", "Crypto",
-                          datetime(2026, 5, 1, 12, tzinfo=UTC)),
-              rec.Missing("KXBTCD-26MAY01-T2", "KXBTCD", "Crypto",
-                          datetime(2026, 5, 1, 18, tzinfo=UTC)),
-              rec.Missing("KXHIGHNY-26MAY02-B1", "KXHIGHNY", "Climate and Weather",
-                          datetime(2026, 5, 2, 4, tzinfo=UTC))]
+    purged = [
+        rec.Missing("KXBTCD-26MAY01-T1", "KXBTCD", "Crypto", datetime(2026, 5, 1, 12, tzinfo=UTC)),
+        rec.Missing("KXBTCD-26MAY01-T2", "KXBTCD", "Crypto", datetime(2026, 5, 1, 18, tzinfo=UTC)),
+        rec.Missing(
+            "KXHIGHNY-26MAY02-B1",
+            "KXHIGHNY",
+            "Climate and Weather",
+            datetime(2026, 5, 2, 4, tzinfo=UTC),
+        ),
+    ]
     f = rec.ledger_findings(purged)
-    assert set(f) == {"purged_market:KXBTCD@2026-05-01",
-                      "purged_market:KXHIGHNY@2026-05-02"}
+    assert set(f) == {"purged_market:KXBTCD@2026-05-01", "purged_market:KXHIGHNY@2026-05-02"}
     assert f["purged_market:KXBTCD@2026-05-01"]["magnitude"] == 2.0
     assert f["purged_market:KXBTCD@2026-05-01"]["unit"] == "markets"
     assert "KXBTCD-26MAY01-T1" in f["purged_market:KXBTCD@2026-05-01"]["detail"]
@@ -453,15 +536,21 @@ def test_an_unrepairable_hole_is_recorded_in_the_real_ledger(tmp_path, monkeypat
     lock = str(tmp_path / "writer.lock")
     monkeypatch.setattr("collector.sweep.LOCK_FILE", lock)
     state = tmp_path / "completeness_ledger.json"
-    gone = [rec.Missing("KXBTCD-26MAY01-T1", "KXBTCD", "Crypto",
-                        datetime(2026, 5, 1, 12, tzinfo=UTC)),
-            rec.Missing("KXBTCD-26MAY01-T2", "KXBTCD", "Crypto",
-                        datetime(2026, 5, 1, 13, tzinfo=UTC))]
+    gone = [
+        rec.Missing("KXBTCD-26MAY01-T1", "KXBTCD", "Crypto", datetime(2026, 5, 1, 12, tzinfo=UTC)),
+        rec.Missing("KXBTCD-26MAY01-T2", "KXBTCD", "Crypto", datetime(2026, 5, 1, 13, tzinfo=UTC)),
+    ]
     alive = _repair_order(1)
-    out = rec.reconcile(gone + alive, db=db,
-                        session=_Session(alive={m.market_id for m in alive}),
-                        lock_file=lock, ledger_state=str(state),
-                        pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    out = rec.reconcile(
+        gone + alive,
+        db=db,
+        session=_Session(alive={m.market_id for m in alive}),
+        lock_file=lock,
+        ledger_state=str(state),
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
 
     assert out["purged"] == 2 and out["repaired"] == 1
     assert out["ledger_recorded"] == 1
@@ -478,11 +567,17 @@ def test_an_unrepairable_hole_is_recorded_in_the_real_ledger(tmp_path, monkeypat
     st = led.load_state(str(state))
     same = rec.ledger_findings(gone)
     assert led.classify(same, st)["escalating"] == []
-    grown = rec.ledger_findings(gone + [rec.Missing(
-        "KXBTCD-26MAY01-T3", "KXBTCD", "Crypto",
-        datetime(2026, 5, 1, 14, tzinfo=UTC))])
+    grown = rec.ledger_findings(
+        gone
+        + [
+            rec.Missing(
+                "KXBTCD-26MAY01-T3", "KXBTCD", "Crypto", datetime(2026, 5, 1, 14, tzinfo=UTC)
+            )
+        ]
+    )
     assert [e["key"] for e in led.classify(grown, st)["escalating"]] == [
-        "purged_market:KXBTCD@2026-05-01"]
+        "purged_market:KXBTCD@2026-05-01"
+    ]
 
 
 def test_a_clean_run_writes_no_ledger_entry(tmp_path, monkeypatch):
@@ -492,9 +587,16 @@ def test_a_clean_run_writes_no_ledger_entry(tmp_path, monkeypatch):
     monkeypatch.setattr("collector.sweep.LOCK_FILE", lock)
     state = tmp_path / "ledger.json"
     order = _repair_order()
-    out = rec.reconcile(order, db=db, session=_Session(alive={m.market_id for m in order}),
-                        lock_file=lock, ledger_state=str(state),
-                        pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    out = rec.reconcile(
+        order,
+        db=db,
+        session=_Session(alive={m.market_id for m in order}),
+        lock_file=lock,
+        ledger_state=str(state),
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     assert out["purged"] == 0 and out["ledger_recorded"] == 0
     assert not state.exists(), "a clean run must not touch the trading repo's state"
 
@@ -508,11 +610,20 @@ def test_undetermined_is_never_recorded_as_a_permanent_hole(tmp_path, monkeypatc
     state = tmp_path / "ledger.json"
     order = _repair_order(2)
     monkeypatch.setattr(
-        kalshi, "get_markets_by_tickers",
+        kalshi,
+        "get_markets_by_tickers",
         lambda batch, **kw: ({}, [], list(batch)),
     )
-    out = rec.reconcile(order, db=db, session=_Session(alive=set()), lock_file=lock,
-                        ledger_state=str(state), pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    out = rec.reconcile(
+        order,
+        db=db,
+        session=_Session(alive=set()),
+        lock_file=lock,
+        ledger_state=str(state),
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     assert out["undetermined"] == 2 and out["purged"] == 0
     assert out["complete"] is False
     assert not state.exists()
@@ -524,9 +635,17 @@ def test_budget_stop_leaves_a_reported_remainder(tmp_path, monkeypatch):
     monkeypatch.setattr("collector.sweep.LOCK_FILE", lock)
     order = _repair_order(4)
     monkeypatch.setattr(kalshi, "batch_tickers", lambda t, *a, **k: [[x] for x in t])
-    out = rec.reconcile(order, db=db, session=_Session(alive={m.market_id for m in order}),
-                        lock_file=lock, ledger_state=str(tmp_path / "l.json"),
-                        max_markets=2, pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    out = rec.reconcile(
+        order,
+        db=db,
+        session=_Session(alive={m.market_id for m in order}),
+        lock_file=lock,
+        ledger_state=str(tmp_path / "l.json"),
+        max_markets=2,
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     assert out["processed"] == 2 and out["remaining"] == 2
     assert out["complete"] is False and out["stop_reason"] == "max-markets"
 
@@ -537,17 +656,29 @@ def test_max_markets_tail_is_unreached_work_not_a_finished_run(tmp_path, monkeyp
     repair five markets and report `complete`."""
     lab = _make_lab(tmp_path / "lab.duckdb", archived=[], series={"KXBTCD": "Crypto"})
     ids = [f"KXBTCD-26JUL10-T{i}" for i in range(4)]
-    stream = _make_stream(tmp_path / "stream.duckdb",
-                          [(m, NOW - timedelta(days=10)) for m in ids])
+    stream = _make_stream(tmp_path / "stream.duckdb", [(m, NOW - timedelta(days=10)) for m in ids])
     sess = _Session(alive=set(ids))
     monkeypatch.setattr(rec.requests, "Session", lambda: sess)
     monkeypatch.setattr("collector.sweep.LOCK_FILE", str(tmp_path / "writer.lock"))
-    code = rec.main([
-        "--db", lab, "--stream-db", stream, "--categories", "Crypto",
-        "--max-markets", "1", "--max-per-series", "0", "--metadata-only",
-        "--ledger-state", str(tmp_path / "ledger.json"),
-        "--summary", str(tmp_path / "summary.json"),
-    ])
+    code = rec.main(
+        [
+            "--db",
+            lab,
+            "--stream-db",
+            stream,
+            "--categories",
+            "Crypto",
+            "--max-markets",
+            "1",
+            "--max-per-series",
+            "0",
+            "--metadata-only",
+            "--ledger-state",
+            str(tmp_path / "ledger.json"),
+            "--summary",
+            str(tmp_path / "summary.json"),
+        ]
+    )
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["repaired"] == 1 and summary["deferred_by_series_cap"] == 0
     assert summary["dropped_by_max_markets"] == 3
@@ -563,7 +694,7 @@ def test_batch_tickers_bounds_url_length_not_ticker_count():
     """MEASURED: 250 tickers = 5,869 chars is served; 500 = 12,247 -> HTTP 414.
     Exotics tickers are ~2.4x longer than weather ones, so a count-based
     batcher would 414 on exactly the families with the most to repair."""
-    short = [f"KX{i:03d}" for i in range(100)]           # 5 chars each
+    short = [f"KX{i:03d}" for i in range(100)]  # 5 chars each
     long = [f"KXMVESPORTSMULTIGAMEEXTENDED-26JUL{i:02d}-ABCDEFGH" for i in range(100)]
     assert len(kalshi.batch_tickers(short, max_chars=60)) == 10
     assert all(len(",".join(b)) <= 60 for b in kalshi.batch_tickers(long, max_chars=60))
@@ -576,8 +707,7 @@ def test_batch_resolution_splits_found_from_absent():
     class _S:
         def get(self, url, params=None, timeout=None):
             want = params["tickers"].split(",")
-            return _FakeResp({"markets": [_mkt(t) for t in want if t.endswith("OK")],
-                              "cursor": ""})
+            return _FakeResp({"markets": [_mkt(t) for t in want if t.endswith("OK")], "cursor": ""})
 
     found, absent, undet = kalshi.get_markets_by_tickers(["A-OK", "B-GONE", "C-OK"], session=_S())
     assert sorted(found) == ["A-OK", "C-OK"]
@@ -589,8 +719,7 @@ def test_a_live_cursor_makes_unseen_tickers_undetermined_not_absent():
         def get(self, url, params=None, timeout=None):
             return _FakeResp({"markets": [_mkt("A-OK")], "cursor": "more"})
 
-    found, absent, undet = kalshi.get_markets_by_tickers(
-        ["A-OK", "B-?"], session=_S(), max_pages=2)
+    found, absent, undet = kalshi.get_markets_by_tickers(["A-OK", "B-?"], session=_S(), max_pages=2)
     assert sorted(found) == ["A-OK"]
     assert absent == [] and undet == ["B-?"]
 
@@ -626,16 +755,25 @@ def test_full_path_batches_are_capped_but_metadata_only_is_not(tmp_path, monkeyp
 
     monkeypatch.setattr(rec.kalshi, "get_markets_by_tickers", spy_by_tickers)
     monkeypatch.setattr(rec, "record_holes", lambda *a, **k: 0)
-    order = [rec.Missing(f"KXPAY-{i:04d}", "KXPAY", "Economics",
-                         NOW - timedelta(days=10)) for i in range(60)]
+    order = [
+        rec.Missing(f"KXPAY-{i:04d}", "KXPAY", "Economics", NOW - timedelta(days=10))
+        for i in range(60)
+    ]
 
-    rec.reconcile(order, db=str(tmp_path / "x.duckdb"), max_markets_per_batch=25,
-                  ledger_state=None, now=NOW)
+    rec.reconcile(
+        order, db=str(tmp_path / "x.duckdb"), max_markets_per_batch=25, ledger_state=None, now=NOW
+    )
     assert seen and all(n <= 25 for n in seen), seen
 
     seen.clear()
-    rec.reconcile(order, db=str(tmp_path / "x.duckdb"), metadata_only=True,
-                  max_markets_per_batch=25, ledger_state=None, now=NOW)
+    rec.reconcile(
+        order,
+        db=str(tmp_path / "x.duckdb"),
+        metadata_only=True,
+        max_markets_per_batch=25,
+        ledger_state=None,
+        now=NOW,
+    )
     assert seen == [60]  # one URL-length batch, untouched
 
 
@@ -655,8 +793,8 @@ class _OpenFutureSession(_Session):
     """Serves OPEN, far-dated markets (close years past NOW), like the
     KXFEDFUNDSYEAR-30JAN01 family the census actually surfaces."""
 
-    OPEN = "2026-07-24T12:00:00Z"      # 9.75 days before NOW
-    CLOSE = "2030-01-01T05:00:00Z"     # ~3.4 years past NOW
+    OPEN = "2026-07-24T12:00:00Z"  # 9.75 days before NOW
+    CLOSE = "2030-01-01T05:00:00Z"  # ~3.4 years past NOW
 
     def get(self, url, params=None, timeout=None):
         resp = super().get(url, params=params, timeout=timeout)
@@ -677,11 +815,21 @@ def test_candle_fetch_is_clamped_to_now_for_open_far_dated_markets(tmp_path):
     request accounting must both stop at now."""
     db = _make_lab(tmp_path / "lab.duckdb", archived=[], series={"KXPAY": "Economics"})
     lock = str(tmp_path / "writer.lock")
-    order = [rec.Missing(f"KXPAY-30JAN01-T{i}", "KXPAY", "Economics",
-                         NOW - timedelta(days=5)) for i in range(2)]
+    order = [
+        rec.Missing(f"KXPAY-30JAN01-T{i}", "KXPAY", "Economics", NOW - timedelta(days=5))
+        for i in range(2)
+    ]
     sess = _OpenFutureSession(alive={m.market_id for m in order}, lock_file=lock)
-    out = rec.reconcile(order, db=db, session=sess, lock_file=lock,
-                        ledger_state=None, pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    out = rec.reconcile(
+        order,
+        db=db,
+        session=sess,
+        lock_file=lock,
+        ledger_state=None,
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     assert out["repaired"] == 2
     candle_calls = [c for c in sess.calls if "candlesticks" in c["url"]]
     assert len(candle_calls) == 2, "one single-chunk call per market, not ~7"
@@ -698,12 +846,19 @@ def test_candle_fetch_is_clamped_to_now_for_open_far_dated_markets(tmp_path):
 def test_candle_fetch_of_a_settled_market_still_reaches_its_close(tmp_path):
     """The clamp is min(close, now): a settled market (close < now) must be
     fetched to its close exactly as before."""
-    db = _make_lab(tmp_path / "lab.duckdb", archived=[],
-                   series={"KXHIGHNY": "Climate and Weather"})
+    db = _make_lab(tmp_path / "lab.duckdb", archived=[], series={"KXHIGHNY": "Climate and Weather"})
     lock = str(tmp_path / "writer.lock")
     order = _repair_order(1)
     sess = _Session(alive={m.market_id for m in order}, lock_file=lock)
-    rec.reconcile(order, db=db, session=sess, lock_file=lock,
-                  ledger_state=None, pause_s=0.0, candles_pause_s=0.0, now=NOW)
+    rec.reconcile(
+        order,
+        db=db,
+        session=sess,
+        lock_file=lock,
+        ledger_state=None,
+        pause_s=0.0,
+        candles_pause_s=0.0,
+        now=NOW,
+    )
     (candle_call,) = [c for c in sess.calls if "candlesticks" in c["url"]]
     assert candle_call["params"]["end_ts"] == rec._ts(_mkt("x")["close_time"])

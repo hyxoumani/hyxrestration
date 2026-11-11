@@ -88,9 +88,7 @@ def is_shell_shebang(first_line: str) -> bool:
 
 
 def _tracked() -> list[str]:
-    p = subprocess.run(
-        ["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True
-    )
+    p = subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True, text=True, check=True)
     return [ln for ln in p.stdout.splitlines() if ln.strip()]
 
 

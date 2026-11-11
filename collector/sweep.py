@@ -579,6 +579,8 @@ def sweep_series(
     `skip_untraded` (SKIP_UNTRADED_SERIES): the listing is paged up to
     `UNTRADED_LIST_MAX` and `max_markets` counts FETCHED markets; a market the
     listing says never traded is recorded and marked, with no request made.
+
+    Returns `(markets fetched, candles inserted, truncated)`.
     """
     global _TAPES_SKIPPED, _UNTRADED_SKIPPED
     now = datetime.now(UTC)
@@ -765,7 +767,11 @@ def sweep_series(
             "truncated" if markets_truncated else "ok",
             note,
         )
-    return len(markets), n_candles, markets_truncated
+    # The caller's count is a COST: it feeds the done line's `markets`, the
+    # per-class `s/mkt` and QA's wall-per-1k-markets model, all of which mean
+    # "markets a request was spent on". An untraded-skipped market cost none
+    # (it is in `sweep_log.n_markets` and the note, and in `untraded_skipped`).
+    return len(markets) - len(untraded), n_candles, markets_truncated
 
 
 def _ts(v: str | None) -> int | None:

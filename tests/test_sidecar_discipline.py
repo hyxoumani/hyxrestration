@@ -138,9 +138,7 @@ def _code_strings(tree: ast.AST, rel: str) -> dict[str, list[str]]:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         if isinstance(node, ast.JoinedStr):
-            return "".join(
-                p.value if isinstance(p, ast.Constant) else "{}" for p in node.values
-            )
+            return "".join(p.value if isinstance(p, ast.Constant) else "{}" for p in node.values)
         return None
 
     class V(ast.NodeVisitor):
@@ -163,12 +161,7 @@ def _code_strings(tree: ast.AST, rel: str) -> dict[str, list[str]]:
 
 def _strings_naming(tree: ast.AST, rel: str, needle: str) -> dict[str, str]:
     """`rel::qualname` -> the string, for code strings containing `needle`."""
-    return {
-        k: t
-        for k, texts in _code_strings(tree, rel).items()
-        for t in texts
-        if needle in t
-    }
+    return {k: t for k, texts in _code_strings(tree, rel).items() for t in texts if needle in t}
 
 
 #: `temp_directory` as a WORD. The sibling setting
@@ -200,8 +193,11 @@ def _walk(fn) -> dict:
 
 def test_only_the_kernel_attaches_duckdb_directly():
     """A bare `duckdb.connect` gets the SHARED default `<db>.tmp`."""
-    outside = {k: v for k, v in _walk(lambda t, r: _sites(t, r, "duckdb")).items()
-               if not k.startswith(KERNEL + "::")}
+    outside = {
+        k: v
+        for k, v in _walk(lambda t, r: _sites(t, r, "duckdb")).items()
+        if not k.startswith(KERNEL + "::")
+    }
     assert not outside, (
         "raw duckdb.connect outside the kernel, so it spills into the shared"
         f" default <db>.tmp: {sorted(outside)} — use hyxlab.store.duck_connect"
@@ -289,9 +285,11 @@ def _spill_pair(tmp_path: Path, tag: str, shared: bool) -> list[tuple[int, str]]
     """Two spilling processes; `(returncode, stdout)` each."""
     script = tmp_path / "spiller.py"
     script.write_text(_SPILLER)
-    dirs = [tmp_path / f"{tag}-shared"] * 2 if shared else [
-        tmp_path / f"{tag}-a", tmp_path / f"{tag}-b"
-    ]
+    dirs = (
+        [tmp_path / f"{tag}-shared"] * 2
+        if shared
+        else [tmp_path / f"{tag}-a", tmp_path / f"{tag}-b"]
+    )
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
     procs = [
@@ -318,9 +316,7 @@ def test_a_shared_spill_directory_does_not_contend_it_corrupts(tmp_path):
         f"the control pair must survive or the experiment says nothing: {control}"
     )
     trials = [_spill_pair(tmp_path, f"shared{i}", shared=True) for i in range(3)]
-    assert not all(
-        all(rc == 0 and out.startswith("OK") for rc, out in t) for t in trials
-    ), (
+    assert not all(all(rc == 0 and out.startswith("OK") for rc, out in t) for t in trials), (
         "three pairs of DuckDB processes shared one temp_directory and ALL"
         f" survived: {trials}. If DuckDB now isolates temp files per process,"
         " this file's premise is gone — delete the guard rather than keep it"

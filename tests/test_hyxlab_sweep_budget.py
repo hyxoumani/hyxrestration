@@ -104,5 +104,10 @@ def test_explicit_max_markets_wins_over_override(monkeypatch):
 def test_override_covers_all_six_dense_crypto_series():
     # The measured cannot-keep-up set (EXP-1271 + sweep_log 08-03..08-12).
     assert set(sweep_mod.SERIES_MAX_MARKETS) == {
-        "KXBTC", "KXBTCD", "KXETH", "KXETHD", "KXSOLD", "KXSOLE",
+        "KXBTC",
+        "KXBTCD",
+        "KXETH",
+        "KXETHD",
+        "KXSOLD",
+        "KXSOLE",
     }

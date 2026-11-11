@@ -228,8 +228,7 @@ def test_every_timer_pins_a_timezone():
     ]
     assert not offenders, (
         "OnCalendar without a timezone suffix is evaluated in the host's local "
-        "zone and skips the repeated hour at DST fall-back:\n  "
-        + "\n  ".join(offenders)
+        "zone and skips the repeated hour at DST fall-back:\n  " + "\n  ".join(offenders)
     )
 
 
