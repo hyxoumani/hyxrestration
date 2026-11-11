@@ -1571,6 +1571,28 @@ class Store:
             [market_id, datetime.now(UTC).replace(tzinfo=None), n_trades, status],
         )
 
+    def mark_trades_swept_many(self, marks: list[tuple[str, int, str]]) -> None:
+        """`mark_trades_swept` for a batch of `(market_id, n_trades, status)`,
+        set-based: one statement per row against the PK index is the
+        `executemany` cost `upsert_markets` documents, and the sweep marks
+        tens of thousands of markets inside one writer burst. Last mark wins
+        for a market named twice, as it would row by row."""
+        if not marks:
+            return
+        now = datetime.now(UTC).replace(tzinfo=None)
+        rows = [(m, now, n, status, seq) for seq, (m, n, status) in enumerate(marks)]
+        self.conn.execute(
+            "CREATE OR REPLACE TEMP TABLE _tsstage AS"
+            " SELECT *, 0::BIGINT AS seq FROM trades_swept LIMIT 0"
+        )
+        self._stage_rows("_tsstage", rows)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO trades_swept"
+            " SELECT * EXCLUDE (seq) FROM _tsstage"
+            " QUALIFY row_number() OVER (PARTITION BY market_id ORDER BY seq DESC) = 1"
+        )
+        self.conn.execute("DROP TABLE _tsstage")
+
     def trades_swept_ids(self) -> set[str]:
         return {r[0] for r in self.conn.execute("SELECT market_id FROM trades_swept").fetchall()}
 

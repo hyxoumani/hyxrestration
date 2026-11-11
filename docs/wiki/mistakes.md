@@ -4268,6 +4268,56 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+179. **2026-09-20 -> 2026-11-11 20:50Z -- KXHYPE and KXHYPED fell 14 h
+    further behind every day for 52 days (704 h and 730 h on 11-11) while
+    the fix that was being scheduled, a budget raise, could not have
+    recovered them; and the reading the choice was gated on was
+    contaminated by another series' catch-up.** Two errors of the same
+    kind. (a) The 21:00Z/21:25Z 11-10 entries priced three options by
+    their DAILY cost (raise to 8,000: +65 min/day; skip-untraded: -45;
+    exclude: -50) and wrote the rule "raise if the 11-11/11-12 walls
+    return to the 645-739 band, else skip". The raise was never priced by
+    its time to RECOVER: 8,000 fetched against ~6,770 listed a day closes
+    a 704 h backlog at ~3-4 h/day, about half a year, inside which the
+    data arrives a month late. Only the skip recovers the backlog at all
+    (dry run on the live listing 20:20Z: 50,390 KXHYPE markets = 7.4 days
+    of close-time paged in 32.2 s, 508 of them traded; KXHYPED 50,400 /
+    1,128 -- five runs to current). (b) The 16:00Z entry read the 11-11
+    wall heading to ~785 min as "ABOVE the band, pointing at the skip".
+    The done line was 750.4 min, and `sweep_log` shows KXETH and KXETHD
+    each fetched 10,540 markets against a routine ~6,900 because their
+    frontiers were still closing the 11-09 DNS deferral (lag 14.0 h ->
+    1.7 h, 14.5 h -> 2.1 h): ~7,280 extra markets x 0.455 s = ~55 min, so
+    the like-for-like wall is ~695, inside the band. The rule as written
+    would have picked the right option for the wrong reason on one
+    reading and the wrong option on the corrected one. Decided on the
+    arithmetic instead and shipped: `sweep.SKIP_UNTRADED_SERIES`
+    (KXHYPE, KXHYPED) skips the candlesticks request and the tape when
+    the listing carries an EXPLICIT zero `volume_fp` (probed 11-10: 60 of
+    60 such markets trade-free), pages up to `UNTRADED_LIST_MAX` 50,000
+    listed markets, counts the 2,000 budget in FETCHED markets, cuts only
+    on a close-instant boundary so the watermark stays honest, and skips
+    nothing when no market in the listing has positive volume (a venue
+    sending 0.00 for everything proves nothing). The market row is still
+    upserted and `trades_swept` says `listing_untraded`, which is also
+    what keeps the 06:35Z tradepass from requesting 100k empty tapes.
+    Given up on purpose: the quote-only hourly candle of an untraded
+    strike (~62 two-sided a week on KXHYPE). NOT fleet-wide (three hylshi
+    scans select on quotes alone). **A defect the rehearsal caught before
+    it shipped:** the final burst marked `trades_swept` one statement per
+    row; measured on a reflinked copy of the 11-11 backup (6.7M markets,
+    6.5M marks), 50,400 marks row by row = ~353 s inside the writer hold
+    on the 5-minute collector's file, against 0.32 s set-based
+    (`Store.mark_trades_swept_many`); the 50,400-row `upsert_markets`
+    beside it is 16.6 s, under the run's routine 67 s worst hold, and
+    falls to ~2 s once caught up. Rule: **price a backlog option by its
+    time to clear the backlog, not only by its daily cost -- an option
+    that never catches up is not an option; and before a wall-clock
+    reading votes in a decision rule, subtract what `sweep_log` says was
+    a transient (a series fetching more than its routine count is one).**
+    13 tests (`tests/test_sweep_untraded_skip.py`), six mutants each
+    asserted to land and each red. Suite 2549 -> 2562.
+
 178. **2026-10-23 -> 2026-11-11 14:35Z -- `book_events` was archived in
     ARRIVAL order, interleaved across 18 books connections, at ~20 B/row
     where the same rows grouped by connection take ~14.** #177's rule ("no

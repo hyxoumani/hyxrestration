@@ -55,6 +55,9 @@ class _StubStore:
     def mark_trades_swept(self, ticker, n, status):
         pass
 
+    def mark_trades_swept_many(self, marks):
+        pass
+
 
 def _run(monkeypatch, store, markets=(), **kw):
     """Run sweep_series with stubbed venue; capture the markets request."""

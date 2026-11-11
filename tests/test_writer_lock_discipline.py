@@ -416,6 +416,7 @@ def test_the_mutator_set_is_derived_and_complete():
         "insert_vintages",
         "log_sweep",
         "mark_trades_swept",
+        "mark_trades_swept_many",
         "poly_unset_results",
         "set_schema_version",
         "set_watermark",

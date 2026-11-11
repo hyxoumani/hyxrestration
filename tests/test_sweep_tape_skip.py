@@ -84,6 +84,9 @@ class _Store:
     def mark_trades_swept(self, ticker, n, status):
         self.marks.append((ticker, n, status))
 
+    def mark_trades_swept_many(self, marks):
+        self.marks.extend(marks)
+
 
 def _market(ticker: str, close: datetime) -> dict:
     fmt = "%Y-%m-%dT%H:%M:%SZ"

@@ -111,6 +111,34 @@ SERIES_MAX_MARKETS: dict[str, int] = {
     "KXSOLE": 8000,
 }
 
+# Series whose untraded markets are listed and recorded but NOT asked for a
+# candle (mistakes #179, 2026-11-11). KXHYPE and KXHYPED list ~6,770 markets a
+# day each and 1.2% / 2.8% of them ever trade (measured on closes
+# 10-01..10-07: 79 and 191 a day). At the flat 2,000 budget a run delivered
+# ~10 h of close-time per 24 h, so both frontiers receded 14 h/day for 52 days
+# to 704 h and 730 h (11-11). Raising them to 8,000 like the six ladders above
+# would cost +65 min/day and close the backlog at ~3-4 h/day -- half a year --
+# for candles that are, for 97-99% of the markets, ONE quote-only hourly row.
+# The `/markets` listing the sweep already pages carries each settled market's
+# final `volume_fp` (probed 2026-11-10: 60 of 60 zero-volume markets had
+# trade-free candles, 15 of 15 positive ones matched their candle volume), so
+# for these series an explicit listing zero skips the candlesticks request and
+# the tape with it; the market row is still upserted and `trades_swept` says
+# `listing_untraded`. What is given up, on purpose: the quote-only hourly
+# candle of a strike that never traded (~62 two-sided ones a week on KXHYPE).
+# NOT fleet-wide: three of hylshi's scans select candles on quotes alone, and
+# on the thin ladders those rows are most of what they select (21:25Z 11-10).
+# Rides the DEFAULT budget and the nightly pass only, like the raises above:
+# an explicit --max-markets or a --refetch-from repair fetches everything.
+SKIP_UNTRADED_SERIES: frozenset[str] = frozenset({"KXHYPE", "KXHYPED"})
+
+# How many LISTED markets one run may page for a skip-untraded series. The
+# per-series budget then counts FETCHED markets, so this is what bounds the
+# listing walk and the rows held in memory: 50,000 is ~7.4 days of KXHYPE
+# close-time (~70 listing requests at 0.2 s), so the 30-day backlog clears in
+# about five runs and a caught-up series lists one day.
+UNTRADED_LIST_MAX = 50_000
+
 # Families deliberately NOT swept, even though their category is allowlisted
 # (EXP-1275, 2026-08-12). KXMVE* (multivariate parlays, Exotics/Mentions):
 # measured close-time density ~85k-7M markets/day against ~3.4k/run — full
@@ -342,6 +370,72 @@ def eta_minutes(
 # empty, and the candles fetched first already say so for nearly all of them.
 _TAPES_SKIPPED = 0
 
+# Candlestick requests not made because the listing itself said the market
+# never traded (SKIP_UNTRADED_SERIES). On the done line as `untraded_skipped`.
+_UNTRADED_SKIPPED = 0
+
+
+def listing_untraded(m: dict) -> bool:
+    """True only for an EXPLICIT zero `volume_fp` on a listed market. A
+    missing, empty or unparseable field is not a zero (the rule
+    `tape_provably_empty` carries for candles): after an API rename every
+    market must fetch again, not skip."""
+    v = m.get("volume_fp")
+    if v in (None, ""):
+        return False
+    try:
+        return float(v) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def plan_untraded_skip(
+    markets: list[dict], fetch_budget: int | None
+) -> tuple[list[dict], set[str], bool]:
+    """Order one listing by close time and decide what is fetched.
+
+    Returns `(markets, untraded, cut)`: the markets this run will record, the
+    tickers among them whose candles are not requested, and whether the run
+    stopped at the fetch budget with listed markets left over.
+
+    Two properties the watermark depends on. The returned list is a PREFIX in
+    close-time order and never splits one close instant, so `max(close)` over
+    it is an honest resume point (the next run's floor is `wm + 1s`). And a
+    listing in which NO market carries positive volume proves nothing about
+    the field -- a venue that started sending `0.00` for everything would
+    otherwise skip the whole series silently -- so then nothing is skipped
+    and the run behaves exactly as it did before."""
+    ordered = sorted(markets, key=lambda m: _ts(m.get("close_time")) or 0)
+    untraded = {m["ticker"] for m in ordered if listing_untraded(m)}
+    live = any(_positive_volume(m) for m in ordered)
+    if not live:
+        untraded = set()
+    if fetch_budget is None:
+        return ordered, untraded, False
+    fetched = 0
+    for i, m in enumerate(ordered):
+        if m["ticker"] in untraded:
+            continue
+        fetched += 1
+        if fetched < fetch_budget:
+            continue
+        close = _ts(m.get("close_time")) or 0
+        end = i + 1
+        while end < len(ordered) and (_ts(ordered[end].get("close_time")) or 0) == close:
+            end += 1
+        if end == len(ordered):
+            break
+        kept = ordered[:end]
+        return kept, untraded & {k["ticker"] for k in kept}, True
+    return ordered, untraded, False
+
+
+def _positive_volume(m: dict) -> bool:
+    try:
+        return float(m.get("volume_fp") or 0.0) > 0.0
+    except (TypeError, ValueError):
+        return False
+
 
 def tape_provably_empty(candles: list[dict], close_ts: int) -> bool:
     """True when the hourly candles prove a market never traded.
@@ -455,6 +549,7 @@ def sweep_series(
     max_markets: int | None = MAX_MARKETS_PER_SERIES,
     refetch_from: datetime | None = None,
     refetch_to: datetime | None = None,
+    skip_untraded: bool = False,
 ) -> tuple[int, int, bool]:
     """Capture settled markets + candles for one series since its watermark.
 
@@ -480,8 +575,12 @@ def sweep_series(
     idempotent, and sweep_log records the repaired [floor, max_close]
     interval so recovery is verifiable. Bounded below by the purge
     horizon like everything else.
+
+    `skip_untraded` (SKIP_UNTRADED_SERIES): the listing is paged up to
+    `UNTRADED_LIST_MAX` and `max_markets` counts FETCHED markets; a market the
+    listing says never traded is recorded and marked, with no request made.
     """
-    global _TAPES_SKIPPED
+    global _TAPES_SKIPPED, _UNTRADED_SKIPPED
     now = datetime.now(UTC)
     repair = refetch_from is not None
     floor_ts = now - timedelta(days=days)
@@ -510,16 +609,24 @@ def sweep_series(
             now - timedelta(days=PURGE_HORIZON_DAYS),
         )
 
+    list_budget = max_markets
+    if skip_untraded and max_markets is not None:
+        list_budget = max(max_markets, UNTRADED_LIST_MAX)
     markets, markets_truncated = kalshi.get_markets_ascending(
         series_ticker=series_ticker,
         status="settled",
         min_close_ts=int(floor_ts.timestamp()),
         max_close_ts=int(ceiling_ts.timestamp()),
-        max_markets=max_markets,
+        max_markets=list_budget,
         session=session,
         pause_s=MARKETS_PAUSE_S,
     )
     time.sleep(MARKETS_PAUSE_S)
+    untraded: set[str] = set()
+    n_listed = len(markets)
+    if skip_untraded:
+        markets, untraded, cut = plan_untraded_skip(markets, max_markets)
+        markets_truncated = markets_truncated or cut
     if not markets:
         with writer_burst(db) as store:
             store.log_sweep(series_ticker, floor_ts, None, 0, 0, "ok", "no settled markets")
@@ -536,8 +643,10 @@ def sweep_series(
         nonlocal n_candles
         n_candles += store.insert_candles(candle_rows)
         store.insert_trades(trade_rows)
-        for ticker, n_trades, status in swept:
-            store.mark_trades_swept(ticker, n_trades, status)
+        # One set-based write: a skip-untraded series marks tens of
+        # thousands of markets in the final burst, and a statement per row
+        # would be the longest hold of the run.
+        store.mark_trades_swept_many(swept)
         candle_rows.clear()
         trade_rows.clear()
         swept.clear()
@@ -550,6 +659,14 @@ def sweep_series(
             # siblings' closes — without a log line that's a permanent
             # invisible hole in a system built on marking what it missed.
             print(f"[sweep] {m.get('ticker', '?')} skipped: missing open/close time", flush=True)
+            continue
+        if m["ticker"] in untraded:
+            # No candlesticks request, no tape, no pause: the listing's own
+            # final volume says nothing traded. Marked under its own status
+            # so the skip is auditable and the tradepass does not fetch it.
+            _UNTRADED_SKIPPED += 1
+            swept.append((m["ticker"], 0, "listing_untraded"))
+            max_close = max(max_close, datetime.fromtimestamp(close_ts, tz=UTC))
             continue
         try:
             candles = kalshi.get_candlesticks(
@@ -627,6 +744,11 @@ def sweep_series(
         note = ""
         if markets_truncated:
             note = f"budget {max_markets} markets reached; resume from {max_close:%Y-%m-%dT%H:%M}Z"
+        if skip_untraded:
+            note = (
+                f"{len(untraded)} of {len(markets)} untraded by listing, no candle requested"
+                f" ({n_listed} listed)" + (f"; {note}" if note else "")
+            )
         if repair:
             resume = (
                 f"; re-run with --refetch-from {max_close:%Y-%m-%dT%H:%M:%S}Z"
@@ -697,8 +819,9 @@ def run_sweep(
         targets = targets[:limit]
     listings = listings_delta(targets, prior_run)
     print(listings_line(listings), flush=True)
-    global _TAPES_SKIPPED
+    global _TAPES_SKIPPED, _UNTRADED_SKIPPED
     _TAPES_SKIPPED = 0
+    _UNTRADED_SKIPPED = 0
     totals = {
         "series": len(targets),
         # The enumeration against the prior run's series set, or None on a
@@ -747,12 +870,19 @@ def run_sweep(
         budget = max_markets
         if max_markets == MAX_MARKETS_PER_SERIES:
             budget = SERIES_MAX_MARKETS.get(ticker, max_markets)
+        skip = (
+            ticker in SKIP_UNTRADED_SERIES
+            and max_markets == MAX_MARKETS_PER_SERIES
+            and refetch_from is None
+        )
         try:
             repair_kw = (
                 {"refetch_from": refetch_from, "refetch_to": refetch_to}
                 if refetch_from is not None
                 else {}
             )
+            if skip:
+                repair_kw = {"skip_untraded": True}  # never both: skip excludes repair
             # An outage witnessed mid-series waits for the venue and re-runs
             # the series once from its (unmoved) watermark; see OutagePause.
             n_m, n_c, truncated = pause.run(
@@ -834,6 +964,7 @@ def run_sweep(
             )
     totals["net_pauses"] = pause.block()
     totals["tapes_skipped"] = _TAPES_SKIPPED
+    totals["untraded_skipped"] = _UNTRADED_SKIPPED
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["slowest"] = slowest_series(series_wall)
     totals["by_class"] = wall_by_class(series_wall)
