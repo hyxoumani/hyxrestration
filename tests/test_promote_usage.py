@@ -43,6 +43,8 @@ def sandbox(tmp_path: Path):
     for root in (dev, stable):
         (root / ".venv" / "bin").mkdir(parents=True)
         (root / "scripts" / "systemd").mkdir(parents=True)
+        for unit in ("hyxlab-shadow.service", "hyxlab-stream.service"):
+            (root / "scripts" / "systemd" / unit).write_text("[Service]\n")
         # Exits 1: in the control run, `set -e` stops the script at the suite,
         # so it reaches nothing past the first real step even in the sandbox.
         _stub(root / ".venv" / "bin" / "python", log, rc=1)
@@ -149,3 +151,22 @@ def test_the_refusal_comes_before_the_first_side_effect():
     for marker in ('\ncd "$DEV"', "\n.venv/bin/python", "systemctl --user enable"):
         assert refuse < src.index(marker), marker
     assert os.access(PROMOTE, os.X_OK)
+
+
+def test_a_defer_that_names_no_unit_exits_2_and_runs_nothing(sandbox):
+    """2026-11-11: `--defer=hyxlab-stream,hyxlab-shadow` matched nothing and
+    the promote restarted the stream it was told to leave (mistakes #180)."""
+    run, log = sandbox
+    p = run("--defer=hyxlab-shadow.service,hyxlab-straem")
+    assert p.returncode == 2, (p.returncode, p.stdout, p.stderr)
+    assert "names no unit" in p.stderr and "hyxlab-straem.service" in p.stderr, p.stderr
+    assert _ran(log) == "", _ran(log)
+
+
+def test_a_defer_without_the_service_suffix_is_the_same_unit(sandbox):
+    """Reaches the suite step, i.e. the bare names were accepted as units."""
+    run, log = sandbox
+    p = run("--defer=hyxlab-stream,hyxlab-shadow")
+    assert p.returncode not in (0, 2), (p.returncode, p.stderr)
+    assert "python -m pytest tests/" in _ran(log), _ran(log)
+

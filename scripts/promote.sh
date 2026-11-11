@@ -106,6 +106,25 @@ for arg in "$@"; do
         --units-only) UNITS_ONLY=1 ;;
     esac
 done
+# A --defer NAME THAT MATCHES NOTHING REFUSES, BEFORE ANYTHING RUNS (mistakes
+# #180). The deferral below compares full unit names, so on 2026-11-11
+# `--defer=hyxlab-stream,hyxlab-shadow` (no `.service`) matched neither: the
+# promote ran clean and restarted the stream it had been told to leave alone,
+# with no line saying the flag had done nothing. A bare name gains its suffix;
+# a name with no unit file in the repo is a typo, and a typo exits 2 here.
+if [[ "$DEFER" != "" ]]; then
+    _norm=""
+    IFS=, read -ra _defer_names <<< "$DEFER"
+    for u in "${_defer_names[@]}"; do
+        [[ "$u" == *.service ]] || u="$u.service"
+        if [[ ! -f "$DEV/scripts/systemd/$u" ]]; then
+            echo "promote.sh: --defer names no unit in scripts/systemd/: $u" >&2
+            exit 2
+        fi
+        _norm="${_norm:+$_norm,}$u"
+    done
+    DEFER="$_norm"
+fi
 
 install_units() {
     echo "== install systemd units (repo scripts/systemd/ is canonical) =="

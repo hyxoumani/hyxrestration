@@ -4268,6 +4268,28 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+180. **2026-11-11 20:52Z -- `promote.sh --defer=hyxlab-stream,hyxlab-shadow`
+    restarted the stream it had been told to leave alone.** The #179
+    promote moved `hyxlab/store.py` (one new method only the sweep
+    calls), which is in the stream daemon's closure, so the pass deferred
+    both daemons -- by bare name. The deferral compares full unit names
+    (`",$DEFER," == *",$u,"*` against `hyxlab-stream.service`), so neither
+    name matched, nothing said so, and the stream was restarted at
+    20:52:38Z, its second restart of the day (the shadow was deferred
+    only because the young-run guard adds it by its full name). Cost,
+    measured: a clean stop (`final counts` printed, `raw_dropped 0`) and
+    a 1 s start, then the boot `seq_reset` rows on every shard as
+    designed -- a reconnect gap that bought nothing. The parser already
+    refused unknown FLAGS before anything ran (EXP-2305); a flag whose
+    VALUE names nothing was the same silent no-op one level in. Fix:
+    a bare name gains `.service`, and a name with no unit file in
+    `scripts/systemd/` exits 2 ahead of the suite and every systemctl
+    call. Rule: **an option that selects by name must fail on a name
+    that selects nothing; "accepted and ignored" is the worst of the
+    three outcomes, and validating the flag is not validating its
+    value.** 2 tests in `tests/test_promote_usage.py`, the refusal one
+    red against the old script.
+
 179. **2026-09-20 -> 2026-11-11 20:50Z -- KXHYPE and KXHYPED fell 14 h
     further behind every day for 52 days (704 h and 730 h on 11-11) while
     the fix that was being scheduled, a budget raise, could not have
