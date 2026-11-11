@@ -4268,6 +4268,61 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+174. **2026-11-11 02:20Z -- the shared disk was 1.9 d from the kubelet's
+    threshold and ~10 d from full, the status page had carried the user
+    item for nine days, and no pass had watched one of this lab's writers
+    meet a full filesystem: every ENOSPC test in the suite (five files)
+    raises `OSError(28)` from a PATCHED call, which proves the handler of
+    the call that was patched.** Rehearsed on a real one -- `unshare -Urm`,
+    a 24-64 MB tmpfs, the store's own flush filling it, the archive read
+    back from a second process after every step (DuckDB 1.5.2). **Result:
+    the design holds; nothing is lost and nothing corrupts.** (a)
+    `StreamStore`: the first write to fail is the staged CSV in
+    `_insert_frame`, before DuckDB is asked for anything; the batch goes
+    back to the buffer front, the overflow spill fails too and leaves an
+    empty sidecar, the archive holds exactly the flushes that returned
+    (620,000 of 620,000, distinct), a restart boots, and when space
+    returns one flush lands the backlog once (800k / 640k rows across
+    runs, count == distinct == appended). (b) The CSV is an accidental
+    RESERVATION: it is unlinked before `COMMIT`, and at ~133 B/row it is
+    larger than the WAL the commit then writes (~84 B/row), so the store's
+    commit cannot itself meet ENOSPC unless another tenant takes the space
+    in that window; when the commit lands but the checkpoint cannot, DuckDB
+    keeps the WAL (1.68 -> 13.48 MB over eight flushes), stays readable,
+    and folds it in at the first checkpoint that fits. (c) DuckDB's own
+    path (the collector/sweep shape, plain INSERTs): `TransactionException:
+    Failed to commit: Could not write file "...wal": No space left on
+    device` (or `"...duckdb"` for a 400k-row batch written straight to the
+    file), atomic -- 880,000 of 880,000 committed rows readable from
+    outside while full, and writable again after the free. **What the
+    rehearsal found wrong was a test, not the store:** at ZERO free a
+    failed append lands no bytes, so the sidecar-rewind in `_spill_locked`
+    is invisible -- a mutant with the `truncate` removed stayed green until
+    the scenario left 300 kB of room, where it leaves a 299,008-byte torn
+    tail. **What no code can fix:** on a full disk the sidecar and the
+    shutdown snapshot fail with everything else (`spill_all` and
+    `spill_snapshot` both raise ENOSPC, buffer untrimmed, no part-written
+    snapshot), so the buffer is the only copy and it grows without bound:
+    441 B per buffered `BookEvent` (tracemalloc, 300k rows) x ~6.6k
+    events/s = ~2.9 MB/s against `MemoryMax=4G` with ~350 MB in use is
+    **~21 minutes to a cgroup kill, repeated every restart** -- a full disk
+    costs the stream everything it receives, in 21-minute lives, and the
+    journal says so from the first tick (`flush FAILED (OSError: [Errno
+    28] ...)`, `CRITICAL` past `PENDING_ALARM`). Not rehearsed: btrfs
+    itself (delayed allocation can report ENOSPC at fsync rather than at
+    write, and metadata exhaustion arrives before `statvfs` reads zero);
+    the tmpfs proves the code paths, not the filesystem. Pinned:
+    `tests/test_stream_enospc.py` (one test, 3.9 s, skips where an
+    unprivileged mount namespace is unavailable; vacuity guard = four
+    `OSError 28` in a row). Rule: **a failure the calendar has already
+    scheduled gets rehearsed on the real resource before its date, and a
+    mocked errno is a test of one call site -- a full filesystem fails
+    whichever write comes FIRST, and here that was a write no ENOSPC test
+    named. And a rewind/cleanup test needs the failure to land PART-WAY:
+    at the boundary where nothing is written, cleanup that never ran is
+    green.** (#12's "recovery claims get tested, not assumed", applied to
+    the resource instead of the exception.)
+
 173. **2026-09-20 -> 2026-11-10, read 11-10 20:25Z from `sweep_log` -- KXHYPE
     and KXHYPED truncated at the per-series budget on EVERY kalshi sweep for
     52 days, and "resumes next run" was true every day while the frontier
