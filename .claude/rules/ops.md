@@ -716,7 +716,13 @@
   day's closed hours vs the same hour files 1 d and 7 d back): the 11-07
   ticker-channel doubling was read by hand on four passes before it had a
   name. Read the line, never `du` the day directory, before calling a
-  raw-frame step a weekend effect.
+  raw-frame step a weekend effect. The writer compresses at zstd level 9
+  since 2026-11-11 08:43Z (`rawframes.ZSTD_LEVEL`; measured -31% books /
+  -32% ticker as a share of raw against level 3, mistakes #177), so a day
+  or hour compared across that instant reads ~-30% with the wire
+  unchanged: compare bytes as a SHARE OF RAW (decompress and count)
+  before calling it a traffic drop. "No lever of ours" on a burn is a
+  claim about every constant of the writer, not only scope and retention.
 - A worst-over-window rate assumes the quantity is MONOTONE inside the
   window. `qa._fs_burn` (max burn over 14 d of free-space samples) nets
   a deletion into every older sample: the 11-06 run would have printed

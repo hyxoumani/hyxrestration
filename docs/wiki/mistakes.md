@@ -4292,7 +4292,12 @@ Format: what happened → root cause → error type → prevention tier
     GB/day off a net burn of 31-41. Fix: `rawframes.ZSTD_LEVEL = 9` with
     the table beside it; same container, default window, so every reader
     (the sibling's included) decodes it unchanged, and an hour file that
-    straddles the restart is two frames at two levels. Rule: **"no lever"
+    straddles the restart is two frames at two levels. CONFIRMED in
+    production 10:14Z on 09Z, the first whole hour (share of raw vs
+    11-10's 09Z): books 6.82% -> 4.74%, ticker 8.09% -> 5.50%, trades
+    10.03% -> 8.24%; the hour 619 MB -> 412 MB on near-equal raw, with
+    07Z (level 3 both days) at 6.87% / 6.87% as the control;
+    `raw_dropped 0`, `raw_errors 0`. Rule: **"no lever"
     on a cost is a claim about every parameter of the writer, not just
     its scope and its retention -- before handing a burn to the user,
     read the writer's constants and ask which were set before the cost
