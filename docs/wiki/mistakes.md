@@ -4268,6 +4268,29 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+175. **2026-11-07 -> 2026-11-11 02:35Z -- the urgent disk user item named
+    `~/scratch/backupcap` (135 GB) and `~/scratch/polycap` (47 GB) as "the
+    one pair you can approve without losing anything live", for four days
+    and through a dozen passes that re-dated the threshold around it;
+    both are reflinked probe copies of `hyxlab.duckdb` and all of
+    `~/scratch` holds 0.2 GB exclusive of 195.2 GB nominal.** The 182 GB
+    was `du`. #139 had already measured this exact mechanism on this
+    exact file (`stat`/`du` report a reflinked copy at full size; only
+    `btrfs filesystem du -s --raw` prices a slot) and the ops rule says
+    so -- it was applied to the model's COST side (backups x8) and never
+    to the list of things to DELETE, where the same error points the
+    other way: it promises the user headroom that does not exist, on the
+    item whose whole content is a date. Had the user approved it, the
+    kubelet threshold would have moved by minutes. Re-priced by exclusive
+    bytes: hylshi-research 184.8 GB, Steam 103.1, hylshi-worktree-backups
+    84.6, hyzero 63.0, `~/.cache` 37.5, workspace/hylshi 24.5, hytest 7.7.
+    Rule: **a deletion candidate is priced in EXCLUSIVE bytes or it is
+    not a candidate -- on a reflink filesystem the copies we made
+    ourselves are the likeliest to be free to keep and worthless to
+    delete. A recommendation carried forward is re-measured when the
+    deadline it serves is re-dated; re-dating the clock around an
+    unchecked remedy is half a read.**
+
 174. **2026-11-11 02:20Z -- the shared disk was 1.9 d from the kubelet's
     threshold and ~10 d from full, the status page had carried the user
     item for nine days, and no pass had watched one of this lab's writers
