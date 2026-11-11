@@ -460,6 +460,35 @@ class BookEvent:
     qty: float
 
 
+def _book_order(events: list[BookEvent]) -> list[BookEvent]:
+    """One flush's book events grouped by connection, arrival order kept
+    inside each group. Returns a NEW list -- the caller's is what a failed
+    flush puts back in the buffer.
+
+    Why: the shards interleave on arrival, so in arrival order `sid` never
+    runs, `seq` is a sawtooth across 18 streams and `market_id` alternates
+    row by row -- and a flush is about one DuckDB row group (122,880 rows),
+    the unit compression is chosen over. MEASURED 2026-11-11 on a real
+    10-minute slice (13:00-13:10Z, 2,870,280 rows) rebuilt in production-
+    shaped batches: 19.5-19.9 B/row in arrival order, 13.1-14.0 grouped by
+    sid, -29% at 72k-row flushes to -34% at 122,880 and 180k. Refuted on
+    the same slice: grouping by market (-14%), by sid then market (-17%),
+    and any order at all for `stream_ticker` at its real ~9k-row flush
+    (-6%, and nothing at 5k) or `stream_trades` (0%).
+
+    The key is the connection ALONE and the sort is stable, so no row moves
+    relative to another row of its own connection: `seq` order per `sid` is
+    arrival order already, and the levels of one snapshot frame (same
+    `recv_ts`, same `seq`) stay as they were sent. Rows with no `sid`
+    (polymarket) form one group, first. Every reader orders by `recv_ts`
+    explicitly; none may read physical order (mistakes #178)."""
+    return sorted(events, key=_book_group)
+
+
+def _book_group(e: BookEvent) -> int:
+    return -1 if e.sid is None else e.sid
+
+
 @dataclass
 class StreamTrade:
     venue: str
@@ -1221,6 +1250,7 @@ class StreamStore:
         measured on a temp database 2026-10-23, see `FLUSH_ROWS_PER_S`."""
         conn.execute("BEGIN")
         tmp = self.path.parent
+        events = _book_order(events)
         _insert_frame(
             conn,
             "book_events",

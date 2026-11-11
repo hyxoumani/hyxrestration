@@ -945,7 +945,9 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   (the stable venv has no pandas/pyarrow): FLUSH_ROWS_PER_S 7,100 -> 100,000.
   Buffer constants re-sized from a 10-min staging run (~4,200 rows/s):
   SPILL_CAP 2M (~8 min, memory-bound). Raw frames kept 14 days. Measured
-  growth ~8.6 GB/day DuckDB (~19 B/book row, ~48 B/ticker row) + ~8 GB/day
+  growth ~8.6 GB/day DuckDB (~19 B/book row, ~48 B/ticker row; since
+  2026-11-11 each flush's book events are stored grouped by connection,
+  `_book_order`, measured -31% to ~14 B/row on a real slice, mistakes #178) + ~8 GB/day
   raw -- the full-file hyxstream backup is unbounded at that rate.
   **Re-measured in production 2026-10-24 (mistakes #136):** `hyxstream.duckdb`
   43.99 GB at the 10-23 03:30Z backup -> 51.41 GB at 10-24 03:30Z (7.4 GB

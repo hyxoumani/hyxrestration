@@ -4268,6 +4268,48 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+178. **2026-10-23 -> 2026-11-11 14:35Z -- `book_events` was archived in
+    ARRIVAL order, interleaved across 18 books connections, at ~20 B/row
+    where the same rows grouped by connection take ~14.** #177's rule ("no
+    lever of ours is a claim about every constant of the writer") had been
+    applied to the raw frames and not to the DuckDB archive, the lab's
+    largest live term (293 GB, ~10-13 GB/day, never pruned). Measured on a
+    real slice (13:00-13:10Z 11-11; 2,870,280 book rows, 356,581 ticker,
+    67,571 trades; one 1.39 s ledgered read hold, no stall entry), rebuilt
+    on /home in production-shaped batches and priced in USED blocks:
+    leave-one-out puts the bytes in `qty` 4.3, `sid` 2.7, `seq` 2.7,
+    `market_id` 2.5, `src_ts` 2.2, `price` 2.1 B/row -- two of the top
+    three are a connection id and its counter, incompressible only because
+    the shards interleave row by row and a flush is about one row group
+    (122,880 rows), the unit DuckDB picks compression over. Stable-sorting
+    each flush by `sid`: 19.5-19.9 -> 13.1-14.0 B/row, -29% at 72k-row
+    flushes, -34% at 122,880 and 180k; replayed through the real
+    `StreamStore` in 40 fifteen-second flushes, 21.28 -> 14.61 B/row
+    (-31%) with an identical row-set hash and the sort costing 11 ms per
+    180k rows. REFUTED on the same slice: by market (-14%), by sid then
+    market (-17%), any order for `stream_ticker` at its real ~9k-row flush
+    (-6%; 0% at 5k; the -39% at 122,880 is a batch size it never has) and
+    `stream_trades` (0%). Fix (`hyxlab.streamstore._book_order`, called in
+    `_insert`): a NEW list sorted on the connection alone, so no row moves
+    relative to its own connection's rows and the buffer a failed flush
+    restores is untouched; every reader already orders by `recv_ts, seq`.
+    Worth ~6.5 B x ~425M book rows/day = ~2.8 GB/day, forward only. **Two
+    probe artifacts caught before they became findings:** (a) a
+    single-column file prices every column at a whole 256 KiB block per row
+    group (2.29 B/row for a constant `venue`) -- price a column by leaving
+    it OUT of the full table; (b) batches over one row group read 37 B/row
+    by FILE size because DuckDB's optimistic writes leave free blocks that
+    a one-checkpoint scratch file never reuses (409 total / 206 used) -- the
+    live file has 27 free blocks of 1,117,605, so that "doubling" does not
+    exist in production. Rule: **an append-only columnar archive is
+    compressed in the ORDER rows arrive, and arrival order from N
+    multiplexed connections is the worst order for every per-connection
+    column; price a scratch database in used blocks, never bytes on disk,
+    and test a sort at the batch size the table really flushes at.** 3
+    tests (`tests/test_stream_book_order.py`), the grouping one red against
+    a mutant whose landing was checked.
+
+
 177. **2026-10-20 -> 2026-11-11 08:45Z -- the raw-frame writer compressed
     at zstd level 3 for 22 days, a level chosen for its speed against a
     wire it outruns 280-fold, while raw frames were the largest term of
