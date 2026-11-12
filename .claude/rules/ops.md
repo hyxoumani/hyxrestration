@@ -632,7 +632,11 @@
   disk). The digest now prints `HOSTMEM`: 24h kernel kills with episode
   count, whether any victim was ours and the largest victim (the thing
   that WAS the memory), `MemAvailable`/`MemTotal`, `Shmem` with the tmpfs
-  verdict, and lifetime memory PSI. The disk rule ("enumerate every
+  verdict, and lifetime memory PSI. The kill count is GLOBAL
+  OOMs only; kills at a cgroup's own `memory.max` (a different kernel
+  sentence) ride in a `(+N kill(s) at a cgroup's own memory.max, ...)`
+  clause since 2026-11-12 (mistakes #184) -- a sibling's `testbomb`
+  scopes put ~36 a day there and are not a host event. The disk rule ("enumerate every
   tenant before attributing") applies to RAM unchanged: `du -sx -BG
   /tmp/*` is a memory reading here, and so is `grep Shmem /proc/meminfo`.
   Never write a large temporary into `/tmp` on this host (pytest

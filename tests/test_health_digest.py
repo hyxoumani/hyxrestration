@@ -2079,3 +2079,36 @@ def test_the_live_host_reader_never_raises_and_the_digest_prints_it(
     out = capsys.readouterr().out
     assert "HOSTMEM    (host)" in out
     assert "kernel journal UNREAD" in out and "Shmem 21.4 GiB (/tmp is tmpfs" in out
+
+
+CAP_OOM_LINES = """\
+2026-11-12T13:02:42+00:00 hyz kernel: oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=user.slice,mems_allowed=0,oom_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/hylshi-slot-testbomb-b7e640c4bd49.scope,task_memcg=/user.slice/user-1000.slice/user@1000.service/app.slice/hylshi-slot-testbomb-b7e640c4bd49.scope,task=python,pid=1284644,uid=1000
+2026-11-12T13:02:42+00:00 hyz kernel: Memory cgroup out of memory: Killed process 1284644 (python) total-vm:631768kB, anon-rss:261528kB, file-rss:8264kB, shmem-rss:0kB, UID:1000 pgtables:588kB oom_score_adj:200
+"""
+
+
+def _both(text):
+    return health.parse_kernel_oom(text) + health.parse_kernel_oom(text, cap=True)
+
+
+def test_a_cgroup_cap_kill_is_not_a_host_oom_but_is_not_silence_either():
+    # 2026-11-12: 36 of these in 24h under a line reading "0 kernel OOM kills".
+    assert health.parse_kernel_oom(CAP_OOM_LINES) == []
+    line = health.host_memory_line(_both(CAP_OOM_LINES), UNITS, _hm())
+    assert line.startswith(
+        "24h: 0 kernel OOM kills (+1 kill(s) at a cgroup's own memory.max, none a hyxlab unit; "
+        "largest python 255 MiB anon in hylshi-slot-testbomb-b7e640c4bd49.scope) |"
+    )
+
+
+def test_a_cap_kill_in_a_hyxlab_cgroup_is_named():
+    mine = CAP_OOM_LINES.replace("hylshi-slot-testbomb-b7e640c4bd49.scope", "hyxlab-stream.service")
+    line = health.host_memory_line(_both(mine), UNITS, _hm())
+    assert "hyxlab victims: ['hyxlab-stream.service']" in line
+
+
+def test_cap_kills_leave_the_global_half_of_the_line_unchanged():
+    base = health.host_memory_line(health.parse_kernel_oom(HOST_OOM_LINES), UNITS, _hm())
+    mixed = health.host_memory_line(_both(HOST_OOM_LINES + CAP_OOM_LINES), UNITS, _hm())
+    head = base.split(" | ")[0]
+    assert mixed.startswith(head + " (+1 kill(s)")

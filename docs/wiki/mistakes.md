@@ -4268,6 +4268,29 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+184. **2026-11-01 -> 2026-11-12 14:40Z -- the digest's `HOSTMEM` line said
+    `0 kernel OOM kills` over a kernel journal holding 36 kills in the
+    same 24 h.** All 36 were `Memory cgroup out of memory: Killed process`
+    -- a cgroup at its own `memory.max`, here the sibling's
+    `hylshi-{slot,loop}-testbomb-*` scopes at ~250 MiB each (deliberate, by
+    the name) -- and `_KILLED_RE` anchors on the global sentence, `Out of
+    memory: Killed process`, capital O. Excluding them from the HOST count
+    is the line's design (#152: who did the host sacrifice); printing the
+    count of one sentence under the name of the whole kernel is not, and a
+    pass that greps the journal by hand (this one, `grep -ci oom`: 105)
+    meets a digest that contradicts the journal. It hid nothing of ours
+    today -- a hyxlab unit killed at its cap already shows as `OOM-KILLED`
+    / `result=oom-kill` -- which is why it survived 11 days. Fix:
+    `parse_kernel_oom(text, cap=True)` returns the other population, and
+    the line appends `(+36 kill(s) at a cgroup's own memory.max, none a
+    hyxlab unit; largest python 255 MiB anon in hylshi-slot-testbomb-
+    ....scope)` -- nothing when there are none, the global half byte-for-
+    byte unchanged (asserted). One mutant red-verified (3 tests), landing
+    checked with `cmp`. Rule: **a count is named after the population its
+    parser admits, not the one its source holds; when a regex selects one
+    of two sentences a tool emits for one event, the line says which, or
+    reports the other.**
+
 183. **2026-11-12 14:15Z -- the first skip-untraded run's truncation was
     blamed on the wrong cap, in the journal and in `sweep_log`, and the
     line the prior pass told this one to read was never printed.** #179

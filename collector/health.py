@@ -1222,6 +1222,15 @@ _KILLED_RE = re.compile(
     r"Out of memory: Killed process (?P<pid>\d+) \((?P<comm>[^)]*)\)"
     r".*?anon-rss:(?P<anon>\d+)kB.*?oom_score_adj:(?P<adj>-?\d+)"
 )
+# A cgroup that hit ITS OWN `memory.max` is killed by the same kernel code and
+# logged in the same journal, under a different sentence. It is not the host
+# running out, so it stays out of the global count -- but a line that says
+# "0 kernel OOM kills" over a journal holding 36 of these (2026-11-12, all in
+# a sibling's `testbomb` scopes) is describing its regex, not the kernel.
+_CAP_KILLED_RE = re.compile(
+    r"Memory cgroup out of memory: Killed process (?P<pid>\d+) \((?P<comm>[^)]*)\)"
+    r".*?anon-rss:(?P<anon>\d+)kB.*?oom_score_adj:(?P<adj>-?\d+)"
+)
 
 
 @dataclass(frozen=True)
@@ -1234,6 +1243,7 @@ class OomVictim:
     owner: str  # the cgroup leaf -- a unit name, or a scope for anything else
     anon_kb: int
     adj: int
+    cap: bool = False  # killed at its own cgroup's memory.max, not by a host OOM
 
 
 def _gib(kb: int) -> str:
@@ -1241,7 +1251,7 @@ def _gib(kb: int) -> str:
     return f"{mib / 1024.0:.1f} GiB" if mib >= 1024 else f"{mib:.0f} MiB"
 
 
-def parse_kernel_oom(text: str) -> list[OomVictim]:
+def parse_kernel_oom(text: str, cap: bool = False) -> list[OomVictim]:
     """Victims from `journalctl -k -o short-iso`. Pure, so the shapes below are
     asserted against the real 2026-09-07 lines rather than against a live box.
 
@@ -1249,7 +1259,12 @@ def parse_kernel_oom(text: str) -> list[OomVictim]:
     cgroup, then a `Killed process` line carrying the footprint. They are
     joined on pid rather than on adjacency -- interleaved episodes are common
     and the pid is the only field that actually identifies the victim.
+
+    `cap=True` returns the OTHER population instead: processes killed at their
+    own cgroup's `memory.max`. Never both -- every caller of the default is
+    asking what the HOST ran out of.
     """
+    killed_re = _CAP_KILLED_RE if cap else _KILLED_RE
     owners: dict[str, str] = {}
     out: list[OomVictim] = []
     for line in text.splitlines():
@@ -1258,7 +1273,7 @@ def parse_kernel_oom(text: str) -> list[OomVictim]:
             leaf = m.group("memcg").rstrip("/").rsplit("/", 1)[-1]
             owners[m.group("pid")] = leaf
             continue
-        if m := _KILLED_RE.search(rest):
+        if m := killed_re.search(rest):
             try:
                 ts = datetime.fromisoformat(stamp).timestamp()
             except ValueError:
@@ -1272,6 +1287,7 @@ def parse_kernel_oom(text: str) -> list[OomVictim]:
                     owner=owners.get(pid, "?"),
                     anon_kb=int(m.group("anon")),
                     adj=int(m.group("adj")),
+                    cap=cap,
                 )
             )
     return out
@@ -1414,7 +1430,7 @@ def read_kernel_oom_window(hours: int = HOSTMEM_WINDOW_H) -> list[OomVictim] | N
         return None
     if proc.returncode != 0:
         return None
-    return parse_kernel_oom(proc.stdout)
+    return parse_kernel_oom(proc.stdout) + parse_kernel_oom(proc.stdout, cap=True)
 
 
 def oom_episodes(
@@ -1449,6 +1465,9 @@ def host_memory_line(
     tmpfs is files pretending to be free disk. PSI is the cost the host's own
     tasks paid, lifetime, so a reader can difference it between digests.
     """
+    caps = [v for v in victims or [] if v.cap]
+    if victims is not None:
+        victims = [v for v in victims if not v.cap]
     if victims is None:
         kills = f"{window_h}h: kernel journal UNREAD (no claim about OOM kills)"
     elif not victims:
@@ -1462,6 +1481,14 @@ def host_memory_line(
             f"{window_h}h: {len(victims)} kernel OOM kill(s) in {len(oom_episodes(victims))} "
             f"episode(s), {who}; largest {worst.comm} {_gib(worst.anon_kb)} anon "
             f"(adj={worst.adj}, {worst.owner}) at {when}"
+        )
+    if caps:
+        ours = sorted({v.owner for v in caps if v.owner in units})
+        worst = max(caps, key=lambda v: v.anon_kb)
+        who = f"hyxlab victims: {ours}" if ours else "none a hyxlab unit"
+        kills += (
+            f" (+{len(caps)} kill(s) at a cgroup's own memory.max, {who}; "
+            f"largest {worst.comm} {_gib(worst.anon_kb)} anon in {worst.owner})"
         )
     if hm.available_kb is None or hm.total_kb is None:
         standing = "MemAvailable unread"
