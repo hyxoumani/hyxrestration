@@ -19,6 +19,8 @@ state, session findings, execution queue).
 - [Unit-drift runbook](unit-drift-runbook.md) — SHADOWED / DROP-IN: the two drift
   states no script may clear, and what to do when one fires
 - [Mistakes log](mistakes.md) — root-caused failures with escalation tiers
+- [Status archive 2026-11](status-archive-2026-11.md) — entries older than ~5 days,
+  moved by `scripts/rotate_status.py`; grows through the month; reference only
 - [Status archive 2026-10](status-archive-2026-10.md) — October's dated status
   entries, rotated off the living page on 2026-11-12, verbatim; reference only
 - [Status archive 2026-07..09](status-archive-2026-07-09.md) — dated status entries
