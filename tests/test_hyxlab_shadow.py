@@ -291,6 +291,61 @@ def test_shadow_gap_invalidates_books(tmp_path):
     assert runner.poll_once() == 1
 
 
+def test_shadow_gap_row_that_lands_a_poll_before_the_next_event_still_invalidates(tmp_path):
+    """The stream flushes a gap row when the break is seen; the first
+    post-gap event of the shadow's universe can land a flush -- so a poll --
+    later. That poll's batch is empty, the gap cursor moves past the row,
+    and nothing re-offers it: before mistakes #186 the delta below emitted
+    a snapshot of the pre-gap book. Same events, same gap as
+    `test_shadow_gap_invalidates_books`, cut one poll earlier."""
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+
+    from hyxlab.store import Store
+
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id="M1")])
+    store.close()
+
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.flush()
+    runner = ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ShadowLedger(tmp_path / "shadow.duckdb"),
+    )
+    runner.poll_once()  # anchor
+
+    t1 = T0 + timedelta(seconds=60)
+    sstore.append_gap("kalshi", "books", t1, t1 + timedelta(seconds=1), "reconnect")
+    sstore.flush()
+    assert runner.poll_once() == 0  # the gap row alone: no events yet
+    delta = parse_message(
+        {
+            "type": "orderbook_delta",
+            "sid": 1,
+            "seq": 5,
+            "msg": {
+                "market_ticker": "M1",
+                "price_dollars": "0.4400",
+                "delta_fp": "10.00",
+                "side": "yes",
+                "ts_ms": int((t1 + timedelta(seconds=2)).timestamp() * 1000),
+            },
+        },
+        t1 + timedelta(seconds=2),
+    )[0]
+    sstore.append_events(delta)
+    sstore.flush()
+    assert runner.poll_once() == 0  # suppressed: the book is unknown
+    sstore.append_events(_snapshot_frame("M1", 6, 44, 55, t1 + timedelta(seconds=10)))
+    sstore.flush()
+    assert runner.poll_once() == 1  # a fresh image re-seeds
+
+
 def test_shadow_ignores_gaps_from_other_venues_and_channels(tmp_path):
     """A Polymarket reconnect (or a Kalshi trades-channel gap) must not
     blank Kalshi book state — books re-seed only on Kalshi reconnects,

@@ -493,6 +493,10 @@ def replay_snapshots(
     images emit once complete — when their (market, sid, seq) row group
     ends — never row-by-row.
 
+    A gap that starts after the LAST event is applied when the events run
+    out, so how a stream is cut into batches cannot decide whether a gap
+    is honoured.
+
     Pass a persistent `replayer` to carry book state across successive
     batches (the shadow harness tails the stream archive in polls; a WS
     frame's rows are flushed atomically, so image groups never span
@@ -526,3 +530,16 @@ def replay_snapshots(
         snap = replayer.finalize_snap(open_group[0])
         if snap is not None:
             yield snap
+    # Gaps no event reached. With a one-shot replayer this changes nothing
+    # (no event follows to observe the state). With a PERSISTENT one it is
+    # the difference between a gap and no gap: the shadow's poll advances
+    # its gap cursor past every row it read, so a gap row that lands a
+    # poll ahead of the next event (an empty batch, or one whose events
+    # all predate the gap's start) was read once, applied never, and the
+    # next poll's delta replayed onto the pre-gap book (mistakes #186).
+    # `invalidate(before=start)` spares any image newer than the start, so
+    # applying it here equals applying it ahead of the next batch's first
+    # event, and a caller that re-offers the gap (simui) wipes nothing twice.
+    while gi < len(gap_starts):
+        replayer.invalidate(before=gap_starts[gi][0], shard=gap_starts[gi][1])
+        gi += 1

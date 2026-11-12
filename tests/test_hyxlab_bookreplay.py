@@ -267,3 +267,37 @@ def test_replay_snapshots_reads_the_shard_from_a_three_tuple_gap():
     # The two-tuple form is the pre-2026-11-02 reading: every book wiped.
     snaps = list(replay_snapshots(events, gaps=[gap[:2]]))
     assert [(s.market_id, s.yes_bid_size) for s in snaps] == [("A", 100), ("B", 100)]
+
+
+def test_a_gap_no_event_reached_still_invalidates_for_the_next_batch():
+    """Batch-invariance of gap handling. The shadow reads gap rows by an
+    `ended_at` cursor and never re-offers one, so a gap row that lands a
+    poll before the next event -- an empty batch, or one whose events all
+    predate the gap's start -- must be applied when that batch ends.
+    Otherwise the next poll's delta replays onto the pre-gap book: the same
+    stream cut at a different place yields a different book (mistakes #186)."""
+    gap = (T0 + timedelta(seconds=5), T0 + timedelta(seconds=6))
+    delta = ev("delta", "yes", 0.40, -20, seq=4, ts_off=10)
+
+    # Control: one batch -- the delta after the gap is suppressed.
+    r1 = BookReplayer()
+    seed(r1)
+    assert list(replay_snapshots([delta], gaps=[gap], replayer=r1)) == []
+
+    # Empty batch carries the gap; the delta arrives a batch later.
+    r2 = BookReplayer()
+    seed(r2)
+    assert list(replay_snapshots([], gaps=[gap], replayer=r2)) == []
+    assert list(replay_snapshots([delta], replayer=r2)) == []
+
+    # Batch whose only event PREDATES the gap's start.
+    r3 = BookReplayer()
+    seed(r3)
+    early = ev("delta", "yes", 0.40, 5, seq=2, ts_off=2)
+    assert len(list(replay_snapshots([early], gaps=[gap], replayer=r3))) == 1
+    assert list(replay_snapshots([delta], replayer=r3)) == []
+
+    # Vacuity guard: with no gap at all the same delta DOES emit.
+    r4 = BookReplayer()
+    seed(r4)
+    assert len(list(replay_snapshots([delta], replayer=r4))) == 1
