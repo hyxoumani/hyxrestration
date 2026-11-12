@@ -1668,6 +1668,17 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   checking what hylshi reads from the untraded strikes' quotes).
   The 'KXHYPE 4.9k' above is what a TRUNCATED run delivered, not what
   the venue listed.
+  **Shipped 11-11 (#179), first production run read 2026-11-12:** KXHYPE
+  50,390 listed / 49,882 untraded / 508 fetched, KXHYPED 50,400 / 49,272
+  / 1,128; each watermark advanced 7.4 days of close-time in one run
+  (10-20 16:00Z and 10-19 14:00Z), so the ~23-day backlog clears in about
+  four more runs. Both stopped at the LISTING cap (`UNTRADED_LIST_MAX`),
+  not the fetch budget; since #183 the note and the journal line
+  (`[sweep] KXHYPE: N of M untraded by listing ... listing cap 50000
+  markets reached`) say which. `sweep_log.n_candles` counts NEW rows (70
+  and 1,235) -- the archive holds 779 and 2,907 for those markets, the
+  rest were already archived when the sweep reached them (writer not
+  traced; candidates are the 5-min collector and breadth).
 
 - `pgrep -f` matches your own command string — quote patterns or match
   the python binary path; this caused false "sweep alive" reads.

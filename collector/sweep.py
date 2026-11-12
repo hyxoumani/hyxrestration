@@ -626,6 +626,7 @@ def sweep_series(
     time.sleep(MARKETS_PAUSE_S)
     untraded: set[str] = set()
     n_listed = len(markets)
+    cut = False
     if skip_untraded:
         markets, untraded, cut = plan_untraded_skip(markets, max_markets)
         markets_truncated = markets_truncated or cut
@@ -745,12 +746,25 @@ def sweep_series(
         # sweep_log where doctor(), QA and any later analyst must trip over it.
         note = ""
         if markets_truncated:
-            note = f"budget {max_markets} markets reached; resume from {max_close:%Y-%m-%dT%H:%M}Z"
+            # Name the cap that actually cut the run. A skip-untraded series
+            # has two, and on 2026-11-12 both HYPE lines read "budget 2000
+            # markets reached" after fetching 508 and 1,128: the listing walk
+            # had stopped at UNTRADED_LIST_MAX (mistakes #183).
+            cap = (
+                f"listing cap {list_budget} markets"
+                if skip_untraded and not cut
+                else f"budget {max_markets} markets"
+            )
+            note = f"{cap} reached; resume from {max_close:%Y-%m-%dT%H:%M}Z"
         if skip_untraded:
             note = (
                 f"{len(untraded)} of {len(markets)} untraded by listing, no candle requested"
                 f" ({n_listed} listed)" + (f"; {note}" if note else "")
             )
+            # The journal is the only reading of this that attaches nothing:
+            # without the line, confirming a skip means opening the archive
+            # the running sweep is writing.
+            print(f"[sweep] {series_ticker}: {note}", flush=True)
         if repair:
             resume = (
                 f"; re-run with --refetch-from {max_close:%Y-%m-%dT%H:%M:%S}Z"
@@ -903,7 +917,8 @@ def run_sweep(
             if truncated:
                 print(
                     f"[sweep] {ticker} TRUNCATED at {n_m} markets"
-                    f" (per-series budget); logged non-ok, resumes next run",
+                    f" fetched (per-series budget or listing cap); logged non-ok,"
+                    f" resumes next run",
                     flush=True,
                 )
         except duckdb.Error as e:

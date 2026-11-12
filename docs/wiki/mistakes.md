@@ -4268,6 +4268,36 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+183. **2026-11-12 14:15Z -- the first skip-untraded run's truncation was
+    blamed on the wrong cap, in the journal and in `sweep_log`, and the
+    line the prior pass told this one to read was never printed.** #179
+    gave KXHYPE/KXHYPED two caps: the fetch budget (2,000 markets a request
+    is spent on) and `UNTRADED_LIST_MAX` (50,000 listed). On its first
+    production run both series stopped at the SECOND -- KXHYPE 50,390
+    listed, 49,882 untraded, 508 fetched; KXHYPED 50,400 / 49,272 / 1,128
+    -- and both `sweep_log` notes read `budget 2000 markets reached`, and
+    both journal lines `TRUNCATED at 508 markets (per-series budget)`: the
+    note's format string predates the second cap and `markets_truncated`
+    is the OR of the two. A reader of the journal alone sees a series cut
+    at a quarter of its budget, which is the shape of a bug. And the
+    status page's NEXT asked for the journal's `N of M untraded by listing`
+    lines, which exist only in the `sweep_log` note: confirming the ship
+    took a read attach of `hyxlab.duckdb` while the sweep was writing it.
+    The run itself was right (read-only, this pass): KXHYPE's watermark moved
+    10-13 06:00Z -> 10-20 16:00Z and KXHYPED's 10-12 04:00Z -> 10-19 14:00Z,
+    7.4 days of close-time each against ~10 h a run before; every one of
+    the 508 + 1,128 fetched markets carries candles and an `ok` tape
+    (2,821 and 17,097 trades), every skipped one is `listing_untraded`.
+    Fix: the note names the cap that cut (`listing cap 50000 markets
+    reached` unless the fetch budget did), a skip-untraded series prints
+    its note to the journal, and the dispatcher's line says `fetched
+    (per-series budget or listing cap)`. Red-verified by one mutant,
+    landing checked with `cmp`. Rule: **when a stop condition becomes the
+    OR of two limits, every sentence that names the reason has to be
+    re-derived the same pass; and a ship's confirming read belongs in the
+    journal line the ship prints, or the confirmation costs a hold on the
+    file it is about.**
+
 182. **2026-11-01 -> 2026-11-12 08:15Z -- QA's Kalshi maintenance window
     was a constant in UTC hours for a closure the venue publishes in US
     Eastern time, and the digest raised the closure as `DEAD-AIR` every

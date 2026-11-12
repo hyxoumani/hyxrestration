@@ -192,6 +192,23 @@ def test_a_fetch_budget_cut_is_logged_truncated_at_an_honest_watermark(monkeypat
     assert seen["candles"] == ["KXH-T1", "KXH-T2"]
     assert store.watermark_writes == [T0 + timedelta(hours=3)]
     assert store.logs[-1][-2] == "truncated"
+    assert "budget 2 markets reached" in store.logs[-1][-1]
+
+
+def test_a_listing_cap_cut_is_named_as_the_listing_cap_not_the_fetch_budget(monkeypatch, capsys):
+    # 2026-11-12: KXHYPE fetched 508 of a 2,000 budget and its note said
+    # "budget 2000 markets reached" -- the walk had stopped at the listing cap.
+    listing = [_m("KXH-U", 1), _m("KXH-T", 2, "4.00")]
+    store, _ = _wire(monkeypatch, listing, truncated=True)
+    _, _, truncated = sweep_mod.sweep_series(
+        "unused.duckdb", "KXH", 2, session=None, skip_untraded=True
+    )
+    note = store.logs[-1][-1]
+    assert truncated
+    assert f"listing cap {sweep_mod.UNTRADED_LIST_MAX} markets reached" in note
+    assert "budget" not in note
+    # and the journal carries the same sentence, so no reader attaches for it
+    assert f"[sweep] KXH: {note}" in capsys.readouterr().out
 
 
 def _dispatch(monkeypatch, **kw):
