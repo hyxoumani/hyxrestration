@@ -4339,6 +4339,24 @@ Format: what happened → root cause → error type → prevention tier
     a transient (a series fetching more than its routine count is one).**
     13 tests (`tests/test_sweep_untraded_skip.py`), six mutants each
     asserted to land and each red. Suite 2549 -> 2562.
+    **Premise re-measured at scale 2026-11-12 02:35Z, before the first
+    production run (the 60-of-60 probe was the whole evidence for a rule
+    that skips ~99k requests a run):** the settled listing for both
+    series over closes 10-01 00:00Z .. 11-11 03:00Z (557,340 markets, 443 s
+    of public reads at 0.5 s pacing, 8 x 429 retried) against the 11-11
+    03:30Z backup. The harmful direction -- listing says zero, the market
+    traded -- is EMPTY: of 5,521 listed markets with an archived tape
+    (KXHYPE 1,910, KXHYPED 3,611) every one carries a positive `volume_fp`,
+    and it equals the tape's summed `qty` on all 5,521 (0 mismatches at
+    1e-6). The other direction: 150,296 explicit-zero markets the sweep or
+    tradepass had already marked (147,464 `candle_empty`, 2,832 `empty`
+    with the tape actually fetched) hold 0 trades. `volume_fp` missing on 0
+    of 557,340. Positive-volume markets not yet tape-swept, i.e. what the
+    catch-up runs will fetch through 11-11 03:00Z: KXHYPE 1,353, KXHYPED
+    4,429. The listing's own final volume is therefore an exact statement
+    of the tape for these series, including the final partial hour the
+    hourly candles miss (#179's sibling proof, `tape_provably_empty`,
+    needed a coverage clause for that; the listing does not).
 
 178. **2026-10-23 -> 2026-11-11 14:35Z -- `book_events` was archived in
     ARRIVAL order, interleaved across 18 books connections, at ~20 B/row
