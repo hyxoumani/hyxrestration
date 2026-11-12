@@ -4339,7 +4339,7 @@ Format: what happened → root cause → error type → prevention tier
     a transient (a series fetching more than its routine count is one).**
     13 tests (`tests/test_sweep_untraded_skip.py`), six mutants each
     asserted to land and each red. Suite 2549 -> 2562.
-    **Premise re-measured at scale 2026-11-12 02:35Z, before the first
+    **Premise re-measured at scale 2026-11-12 02:24Z, before the first
     production run (the 60-of-60 probe was the whole evidence for a rule
     that skips ~99k requests a run):** the settled listing for both
     series over closes 10-01 00:00Z .. 11-11 03:00Z (557,340 markets, 443 s
