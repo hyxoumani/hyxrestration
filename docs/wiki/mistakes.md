@@ -4268,6 +4268,28 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+185. **2026-09-26 -> 2026-11-12 15:50Z -- the sweep's hold instrument
+    published a worst hold nobody could place.** The done-side
+    `attach_wait` line has carried `held N on hyxlab.duckdb ... worst X s`
+    since #91/#95; over 11-05..11-11 the worst ran 64-73 s, with 106.8 s
+    on 11-10 and 103.5 s on 11-12 -- and this pass first wrote that the
+    11-12 figure was "the skip-untraded final burst" (50k `trades_swept`
+    marks in one burst), then found 11-10's 106.8 s, a day BEFORE that
+    code existed. A maximum over ~8,500 bursts with no timestamp is a
+    number a reader can only guess a cause for, and the guess goes to
+    whatever shipped last. Fix: `writer_burst` prints `[burst] long write
+    burst: held hyxlab.duckdb 103.5s` when a burst holds past
+    `LONG_BURST_S` (30 s, half the routine worst), from a `finally`, so the
+    journal's own stamp and the series lines around it name the burst --
+    for every `writer_burst` user (sweep, tradepass, breadth, backfills).
+    One mutant red-verified (2 tests), landing checked with `cmp`. Not
+    done: no reading yet; the first is the 11-13 06:10Z sweep. Rule: **an
+    extreme published without the WHEN is an alarm with no address; when
+    an instrument reports a maximum, it also emits the event at the moment
+    it happens, or the first explanation offered for it will be the most
+    recent change.** (#91's own rule, "measure at the holder", one step
+    further: the holder must also say when.)
+
 184. **2026-11-01 -> 2026-11-12 14:35Z -- the digest's `HOSTMEM` line said
     `0 kernel OOM kills` over a kernel journal holding 36 kills in the
     same 24 h.** All 36 were `Memory cgroup out of memory: Killed process`

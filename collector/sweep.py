@@ -201,6 +201,9 @@ PURGE_HORIZON_DAYS = 60
 # failure mode is a delayed sweep, never a lost one.
 BURST_OPEN_RETRIES = 150
 BURST_OPEN_DELAY_S = 2.0
+# A write burst held longer than this prints its own journal line. Half the
+# routine worst of a run (64-73 s, 11-05..11-11), so a handful of lines a day.
+LONG_BURST_S = 30.0
 
 
 # The `~N min left` line is an ETA over SERIES, and the run's cost is per
@@ -502,15 +505,28 @@ def writer_burst(db: str, lock_file: str | None = None):
         # x ~3,709 series, so `held_s_total` in this run's `attach_wait`
         # block is the sweep's total exclusion of the archive — the number
         # the 08-02 fix claimed to shrink and never printed.
-        with held_open(db, retries=BURST_OPEN_RETRIES, delay=BURST_OPEN_DELAY_S) as store:
-            try:
-                yield store
-            finally:
-                # Inside `held_open`, so the flock is released only after the
-                # DuckDB handle is: unlocking first would let the next writer
-                # take the advisory lock and then block on the file lock this
-                # frame still holds.
-                fcntl.flock(lock, fcntl.LOCK_UN)
+        t_open: float | None = None
+        try:
+            with held_open(db, retries=BURST_OPEN_RETRIES, delay=BURST_OPEN_DELAY_S) as store:
+                t_open = time.monotonic()
+                try:
+                    yield store
+                finally:
+                    # Inside `held_open`, so the flock is released only after the
+                    # DuckDB handle is: unlocking first would let the next writer
+                    # take the advisory lock and then block on the file lock this
+                    # frame still holds.
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+        finally:
+            # The run's `attach_wait` line prints the WORST hold and not when
+            # it happened: 103.5 s on 2026-11-12 and 106.8 s on 11-10 against a
+            # 64-73 s band, neither attributable to a series after the fact
+            # (mistakes #185). The journal stamps this line, and the series
+            # lines around it name the burst.
+            if t_open is not None:
+                held = time.monotonic() - t_open
+                if held >= LONG_BURST_S:
+                    print(f"[burst] long write burst: held {Path(db).name} {held:.1f}s", flush=True)
 
 
 def refresh_series(
