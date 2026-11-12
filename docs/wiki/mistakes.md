@@ -4268,6 +4268,30 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+181. **2026-11-10 -> 2026-11-12 02:26Z -- six status entries in three days
+    were stamped with a time the clock had not reached, each fixed by its
+    own `docs: correct ... timestamp` commit (2a81b7a, 021e65b, d7294d7,
+    6562900, 7a4aff2, ea46d3e -- and ea46d3e's own "corrected" 02:27Z was
+    written at 02:25:40Z, caught by this guard's ordering assertion on its
+    first full-suite run).** Same slip every time: the entry's
+    `Updated:` stamp was written from an ESTIMATE of how long the pass had
+    run, never from `date -u`, and the estimate runs long (11-12: stamped
+    02:45Z with a "02:35Z" measurement inside it, at 02:25Z by the clock;
+    11-11: 03:40Z for 03:32Z). It matters beyond tidiness: later passes
+    read a stamp against a unit's run time ("QA 10:00Z, entry 10:15Z") as
+    proof of what the entry had seen, and #154 was a wrong-by-a-day age
+    for the same reason -- arithmetic on a time nobody read. Five
+    corrections were made by hand before this became a guard, which is
+    the gotcha -> rule -> hook ladder skipped twice. Now
+    `tests/test_status_stamp.py`: no `Updated:` stamp on the status page
+    may be later than the clock (1 min slack), the newest entry is first,
+    and a vacuity guard pins the header format; it runs at the stop gate
+    of the pass that wrote the entry. Red-verified by a future-stamp
+    mutant on the real page (landing checked with `cmp`). Rule: **a
+    timestamp in a record is a reading -- take it from `date -u` in the
+    same command that writes it, as every other number in an entry is
+    taken from its instrument.**
+
 180. **2026-11-11 20:52Z -- `promote.sh --defer=hyxlab-stream,hyxlab-shadow`
     restarted the stream it had been told to leave alone.** The #179
     promote moved `hyxlab/store.py` (one new method only the sweep
