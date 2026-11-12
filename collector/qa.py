@@ -25,6 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import duckdb
 
@@ -86,16 +87,52 @@ SKIP_MAX_AGE_H = 36.0  # matches the "sweep ran in last 36h" tolerance
 # Outside the maintenance window the per-channel daily load is 0.0-5.6
 # minutes over all 71 days.
 #
-#: Thursday (Python `weekday()`), 06:00-10:00 UTC. Bounds are the RECORD's,
-#: not the venue's published ones: storms begin in hour 06 or 07 on every
-#: Thursday observed, and the single latest-bleeding one (07-30) opened its
-#: last gap inside hour 09. Excusing four hours a week is the cost of not
-#: alarming weekly on something we cannot fix; the minutes inside the window
-#: are still REPORTED in the detail line every run, so the storm's own drift
-#: stays visible even though it is not budgeted.
-KALSHI_MAINT_DOW = 3
-KALSHI_MAINT_START_H = 6
-KALSHI_MAINT_END_H = 10
+#: The venue's PUBLISHED weekly closure (`GET /trade-api/v2/exchange/schedule`,
+#: read 2026-10-15 and again 2026-11-12): Thursday `standard_hours` are two
+#: sessions, 00:00-03:00 and 05:00-24:00, in US EASTERN time. So the closure
+#: is 07:00-09:00Z under EDT and 08:00-10:00Z under EST, and the window is
+#: anchored to that zone, never to UTC hours: through 2026-11-05 this was a
+#: constant Thursday 06-10Z -- the RECORD's bounds over 11 summer Thursdays --
+#: which after the 11-01 fall-back excused an hour of open market before the
+#: closure and stopped at the instant it reopens (mistakes #182). The journal
+#: shows the storm moving with the zone: 10-29 gaps in hours 07-08Z only,
+#: 11-05 in 08-09Z with the reopen bleed in hour 10.
+KALSHI_MAINT_TZ = ZoneInfo("America/New_York")
+KALSHI_MAINT_DOW = 3  # Thursday (Python `weekday()`), in KALSHI_MAINT_TZ
+KALSHI_CLOSE_LOCAL_H = 3
+KALSHI_REOPEN_LOCAL_H = 5
+#: What QA EXCUSES is the closure plus an hour each side, which is what the
+#: record-derived 06-10Z was under EDT: storms begin in the hour before the
+#: close on some Thursdays, and the single latest-bleeding one (07-30) opened
+#: its last gap in the hour after the reopen. Excusing four hours a week is
+#: the cost of not alarming weekly on something we cannot fix; the minutes
+#: inside the window are still REPORTED in the detail line every run, so the
+#: storm's own drift stays visible even though it is not budgeted.
+KALSHI_MAINT_PAD_H = 1
+
+
+def kalshi_closure_windows(
+    start: datetime, end: datetime, pad_h: float = KALSHI_MAINT_PAD_H
+) -> list[tuple[datetime, datetime]]:
+    """Every weekly closure touching [start, end), as naive-UTC (open, close)
+    pairs widened by `pad_h` hours each side. `pad_h=0` is the venue's
+    published closure itself; the default is the span QA excuses."""
+    out: list[tuple[datetime, datetime]] = []
+    day = start.date() - timedelta(days=1)
+    while day <= end.date() + timedelta(days=1):
+        if day.weekday() == KALSHI_MAINT_DOW:
+            # `datetime.min.time()`, not `datetime.time()`: qa.py imports the
+            # `time` MODULE, and shadowing it here breaks the lock-retry sleep.
+            local = datetime.combine(day, datetime.min.time(), tzinfo=KALSHI_MAINT_TZ)
+            w0, w1 = (
+                (local + timedelta(hours=h)).astimezone(UTC).replace(tzinfo=None)
+                for h in (KALSHI_CLOSE_LOCAL_H - pad_h, KALSHI_REOPEN_LOCAL_H + pad_h)
+            )
+            if w1 > start and w0 < end:
+                out.append((w0, w1))
+        day += timedelta(days=1)
+    return out
+
 
 #: Ceiling on kalshi capture-gap minutes per QA window, per channel, outside
 #: that window. Calibrated by REPLAYING this check over all 71 historical
@@ -813,18 +850,10 @@ def maintenance_overlap_s(start: datetime, end: datetime) -> float:
     """
     if end <= start:
         return 0.0
-    total = 0.0
-    day = start.date() - timedelta(days=1)
-    while day <= end.date():
-        if day.weekday() == KALSHI_MAINT_DOW:
-            # `datetime.min.time()`, not `datetime.time()`: qa.py imports the
-            # `time` MODULE, and shadowing it here breaks the lock-retry sleep.
-            midnight = datetime.combine(day, datetime.min.time())
-            w0 = midnight + timedelta(hours=KALSHI_MAINT_START_H)
-            w1 = midnight + timedelta(hours=KALSHI_MAINT_END_H)
-            total += max(0.0, (min(end, w1) - max(start, w0)).total_seconds())
-        day += timedelta(days=1)
-    return total
+    return sum(
+        max(0.0, (min(end, w1) - max(start, w0)).total_seconds())
+        for w0, w1 in kalshi_closure_windows(start, end)
+    )
 
 
 CAPTURE_GAP_CHECK = "kalshi capture gaps within budget outside venue maintenance"

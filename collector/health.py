@@ -109,7 +109,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from collector.qa import DISK_RISE_RESET_FRAC, STANDING_SKIPS, _load_state, _prior_run
+from collector.qa import (
+    DISK_RISE_RESET_FRAC,
+    KALSHI_MAINT_PAD_H,
+    STANDING_SKIPS,
+    _load_state,
+    _prior_run,
+    kalshi_closure_windows,
+)
 from collector.qa import QA_RUN_CHECK as QA_UNREAD_CHECK
 from collector.qa import STATE as QA_STATE
 
@@ -893,6 +900,37 @@ def _split(r: FlowRound) -> str:
     )
 
 
+def _naive_utc(t: datetime) -> datetime:
+    return t.astimezone(UTC).replace(tzinfo=None) if t.tzinfo is not None else t
+
+
+def closure_note(start: datetime, end: datetime) -> tuple[str, bool]:
+    """Where [start, end] sits against Kalshi's published Thursday closure:
+    (clause, wholly_inside). The venue shuts 03:00-05:00 US Eastern every
+    Thursday and the stream reads it as dead air; the 11-05 and 11-12 08:15Z
+    passes each re-derived that from three transports before the digest said
+    it (mistakes #182). Judged against the window QA EXCUSES (the closure
+    plus `qa.KALSHI_MAINT_PAD_H` each side), printed with the closure's own
+    hours; a span only partly inside says how much is outside, because that
+    part is ours to explain. No overlap -> ("", False)."""
+    a, b = _naive_utc(start), _naive_utc(end)
+    pad = timedelta(hours=KALSHI_MAINT_PAD_H)
+    for w0, w1 in kalshi_closure_windows(a, b):
+        c0, c1 = w0 + pad, w1 - pad
+        if b <= w0 or a >= w1:
+            continue
+        name = f"Kalshi's Thursday closure {c0:%H:%M}-{c1:%H:%M}Z"
+        outside = max(0.0, (w0 - a).total_seconds()) + max(0.0, (b - w1).total_seconds())
+        if outside <= 0:
+            return f" -- inside {name} (venue shut, QA excuses {w0:%H}-{w1:%H}Z)", True
+        return (
+            f" -- overlaps {name} but {_mins(outside)} of it is outside "
+            f"the {w0:%H}-{w1:%H}Z QA excuses",
+            False,
+        )
+    return "", False
+
+
 def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WINDOW_H) -> str:
     """Render the reading. Shapes: the window's rounds and medians, then the
     dead episodes (span bounds, GAP lines), the LOW rounds (share of the
@@ -918,17 +956,24 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
     parts: list[str] = []
     if flow.dead:
         eps = []
+        excused = []
         for ep in flow.dead:
             shares = ", ".join(
                 f"{r.received / max(flow.median_received, 1):.0%}" for r in ep.rounds
             )
+            # The first dead round BEGAN one period before the line closing it.
+            note, inside = closure_note(ep.first - timedelta(seconds=ep.period_s), ep.last)
+            excused.append(inside)
             eps.append(
                 f"{ep.first:%m-%d %H:%M}Z..{ep.last:%H:%M}Z {len(ep.rounds)} round(s) ({shares}): "
                 f"dead air {_mins(ep.dead_lower_s)}..{_mins(ep.dead_upper_s)}, GAP lines {ep.gaps}"
+                f"{note}"
             )
         total = sum(len(ep.rounds) for ep in flow.dead)
+        # The alarm word is kept for dead air nobody scheduled.
+        word = "VENUE-CLOSED" if all(excused) else "DEAD-AIR"
         parts.append(
-            f"DEAD-AIR {total} round(s) under {dead_pct} in {len(flow.dead)} episode(s): "
+            f"{word} {total} round(s) under {dead_pct} in {len(flow.dead)} episode(s): "
             + "; ".join(eps)
         )
     else:
@@ -945,9 +990,11 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
         parts.append(f"no round under {low_pct} of its neighbours")
     if flow.dead_ticks:
         ticks = ", ".join(f"{r.at:%H:%M:%S}Z {r.last_tick} rows" for r in flow.dead_ticks)
+        closed = sum(1 for r in flow.dead_ticks if closure_note(r.at, r.at)[1])
         parts.append(
             f"last tick dead (under {dead_pct} of the tick median) at "
             f"{len(flow.dead_ticks)} instant(s): {ticks}"
+            + (f" ({closed} inside Kalshi's Thursday closure window)" if closed else "")
         )
     else:
         parts.append("no dead last tick")

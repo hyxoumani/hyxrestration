@@ -242,7 +242,7 @@ either. Fixed + instrumented 09-24 (mistakes #82): poly now writes
 `kind='void'` rows for any frame that archives no level, `streamd`
 publishes `poly_void` apart from `poly_events`, and QA's void check is
 per-venue with `price_change` deliberately NOT benign.
-**Kalshi weekly maintenance, Thursdays ~06:00-10:00Z**: 26-38 `dead_air`
+**Kalshi weekly maintenance, Thursdays 03:00-05:00 US Eastern (07-09Z under EDT, 08-10Z under EST; QA excuses an hour each side via `qa.kalshi_closure_windows`, and the digest's STREAMFLOW line prints `VENUE-CLOSED` for dead air inside it -- mistakes #182; the hours below were written under EDT)**: 26-38 `dead_air`
 gaps, each followed by a reconnect that comes back silent. Kalshi trades
 fall to ~2k in the 07Z hour, against 200-400k/h on either side. Replay and
 event studies must exclude this window rather than read it as illiquidity.
@@ -277,7 +277,7 @@ why it must be EXCLUDED rather than read as illiquidity. The record-derived
 ET, so **after DST ends (2026-11-01) the closure sits at 08:00-10:00Z** and
 its reopen bleed (~5-6 min of reconnect gaps) lands in the first minutes of
 the NEXT 10:00Z QA slot, outside the excuse and against the 30-min budget.
-First Thursday to read: 2026-11-05. **2026-10-22 (Thursday) added a second failure mode inside the
+First Thursday to read: 2026-11-05. **Read 11-05 and 11-12, as predicted: kalshi GAP lines in hours 08-09Z with the reopen bleed in hour 10 (10-29, EDT: hours 07-08Z only); the excuse window follows the Eastern clock since 2026-11-12 (mistakes #182).** **2026-10-22 (Thursday) added a second failure mode inside the
 closure:** REST `/markets` returned `HTTP 503` on every walk from 07:12:00Z
 to 08:00:15Z (0 x 503 in the same window on 10-08 and 10-15), which aborted
 the 06:10Z kalshi sweep at 07:14Z (designed exit 75, 714/4042 series,

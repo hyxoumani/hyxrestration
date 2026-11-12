@@ -767,3 +767,12 @@
   real poll body) and a `rowid >` cursor (1.04 s for zero rows). Time a
   query's `EXPLAIN` apart from its execute before naming which half of a
   hold is "the scan".
+- A window that excuses a VENUE's schedule is anchored to the venue's
+  clock. Kalshi shuts Thursdays 03:00-05:00 US Eastern (07-09Z EDT, 08-10Z
+  EST); QA excused a constant 06-10Z for two Thursdays after the 11-01
+  fall-back, with the shift predicted in the wiki on 10-15 and left as a
+  sentence (mistakes #182). `qa.kalshi_closure_windows` is the one
+  definition; the digest prints `VENUE-CLOSED` for dead air wholly inside
+  it and `DEAD-AIR` with the minutes outside otherwise -- chase only the
+  second. A dated prediction about our own code ships as the change or as
+  a test that goes red on the day.

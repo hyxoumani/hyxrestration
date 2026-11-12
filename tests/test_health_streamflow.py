@@ -103,6 +103,72 @@ def test_consecutive_dead_rounds_are_one_episode_with_both_bounds() -> None:
     )
 
 
+def _thursday(rows: list[tuple[str, int, int]]) -> list[str]:
+    return [_stats(f"2026-11-12T{hm}:00+00:00", c, t) for hm, c, t in rows]
+
+
+def test_dead_air_inside_the_venues_thursday_closure_is_named_not_alarmed() -> None:
+    """mistakes #182: the real 2026-11-12 shape. Kalshi shuts 03:00-05:00 ET
+    (08:00-10:00Z under EST) and two passes re-derived that by hand."""
+    flow = health.parse_stream_flow(
+        _thursday(
+            [
+                ("07:50", 10 * M, 1000),
+                ("07:55", 12 * M, 1000),
+                ("08:00", 14 * M, 1000),
+                ("08:05", 14 * M + 10, 0),
+                ("08:10", 14 * M + 20, 0),
+                ("10:15", 16 * M, 1000),
+                ("10:20", 18 * M, 1000),
+            ]
+        )
+    )
+    assert flow is not None and len(flow.dead) == 1
+    line = health.stream_flow_line(flow)
+    assert "DEAD-AIR" not in line
+    assert "VENUE-CLOSED 2 round(s) under 10% in 1 episode(s): 11-12 08:05Z..08:10Z" in line
+    assert (
+        "-- inside Kalshi's Thursday closure 08:00-10:00Z (venue shut, QA excuses 07-11Z)" in line
+    )
+    assert line.endswith("(2 inside Kalshi's Thursday closure window)")
+
+
+def test_dead_air_that_starts_before_the_closure_keeps_the_alarm() -> None:
+    # THE MUTANT THIS KILLS: excusing an episode because it TOUCHES the
+    # window. Dead from 06:45Z is 15 minutes of open market.
+    flow = health.parse_stream_flow(
+        _thursday(
+            [
+                ("06:35", 10 * M, 1000),
+                ("06:40", 12 * M, 1000),
+                ("06:45", 14 * M, 1000),
+                ("06:50", 14 * M + 10, 1000),
+                ("07:10", 14 * M + 20, 1000),
+                ("07:15", 16 * M, 1000),
+                ("07:20", 18 * M, 1000),
+            ]
+        )
+    )
+    assert flow is not None and len(flow.dead) == 1
+    line = health.stream_flow_line(flow)
+    assert "DEAD-AIR 2 round(s)" in line and "VENUE-CLOSED" not in line
+    assert "overlaps Kalshi's Thursday closure 08:00-10:00Z but 15.0 min of it is outside" in line
+
+
+def test_the_same_clock_hours_on_another_day_are_plain_dead_air() -> None:
+    assert health.closure_note(
+        datetime(2026, 11, 11, 8, 5, tzinfo=UTC), datetime(2026, 11, 11, 8, 10, tzinfo=UTC)
+    ) == ("", False)
+    # ...and under EDT the hour 09-10Z is past the reopen but inside the pad,
+    # while 10:05Z is outside it.
+    assert health.closure_note(
+        datetime(2026, 9, 17, 9, 5, tzinfo=UTC), datetime(2026, 9, 17, 9, 10, tzinfo=UTC)
+    )[1]
+    assert not health.closure_note(
+        datetime(2026, 9, 17, 9, 55, tzinfo=UTC), datetime(2026, 9, 17, 10, 5, tzinfo=UTC)
+    )[1]
+
+
 def test_a_counter_reset_is_a_restart_not_a_negative_round() -> None:
     lines = [
         _stats("2026-11-09T10:00:00+00:00", 10 * M, 100),

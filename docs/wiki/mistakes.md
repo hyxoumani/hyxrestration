@@ -4268,6 +4268,48 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+182. **2026-11-01 -> 2026-11-12 08:15Z -- QA's Kalshi maintenance window
+    was a constant in UTC hours for a closure the venue publishes in US
+    Eastern time, and the digest raised the closure as `DEAD-AIR` every
+    Thursday.** `collector/qa.py` excused Thursday 06-10Z: the RECORD's
+    bounds over 11 summer Thursdays, written 09-17. On 10-15 a pass read
+    the venue's own schedule (`exchange/schedule`: Thursday sessions
+    00:00-03:00 and 05:00-24:00 ET), wrote into data-pipeline.md that
+    "after DST ends (2026-11-01) the closure sits at 08:00-10:00Z" with
+    the reopen bleed outside the excuse, named 11-05 as the first
+    Thursday to read -- and left the constant. That is #97's rule ("the
+    same shape one level down is part of the fix, not a note") with a
+    calendar on it: a prediction with a date and no code is a note that
+    fires on a pass that has not read it. 11-05's pass re-derived the
+    halt from three transports and recorded "the 06-10Z window has been
+    OUTRUN" (again as a watch item); 11-12's did the same from the new
+    STREAMFLOW line, which printed `DEAD-AIR 2 round(s) ... (4%, 4%)`
+    fifteen minutes into a scheduled closure. The journal shows the storm
+    moving with the zone: 10-29 (EDT) kalshi GAP lines in hours 07-08Z
+    only; 11-05 (EST) in 08-09Z, reopen bleed in hour 10, none in 06. So
+    since 11-01 the excuse covered an hour of OPEN market (a real 06-07Z
+    Thursday outage would have been excused whole) and stopped at the
+    instant the venue reopens. It cost no false verdict -- the 11-06 QA
+    read `trades 0.6 min budgeted` -- which is luck in the size of one
+    reopen, not a property of the window. Fix: the window is the
+    published closure in `America/New_York` (03:00-05:00 local) plus an
+    hour each side, which IS 06-10Z under EDT (the 71-slot calibration is
+    untouched) and 07-11Z under EST (`qa.kalshi_closure_windows`); the
+    digest judges every dead episode and dead tick against it and prints
+    `VENUE-CLOSED ... -- inside Kalshi's Thursday closure 08:00-10:00Z
+    (venue shut, QA excuses 07-11Z)`, keeping `DEAD-AIR` and the minutes
+    outside for an episode that only overlaps. Red-verified by two
+    mutants, landing checked with `cmp`: a fixed UTC-4 zone (3 tests
+    red) and an overlap-is-enough excuse (2 red). Suite 2564 -> 2572.
+    Not done: the closure hours themselves are still constants here, not
+    read from `exchange/schedule` -- a venue that MOVES its closure is a
+    different failure and would show as `DEAD-AIR` outside the window.
+    Rule: **a window that excuses someone else's schedule is anchored to
+    THEIR clock; bounds measured from the record are that schedule seen
+    through one season. And a dated prediction about our own code is a
+    work item for that date -- ship the change or a test that goes red on
+    the day, never a sentence.**
+
 181. **2026-11-10 -> 2026-11-12 02:26Z -- six status entries in three days
     were stamped with a time the clock had not reached, each fixed by its
     own `docs: correct ... timestamp` commit (2a81b7a, 021e65b, d7294d7,

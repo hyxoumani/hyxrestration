@@ -2069,6 +2069,37 @@ def test_a_wednesday_gap_of_the_same_clock_hours_is_never_excused():
     assert qa.maintenance_overlap_s(wed + timedelta(hours=6), wed + timedelta(hours=10)) == 0.0
 
 
+def test_the_window_follows_the_venues_eastern_clock_across_dst():
+    # mistakes #182: the closure is published as 03:00-05:00 US Eastern, so
+    # it is 07-09Z in summer and 08-10Z after the fall-back. A constant
+    # 06-10Z excused 06-07Z of open market on 2026-11-05 and nothing after
+    # the 10:00Z reopen.
+    edt, est = datetime(2026, 9, 17), datetime(2026, 11, 12)  # both Thursdays
+    day = timedelta(days=1)
+    assert qa.kalshi_closure_windows(edt, edt + day, 0) == [
+        (edt + timedelta(hours=7), edt + timedelta(hours=9))
+    ]
+    assert qa.kalshi_closure_windows(est, est + day, 0) == [
+        (est + timedelta(hours=8), est + timedelta(hours=10))
+    ]
+    # The excuse is the closure plus an hour each side: 06-10Z, then 07-11Z.
+    assert qa.kalshi_closure_windows(edt, edt + day) == [
+        (edt + timedelta(hours=6), edt + timedelta(hours=10))
+    ]
+    h = lambda a, b: qa.maintenance_overlap_s(est + timedelta(hours=a), est + timedelta(hours=b))  # noqa: E731
+    assert h(6, 7) == 0.0  # open market under EST: no longer excused
+    assert h(10, 11) == pytest.approx(3600)  # the reopen bleed: now excused
+    assert h(0, 24) == pytest.approx(4 * 3600)
+
+
+def test_a_window_is_found_from_either_edge_and_only_on_thursday():
+    est = datetime(2026, 11, 12)
+    assert qa.kalshi_closure_windows(est + timedelta(hours=11), est + timedelta(hours=30)) == []
+    assert len(qa.kalshi_closure_windows(est - timedelta(days=8), est + timedelta(days=1))) == 2
+    wed = est - timedelta(days=1)
+    assert qa.kalshi_closure_windows(wed, wed + timedelta(hours=23)) == []
+
+
 def test_maintenance_storm_does_not_trip_the_budget(tmp_path):
     # The real 09-17 shape: dozens of short gaps across 07-09Z, 61 minutes of
     # books capture lost. Every minute is inside the window, so nothing is
