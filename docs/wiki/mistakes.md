@@ -4268,6 +4268,46 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+186. **2026-07 -> 2026-11-12 20:32Z -- the shadow dropped any coverage gap
+    whose row landed a poll ahead of the next event.** `replay_snapshots`
+    applied a gap only when an event at or after its start flowed through
+    the SAME call; `ShadowRunner._read_new` reads gap rows by an
+    `ended_at` cursor and advances it past every row it read. So a gap
+    row read with an empty batch (or one whose events all predate the
+    gap's start) was read once, applied never, and the next poll's delta
+    replayed onto the pre-gap book -- a top of book that never existed,
+    stepped through the sim. Reproduced on synthetic archives: the same
+    gap and delta give 0 snapshots in one poll and `[0, 1]` when the gap
+    row is flushed one poll earlier. `simui.session._due_gaps` had the
+    contract written down ("gaps stay pending until that happens") and
+    kept its own pending list; the shadow, the only 24/7 caller, did not.
+    Found while checking whether the poll period (#169's named lever,
+    20 s -> 60 s) is an outcome parameter: it was, through this path --
+    where the batch is cut decided whether a gap was honoured. Fix:
+    `replay_snapshots` applies every unreached gap when its events run
+    out (`invalidate(before=start)` spares images newer than the start,
+    so this equals applying it ahead of the next batch's first event and
+    a re-offering caller wipes nothing twice); one-shot callers
+    (divergence, run_l2, queuescore) are unchanged by construction. 2
+    tests (`tests/test_hyxlab_bookreplay.py`, `tests/test_hyxlab_shadow.py`),
+    both red against a mutant whose landing was checked with `cmp`.
+    **Production exposure is NOT measured and is probably small:** it
+    needs a book-gap row with no universe event at or after its
+    `started_at` in the same poll, then a delta before a fresh image.
+    The run's gap table (one read-only look, `stream_gaps` only, 2.2 s
+    hold on `hyxstream.duckdb`) holds 513 `seq_reset`, 354 `reconnect`
+    and 10 `daemon_start` book rows since 11-03 and no `dead_air`; a
+    per-shard row normally shares its flush with other shards' events,
+    and a reconnect re-images its markets. Not counted against the
+    archive (it would take a bounded `book_events` scan per gap row).
+    Live at the shadow's NEXT restart: promote deferred it (panel 8 of 10
+    days). Rule: **a function that consumes two streams and applies one
+    only when the other advances has a contract every incremental caller
+    must know -- and the caller that tails forever is the one that
+    cannot re-offer. Before moving a daemon's batching parameter, prove
+    the output is invariant to where the batch is cut; test the cut with
+    the second stream's row on the far side of it.**
+
 185. **2026-09-26 -> 2026-11-12 15:50Z -- the sweep's hold instrument
     published a worst hold nobody could place.** The done-side
     `attach_wait` line has carried `held N on hyxlab.duckdb ... worst X s`
