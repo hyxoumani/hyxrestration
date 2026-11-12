@@ -4268,7 +4268,7 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
-184. **2026-11-01 -> 2026-11-12 14:40Z -- the digest's `HOSTMEM` line said
+184. **2026-11-01 -> 2026-11-12 14:35Z -- the digest's `HOSTMEM` line said
     `0 kernel OOM kills` over a kernel journal holding 36 kills in the
     same 24 h.** All 36 were `Memory cgroup out of memory: Killed process`
     -- a cgroup at its own `memory.max`, here the sibling's
