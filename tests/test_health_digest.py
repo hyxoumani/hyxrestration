@@ -2112,3 +2112,35 @@ def test_cap_kills_leave_the_global_half_of_the_line_unchanged():
     mixed = health.host_memory_line(_both(HOST_OOM_LINES + CAP_OOM_LINES), UNITS, _hm())
     head = base.split(" | ")[0]
     assert mixed.startswith(head + " (+1 kill(s)")
+
+
+# 2026-11-13 07:15-07:40Z as the collector sampled it (GB): a sibling job's
+# DuckDB spill takes the disk through the kubelet's line and hands it back.
+_DIP = [
+    (1794554100 + 300 * i, int(g * 1e9))
+    for i, g in enumerate([313.0, 305.3, 316.1, 297.0, 315.3, 315.0])
+]
+_FS13 = health.HostFs(free_b=310_000_000_000, size_b=1_999_000_000_000)
+
+
+def test_the_fs_line_names_a_floor_that_crossed_while_the_level_did_not() -> None:
+    """mistakes #189: `below the kubelet's threshold by 11 GB` beside 36
+    eviction attempts. The level never crossed; a five-minute dip did."""
+    pace = health.fs_pace(_DIP)
+    assert (pace.floor_b, pace.floor_dip_b) == (297_000_000_000, 19_100_000_000)
+    line = health.host_fs_line(_FS13, health.parse_kubelet(KUBELET_LINES), pace)
+    assert "-- below the kubelet's threshold by 10 GB (frees to 80%)" in line
+    assert (
+        "; 24h floor (lowest 5-min sample) 297 GB at 11-13 07:30Z,"
+        " 19 GB under that hour's ceiling -- PAST the threshold by 3 GB | pace:"
+    ) in line
+    # The other arm: the same window without the dip is short of the line.
+    calm = health.fs_pace([s for s in _DIP if s[1] > 300e9])
+    assert "-- 5 GB short of the threshold | pace:" in health.host_fs_line(
+        _FS13, health.parse_kubelet(KUBELET_LINES), calm
+    )
+    # The floor is a window fact, not a post-reset one, and no samples is no clause.
+    assert health.fs_pace([]).floor_b is None
+    assert "floor" not in health.host_fs_line(
+        _FS13, health.parse_kubelet(KUBELET_LINES), health.fs_pace([])
+    )

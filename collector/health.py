@@ -1744,6 +1744,11 @@ class FsPace:
     reset_b: int | None
     rise_b: int | None
     freed_b: int = 0
+    #: The lowest SAMPLE in the whole window (not only after a reset), its
+    #: instant, and how far it sat under its own clock hour's ceiling.
+    floor_b: int | None = None
+    floor_ts: float | None = None
+    floor_dip_b: int = 0
 
     @property
     def gross_b_per_day(self) -> float | None:
@@ -1810,6 +1815,11 @@ def fs_pace(
     ceiling higher than the previous hour's by more than `reset_frac` of it),
     between the medians of the `end_k` oldest and youngest ceilings. Pure."""
     ceils = hourly_ceilings(samples)
+    fl: dict = {}
+    if samples:
+        floor_ts, floor_b = min(samples, key=lambda c: c[1])
+        hour_ceil = max(f for t, f in samples if int(t) // 3600 == int(floor_ts) // 3600)
+        fl = {"floor_b": floor_b, "floor_ts": floor_ts, "floor_dip_b": hour_ceil - floor_b}
     start = 0
     reset = None
     for i in range(1, len(ceils)):
@@ -1822,10 +1832,10 @@ def fs_pace(
     rise_b = rise if rise > 0 else None
     freed_b = sum(r for r in rises if r >= FS_PACE_RISE_FLOOR_B)
     if len(ceils) < 2:
-        return FsPace(len(samples), len(ceils), 0.0, None, reset, rise_b, freed_b)
+        return FsPace(len(samples), len(ceils), 0.0, None, reset, rise_b, freed_b, **fl)
     if len(ceils) < 2 * end_k:
         span_h = (ceils[-1][0] - ceils[0][0]) / 3600.0
-        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b, freed_b)
+        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b, freed_b, **fl)
     # The endpoint is the one ceiling whose VALUE is the median, time and value
     # together: medians taken separately pair a low middle hour's neighbour's
     # value with the middle hour's instant, and the span is wrong by an hour.
@@ -1833,9 +1843,9 @@ def fs_pace(
     t1, f1 = sorted(ceils[-end_k:], key=lambda c: c[1])[end_k // 2]
     span_h = (t1 - t0) / 3600.0
     if span_h < min_h:
-        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b, freed_b)
+        return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b, freed_b, **fl)
     burn = (f0 - f1) / ((t1 - t0) / 86400.0)
-    return FsPace(len(samples), len(ceils), span_h, burn, reset, rise_b, freed_b)
+    return FsPace(len(samples), len(ceils), span_h, burn, reset, rise_b, freed_b, **fl)
 
 
 def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: int) -> str:
@@ -1881,6 +1891,33 @@ def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: 
     if over_b is not None and over_b < 0:
         return f"{burn}, threshold in {-over_b / pace.burn_b_per_day:.1f} d{rise}"
     return f"{burn}, full in {fs.free_b / pace.burn_b_per_day:.1f} d{rise}"
+
+
+def fs_floor_text(pace: FsPace | None, size_b: int, high_pct: float, window_h: int) -> str:
+    """The window's lowest free-space SAMPLE against the kubelet's threshold.
+
+    The standing reading and the pace are both about the LEVEL, and the level
+    is not what evicts: on 2026-11-13 the line read `below the kubelet's
+    threshold by 11 GB` beside 36 eviction attempts, because a sibling job's
+    DuckDB spill (`hylshi-lake/.spill`, 7-11 GB live, 16-43 GB at the 5-min
+    samples of 11-09..11-13) dips free space through the threshold for
+    minutes at 05:25Z and 07:20Z+ every day (mistakes #189). The kubelet
+    samples every ~10 s and the collector every 5 min, so this floor is an
+    UPPER bound on the true one: a floor short of the threshold proves
+    nothing, a floor past it proves the crossing."""
+    if pace is None or pace.floor_b is None or pace.floor_ts is None:
+        return ""
+    at = datetime.fromtimestamp(pace.floor_ts, UTC).strftime("%m-%d %H:%MZ")
+    past_b = int((size_b - pace.floor_b) - size_b * high_pct / 100)
+    verdict = (
+        f"PAST the threshold by {_gb_b(past_b)}"
+        if past_b >= 0
+        else f"{_gb_b(-past_b)} short of the threshold"
+    )
+    return (
+        f"; {window_h}h floor (lowest 5-min sample) {_gb_b(pace.floor_b)} at {at},"
+        f" {_gb_b(pace.floor_dip_b)} under that hour's ceiling -- {verdict}"
+    )
 
 
 def _gb_b(n: int) -> str:
@@ -1932,6 +1969,7 @@ def host_fs_line(
                 f" -- {'ABOVE' if over_b >= 0 else 'below'} the kubelet's threshold by "
                 f"{_gb_b(abs(over_b))} (frees to {kube.low_pct}%)"
             )
+            k += fs_floor_text(pace, fs.size_b, kube.high_pct, window_h)
     return f"{standing} | {k} | {fs_pace_text(pace, fs, over_b, window_h)}"
 
 

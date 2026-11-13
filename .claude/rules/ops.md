@@ -797,3 +797,13 @@
   it and `DEAD-AIR` with the minutes outside otherwise -- chase only the
   second. A dated prediction about our own code ships as the change or as
   a test that goes red on the day.
+- The kubelet's disk threshold is crossed by the FLOOR, not the level.
+  The sibling's `hylshi-partition-nightly` (05:20Z) and `hylshi-lake-nightly`
+  (07:00Z, 1-3.6 h) spill DuckDB temp files into `hylshi-lake/.spill`:
+  7-43 GB gone and back in minutes, daily (measured live 2026-11-13: free +
+  spill constant at 308-312 GB while free swung 297-305; mistakes #189).
+  With the level 11 GB short of the line the 07:30Z dip evicted pods. Read
+  the `HOSTFS` line's `24h floor ... PAST the threshold by N GB` clause; a
+  5-min floor is an upper bound on the kubelet's 10 s one, so `short of`
+  proves nothing. The usable headroom on this disk is the level's distance
+  minus ~45 GB of the sibling's nightly spill.

@@ -5140,6 +5140,47 @@ Format: what happened → root cause → error type → prevention tier
     story.** 4 assertions added, each landing checked by hand against
     the live line.
 
+189. **2026-11-04 -> 2026-11-13 08:20Z -- the free-space dips this log called
+    "churn" for nine days are one sibling job's DuckDB spill, and they, not
+    the level, are what evicts pods.** #162 measured the dips (15-30 GB gone
+    and back inside 5-15 min in the sweep hours), chose hourly ceilings to
+    see past them, and never asked whose they were; every pass since read
+    the LEVEL against the kubelet's line. On 11-13 the digest said `below
+    the kubelet's threshold by 11 GB` beside `36 kubelet eviction
+    attempt(s)`, and the two were both true: the 5-min series since 11-09
+    shows the same two dips every day -- 05:25-05:35Z (7-25 GB) and
+    07:20-07:35Z (17-43 GB), then more until ~10:40Z on the days the job
+    runs long -- and the 07:30Z sample (297.0 GB) is 3 GB past the 299.9 GB
+    line, with `argocd-repo-server` evicted at 07:22:23Z. Clock match:
+    `hylshi-partition-nightly` runs 05:20-05:38..05:41Z (5 of 5 days, 3G
+    peak == its DuckDB limit), `hylshi-lake-nightly` starts 07:00Z and the
+    last dip of 11-10 and 11-12 returns within 5 min of its exit (10:11Z ->
+    +22.5 GB at 10:15Z; 10:36Z -> +6.8 GB at 10:40Z). Proven live for the
+    second: at 08:17-08:22Z, 24 samples 10 s apart, free ran 296.7-304.8 GB
+    while `~/.local/share/hylshi-lake/.spill/tier3/s-<pid>-*/
+    duckdb_temp_storage_*.tmp` (held open by the `lake.nightly` pid) ran
+    5.9-11.2 GB, and free + spill stayed 307.9-311.9; our own three `.tmp`
+    spill directories read 0.00 GB throughout. The 05:25Z job's spill
+    (`<root>/<store>/.spill`, `tools/partition_nightly.py:374`) is matched
+    by clock only -- it was not running. Not ours to edit; the levers are
+    the sibling's (spill bound / `max_temp_directory_size`, or run the two
+    jobs' big sorts on fewer days at once) or headroom. Also not ours, and
+    cleared as a suspect in the same pass: `.pytest-tmp/pytest-110` reads
+    16.4 GB in `du` -- zero-filled fixture files, which `compress=zstd`
+    stores as almost nothing (the 02:38Z write moved the series < 3 GB), and
+    pytest's keep-3 rotation drops it on the next suite run. Fix:
+    `health.fs_floor_text` -- the `HOSTFS` line carries the window's lowest
+    5-min sample, its instant, how far it sat under its own hour's ceiling,
+    and `PAST the threshold by N GB` / `N GB short of the threshold`. The
+    kubelet samples every ~10 s against our 5 min, so the floor is an upper
+    bound: short proves nothing, PAST proves the crossing. 1 test, red
+    against two mutants, both landings checked with `cmp`. **Rule: a
+    threshold on a shared resource is crossed by the MINIMUM, so an
+    instrument that smooths transients away to price the trend (ceilings,
+    medians) must publish the floor it discarded beside the limit; and
+    "churn" is a tenant with a name -- when a transient recurs at a clock
+    time, list the units that start before it and match its END.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
