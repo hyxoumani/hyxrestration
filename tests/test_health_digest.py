@@ -1748,6 +1748,46 @@ def test_the_fs_line_reads_the_kubelet_against_the_filesystem() -> None:
     assert line.endswith("full in 4.9 d")
 
 
+# One real line of each outcome kind, 2026-11-13 14:15-14:18Z (mistakes #190).
+KUBELET_OUTCOMES = (
+    KUBELET_LINES
+    + """\
+2026-11-13T14:15:59+00:00 hyz kubelet[1270]: E1113 08:15:59.946695    1270 eviction_manager.go:633] "Eviction manager: pod failed to evict" err="timeout waiting to kill pod" pod="monitoring/monitoring-grafana-bbb4d5b7c-qd94g"
+2026-11-13T14:16:16+00:00 hyz kubelet[1270]: I1113 08:16:16.694423    1270 eviction_manager.go:635] "Eviction manager: pod is evicted successfully" pod="argocd/argocd-dex-server-6fb56f4676-fpdss"
+2026-11-13T14:17:16+00:00 hyz kubelet[1270]: I1113 08:17:16.694423    1270 eviction_manager.go:635] "Eviction manager: pod is evicted successfully" pod="argocd/argocd-application-controller-0"
+2026-11-13T14:17:46+00:00 hyz kubelet[1270]: I1113 08:17:46.694423    1270 eviction_manager.go:635] "Eviction manager: pod is evicted successfully" pod="argocd/argocd-application-controller-0"
+2026-11-13T14:18:12+00:00 hyz kubelet[1270]: I1113 08:18:12.106086    1270 eviction_manager.go:444] "Eviction manager: unable to evict any pods from the node"
+2026-11-13T14:18:22+00:00 hyz kubelet[1270]: I1113 08:18:22.918134    1270 eviction_manager.go:388] "Eviction manager: able to reduce resource pressure without evicting pods." resourceName="ephemeral-storage"
+"""
+)
+
+
+def test_the_fs_line_says_what_the_eviction_attempts_led_to() -> None:
+    """An attempt count is the pressure's duration; the outcomes are its cost."""
+    kube = health.parse_kubelet(KUBELET_OUTCOMES)
+    assert len(kube.reclaims) == 3  # outcome lines are not attempts
+    assert (len(kube.evicted), kube.stuck_n, kube.relieved_n, kube.failed_n) == (3, 1, 1, 1)
+    line = health.host_fs_line(_FS, kube, _PACE)
+    assert (
+        "-> 09:00Z = 3 pod(s) evicted (2 distinct name(s)), 1 pass(es) with no evictable "
+        "pod left, 1 relieved without evicting, 1 failed eviction(s); image GC:"
+    ) in line
+    # Attempts with no outcome line say zero of each, not nothing.
+    bare = health.host_fs_line(_FS, health.parse_kubelet(KUBELET_LINES), _PACE)
+    assert "= 0 pod(s) evicted (0 distinct name(s)), 0 pass(es)" in bare
+    # A quiet window has no outcome clause to print.
+    assert "evicted (" not in health.host_fs_line(_FS, health.parse_kubelet(""))
+    # Perturbation (#95): each outcome term moves the line.
+    for change in (
+        {"evicted": kube.evicted + ("a/b",)},
+        {"evicted": kube.evicted + (kube.evicted[0],)},
+        {"stuck_n": 2},
+        {"relieved_n": 2},
+        {"failed_n": 2},
+    ):
+        assert health.host_fs_line(_FS, dataclasses.replace(kube, **change), _PACE) != line, change
+
+
 def test_a_quiet_kubelet_and_an_unread_one_are_different_lines() -> None:
     quiet = health.host_fs_line(_FS, health.parse_kubelet(""))
     unread = health.host_fs_line(_FS, None)

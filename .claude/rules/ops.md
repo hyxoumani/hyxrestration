@@ -806,4 +806,7 @@
   the `HOSTFS` line's `24h floor ... PAST the threshold by N GB` clause; a
   5-min floor is an upper bound on the kubelet's 10 s one, so `short of`
   proves nothing. The usable headroom on this disk is the level's distance
-  minus ~45 GB of the sibling's nightly spill.
+  minus ~45 GB of the sibling's nightly spill. The line's attempt count is
+  the pressure's DURATION in ~10 s passes; its cost is the clause after it
+  (`= N pod(s) evicted (...), M pass(es) with no evictable pod left, ...`,
+  mistakes #190) -- quote the pods, never the attempts.

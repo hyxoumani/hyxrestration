@@ -1543,6 +1543,17 @@ _KUBE_CFG_LOW_RE = re.compile(r"^imageGCLowThresholdPercent:\s*(\d+)\s*$", re.M)
 _KUBE_RECLAIM_RE = re.compile(
     r'^(\S+) .*"Eviction manager: attempting to reclaim" resourceName="([^"]+)"'
 )
+# What an attempt LED TO (mistakes #190). "attempting to reclaim" is the
+# kubelet noticing pressure, every ~10 s for as long as it lasts; the cost is
+# in the lines after it. Read 2026-11-13 14:52Z, 24h: 579 attempts = 214 pods
+# evicted, 353 passes where only critical pods were left ("unable to evict
+# any pods from the node" -- pressure the kubelet can no longer answer), 5
+# relieved by image GC alone, 7 evictions that timed out. The digest had
+# printed the 579 for nine days and none of the four.
+_KUBE_EVICTED_RE = re.compile(r'"Eviction manager: pod is evicted successfully" pod="([^"]+)"')
+_KUBE_STUCK = '"Eviction manager: unable to evict any pods from the node"'
+_KUBE_RELIEVED = '"Eviction manager: able to reduce resource pressure without evicting pods."'
+_KUBE_FAILED = '"Eviction manager: pod failed to evict"'
 _KUBE_GC_RE = re.compile(
     r"Disk usage on image filesystem is over the high threshold.*?"
     r"usage=(\d+) highThreshold=(\d+).*?lowThreshold=(\d+)"
@@ -1567,6 +1578,10 @@ class KubeletPressure:
     gc_low_pct: int | None
     cfg_high_pct: int | None = None  # the CONFIGURED thresholds; None = config unread
     cfg_low_pct: int | None = None
+    evicted: tuple[str, ...] = ()  # pod of every "pod is evicted successfully"
+    stuck_n: int = 0  # passes with no evictable pod left
+    relieved_n: int = 0  # passes relieved without evicting a pod
+    failed_n: int = 0  # evictions that failed (kill timeout)
 
     @property
     def high_pct(self) -> int | None:
@@ -1615,7 +1630,22 @@ def parse_kubelet(text: str, config: tuple[int, int] | None = None) -> KubeletPr
     them. Pure. A box with no kubelet parses as quiet."""
     reclaims: list[tuple[float, str]] = []
     gc: tuple[int, int, int] | None = None
+    evicted: list[str] = []
+    stuck = relieved = failed = 0
     for line in text.splitlines():
+        e = _KUBE_EVICTED_RE.search(line)
+        if e:
+            evicted.append(e.group(1))
+            continue
+        if _KUBE_STUCK in line:
+            stuck += 1
+            continue
+        if _KUBE_RELIEVED in line:
+            relieved += 1
+            continue
+        if _KUBE_FAILED in line:
+            failed += 1
+            continue
         m = _KUBE_RECLAIM_RE.match(line)
         if m:
             try:
@@ -1628,9 +1658,25 @@ def parse_kubelet(text: str, config: tuple[int, int] | None = None) -> KubeletPr
         if g:
             gc = (int(g.group(1)), int(g.group(2)), int(g.group(3)))
     cfg = (None, None) if config is None else config
+    out = (tuple(evicted), stuck, relieved, failed)
     if gc is None:
-        return KubeletPressure(tuple(reclaims), None, None, None, *cfg)
-    return KubeletPressure(tuple(reclaims), *gc, *cfg)
+        return KubeletPressure(tuple(reclaims), None, None, None, *cfg, *out)
+    return KubeletPressure(tuple(reclaims), *gc, *cfg, *out)
+
+
+def kubelet_outcome_text(kube: KubeletPressure) -> str:
+    """What the window's eviction attempts led to, as one clause. Pure.
+
+    An attempt count is how long the pressure lasted in 10 s passes; these
+    are what it cost: pods actually evicted (and how many distinct names --
+    a StatefulSet pod comes back under the same name and is evicted again),
+    passes where nothing evictable was left, passes image GC answered alone,
+    and evictions that failed."""
+    return (
+        f" = {len(kube.evicted)} pod(s) evicted ({len(set(kube.evicted))} distinct name(s)), "
+        f"{kube.stuck_n} pass(es) with no evictable pod left, "
+        f"{kube.relieved_n} relieved without evicting, {kube.failed_n} failed eviction(s)"
+    )
 
 
 def read_kubelet_window(hours: int = HOSTFS_WINDOW_H) -> KubeletPressure | None:
@@ -1956,7 +2002,7 @@ def host_fs_line(
         k = (
             f"{window_h}h: {len(kube.reclaims)} kubelet eviction attempt(s) on "
             f"{'/'.join(names)}, {first} -> {last}"
-        )
+        ) + kubelet_outcome_text(kube)
     over_b = None
     if kube is not None and kube.high_pct is not None:
         if kube.gc_high_pct is not None:

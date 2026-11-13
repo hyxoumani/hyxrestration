@@ -5181,6 +5181,34 @@ Format: what happened → root cause → error type → prevention tier
     "churn" is a tenant with a name -- when a transient recurs at a clock
     time, list the units that start before it and match its END.**
 
+190. **2026-11-04 -> 2026-11-13 14:55Z -- the digest counted the kubelet's
+    eviction ATTEMPTS for nine days and never printed what one led to.**
+    `HOSTFS` reads `"Eviction manager: attempting to reclaim"`, which the
+    kubelet logs every ~10 s for as long as pressure lasts: a duration in
+    passes, wearing the word "eviction". The outcome lines sit beside it in
+    the same journal read and were dropped by the regex. Read 2026-11-13
+    14:52Z over 24h: 579 attempts = **214 pods evicted** (170 distinct
+    names; `prometheus-...-0` 17 times, `alertmanager-...-0` 16,
+    `argocd-application-controller-0` 16 -- StatefulSet pods come back
+    under the same name and are evicted again), **353 passes "unable to
+    evict any pods from the node"** (only critical pods left: pressure the
+    kubelet can no longer answer, 61% of the passes), 5 relieved by image
+    GC alone, 7 evictions that timed out. Status entries from 11-04 on
+    carried "36 eviction attempts", "50", "83", "489" as the size of the
+    problem; the reader could not tell 83 passes that image GC answered
+    from 83 pods killed. This is the `memory.events` `max` rule (#121: a
+    count of reclaim events says nothing about what they cost) one resource
+    over, and it was written down eight weeks before this line was built.
+    Fix: `health.parse_kubelet` keeps the four outcomes,
+    `kubelet_outcome_text` prints them after the attempt span (`= 214
+    pod(s) evicted (170 distinct name(s)), 353 pass(es) with no evictable
+    pod left, 5 relieved without evicting, 7 failed eviction(s)`). 1 test
+    with one real journal line per outcome kind, each term perturbed; red
+    against the mutant that drops the clause, landing checked by diff.
+    **Rule: a log line that says an actor STARTED trying is a clock, not a
+    cost; before counting it, read the next five lines the same actor
+    prints and count the ones that say what happened.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
