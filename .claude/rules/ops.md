@@ -712,8 +712,8 @@
   on all 48 files of the day the first prune drops), so the prune frees
   0 B and raw frames stay a ~17 GB/day burn, the model's largest term
   (mistakes #164). `qa._raw_frames_growth` stats the oldest held day and
-  the headroom line says `oldest day hard-linked xN, the prune frees
-  nothing`; before calling any rotation net zero, read `st_nlink` on the
+  the headroom line says `oldest day has N hard-linked file(s), the prune
+  frees nothing` (N counts FILES, not links); before calling any rotation net zero, read `st_nlink` on the
   file it drops.
   The burn's SPLIT is the digest's `RAWFRAMES` line (newest complete day by
   channel vs the median of the 7 before it, `STEP` over +50%; the running

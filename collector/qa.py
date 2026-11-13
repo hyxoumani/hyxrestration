@@ -2091,7 +2091,8 @@ def qa_disk_headroom(
         )
         if raw_linked:
             # The prune drops a LINK; the lake keeps the bytes (mistakes #164).
-            raw_state = f"oldest day hard-linked x{raw_linked}, the prune frees nothing"
+            # A FILE count, worded as one: `x96` read as a link count of 96.
+            raw_state = f"oldest day has {raw_linked} hard-linked file(s), the prune frees nothing"
         else:
             raw_state = "filling" if raw_rate > 0 else "plateau"
         raw_how = (

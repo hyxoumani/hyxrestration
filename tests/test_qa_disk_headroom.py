@@ -234,7 +234,7 @@ def test_a_hard_linked_raw_window_is_labelled_in_the_model(tmp_path, monkeypatch
     _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
     detail = "\n".join(lines)
     assert (
-        "+ 4.00 raw_frames (16 of 15 day dirs held, oldest day hard-linked x1,"
+        "+ 4.00 raw_frames (16 of 15 day dirs held, oldest day has 1 hard-linked file(s),"
         " the prune frees nothing)"
     ) in detail, detail
     assert "burn 12.00 GB/day" in detail, detail
