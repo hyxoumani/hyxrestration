@@ -109,6 +109,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from collector import rawsizes
 from collector.qa import (
     DISK_RISE_RESET_FRAC,
     KALSHI_MAINT_PAD_H,
@@ -1955,34 +1956,10 @@ RAW_BASELINE_DAYS = 7
 #: A channel this far over its baseline median is named a STEP on the line.
 RAW_DRIFT_FRAC = 0.5
 _RAW_FILE_RE = re.compile(r"^(\d\d)-([a-z]+)\.jsonl\.zst$")
-#: A frame file whose first zstd frame declares a window this large is NOT as
-#: the writer left it. Measured 2026-11-13: the sibling's
-#: `hylshi-raw-frames-recompress-d1` (EXP-2248, hourly since 11-08 04:50Z)
-#: rewrites every closed day of `data/raw_frames` in place at `zstd -19
-#: --long=27` -- both hard-link names onto one new inode, mtime preserved, so
-#: neither `ls` nor `stat` shows it -- and had halved 10-24..11-08 (22.3 ->
-#: 9.9 GB on 11-08; ticker -71%, books -47%, trades -32%). The writer's level
-#: 9 declares window 2^21..2^22. A byte comparison across that line reads the
-#: recompressor, not the wire: the 11-13 02:15Z digest printed `same hours 7 d
-#: ago 0.9 GB: total +124% (ticker +234%)` against a rewritten 11-06
-#: (mistakes #188). `tests/test_health_rawframes.py` pins that the writer's
-#: own output reads below this.
-RAW_REWRITTEN_WLOG = 27
-_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
-
-
-def zstd_window_log(path: Path) -> int | None:
-    """Window log declared by the file's first zstd frame; None when the file
-    is unreadable, not zstd, or a single-segment frame (which declares none).
-    Six bytes read, nothing decompressed."""
-    try:
-        with open(path, "rb") as fh:
-            b = fh.read(6)
-    except OSError:
-        return None
-    if len(b) < 6 or b[:4] != _ZSTD_MAGIC or (b[4] >> 5) & 1:
-        return None
-    return 10 + (b[5] >> 3)
+#: Rewritten-in-place detection and the as-written size ledger live in
+#: `collector.rawsizes` (mistakes #188); re-exported for the digest's callers.
+RAW_REWRITTEN_WLOG = rawsizes.REWRITTEN_WLOG
+zstd_window_log = rawsizes.zstd_window_log
 
 
 @dataclass(frozen=True)
@@ -1992,7 +1969,8 @@ class RawDay:
     day: str  # YYYY-MM-DD
     by_channel: dict[str, int]
     by_hour: dict[tuple[str, str], int]  # (HH, channel) -> bytes
-    #: (HH, channel) files rewritten in place since the writer closed them.
+    #: (HH, channel) files rewritten in place since the writer closed them
+    #: whose as-written size was never ledgered: bytes at rest, not the wire.
     rewritten: frozenset[tuple[str, str]] = frozenset()
 
     @property
@@ -2008,9 +1986,12 @@ class RawDay:
         return out
 
 
-def read_raw_day(day_dir: Path) -> RawDay | None:
+def read_raw_day(day_dir: Path, sizes: dict[rawsizes.Key, int] | None = None) -> RawDay | None:
     """`stat` every frame file of one day directory and read its zstd window;
-    None when unreadable."""
+    None when unreadable. A file rewritten in place counts at the size the
+    collector ledgered while it was as written (`sizes`); without one it
+    counts at its size at rest and is named in `rewritten`."""
+    sizes = sizes or {}
     by_channel: dict[str, int] = {}
     by_hour: dict[tuple[str, str], int] = {}
     rewritten: set[tuple[str, str]] = set()
@@ -2027,14 +2008,20 @@ def read_raw_day(day_dir: Path) -> RawDay | None:
         except OSError:
             continue
         hh, ch = m.group(1), m.group(2)
+        if rawsizes.is_rewritten(f):
+            ledgered = sizes.get((day_dir.name, hh, ch))
+            if ledgered is None:
+                rewritten.add((hh, ch))
+            else:
+                n = ledgered
         by_channel[ch] = by_channel.get(ch, 0) + n
         by_hour[(hh, ch)] = by_hour.get((hh, ch), 0) + n
-        if (zstd_window_log(f) or 0) >= RAW_REWRITTEN_WLOG:
-            rewritten.add((hh, ch))
     return RawDay(day_dir.name, by_channel, by_hour, frozenset(rewritten))
 
 
-def read_raw_frames(raw_dir: str | Path | None = None) -> list[RawDay] | None:
+def read_raw_frames(
+    raw_dir: str | Path | None = None, ledger: str | Path | None = None
+) -> list[RawDay] | None:
     """Every held day directory, oldest first; None when the tree is unreadable.
     The running day is included and is told apart by name -- the renderer
     owns the complete/running split. `raw_dir` defaults to `RAW_FRAMES_DIR`
@@ -2044,7 +2031,8 @@ def read_raw_frames(raw_dir: str | Path | None = None) -> list[RawDay] | None:
         dirs = sorted(p for p in root.iterdir() if p.is_dir())
     except OSError:
         return None
-    days = [d for d in (read_raw_day(p) for p in dirs) if d is not None]
+    sizes = rawsizes.load(ledger)
+    days = [d for d in (read_raw_day(p, sizes) for p in dirs) if d is not None]
     return days
 
 

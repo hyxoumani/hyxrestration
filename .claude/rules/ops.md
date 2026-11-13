@@ -723,10 +723,13 @@
   The files under `data/raw_frames` are NOT only ours to write: the
   sibling's `hylshi-raw-frames-recompress-d1` rewrites every closed day in
   place at `zstd -19 --long=27` (about half the bytes; name and mtime kept;
-  mistakes #188). The digest tells a rewritten file by its zstd header
-  (`health.zstd_window_log` >= 27) and prints `NOT COMPARABLE` or `N
-  rewritten prior day(s) left out` -- never difference raw-frame bytes by
-  hand across days without reading the header first, and a free-space
+  mistakes #188). The 5-min collector ledgers each closed file's as-written
+  size first (`collector.rawsizes`, `data/raw_frames_sizes.jsonl`), the
+  digest tells a rewritten file by its zstd header (window >= 2^27) and
+  counts it at the ledgered size, and only a file rewritten before it was
+  ledgered prints `NOT COMPARABLE` / `N rewritten prior day(s) left out`
+  -- never difference raw-frame bytes by hand across days (`du`, `ls`)
+  without the ledger, and a free-space
   series that goes flat while that job has a backlog is the job, not the
   burn stopping (`journalctl --user -g raw_frames_recompress_d1`).
   The burn's SPLIT is the digest's `RAWFRAMES` line (newest complete day by

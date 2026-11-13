@@ -1023,7 +1023,10 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   directory in place at `zstd -19 --long=27` (10-24..11-08 halved by
   11-13 02:32Z; mtime and name preserved), so a rewritten file is told by
   its zstd frame header (window 2^27 vs the writer's 2^21-22) and a
-  rewritten day is left out of the median, or the clause says `NOT
+  rewritten file counts at the size the 5-min collector ledgered while it
+  was still as written (`collector.rawsizes` ->
+  `data/raw_frames_sizes.jsonl`, one line per closed hour file); a file
+  with no ledger line is left out of the median or the clause says `NOT
   COMPARABLE` (mistakes #188). First reading, 08:30Z:
   `11-08: 26.1 GB (books 13.3, ticker 11.8, trades 0.9) vs median of 7 prior
   day(s) 17.4 GB (books 11.1, ticker 5.9, trades 0.8) -- STEP over +50%: ticker +100%

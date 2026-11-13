@@ -4297,12 +4297,24 @@ Format: what happened → root cause → error type → prevention tier
     day is left out of the baseline median and counted on the line, and a
     rewritten newest day or reference hour says NOT COMPARABLE instead of
     a percentage. 4 tests, 3 red against a mutant whose landing was checked
-    with `cmp`. NOT fixed: once the job runs at D+1 the newest complete day
-    is itself part-rewritten by the 10:00Z QA, so the line will mostly say
-    NOT COMPARABLE, and QA's headroom `raw_frames` term (the newest
-    complete day's bytes) will read between the wire and half of it. The
-    instrument that survives is a count of wire bytes at the writer
-    (streamd's stats line), which needs a stream restart to ship. Rule:
+    with `cmp`. Second half, 02:52Z, because that fix alone decays: at the
+    job's designed D+1 the newest complete day is itself part-rewritten
+    and the line would mostly say NOT COMPARABLE. `collector.rawsizes`:
+    the 5-minute collector appends each closed hour file's size to
+    `data/raw_frames_sizes.jsonl` the first time it sees it as the writer
+    left it (a stat and six bytes per unledgered file, after the cycle
+    line, outside every lock, never fatal), and the digest counts a
+    rewritten file at its ledgered size -- only a file rewritten before it
+    was ever ledgered is still named. Seeded by hand the same hour: 404
+    files still as written (11-09..11-13, the tail of 11-08), and 948
+    already-rewritten files of 10-30..11-08 from the job's own journal
+    lines (`A -> B bytes`), each accepted only where B equals the file's
+    size now. All 15 held days read comparable; the line that said `same
+    hours 7 d ago: total +124% (ticker +234%)` says `+0% (books -1%,
+    ticker +2%, trades -4%)`. 7 tests, 4 red against three mutants, landing
+    checked with `cmp`. Still open: QA's headroom `raw_frames` term is the
+    newest complete day's bytes on disk, which a D+1 rewrite will make
+    read between the wire and half of it. Rule:
     **bytes on disk measure the wire only while nobody rewrites the file,
     and a file under a path you own is not thereby a file only you write --
     a hard link is a second owner with a pen. Before differencing file

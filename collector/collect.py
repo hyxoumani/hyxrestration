@@ -32,7 +32,7 @@ from pathlib import Path
 import duckdb
 import requests
 
-from collector import spool
+from collector import rawsizes, spool
 from collector.venues import kalshi, nws, polymarket
 from hyxlab.lockid import note_holder, read_holder
 from hyxlab.models import Forecast, MarketInfo, Snapshot, SourceResult
@@ -493,6 +493,14 @@ def main() -> None:
             "total_s": round(time.monotonic() - t0, 1),
         }
         print(cycle_line(counts, db_counts, drained, timings, fs_free_bytes(args.db)))
+        # After the cycle's own line and outside every lock: the as-written
+        # size of each closed raw frame file, before the sibling's
+        # recompressor rewrites it in place (mistakes #188). A stat and six
+        # bytes per unledgered file; it must never cost a cycle.
+        try:
+            rawsizes.record_closed()
+        except Exception as e:  # noqa: BLE001 -- an instrument, not the capture
+            print(f"[collect] raw frame size ledger skipped: {type(e).__name__}: {e}")
         if args.once:
             break
         time.sleep(args.interval)
