@@ -4268,6 +4268,39 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+187. **2026-11-11 -> 2026-11-13 02:32Z -- the largest tenant on the shared
+    disk was listed at half its size, by the enumeration command the ops
+    rule prescribes.** The #175 candidate list carried `hylshi-lake 201 GB
+    nominal ... not priced`, and this pass's first read said 230G. The lake
+    is 406 GB on disk. One `du` invocation counts a hard-linked inode ONCE,
+    under whichever argument reaches it first: `du -sx -BG /home/devs/*
+    /home/devs/.local/share/*` walks `workspace/` (and so this repo's
+    `data/raw_frames`) before the lake, and the lake's second link to those
+    files is then free. Measured 02:30Z in one call: `data/raw_frames` 155G,
+    `hylshi-lake/raw/raw_frames` 41G; with `-l` (count links every time)
+    155G and 194G. The opposite instrument errs the other way:
+    `btrfs filesystem du` reports a hard-linked file as EXCLUSIVE under
+    both names (one inode owns the extent -- `raw_frames/2026-11-10` reads
+    21.2 GB exclusive in this repo AND in the lake), so this repo's
+    185 GB "exclusive" contains 164 GB that deleting our name alone would
+    not free. Reflinks and hard links are different sharing, and each tool
+    sees only one of them. What the tree actually holds
+    (`find -printf '%n %s'`): 21 day dirs since 10-23, 208 GB, 164.0 GB
+    co-held with our 15-day window (`st_nlink` 2), 44.0 GB the seven days
+    our prune already unlinked -- kept on purpose by the sibling's hourly
+    `ops/lake/raw_frames_link.sh`. Rule: **a size is a claim about what a
+    deletion frees, and that depends on who else names the bytes. Enumerate
+    tenants with `du -l` (every tenant at its own full size), then price a
+    deletion by link kind: `btrfs filesystem du` exclusive for reflinks,
+    `find -links 1` for hard links -- and never read a multi-argument `du`
+    row as a tenant's size.** Two smaller slips in the same pass, both
+    caught: the status entry was stamped 02:50Z from an estimate at 02:18Z
+    and `tests/test_status_stamp.py` refused the promote (the gate working
+    as built); and four sizes were copied from `du -BM` under a GB label,
+    corrected in the entry. No code moved for this one: QA's raw term
+    already reads `st_nlink` (#164) and prices only the backups by
+    exclusive bytes.
+
 186. **2026-07 -> 2026-11-12 20:32Z -- the shadow dropped any coverage gap
     whose row landed a poll ahead of the next event.** `replay_snapshots`
     applied a gap only when an event at or after its start flowed through

@@ -142,8 +142,13 @@
   `~/workspace` and `~/scratch`, attributed 42 GB and called 27 GB
   unattributed; the rest was in `~/.local/share` and `~/.cache` (a Steam
   shader-cache rebuild, 12.9 GB in 85 min; a neighbour's research DBs,
-  8.5 GB; Firefox 1.9 GB). Enumerate with `du -sx -BG /home/devs/* /home/
-  devs/.local/share/* /home/devs/.cache` BEFORE attributing, and locate a
+  8.5 GB; Firefox 1.9 GB). Enumerate with `du -sxl -BG /home/devs/* /home/
+  devs/.local/share/* /home/devs/.cache` BEFORE attributing (`-l`: one `du`
+  counts a hard-linked inode once, under the FIRST argument that reaches
+  it -- without it the sibling's lake read 230G for 406 GB on disk, the
+  164 GB it shares with our `data/raw_frames` already spent on
+  `workspace/`; and `btrfs filesystem du` errs the other way, calling a
+  hard-linked file exclusive under BOTH names; mistakes #187), and locate a
   step with the collector's 5-min `fs_free_b=` journal field (hour
   resolution) rather than the QA series (one sample a day, #93 rule).
 - An instrument for a SHARED resource has to measure both directions:
@@ -663,7 +668,7 @@
   fails even while it is not filling (mistakes #165). A horizon on a
   shared resource is bounded by its tightest tenant's limit, never by
   the resource's last unit. What to delete on the
-  shared disk is the USER's call; enumerate first (`du -sx -BG`, then
+  shared disk is the USER's call; enumerate first (`du -sxl -BG`, then
   `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
   price our own reflinked slots with `btrfs filesystem du`, never `du`.
   The `HOSTFS` line's `pace:` clause is the TIME to that threshold, from the
