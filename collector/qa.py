@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 import duckdb
 
+from collector import rawsizes
 from collector.backup import DBS, backup_one
 from collector.poly_sweep import TAIL_STOP_CLASSES
 from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
@@ -1860,14 +1861,53 @@ def _raw_frames_growth(
     today = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
     complete = [p for p in days if p.name < today]
     day = complete[-1] if complete else days[-1]
+    # The rate is the day AS THE WRITER LEFT IT: the sibling's recompressor
+    # rewrites closed files in place at about half the bytes (mistakes #188),
+    # and a newest day caught mid-rewrite would otherwise read anywhere
+    # between the two. As written is the conservative side; what a day costs
+    # at rest is `_raw_frames_at_rest`, printed beside it.
+    sizes = rawsizes.load()
     size = 0
     for f in day.iterdir():
         try:
             if f.is_file():
-                size += f.stat().st_size
+                m = rawsizes.RAW_FILE_RE.match(f.name)
+                key = (day.name, m.group(1), m.group(2)) if m else None
+                if key in sizes and rawsizes.is_rewritten(f):
+                    size += sizes[key]
+                else:
+                    size += f.stat().st_size
         except OSError:
             continue
     return float(size), held, linked
+
+
+def _raw_frames_at_rest(raw_dir: Path) -> tuple[float, int] | None:
+    """(bytes at rest / bytes as written, files) over every held raw frame
+    file that has been rewritten in place AND has a ledgered as-written size;
+    None when there is no such file. Measured, never assumed: the ratio is
+    the sibling job's, and it moves with the channel mix."""
+    sizes = rawsizes.load()
+    if not sizes or not raw_dir.is_dir():
+        return None
+    at_rest = written = n = 0
+    for d in raw_dir.iterdir():
+        if not d.is_dir():
+            continue
+        for f in d.iterdir():
+            m = rawsizes.RAW_FILE_RE.match(f.name)
+            key = (d.name, m.group(1), m.group(2)) if m else None
+            if key not in sizes or not rawsizes.is_rewritten(f):
+                continue
+            try:
+                at_rest += f.stat().st_size
+            except OSError:
+                continue
+            written += sizes[key]
+            n += 1
+    if not written:
+        return None
+    return at_rest / written, n
 
 
 def _record_free(series: Path, now: datetime, free: int) -> None:
@@ -2095,6 +2135,12 @@ def qa_disk_headroom(
             raw_state = f"oldest day has {raw_linked} hard-linked file(s), the prune frees nothing"
         else:
             raw_state = "filling" if raw_rate > 0 else "plateau"
+        rest = _raw_frames_at_rest(Path(RAW_FRAMES_DIR if raw_dir is None else raw_dir))
+        if rest is not None:
+            raw_state += (
+                f"; as written -- {rest[1]} file(s) rewritten in place by the sibling"
+                f" hold x{rest[0]:.2f} of that at rest"
+            )
         raw_how = (
             f"{raw_rate / 1e9:.2f} raw_frames"
             f" ({raw_held} of {raw_held_day_dirs(RAW_RETAIN_DAYS)} day dirs held"

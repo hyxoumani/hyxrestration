@@ -647,3 +647,38 @@ def test_the_kubelet_clause_is_rendered_in_one_place():
     src = inspect.getsource(qa.qa_disk_headroom)
     assert src.count("_kubelet_clause(") == 2
     assert "kubelet's" not in src.replace("kubelet's config", "").split('"""')[2]
+
+
+def test_a_rewritten_newest_day_is_priced_as_written_with_the_at_rest_ratio(tmp_path):
+    """Mistakes #188: the sibling's recompressor rewrites closed raw frame
+    files in place at about half the bytes. The rate stays the day as the
+    writer left it (from the collector's ledger) -- unfixed, a day caught
+    mid-rewrite reads 2 GB here -- and the label carries the measured
+    at-rest share instead of assuming one."""
+    import json
+
+    from collector import rawsizes
+
+    db = _live(tmp_path, "a", 1 * GB)
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    raw = tmp_path / "raw_frames"
+    _raw_day(raw, "2000-01-01", 4 * GB)
+    _raw_day(raw, "2999-01-01", 1 * GB)
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
+    assert "at rest" not in "\n".join(lines)  # nothing rewritten: no clause
+
+    f = raw / "2000-01-01" / "00-books.jsonl.zst"
+    Path(rawsizes.LEDGER).parent.mkdir(parents=True, exist_ok=True)
+    Path(rawsizes.LEDGER).write_text(
+        json.dumps({"day": "2000-01-01", "hh": "00", "ch": "books", "b": 4 * GB}) + "\n"
+    )
+    f.write_bytes(b"\x28\xb5\x2f\xfd\x04\x88")  # zstd header, window 2^27
+    os.truncate(f, 2 * GB)
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
+    detail = "\n".join(lines)
+    assert (
+        "+ 4.00 raw_frames (2 of 15 day dirs held, filling; as written -- 1 file(s)"
+        " rewritten in place by the sibling hold x0.50 of that at rest)"
+    ) in detail, detail
+    assert "burn 12.00 GB/day" in detail, detail

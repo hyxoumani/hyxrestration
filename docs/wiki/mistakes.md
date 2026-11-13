@@ -4312,9 +4312,13 @@ Format: what happened → root cause → error type → prevention tier
     size now. All 15 held days read comparable; the line that said `same
     hours 7 d ago: total +124% (ticker +234%)` says `+0% (books -1%,
     ticker +2%, trades -4%)`. 7 tests, 4 red against three mutants, landing
-    checked with `cmp`. Still open: QA's headroom `raw_frames` term is the
-    newest complete day's bytes on disk, which a D+1 rewrite will make
-    read between the wire and half of it. Rule:
+    checked with `cmp`. QA's headroom `raw_frames` term (03:07Z) reads the
+    newest complete day from the same ledger -- as written, the
+    conservative side, where bytes on disk mid-rewrite would read anywhere
+    down to half -- and prints the MEASURED at-rest share beside it
+    (`_raw_frames_at_rest`: x0.48 over 948 rewritten files); the rate is
+    deliberately not discounted, since the discount is another tenant's
+    job continuing to run. Rule:
     **bytes on disk measure the wire only while nobody rewrites the file,
     and a file under a path you own is not thereby a file only you write --
     a hard link is a second owner with a pen. Before differencing file
