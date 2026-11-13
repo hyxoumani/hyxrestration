@@ -610,9 +610,9 @@
   3,022 MB at 1 GiB, same 122 s hold, and 114 MB once the connection
   closed; `SET threads = 4` was OOM-killed (mistakes #191). The pool is a
   cache a single pass never re-reads, so a one-pass reader lowers it
-  (`queuescore.ARCHIVE_POOL`, then `spill_cap`, and the site goes in
+  (`queuescore.archive_pool`, the one enumerated site in
   `tests/test_memlimit_override_discipline.py`) and takes its rows OUT
-  of the hold unsorted (`bookreplay.copy_out` / `scratch_rows`) rather
+  of the hold unsorted (`queuescore.copy_to_scratch`, then `bookreplay.scratch_rows`) rather
   than sorting on the archive connection. Read `rss_hold_mb` in the cost
   block before resizing a unit: it is the scan's share of the peak.
 - A process that holds a DuckDB file read-WRITE cannot open the same file

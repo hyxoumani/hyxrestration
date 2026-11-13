@@ -5,8 +5,6 @@ no-match decomposition (late decrement, coverage gap, naive-would-match
 staying zero) on a crafted in-memory stream.
 """
 
-import re
-
 import duckdb
 import pytest
 
@@ -169,7 +167,11 @@ def test_the_selector_is_queuescores_not_a_copy():
 
     src = (Path(__file__).resolve().parent.parent / "simulator/prioritycheck.py").read_text()
     assert "FROM book_events b" not in src, "a second selector query string"
-    assert re.search(r"from simulator\.queuescore import .*\bselect_markets\b", src), src[:200]
+    # The object, not the import line's text: a parenthesised import wrapped
+    # by the formatter defeated the regex that used to stand here (2026-11-13).
+    from simulator import prioritycheck, queuescore
+
+    assert prioritycheck.select_markets is queuescore.select_markets
 
 
 def test_main_measures_the_hold_on_the_stream_archive(tmp_path, monkeypatch, capsys):
@@ -275,11 +277,13 @@ def test_main_publishes_the_cost_block_with_the_pairing_label(tmp_path, monkeypa
     prioritycheck.main()
     text = capsys.readouterr().out
     lines = [ln for ln in text.splitlines() if ln.startswith("[prioritycheck] cost:")]
-    assert len(lines) == 1 and "of which pairing 0.0s" in lines[0], text
+    assert len(lines) == 1 and "then pairing 0.0s after the release" in lines[0], text
     assert "replay" not in lines[0]
     report = json.loads(next(out_dir.glob("*.json")).read_text())
     cost = report["cost"]
     assert cost["markets"] == 0 and cost["held_s"] is not None and cost["held_unknown_n"] == 0
+    # the copied-out rows lived under the run's private scratch and are gone
+    assert not list(tmp_path.rglob("prioritycheck-rows"))
 
 
 def _brute_force_check_rows(market_id, trades, deltas):

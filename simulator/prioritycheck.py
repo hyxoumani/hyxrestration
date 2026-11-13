@@ -45,6 +45,7 @@ import argparse
 import bisect
 import json
 import math
+import shutil
 import statistics
 import time
 from collections import defaultdict
@@ -53,7 +54,15 @@ from pathlib import Path
 
 from hyxlab.memcap import rss_anon_mb
 from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
-from simulator.queuescore import cost_block, cost_line, iter_market_rows, select_markets
+from simulator.bookreplay import scratch_rows
+from simulator.queuescore import (
+    archive_pool,
+    copy_to_scratch,
+    cost_block,
+    cost_line,
+    iter_market_rows,
+    select_markets,
+)
 
 STREAM_DB = "data/hyxstream.duckdb"
 EXACT_WINDOW = 0.005  # s: tight pairing for the exact-match rate / timing stats
@@ -226,14 +235,15 @@ def main() -> None:
     series = [x.strip() for x in args.series.split(",") if x.strip()] if args.series else None
 
     reset_attach_waits()
-    # `held_attach`: every market is checked through a cursor on
-    # `hyxstream.duckdb` -- the file `collector.streamd` OWNS -- so the hold
-    # is the whole loop, measured and published (#91, #102). The selector is
+    # `held_attach`: the selection and the copy-out read `hyxstream.duckdb`
+    # -- the file `collector.streamd` OWNS -- so the hold is those scans,
+    # measured and published (#91, #102). The selector is
     # `queuescore.select_markets`, not a copy: this module carried the SAME
     # unbounded correlated EXISTS that killed the weather bracket (#124),
     # one file over from the fix. The window aggregate stays bare on purpose
     # (statistics-folded; a venue bound makes it a 1.2e9-row scan).
     with held_attach(args.stream_db) as conn:
+        archive_pool(conn, args.stream_db)
         since = conn.execute(
             "SELECT max(recv_ts) - INTERVAL 1 HOUR * CAST(? AS INTEGER) FROM book_events",
             [int(args.hours)],
@@ -244,45 +254,50 @@ def main() -> None:
             + (f", series={series}" if series else "")
         )
 
-        # Inside the hold: ONE scan per table, streamed by market, each
-        # market paired as its group completes -- `check_market`'s two
+        # Inside the hold: ONE unsorted scan per table, copied out
+        # (`bookreplay.copy_out`); the market-ordered sort and the pairing
+        # run after the release, on the copy. Until 2026-11-13 both ran on
+        # the archive connection, and the bracket's twin of this loop was
+        # OOM-killed in that sort (mistakes #191). `check_market`'s two
         # `WHERE market_id=?` reads per market were 2N window scans (#147).
-        # `score_s` is the pairing's share of the hold; the rest is the scans.
-        per_market = []
-        dt_ms: list[float] = []
-        score_s = 0.0
-        rows_n: dict[str, tuple[int, int]] = {}
-        # `rss_peak_mb` is two terms, measured 2026-10-30 on the live archive
-        # (24h window, 8 KXBTC15M/NFL markets, 6.9M book rows): DuckDB's
-        # buffer pool caching the scanned blocks -- `duckdb_memory()` tag
-        # BASE_TABLE, 2.8-3.2 GB after `select_markets` alone, the same under
-        # an EXISTS or a GROUP BY form, bounded only by `memory_limit` (half
-        # the cgroup cap in a unit via `store.cgroup_memory_limit`; 80% of
-        # host RAM ad hoc) -- and the largest market's Python rows, ~0.5 KB
-        # per row (734k rows = 370 MB, 81 MB as negative deltas). Neither is
-        # the pairing. So the peak is the cap's to bound, not the window's:
-        # a unit that runs this needs `MemoryMax`, and an ad-hoc run on an
-        # uncapped box lets DuckDB cache up to its host default.
-        rss_peak = rss_anon_mb()
-        for m, events, trades in iter_market_rows(conn, markets, since):
-            deltas = negative_deltas(events)
-            rows_n[m] = (len(events), len(trades))
-            del events
-            t_pair = time.monotonic()
-            r = check_rows(m, trades, deltas)
-            score_s += time.monotonic() - t_pair
-            dt_ms.extend(r.pop("dt_ms"))
-            per_market.append(r)
-            print(
-                f"  {m}: trades={r['trades']} exact={r['exact_match']} absorb={r['absorb_match']}"
-            )
-            rss = rss_anon_mb()
-            if rss is not None and (rss_peak is None or rss > rss_peak):
-                rss_peak = rss
+        scratch = copy_to_scratch(conn, args.stream_db, markets, since, "prioritycheck-rows")
+        # The hold's anon RSS is the SCAN's: `memory_limit` plus ~2 GB the
+        # limit does not count (measured on the bracket, #191; the 10-30
+        # reading here, 2.8-3.2 GB after `select_markets` alone, was the
+        # same sum at an uncapped limit). After the release the peak is the
+        # largest market's Python rows, ~0.5 KB per row (734k rows = 370 MB,
+        # 81 MB as negative deltas).
+        rss_hold = rss_peak = rss_anon_mb()
+    per_market = []
+    dt_ms: list[float] = []
+    score_s = 0.0
+    rows_n: dict[str, tuple[int, int]] = {}
+    try:
+        with scratch_rows(scratch) as sconn:
+            for m, events, trades in iter_market_rows(sconn, markets, since):
+                deltas = negative_deltas(events)
+                rows_n[m] = (len(events), len(trades))
+                del events
+                t_pair = time.monotonic()
+                r = check_rows(m, trades, deltas)
+                score_s += time.monotonic() - t_pair
+                dt_ms.extend(r.pop("dt_ms"))
+                per_market.append(r)
+                print(
+                    f"  {m}: trades={r['trades']} exact={r['exact_match']}"
+                    f" absorb={r['absorb_match']}"
+                )
+                rss = rss_anon_mb()
+                if rss is not None and (rss_peak is None or rss > rss_peak):
+                    rss_peak = rss
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     # After the RELEASE: `held_s` is charged by the close.
     wait = attach_wait_block(db=Path(args.stream_db).name)
-    cost = cost_block(wait, score_s=score_s, rows=rows_n, rss_peak_mb=rss_peak)
-    print(f"[prioritycheck] cost: {cost_line(cost, compute='pairing')}")
+    cost = cost_block(
+        wait, score_s=score_s, rows=rows_n, rss_peak_mb=rss_peak, rss_hold_mb=rss_hold
+    )
+    print(f"[prioritycheck] cost: {cost_line(cost, compute='pairing', inside_hold=False)}")
 
     tot = sum(r["trades"] for r in per_market)
     agg = {

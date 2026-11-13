@@ -820,6 +820,35 @@ CHUNK_ROWS = 65_536
 ARCHIVE_POOL = "1GiB"
 
 
+def archive_pool(conn, stream_db: str | Path) -> None:
+    """Lower a one-pass archive reader's DuckDB pool to `ARCHIVE_POOL`.
+
+    The pool is a cache a single pass never re-reads; at the cgroup-derived
+    default (half the cap) it put the econ bracket's hold 139 MB under a 4G
+    unit, and at 1 GiB the same hold peaks 1 GiB lower in the same time
+    (`bookreplay.copy_out`, mistakes #191). The spill bound follows the
+    limit it is derived from."""
+    conn.execute(f"SET memory_limit = '{ARCHIVE_POOL}'")
+    spill_cap(conn, stream_db)
+
+
+def copy_to_scratch(conn, stream_db: str | Path, markets: list[str], since: datetime, name: str):
+    """`copy_out` into this process's private scratch; returns the directory,
+    which the CALLER removes once it has read the rows back.
+
+    Under `hyxlab.scratch`'s `<db>.tmp/pid-<pid>`: flock-owned for this
+    process's life, so no second process can construct the path, and reaped
+    by the next attach if the kernel kills this run (one was, 2026-11-13)
+    before the caller's cleanup."""
+    scratch = Path(duck_scratch_dir(stream_db) or ".") / name
+    try:
+        copy_out(conn, markets, since, scratch)
+    except BaseException:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
+    return scratch
+
+
 def iter_market_rows(conn, markets: list[str], since: datetime, chunk: int = CHUNK_ROWS):
     """Yield `(market_id, events, trades)` per selected market from ONE scan
     per table, holding one market's rows in Python at a time.
@@ -838,8 +867,7 @@ def iter_market_rows(conn, markets: list[str], since: datetime, chunk: int = CHU
     rows at a time, and a market is yielded the moment its group ends.
     Since 2026-11-13 `main` hands this a PRIVATE connection over rows
     `copy_out` took from the archive, because the sort itself outgrew the
-    hold (see there); `simulator.prioritycheck` still runs it on the
-    archive connection, inside its hold. The per-market order
+    hold (see there); `simulator.prioritycheck` does the same. The per-market order
     (`recv_ts, seq`) is the one-market read's, so the replay sees exactly
     what that read gave it (`tests/test_hyxlab_queuescore.py` asserts the
     two paths score identically, across chunk boundaries). Markets with no
@@ -1047,11 +1075,7 @@ def main() -> None:
     # listed as debt in `tests/test_hold_discipline.py`: a standing report
     # holding a daemon's archive with nowhere to say for how long (#91, #102).
     with held_attach(args.stream_db) as conn:
-        # The pool is a cache this single pass never re-reads; at the
-        # cgroup-derived default it put the hold 139 MB under a 4G cap
-        # (`copy_out`). The spill bound follows the limit it is derived from.
-        conn.execute(f"SET memory_limit = '{ARCHIVE_POOL}'")
-        spill_cap(conn, args.stream_db)
+        archive_pool(conn, args.stream_db)
         # UNBOUNDED ON PURPOSE -- the one read in this path that must NOT
         # carry the #124 venue/window bound. A bare `max(recv_ts)` is folded
         # from the table's statistics (measured 2026-10-16 over 1.23e9 rows:
@@ -1074,16 +1098,7 @@ def main() -> None:
         # private scratch directory (`copy_out`). The sort and the replay
         # run after the release, on the copy.
         gaps = fetch_gaps(conn, since)
-        # Under `hyxlab.scratch`'s `<db>.tmp/pid-<pid>`: flock-owned for
-        # this process's life, so no second process can construct the path,
-        # and reaped by the next attach if the kernel kills this run (one
-        # was, 2026-11-13) before the `finally` below.
-        scratch = Path(duck_scratch_dir(args.stream_db) or ".") / "queuescore-rows"
-        try:
-            copy_out(conn, markets, since, scratch)
-        except BaseException:
-            shutil.rmtree(scratch, ignore_errors=True)
-            raise
+        scratch = copy_to_scratch(conn, args.stream_db, markets, since, "queuescore-rows")
         rss_hold = rss_peak = rss_anon_mb()
     print(
         f"[queuescore] rss_anon {rss_hold} MB at the end of the hold,"

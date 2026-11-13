@@ -78,7 +78,7 @@ KERNEL_SITE = "hyxlab/store.py::cgroup_memory_limit"
 #: ENUMERATED, not counted: rung-11 found the third copy of one walk by
 #: sweeping for the role, and the lesson (mistake #37) was to pin the
 #: answer so the fourth is a red test instead of a discovery.
-OVERRIDE_SITES = {"simulator/shadow.py::stream_conn", "simulator/queuescore.py::main"}
+OVERRIDE_SITES = {"simulator/shadow.py::stream_conn", "simulator/queuescore.py::archive_pool"}
 
 
 # -- derived half ---------------------------------------------------------

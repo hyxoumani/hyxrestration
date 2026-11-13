@@ -5238,9 +5238,11 @@ Format: what happened → root cause → error type → prevention tier
     by phase without an experiment. The six holds this cost the stream
     (142 + 42 + 139 + 122 + ~140 + 123 s, 20:26-20:44Z, every one named
     in `stream_stalls.jsonl`, 0 spilled, no GAP line) are the price of
-    not having that split on 10-29. Not fixed: `simulator.prioritycheck`
-    runs the same sort inside its hold (24h window, last run 10-29) --
-    it adopts `copy_out` at its next read, not blind. **Rule: a memory
+    not having that split on 10-29. The twin, `simulator.prioritycheck`
+    (same sort inside its hold, 24h window, last run 10-29), took the
+    same path the next pass through shared helpers
+    (`queuescore.archive_pool` / `copy_to_scratch`) -- unit-tested, NOT
+    yet run on the live archive. **Rule: a memory
     prediction names its terms and which of them the cap sets; a peak
     that sits at `limit + constant` under every design tried is the
     limit's, and the lever is the limit. And a dated "next weekly run"
