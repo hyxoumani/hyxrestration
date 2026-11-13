@@ -439,6 +439,29 @@ structure — see [venues](venues.md)).
    per-market-scan defect, mistakes #147, fixed the same pass; the
    restructured reader held 54.5s with the replay 3.3s of it, and the
    next weekly run reads its `cost` block.
+   **Sixth reading (2026-11-13 20:35Z, `20261113T203536.json`, same
+   arguments): the SIXTH consecutive econ null, on units that are all
+   repeats.** 4,876 orders / 24 markets / 6 underlyings (KXCPI 2,019,
+   KXCPIYOY 1,478, KXPAYROLLS 523, KXFED 459, KXU3 397). Crossing 246
+   vs queue-pess 274 / opt 352; `crossing_but_not_pess` 126 vs
+   `pess_but_not_crossing` 154, `inside_bracket` 9,
+   `crossing_but_not_opt` 117. Market tier 9 over / 10 under / 5 tied,
+   p 0.5 (floor) and 0.32 (ceiling), both `not_significant`; underlying
+   tier floor 2 / 2 / 2 = `underpowered` (4 decisive units cannot reach
+   alpha, `min` 0.0625), ceiling 1 / 4 / 1, p 0.1875,
+   `not_significant`: powered 4 -> 3, significant 0 of 4. Floor net -28
+   on abs 60, 68% of it one unit (KXCPI-26OCT -41, which read +16 on
+   10-29). `independence.units`: 6 of 6 shared with 10-29, 0 new; of the
+   4 that leaned in both, 1 kept its sign and 3 flipped -- the same
+   events re-read two weeks later disagree with themselves, which is
+   what a null looks like and what the 10-29 entry said this read could
+   not improve on. The next read that can be NEW is still ~11-26+
+   (KXCPI-26OCT, KXPAYROLLS-26OCT, KXU3-26OCT stopped printing 11-06 /
+   11-10 and leave the window by 11-24). Cost: the first attempt was
+   OOM-killed at the 4G unit (mistakes #191); the fixed reader holds
+   the archive 122-139 s (selection ~40 s + an unsorted copy-out of
+   3.32M book rows) with the replay 5.2 s after the release, anon peak
+   3,022 MB at a 1 GiB pool.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer (SHIPPED 07-11; gate open).
    **Coverage probe (2026-10-14, read on the 10-13 backup; no edge was

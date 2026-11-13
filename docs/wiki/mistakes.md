@@ -5209,6 +5209,43 @@ Format: what happened → root cause → error type → prevention tier
     cost; before counting it, read the next five lines the same actor
     prints and count the ones that say what happened.**
 
+191. **2026-10-29 -> 2026-11-13 20:29Z -- a standing report's memory fix
+    was sized on the term that had just been fixed, and the 4G unit it
+    ran in was 1 GB from the kernel the day it shipped.** The 10-29 fix
+    for the econ maker bracket (#147) streamed one market's rows at a
+    time and predicted `rss_peak_mb` under 3,500 for the next weekly
+    run. That run was due ~11-05, was not run until 11-13, and was
+    OOM-killed at `MemoryMax=4G` 91 s into the market-ordered `ORDER BY`
+    -- before one market was yielded -- having held `hyxstream.duckdb`
+    142 s (streamd: one episode, 11 failed flushes, 957,199 rows
+    pending, 0 spilled) for no report. Three live runs the same evening
+    placed the memory: with the sort moved off the archive (unsorted
+    parquet `COPY` inside the hold, sort and replay on a private copy
+    after the release) the hold still ended at anon 3,957 MB and fell to
+    114 MB when the archive connection closed -- so the peak was never
+    the sort's or Python's, it was the SCAN's: `memory_limit` (2.0 GiB,
+    half the cap) plus ~2.0 GB the limit does not count (a bare filtered
+    `count(*)` over the same window read 2,953 MB). `SET threads = 4`
+    was killed again; `SET memory_limit = '1GiB'` moved the peak by
+    exactly the difference, to 3,022 MB, with the hold unchanged at
+    122-123 s. The 10-29 reading of 3,016 MB was this same sum with a
+    smaller window, and its "DuckDB's half of the cap plus one market's
+    rows" was right about the first term and wrong about the second.
+    Fix: `bookreplay.copy_out` / `scratch_rows` (the hold is the
+    selection and two unsorted scans), `queuescore.ARCHIVE_POOL` 1 GiB
+    with the spill bound re-derived, and the cost block's `rss_hold_mb`
+    (anon at the end of the hold) so the next reading splits the peak
+    by phase without an experiment. The six holds this cost the stream
+    (142 + 42 + 139 + 122 + ~140 + 123 s, 20:26-20:44Z, every one named
+    in `stream_stalls.jsonl`, 0 spilled, no GAP line) are the price of
+    not having that split on 10-29. Not fixed: `simulator.prioritycheck`
+    runs the same sort inside its hold (24h window, last run 10-29) --
+    it adopts `copy_out` at its next read, not blind. **Rule: a memory
+    prediction names its terms and which of them the cap sets; a peak
+    that sits at `limit + constant` under every design tried is the
+    limit's, and the lever is the limit. And a dated "next weekly run"
+    that nothing schedules is a sentence -- this one waited 15 days.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

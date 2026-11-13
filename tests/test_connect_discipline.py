@@ -106,6 +106,11 @@ ALLOWED: dict[str, tuple[str, str]] = {
 #: declines). Each entrypoint now holds `<db>.owner.lock` for its whole
 #: life; tests/test_owned_db_discipline.py enumerates and enforces it.
 WRITE_ALLOWED: dict[str, str] = {
+    "simulator/bookreplay.py::scratch_rows": (
+        "a private scratch database in the directory its caller names (queuescore:"
+        " under hyxlab.scratch's flock-owned pid directory); it holds views over the parquet copy `copy_out` made so the"
+        " sort runs off the stream archive (2026-11-13)"
+    ),
     "collector/streamd.py::main": "the stream daemon owns hyxstream.duckdb",
     "hyxlab/streamstore.py::StreamStore.__init__": "creates its own schema",
     "hyxlab/streamstore.py::StreamStore.flush_outcome": "the daemon's write path",

@@ -97,7 +97,10 @@ ALLOWED: dict[str, tuple[str, str]] = {
         " `<db>.tmp/pid-<pid>`, flock-owned for the process's whole life, so"
         " no second process can construct the path. That claim is the one"
         " thing this disposition rests on, so it is tested at the caller"
-        " (test_hyxlab_divergence.py) rather than asserted here",
+        " (test_hyxlab_divergence.py) rather than asserted here."
+        " `scratch_rows` (2026-11-13) is the same arrangement for"
+        " `simulator.queuescore`: views over the parquet `copy_out` wrote, in"
+        " a directory `main` puts under the same flock-owned scratch",
     ),
 }
 

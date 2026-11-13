@@ -603,6 +603,18 @@
   (`RssAnon`; the cgroup's `memory.peak` is page cache and read 11.3G for a
   run that only did `max(recv_ts)`), and re-measure a cap rationale when
   its query's input moves an order of magnitude (#134 was 20x).
+- A read-only SCAN of the stream archive costs anon RSS of `memory_limit`
+  plus ~2 GB the limit does not count, whatever the query does after it:
+  measured 2026-11-13 in a 4G transient unit, the econ bracket's hold
+  ended at 3,957 MB with the pool at the cgroup-derived 2.0 GiB and
+  3,022 MB at 1 GiB, same 122 s hold, and 114 MB once the connection
+  closed; `SET threads = 4` was OOM-killed (mistakes #191). The pool is a
+  cache a single pass never re-reads, so a one-pass reader lowers it
+  (`queuescore.ARCHIVE_POOL`, then `spill_cap`, and the site goes in
+  `tests/test_memlimit_override_discipline.py`) and takes its rows OUT
+  of the hold unsorted (`bookreplay.copy_out` / `scratch_rows`) rather
+  than sorting on the archive connection. Read `rss_hold_mb` in the cost
+  block before resizing a unit: it is the scan's share of the peak.
 - A process that holds a DuckDB file read-WRITE cannot open the same file
   read-only from another thread: DuckDB serves same-process attaches from
   one instance and refuses a different CONFIGURATION while one is open

@@ -26,11 +26,12 @@ slice — this module refuses non-Kalshi events rather than guessing.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from hyxlab.models import Snapshot
-from hyxlab.store import duck_connect
+from hyxlab.store import duck_connect, held_duck
 from hyxlab.streamstore import SHARD_SID_STRIDE, BookEvent
 
 _EMPTY: tuple = ()
@@ -475,6 +476,64 @@ def stream_exported(dest: str | Path) -> Iterator[BookEvent]:
                 cur.close()
     finally:
         conn.close()
+
+
+BOOK_COLS = _EVENT_COLS
+TRADE_COLS = "recv_ts, price, qty, taker_side, market_id, venue"
+
+
+def _lit(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def copy_out(conn, markets: list[str], since: datetime, scratch: Path) -> None:
+    """Copy the selected markets' window rows out of the archive, UNSORTED,
+    so the hold on `hyxstream.duckdb` is two filtered scans and nothing else.
+
+    Until 2026-11-13 the market-ordered `ORDER BY` of `queuescore.iter_market_rows` ran
+    on the archive connection, inside the hold. A sort has to finish before
+    its first row comes back, and DuckDB's `memory_limit` does not bound it
+    (the #142 class): on 2026-11-13 the 336h econ bracket -- 3.32M selected
+    book rows, up from 2.45M on 10-29 -- was killed by the kernel at the
+    transient unit's 4G `MemoryMax` 91s into that statement, before one
+    market had been yielded, having held the archive 142s for no report.
+
+    Measured the same evening, same unit, same window (three live runs):
+    the copy-out alone is not the fix -- with the pool at its cgroup-derived
+    2.0 GiB the hold ends at anon 3,957 MB of the 4,096, and 114 MB the
+    moment the archive connection closes. So the peak is the SCAN's, not the
+    sort's or the replay's, and it is `memory_limit` plus ~2.0 GB the limit
+    does not count. `SET threads = 4` made it worse (killed again). Lowering
+    the pool to `queuescore.ARCHIVE_POOL` (1 GiB; its `main` sets it) moved the peak down
+    by exactly the difference, to 3,022 MB, with the hold unchanged at
+    122-123s (it was 122-139s at 2 GiB): the pool was caching blocks a
+    single pass never re-reads. The hold itself is the window's volume --
+    ~35-45s in `queuescore.select_markets`, the rest reading ten columns for the copy.
+
+    The rows are inlined as literals because `COPY` takes no bound
+    parameters; market ids come from `select_markets`, i.e. from the archive.
+    """
+    scratch.mkdir(parents=True, exist_ok=True)
+    conn.execute("SET preserve_insertion_order = false")
+    ids = ",".join(_lit(m) for m in markets) or "NULL"
+    where = f"market_id IN ({ids}) AND venue='kalshi' AND recv_ts > TIMESTAMP {_lit(str(since))}"
+    for table, cols in (("book_events", BOOK_COLS), ("stream_trades", TRADE_COLS)):
+        out = _lit(str(scratch / f"{table}.parquet"))
+        conn.execute(f"COPY (SELECT {cols} FROM {table} WHERE {where}) TO {out} (FORMAT parquet)")
+
+
+@contextmanager
+def scratch_rows(scratch: Path):
+    """A private connection whose `book_events` / `stream_trades` are the
+    rows `copy_out` left in `scratch` -- the two names `queuescore.iter_market_rows`
+    reads, so the streamed sort is the same statement on a different file.
+    The scratch database is this process's own (created here, deleted by
+    the caller with the directory), so it takes nobody's lock."""
+    with held_duck(scratch / "scratch.duckdb") as conn:
+        for table in ("book_events", "stream_trades"):
+            src = _lit(str(scratch / f"{table}.parquet"))
+            conn.execute(f"CREATE OR REPLACE VIEW {table} AS SELECT * FROM read_parquet({src})")
+        yield conn
 
 
 def replay_snapshots(

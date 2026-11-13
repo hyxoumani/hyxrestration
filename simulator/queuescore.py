@@ -36,15 +36,29 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import shutil
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from hyxlab.memcap import rss_anon_mb
-from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
+from hyxlab.scratch import duck_scratch_dir
+from hyxlab.store import (
+    attach_wait_block,
+    attach_wait_line,
+    held_attach,
+    reset_attach_waits,
+    spill_cap,
+)
 from hyxlab.streamstore import BookEvent
-from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots
+from simulator.bookreplay import (
+    BOOK_GAPS,
+    BookReplayer,
+    copy_out,
+    replay_snapshots,
+    scratch_rows,
+)
 from simulator.queuebounds import QueueTracker, consuming_print
 
 STREAM_DB = "data/hyxstream.duckdb"
@@ -803,6 +817,8 @@ def fetch_gaps(conn, since: datetime) -> list:
 
 CHUNK_ROWS = 65_536
 
+ARCHIVE_POOL = "1GiB"
+
 
 def iter_market_rows(conn, markets: list[str], since: datetime, chunk: int = CHUNK_ROWS):
     """Yield `(market_id, events, trades)` per selected market from ONE scan
@@ -818,9 +834,12 @@ def iter_market_rows(conn, markets: list[str], since: datetime, chunk: int = CHU
     every market's rows, release, then replay -- was measured the same
     morning: hold 48.9s, but 2.45M Python tuples read 5,135 MB anon with
     the unit at its 6G cap, for a replay that costs 3.3s in total. So the
-    replay stays inside the hold and the rows stream through it: the
-    batched query is ordered by market, pulled `chunk` rows at a time, and
-    a market is yielded the moment its group ends. The per-market order
+    rows stream: the batched query is ordered by market, pulled `chunk`
+    rows at a time, and a market is yielded the moment its group ends.
+    Since 2026-11-13 `main` hands this a PRIVATE connection over rows
+    `copy_out` took from the archive, because the sort itself outgrew the
+    hold (see there); `simulator.prioritycheck` still runs it on the
+    archive connection, inside its hold. The per-market order
     (`recv_ts, seq`) is the one-market read's, so the replay sees exactly
     what that read gave it (`tests/test_hyxlab_queuescore.py` asserts the
     two paths score identically, across chunk boundaries). Markets with no
@@ -943,7 +962,12 @@ def score_rows(
 
 
 def cost_block(
-    wait: dict, *, score_s: float, rows: dict[str, tuple[int, int]], rss_peak_mb: float | None
+    wait: dict,
+    *,
+    score_s: float,
+    rows: dict[str, tuple[int, int]],
+    rss_peak_mb: float | None,
+    rss_hold_mb: float | None = None,
 ) -> dict:
     """What this run cost the archive's owner and itself, split where the
     split is actionable: `held_s` is the hold on `hyxstream.duckdb` (the
@@ -953,7 +977,12 @@ def cost_block(
     anonymous RSS sampled after each market (the cgroup's peak is page
     cache, #134): the memory the one-market-at-a-time stream actually
     holds, against the unit's `MemoryMax`. The row counts price the window;
-    `book_rows_max` is the most any one replay materialised."""
+    `book_rows_max` is the most any one replay materialised. `rss_hold_mb`
+    is the same reading taken once, at the END of the hold, by a publisher
+    whose compute runs after the release (the bracket since 2026-11-13): it
+    splits the peak into the archive scan's share -- DuckDB's pool, sized by
+    the cap -- and what the private sort and replay added on top. `None`
+    for a publisher that never releases before computing."""
     book_rows = {m: n for m, (n, _) in rows.items()}
     trade_rows = {m: n for m, (_, n) in rows.items()}
     return {
@@ -965,24 +994,31 @@ def cost_block(
         "trade_rows": sum(trade_rows.values()),
         "book_rows_max": max(book_rows.values(), default=0),
         "rss_peak_mb": None if rss_peak_mb is None else round(rss_peak_mb, 1),
+        "rss_hold_mb": None if rss_hold_mb is None else round(rss_hold_mb, 1),
         "per_market": {m: {"book_rows": book_rows[m], "trade_rows": trade_rows[m]} for m in rows},
     }
 
 
-def cost_line(cost: dict, compute: str = "replay") -> str:
+def cost_line(cost: dict, compute: str = "replay", inside_hold: bool = True) -> str:
     """The one renderer of the cost block (#95: render a shared block in one
     place; every field but the per-market detail reaches the line). `compute`
     names what `score_s` timed for the publisher -- the bracket's replay, the
     priority check's pairing -- so a reader of the line is not told a
-    pairing pass was a replay."""
+    pairing pass was a replay. `inside_hold=False` says the compute ran after
+    the archive was released (the bracket since 2026-11-13, `copy_out`), so
+    the line never reads a replay's seconds as a share of the hold."""
     held = cost["held_s"]
     held_s = "unmeasured" if held is None else f"{held:.1f}s"
     unknown = cost["held_unknown_n"]
     unknown_s = "" if not unknown else f" ({unknown} unmeasured)"
     rss = cost["rss_peak_mb"]
     rss_s = "rss_anon peak unmeasured" if rss is None else f"rss_anon peak {rss:.1f} MB"
+    hold_rss = cost.get("rss_hold_mb")  # absent from blocks archived before 2026-11-13
+    if hold_rss is not None:
+        rss_s += f" ({hold_rss:.1f} MB at the end of the hold)"
+    joint, tail = ("of which", "") if inside_hold else ("then", " after the release")
     return (
-        f"held {held_s}{unknown_s} of which {compute} {cost['score_s']:.1f}s;"
+        f"held {held_s}{unknown_s} {joint} {compute} {cost['score_s']:.1f}s{tail};"
         f" {cost['markets']} markets, {cost['book_rows']} book rows"
         f" (max {cost['book_rows_max']} in one), {cost['trade_rows']} prints; {rss_s}"
     )
@@ -1004,13 +1040,18 @@ def main() -> None:
     args = ap.parse_args()
 
     reset_attach_waits()
-    # `held_attach`: every market is scored through a cursor on
-    # `hyxstream.duckdb` -- the file `collector.streamd` OWNS and flushes
-    # every 15s -- so the hold is the whole scoring loop, not a query. This
+    # `held_attach`: the selection and the copy-out read `hyxstream.duckdb`
+    # -- the file `collector.streamd` OWNS and flushes every 15s -- so the
+    # hold is those scans (the replay runs after the release). This
     # report published no attach block until 2026-10-07, and was not even
     # listed as debt in `tests/test_hold_discipline.py`: a standing report
     # holding a daemon's archive with nowhere to say for how long (#91, #102).
     with held_attach(args.stream_db) as conn:
+        # The pool is a cache this single pass never re-reads; at the
+        # cgroup-derived default it put the hold 139 MB under a 4G cap
+        # (`copy_out`). The spill bound follows the limit it is derived from.
+        conn.execute(f"SET memory_limit = '{ARCHIVE_POOL}'")
+        spill_cap(conn, args.stream_db)
         # UNBOUNDED ON PURPOSE -- the one read in this path that must NOT
         # carry the #124 venue/window bound. A bare `max(recv_ts)` is folded
         # from the table's statistics (measured 2026-10-16 over 1.23e9 rows:
@@ -1029,31 +1070,49 @@ def main() -> None:
             + (f", series={series}" if series else "")
         )
 
-        # Inside the hold: one scan per table, streamed by market, each
-        # market replayed as its group completes (see `iter_market_rows`:
-        # the replay is ~3s for 24 markets; holding every market's rows to
-        # replay after the release cost 5 GB). `score_s` is the replay's
-        # share of the hold; what `held_s` carries beyond it is the scans.
+        # Inside the hold: ONE unsorted scan per table, copied out to a
+        # private scratch directory (`copy_out`). The sort and the replay
+        # run after the release, on the copy.
         gaps = fetch_gaps(conn, since)
-        all_orders: list[VirtualOrder] = []
-        score_s = 0.0
-        rows_n: dict[str, tuple[int, int]] = {}
-        rss_peak = rss_anon_mb()
-        for m, events, trades in iter_market_rows(conn, markets, since):
-            t_score = time.monotonic()
-            orders = score_rows(m, events, trades, gaps, since, args.qty)
-            score_s += time.monotonic() - t_score
-            rows_n[m] = (len(events), len(trades))
-            all_orders.extend(orders)
-            print(f"  {m}: {len(orders)} virtual maker orders")
-            rss = rss_anon_mb()
-            if rss is not None and (rss_peak is None or rss > rss_peak):
-                rss_peak = rss
+        # Under `hyxlab.scratch`'s `<db>.tmp/pid-<pid>`: flock-owned for
+        # this process's life, so no second process can construct the path,
+        # and reaped by the next attach if the kernel kills this run (one
+        # was, 2026-11-13) before the `finally` below.
+        scratch = Path(duck_scratch_dir(args.stream_db) or ".") / "queuescore-rows"
+        try:
+            copy_out(conn, markets, since, scratch)
+        except BaseException:
+            shutil.rmtree(scratch, ignore_errors=True)
+            raise
+        rss_hold = rss_peak = rss_anon_mb()
+    print(
+        f"[queuescore] rss_anon {rss_hold} MB at the end of the hold,"
+        f" {rss_anon_mb()} MB after the release"
+    )
+    all_orders: list[VirtualOrder] = []
+    score_s = 0.0
+    rows_n: dict[str, tuple[int, int]] = {}
+    try:
+        with scratch_rows(scratch) as sconn:
+            for m, events, trades in iter_market_rows(sconn, markets, since):
+                t_score = time.monotonic()
+                orders = score_rows(m, events, trades, gaps, since, args.qty)
+                score_s += time.monotonic() - t_score
+                rows_n[m] = (len(events), len(trades))
+                all_orders.extend(orders)
+                print(f"  {m}: {len(orders)} virtual maker orders")
+                rss = rss_anon_mb()
+                if rss is not None and (rss_peak is None or rss > rss_peak):
+                    rss_peak = rss
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
     # After the RELEASE: `held_s` is charged by the close, so a block built
     # inside the `with` would publish `held_unknown_n 1` against this attach.
     wait = attach_wait_block(db=Path(args.stream_db).name)
-    cost = cost_block(wait, score_s=score_s, rows=rows_n, rss_peak_mb=rss_peak)
-    print(f"[queuescore] cost: {cost_line(cost)}")
+    cost = cost_block(
+        wait, score_s=score_s, rows=rows_n, rss_peak_mb=rss_peak, rss_hold_mb=rss_hold
+    )
+    print(f"[queuescore] cost: {cost_line(cost, inside_hold=False)}")
 
     n = len(all_orders)
     crossed = [o for o in all_orders if o.crossed_at]

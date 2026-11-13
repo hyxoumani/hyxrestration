@@ -189,7 +189,7 @@ def test_batched_fetch_scores_identically_to_the_one_market_read(tmp_path):
 def _cost_fixture():
     rows = {"A": (3, 1), "B": (1, 0)}
     wait = {"held_s_total": 12.345, "held_unknown_n": 0}
-    return cost_block(wait, score_s=7.25, rows=rows, rss_peak_mb=410.04)
+    return cost_block(wait, score_s=7.25, rows=rows, rss_peak_mb=410.04, rss_hold_mb=300.04)
 
 
 def test_cost_block_prices_the_window_and_the_hold():
@@ -205,6 +205,9 @@ def test_cost_block_prices_the_window_and_the_hold():
     c2 = cost_block({}, score_s=0.0, rows={}, rss_peak_mb=None)
     assert c2["held_s"] is None and c2["rss_peak_mb"] is None
     assert cost_line(c2).count("unmeasured") == 2
+    # a publisher that computes inside the hold has no end-of-hold reading
+    assert c["rss_hold_mb"] == 300.0 and c2["rss_hold_mb"] is None
+    assert "end of the hold" in cost_line(c) and "end of the hold" not in cost_line(c2)
 
 
 def test_cost_line_renders_every_scalar_field():
@@ -1105,6 +1108,8 @@ def test_main_publishes_the_hold_it_takes_on_the_stream_archive(tmp_path, monkey
     queuescore.main()
 
     (report,) = [json.loads(p.read_text()) for p in out.glob("*.json")]
+    # the copied-out rows lived under the run's private scratch and are gone
+    assert not list(tmp_path.rglob("queuescore-rows"))
     wait = report["attach_wait"]
     assert wait["db"] == "hyxstream.duckdb"
     assert wait["n"] == 1
@@ -1196,3 +1201,69 @@ def test_streamed_rows_survive_a_query_on_the_same_connection(tmp_path):
     assert [m for m, _, _ in streamed] == ["A", "B", "C"]
     assert {m: (ev, tr) for m, ev, tr in streamed} == whole
     assert all(len(ev) > 4 for _, ev, _ in streamed)  # every group spans a chunk boundary
+
+
+def test_copied_out_rows_replay_exactly_as_the_archive_rows(tmp_path):
+    """`main` sorts and replays a private COPY of the selected rows, with
+    `hyxstream.duckdb` released (2026-11-13: the in-hold `ORDER BY` was
+    killed at the unit's 4G cap on 3.32M rows, 142s of hold and no report).
+    The copy must hand `iter_market_rows` exactly what the archive did --
+    types and NULLs through parquet included -- must leave out what the
+    window and the selection leave out, and the archive must be free while
+    the copy is read."""
+    import subprocess
+    import sys
+
+    from hyxlab.store import held_attach
+    from hyxlab.streamstore import StreamStore
+    from simulator.bookreplay import copy_out, scratch_rows
+
+    db = tmp_path / "hyxstream.duckdb"
+    store = StreamStore(db)
+    for mid, base in (("A'x", 10), ("B", 20), ("C", 30)):
+        store.append_events(_image(mid, base, T0))
+        for k in range(1, 6):
+            store.append_events(
+                _delta(mid, base + k, T0 + timedelta(seconds=k), "yes", "0.1000", "1.00")
+            )
+        store.append_trades(
+            _trade(mid, base + 9, T0 + timedelta(seconds=9), "0.4000", "1.00", "no")
+        )
+    store.flush()
+
+    since = T0 + timedelta(seconds=2)  # cuts the image and two deltas per market
+    picked = ["A'x", "B"]  # "C" is in the archive and not selected
+    scratch = tmp_path / "scratch"
+
+    # From OUTSIDE the process: a same-process attach is served from the
+    # instance already open and proves nothing about the file lock.
+    def writer_probe():
+        code = "import duckdb,sys; duckdb.connect(sys.argv[1]).close()"
+        return subprocess.run([sys.executable, "-c", code, str(db)], capture_output=True, text=True)
+
+    with held_attach(db) as conn:
+        direct = fetch_rows(conn, picked, since)
+        copy_out(conn, picked, since, scratch)
+        refused = writer_probe()
+    with scratch_rows(scratch) as sconn:
+        probe = writer_probe()
+        copied = {m: (ev, tr) for m, ev, tr in iter_market_rows(sconn, picked, since, chunk=2)}
+        n_c = sconn.execute("SELECT count(*) FROM book_events WHERE market_id = 'C'").fetchone()[0]
+    assert refused.returncode != 0  # vacuity guard: the probe does see a hold
+    assert probe.returncode == 0, probe.stderr  # a writer gets the archive during the replay
+    assert copied == direct
+    assert all(len(ev) == 3 and len(tr) == 1 for ev, tr in copied.values())
+    assert n_c == 0
+
+
+def test_cost_line_never_reads_a_post_release_replay_as_a_share_of_the_hold():
+    from simulator.queuescore import cost_block, cost_line
+
+    cost = cost_block(
+        {"held_s_total": 40.0, "held_unknown_n": 0},
+        score_s=3.0,
+        rows={"A": (5, 1)},
+        rss_peak_mb=1.0,
+    )
+    assert "held 40.0s of which replay 3.0s;" in cost_line(cost)
+    assert "held 40.0s then replay 3.0s after the release;" in cost_line(cost, inside_hold=False)
