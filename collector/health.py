@@ -1955,6 +1955,34 @@ RAW_BASELINE_DAYS = 7
 #: A channel this far over its baseline median is named a STEP on the line.
 RAW_DRIFT_FRAC = 0.5
 _RAW_FILE_RE = re.compile(r"^(\d\d)-([a-z]+)\.jsonl\.zst$")
+#: A frame file whose first zstd frame declares a window this large is NOT as
+#: the writer left it. Measured 2026-11-13: the sibling's
+#: `hylshi-raw-frames-recompress-d1` (EXP-2248, hourly since 11-08 04:50Z)
+#: rewrites every closed day of `data/raw_frames` in place at `zstd -19
+#: --long=27` -- both hard-link names onto one new inode, mtime preserved, so
+#: neither `ls` nor `stat` shows it -- and had halved 10-24..11-08 (22.3 ->
+#: 9.9 GB on 11-08; ticker -71%, books -47%, trades -32%). The writer's level
+#: 9 declares window 2^21..2^22. A byte comparison across that line reads the
+#: recompressor, not the wire: the 11-13 02:15Z digest printed `same hours 7 d
+#: ago 0.9 GB: total +124% (ticker +234%)` against a rewritten 11-06
+#: (mistakes #188). `tests/test_health_rawframes.py` pins that the writer's
+#: own output reads below this.
+RAW_REWRITTEN_WLOG = 27
+_ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def zstd_window_log(path: Path) -> int | None:
+    """Window log declared by the file's first zstd frame; None when the file
+    is unreadable, not zstd, or a single-segment frame (which declares none).
+    Six bytes read, nothing decompressed."""
+    try:
+        with open(path, "rb") as fh:
+            b = fh.read(6)
+    except OSError:
+        return None
+    if len(b) < 6 or b[:4] != _ZSTD_MAGIC or (b[4] >> 5) & 1:
+        return None
+    return 10 + (b[5] >> 3)
 
 
 @dataclass(frozen=True)
@@ -1964,6 +1992,8 @@ class RawDay:
     day: str  # YYYY-MM-DD
     by_channel: dict[str, int]
     by_hour: dict[tuple[str, str], int]  # (HH, channel) -> bytes
+    #: (HH, channel) files rewritten in place since the writer closed them.
+    rewritten: frozenset[tuple[str, str]] = frozenset()
 
     @property
     def total_b(self) -> int:
@@ -1979,9 +2009,11 @@ class RawDay:
 
 
 def read_raw_day(day_dir: Path) -> RawDay | None:
-    """`stat` every frame file of one day directory; None when unreadable."""
+    """`stat` every frame file of one day directory and read its zstd window;
+    None when unreadable."""
     by_channel: dict[str, int] = {}
     by_hour: dict[tuple[str, str], int] = {}
+    rewritten: set[tuple[str, str]] = set()
     try:
         entries = list(day_dir.iterdir())
     except OSError:
@@ -1997,7 +2029,9 @@ def read_raw_day(day_dir: Path) -> RawDay | None:
         hh, ch = m.group(1), m.group(2)
         by_channel[ch] = by_channel.get(ch, 0) + n
         by_hour[(hh, ch)] = by_hour.get((hh, ch), 0) + n
-    return RawDay(day_dir.name, by_channel, by_hour)
+        if (zstd_window_log(f) or 0) >= RAW_REWRITTEN_WLOG:
+            rewritten.add((hh, ch))
+    return RawDay(day_dir.name, by_channel, by_hour, frozenset(rewritten))
 
 
 def read_raw_frames(raw_dir: str | Path | None = None) -> list[RawDay] | None:
@@ -2054,6 +2088,11 @@ def raw_frames_line(
     against the same hour files of yesterday and of the same weekday one week
     back, per channel -- the two comparisons that tell a weekend from a step.
     Every unread state says so instead of printing a zero.
+
+    Bytes are compared only between files AS THE WRITER LEFT THEM. A day (or
+    reference hour) with a file rewritten in place (`RAW_REWRITTEN_WLOG`) is
+    named and left out of the comparison: its bytes are what the sibling's
+    recompressor made of the wire, and against them every new day is a STEP.
     """
     if days is None:
         return f"{RAW_FRAMES_DIR} UNREAD (no claim about the raw burn)"
@@ -2064,10 +2103,22 @@ def raw_frames_line(
         head = f"no complete day held ({len(days)} day dir(s))"
     else:
         newest = complete[-1]
-        base = complete[-1 - baseline_days : -1]
+        window = complete[-1 - baseline_days : -1]
+        base = [d for d in window if not d.rewritten]
+        excluded = len(window) - len(base)
         head = f"{newest.day[5:]}: {_gb(newest.total_b)} GB ({_channels_text(newest.by_channel)})"
-        if not base:
+        if newest.rewritten:
+            head += (
+                f" -- NOT COMPARABLE: {len(newest.rewritten)} of {len(newest.by_hour)} file(s)"
+                " rewritten in place by the sibling's recompressor (bytes at rest, not the wire)"
+            )
+        elif not window:
             head += " -- no earlier complete day to compare"
+        elif not base:
+            head += (
+                f" -- NOT COMPARABLE: all {excluded} prior day(s) rewritten in place by the"
+                " sibling's recompressor (bytes at rest, not the wire)"
+            )
         else:
             medians = {
                 ch: _median_int([d.by_channel.get(ch, 0) for d in base]) for ch in newest.by_channel
@@ -2091,6 +2142,8 @@ def raw_frames_line(
                 )
             else:
                 head += f" -- no channel over +{drift_frac:.0%}"
+            if excluded:
+                head += f" ({excluded} rewritten prior day(s) left out)"
     if running is None:
         tail = f"today {today[5:]}: no hour file yet"
     else:
@@ -2110,6 +2163,14 @@ def raw_frames_line(
             ref = by_day.get(ref_day)
             if ref is None:
                 tail += f"; same hours {label} ago: not held"
+                continue
+            ref_files = [k for k in ref.by_hour if k[0] in hours]
+            ref_rewritten = [k for k in ref_files if k in ref.rewritten]
+            if ref_rewritten:
+                tail += (
+                    f"; same hours {label} ago: not comparable ({len(ref_rewritten)} of"
+                    f" {len(ref_files)} file(s) rewritten in place)"
+                )
                 continue
             sub = ref.hours_subset(hours)
             tot = sum(sub.values())

@@ -1017,7 +1017,14 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   of the 7 complete days before it (a median that straddles a weekend lands
   on a weekday) naming a `STEP` on any channel over +50%, then the running
   day's CLOSED hours against the same hour files 1 d and 7 d back -- a step
-  that holds against both is not a weekend effect. First reading, 08:30Z:
+  that holds against both is not a weekend effect. **Since 2026-11-13 the
+  line compares only files as the writer left them:** the sibling's hourly
+  `hylshi-raw-frames-recompress-d1` rewrites each closed day of this
+  directory in place at `zstd -19 --long=27` (10-24..11-08 halved by
+  11-13 02:32Z; mtime and name preserved), so a rewritten file is told by
+  its zstd frame header (window 2^27 vs the writer's 2^21-22) and a
+  rewritten day is left out of the median, or the clause says `NOT
+  COMPARABLE` (mistakes #188). First reading, 08:30Z:
   `11-08: 26.1 GB (books 13.3, ticker 11.8, trades 0.9) vs median of 7 prior
   day(s) 17.4 GB (books 11.1, ticker 5.9, trades 0.8) -- STEP over +50%: ticker +100%
   | today through 07Z: 8.2 GB; same hours 1 d ago 9.9 GB: total -17% (ticker

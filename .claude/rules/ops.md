@@ -720,6 +720,15 @@
   the headroom line says `oldest day has N hard-linked file(s), the prune
   frees nothing` (N counts FILES, not links); before calling any rotation net zero, read `st_nlink` on the
   file it drops.
+  The files under `data/raw_frames` are NOT only ours to write: the
+  sibling's `hylshi-raw-frames-recompress-d1` rewrites every closed day in
+  place at `zstd -19 --long=27` (about half the bytes; name and mtime kept;
+  mistakes #188). The digest tells a rewritten file by its zstd header
+  (`health.zstd_window_log` >= 27) and prints `NOT COMPARABLE` or `N
+  rewritten prior day(s) left out` -- never difference raw-frame bytes by
+  hand across days without reading the header first, and a free-space
+  series that goes flat while that job has a backlog is the job, not the
+  burn stopping (`journalctl --user -g raw_frames_recompress_d1`).
   The burn's SPLIT is the digest's `RAWFRAMES` line (newest complete day by
   channel vs the median of the 7 before it, `STEP` over +50%; the running
   day's closed hours vs the same hour files 1 d and 7 d back): the 11-07

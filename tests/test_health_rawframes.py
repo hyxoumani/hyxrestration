@@ -190,3 +190,95 @@ def test_the_digest_prints_the_line_from_the_one_renderer(
     assert len(out) == 1 and out[0].startswith("RAWFRAMES  (host)")
     expect = health.raw_frames_line(days, datetime.now(UTC)).split(" | ")[0]
     assert expect in out[0] and "STEP over +50%: ticker +100%" in out[0]
+
+
+# -- files rewritten in place by the sibling's recompressor (mistakes #188) --
+
+#: First six bytes of a zstd frame declaring window 2^27 (descriptor 0x88),
+#: as `zstd -19 --long=27` writes, and 2^22 (0x60), as the writer's level does.
+_HDR_LONG27 = b"\x28\xb5\x2f\xfd\x04\x88"
+_HDR_WLOG22 = b"\x28\xb5\x2f\xfd\x00\x60"
+
+
+def _rewrite(root: Path, day: str, shrink: float = 0.5, hours: range = range(24)) -> None:
+    """What the recompressor does to a day: same names, smaller, window 2^27."""
+    for f in (root / day).iterdir():
+        if int(f.name[:2]) in hours:
+            n = int(f.stat().st_size * shrink)
+            f.write_bytes(_HDR_LONG27 + b"\0" * (n - 6))
+
+
+def test_the_window_log_is_read_from_the_frame_header(tmp_path: Path) -> None:
+    from compression import zstd
+
+    from collector import rawframes
+
+    big, small, junk = tmp_path / "a.zst", tmp_path / "b.zst", tmp_path / "c.zst"
+    big.write_bytes(_HDR_LONG27 + b"\0" * 10)
+    small.write_bytes(_HDR_WLOG22 + b"\0" * 10)
+    junk.write_bytes(b"\0" * 16)
+    assert health.zstd_window_log(big) == 27
+    assert health.zstd_window_log(small) == 22
+    assert health.zstd_window_log(junk) is None
+    assert health.zstd_window_log(tmp_path / "absent.zst") is None
+    # The premise the threshold stands on: what the WRITER's own level emits
+    # for a stream reads below it, and a real long-window frame reads at it.
+    # A retune of ZSTD_LEVEL that crosses the line fails here, not in the digest.
+    payload = (b'{"k": 1, "v": "abcdefgh"}\n' * 4096) * 64
+    ours = tmp_path / "ours.zst"
+    with zstd.ZstdFile(ours, "a", level=rawframes.ZSTD_LEVEL) as fh:
+        fh.write(payload)
+    theirs = tmp_path / "theirs.zst"
+    opts = {
+        zstd.CompressionParameter.compression_level: 19,
+        zstd.CompressionParameter.window_log: 27,
+    }
+    with zstd.ZstdFile(theirs, "w", options=opts) as fh:
+        fh.write(payload)
+    assert health.zstd_window_log(ours) < health.RAW_REWRITTEN_WLOG
+    assert health.zstd_window_log(theirs) >= health.RAW_REWRITTEN_WLOG
+
+
+def test_a_rewritten_prior_day_is_left_out_of_the_baseline(tmp_path: Path) -> None:
+    _week(tmp_path)
+    _day(tmp_path, "2026-11-08", {"books": 20 * 10**6, "ticker": 10 * 10**6, "trades": 3 * 10**6})
+    flat = health.raw_frames_line(health.read_raw_frames(tmp_path), NOW)
+    assert "no channel over +50%" in flat and "left out" not in flat
+    # Halve four of the seven prior days in place. Unfixed, the median lands on
+    # a halved day and a flat 11-08 reads as a +100% STEP on every channel.
+    for day in ("2026-11-01", "2026-11-02", "2026-11-03", "2026-11-04"):
+        _rewrite(tmp_path, day)
+    line = health.raw_frames_line(health.read_raw_frames(tmp_path), NOW)
+    head = line.split(" | ")[0]
+    assert "STEP" not in head, head
+    assert "vs median of 3 prior day(s)" in head, head
+    assert "no channel over +50% (4 rewritten prior day(s) left out)" in head, head
+    # Every prior day rewritten: no verdict, and the reason.
+    for day in ("2026-11-05", "2026-11-06", "2026-11-07"):
+        _rewrite(tmp_path, day)
+    head = health.raw_frames_line(health.read_raw_frames(tmp_path), NOW).split(" | ")[0]
+    assert "NOT COMPARABLE: all 7 prior day(s) rewritten in place" in head, head
+    assert "STEP" not in head and "no channel over" not in head, head
+
+
+def test_a_rewritten_newest_day_gets_no_verdict(tmp_path: Path) -> None:
+    _week(tmp_path)
+    _day(tmp_path, "2026-11-08", {"books": 20 * 10**6, "ticker": 10 * 10**6, "trades": 3 * 10**6})
+    # The recompressor is partway through yesterday: hours 00..05 done.
+    _rewrite(tmp_path, "2026-11-08", hours=range(6))
+    head = health.raw_frames_line(health.read_raw_frames(tmp_path), NOW).split(" | ")[0]
+    assert "NOT COMPARABLE: 18 of 72 file(s) rewritten in place" in head, head
+    assert "vs median" not in head and "no channel over" not in head, head
+
+
+def test_a_rewritten_reference_hour_is_not_compared(tmp_path: Path) -> None:
+    _week(tmp_path)
+    rate = {"books": 20 * 10**6, "ticker": 10 * 10**6, "trades": 3 * 10**6}
+    _day(tmp_path, "2026-11-08", rate)
+    _day(tmp_path, "2026-11-09", rate, hours=9)
+    _rewrite(tmp_path, "2026-11-02")
+    tail = health.raw_frames_line(health.read_raw_frames(tmp_path), NOW).split(" | ")[1]
+    assert "same hours 1 d ago 0.3 GB: total +0%" in tail, tail
+    # Unfixed: `same hours 7 d ago 0.1 GB: total +100%` -- the live 11-13
+    # digest's `+124% (ticker +234%)` against a rewritten 11-06.
+    assert "same hours 7 d ago: not comparable (24 of 24 file(s) rewritten in place)" in tail, tail

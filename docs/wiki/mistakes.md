@@ -4268,6 +4268,51 @@ Format: what happened → root cause → error type → prevention tier
     months later sees.** Mirror of #156's own rule ("the tightest tenant")
     applied to the second reader it named and did not fix.
 
+188. **2026-11-08 04:50Z -> 2026-11-13 02:40Z -- the raw-frame files this lab
+    writes were being rewritten in place by another tenant for five days,
+    and every byte comparison in the digest read the rewrite as traffic.**
+    The sibling's `hylshi-raw-frames-recompress-d1` (EXP-2248, hourly timer,
+    `zstd -19 --long=27`, "replacing every hard-link name with one verified
+    inode") re-compresses each CLOSED day of `data/raw_frames` -- our
+    directory, not only the lake's copy -- keeping the name and the mtime,
+    so `ls`, `stat` and our own `st_nlink` reading all look untouched.
+    Found only because the free-space series had sat at 324-327 GB for 15 h
+    against a ~30 GB/day burn and the journal was grepped for whoever was
+    freeing it. By 02:32Z it had rewritten 10-24..11-08 (16 days; e.g.
+    11-08 22.3 -> 9.9 GB, 11-07 23.9 -> 10.7; ticker -71%, books -47%,
+    trades -32% per file), ~3 days per day, catching up to its designed
+    D+1. Nothing in this repo's wiki, rules or code mentioned it. Cost to
+    our readings: the `RAWFRAMES` line compares bytes across days, and the
+    02:15Z digest printed `same hours 7 d ago 0.9 GB: total +124% (books
+    +77%, ticker +234%, trades +42%)` -- 11-06 had been halved; the 7-day
+    median was one rewritten day from naming a false STEP on every channel
+    every day from here on. And the flat disk the last two runs recorded as
+    good news is this job working through a backlog: ~35 GB more to free on
+    11-09..11-12, then the burn resumes. Our own reader is unaffected
+    (stdlib zstd decodes a 2^27 window by default: 398 MB of trades in
+    0.3 s, 156 MB RSS, checked). Fix: `health.zstd_window_log` reads six
+    bytes of each file's frame header; a file declaring window >= 2^27
+    (`RAW_REWRITTEN_WLOG`; the writer's level 9 declares 2^21-2^22, pinned
+    by a test that runs the writer's own level) is `rewritten`, a rewritten
+    day is left out of the baseline median and counted on the line, and a
+    rewritten newest day or reference hour says NOT COMPARABLE instead of
+    a percentage. 4 tests, 3 red against a mutant whose landing was checked
+    with `cmp`. NOT fixed: once the job runs at D+1 the newest complete day
+    is itself part-rewritten by the 10:00Z QA, so the line will mostly say
+    NOT COMPARABLE, and QA's headroom `raw_frames` term (the newest
+    complete day's bytes) will read between the wire and half of it. The
+    instrument that survives is a count of wire bytes at the writer
+    (streamd's stats line), which needs a stream restart to ship. Rule:
+    **bytes on disk measure the wire only while nobody rewrites the file,
+    and a file under a path you own is not thereby a file only you write --
+    a hard link is a second owner with a pen. Before differencing file
+    sizes over time, ask what else may have changed them, and read it from
+    the FILE (a header, a checksum), never from its timestamps: a careful
+    rewriter preserves those. And a resource that stops burning for no
+    reason you know is a finding to chase the same day, not a line to
+    record as flat.** (The previous run's four reads said `flat` four
+    times.)
+
 187. **2026-11-11 -> 2026-11-13 02:32Z -- the largest tenant on the shared
     disk was listed at half its size, by the enumeration command the ops
     rule prescribes.** The #175 candidate list carried `hylshi-lake 201 GB
