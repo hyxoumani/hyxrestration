@@ -1788,6 +1788,50 @@ def test_the_fs_line_says_what_the_eviction_attempts_led_to() -> None:
         assert health.host_fs_line(_FS, dataclasses.replace(kube, **change), _PACE) != line, change
 
 
+_BLIND = (
+    "2026-11-13T{hm}:17-06:00 hyz kubelet[3089]: E1113 17:37:16.337210    3089 "
+    'eviction_manager.go:297] "Eviction manager: failed to get summary stats" '
+    'err="failed to get node info: node \\"hyz\\" not found"\n'
+)
+
+
+def test_an_eviction_manager_that_cannot_see_is_not_a_quiet_one() -> None:
+    """11-13 23:37Z: the control plane stayed down after a reboot, the kubelet
+    logged this line every 10 s instead of an attempt, and the window's last
+    eviction read as the pressure ending (mistakes #193). The fixture is the
+    journal's own line, local offset included."""
+    blind_only = health.parse_kubelet(_BLIND.format(hm="17:37") + _BLIND.format(hm="20:40"))
+    assert len(blind_only.blind) == 2 and not blind_only.reclaims
+    line = health.host_fs_line(_FS, blind_only, _PACE)
+    assert "kubelet quiet" not in line
+    assert (
+        "| 24h: no kubelet eviction attempt (0 eviction attempts); eviction manager BLIND "
+        "since 11-13 23:37Z: 2 pass(es) could not read node stats (last 02:40Z) -- it can "
+        "neither attempt nor evict, so no attempt after that is not relief"
+    ) in line
+    # After real attempts: the tail is the state now, said after the outcomes.
+    after = health.parse_kubelet(KUBELET_OUTCOMES + _BLIND.format(hm="17:37"))
+    aline = health.host_fs_line(_FS, after, _PACE)
+    assert "failed eviction(s); eviction manager BLIND since 11-13 23:37Z: 1 pass(es)" in aline
+    # A blind pass an attempt FOLLOWED is counted, not called the present state.
+    before = health.parse_kubelet(
+        _BLIND.format(hm="17:37").replace("2026-11-13", "2026-01-01") + KUBELET_OUTCOMES
+    )
+    assert before.blind and not before.blind_tail
+    bline = health.host_fs_line(_FS, before, _PACE)
+    assert "BLIND since" not in bline
+    assert "; 1 blind pass(es) earlier in the window, each followed by an attempt" in bline
+    # No blind line, no clause: every older line is unchanged.
+    assert "blind" not in health.host_fs_line(_FS, health.parse_kubelet(KUBELET_OUTCOMES)).lower()
+    # Perturbation (#95): the count and both ends move the line.
+    for change in (
+        {"blind": blind_only.blind + (blind_only.blind[-1] + 600,)},
+        {"blind": (blind_only.blind[0] - 600,) + blind_only.blind[1:]},
+        {"blind": blind_only.blind[:1] + (blind_only.blind[0] + 60,)},
+    ):
+        assert health.host_fs_line(_FS, dataclasses.replace(blind_only, **change), _PACE) != line
+
+
 def test_a_quiet_kubelet_and_an_unread_one_are_different_lines() -> None:
     quiet = health.host_fs_line(_FS, health.parse_kubelet(""))
     unread = health.host_fs_line(_FS, None)

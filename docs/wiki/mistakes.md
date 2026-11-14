@@ -5286,6 +5286,29 @@ Format: what happened → root cause → error type → prevention tier
     `latest_complete_run` forgets a run the moment a newer one
     finishes.**
 
+193. **2026-11-13 23:37Z -> 2026-11-14 02:41Z -- the digest counted what the
+    kubelet's eviction manager DID and had no word for it being unable to
+    do anything.** The host was powered off and on at 23:33Z; the
+    control plane did not come back (nothing listening on 6443, `node
+    "hyz" not found`), and from 23:37:16Z the eviction manager logged
+    `failed to get summary stats` every 10 s -- 1,109 passes by 02:41Z --
+    instead of an attempt. `HOSTFS` read `786 pod(s) evicted ... 07:22Z ->
+    23:19Z` with the disk 23 GB PAST the threshold: a last-eviction time
+    three hours old, which reads as the pressure having ended, and in 21
+    more hours would have read `kubelet quiet (0 eviction attempts)`. The
+    disk had in fact moved the other way (300 -> 277 GB free; 24 GB of it
+    a Steam install at 23:47Z). #98's shape again: a count of events
+    cannot tell "nothing happened" from "the counter could not run". Fix:
+    `parse_kubelet` keeps the blind passes, the line says `eviction
+    manager BLIND since <first after the last attempt>: N pass(es) could
+    not read node stats (last HH:MMZ)`, a window with blind passes and no
+    attempt is no longer called `quiet`, and blind passes an attempt
+    followed are only counted; +1 test on the journal's own line,
+    perturbed, red-verified. The cluster is the USER's to restart.
+    **Rule: before printing a tenant's silence as its verdict, find the
+    line that tenant logs when it cannot look, and read it in the same
+    pass as the events.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

@@ -1554,6 +1554,12 @@ _KUBE_EVICTED_RE = re.compile(r'"Eviction manager: pod is evicted successfully" 
 _KUBE_STUCK = '"Eviction manager: unable to evict any pods from the node"'
 _KUBE_RELIEVED = '"Eviction manager: able to reduce resource pressure without evicting pods."'
 _KUBE_FAILED = '"Eviction manager: pod failed to evict"'
+# The eviction manager's OWN failure (mistakes #193). After the 2026-11-13
+# 23:33Z reboot the control plane never came back, the kubelet had no node
+# object, and every 10 s pass logged this instead of an attempt: 1,102 lines
+# in 3 h with the disk 23 GB past the threshold. A manager that cannot read
+# node stats logs no attempt and evicts nothing, so its silence is not relief.
+_KUBE_BLIND_RE = re.compile(r'^(\S+) .*"Eviction manager: failed to get summary stats"')
 _KUBE_GC_RE = re.compile(
     r"Disk usage on image filesystem is over the high threshold.*?"
     r"usage=(\d+) highThreshold=(\d+).*?lowThreshold=(\d+)"
@@ -1582,6 +1588,14 @@ class KubeletPressure:
     stuck_n: int = 0  # passes with no evictable pod left
     relieved_n: int = 0  # passes relieved without evicting a pod
     failed_n: int = 0  # evictions that failed (kill timeout)
+    blind: tuple[float, ...] = ()  # epoch of every pass that could not read node stats
+
+    @property
+    def blind_tail(self) -> tuple[float, ...]:
+        """The blind passes AFTER the last attempt: the manager's state at the
+        window's end. An attempt proves it could see; nothing else it logs does."""
+        last = self.reclaims[-1][0] if self.reclaims else float("-inf")
+        return tuple(t for t in self.blind if t > last)
 
     @property
     def high_pct(self) -> int | None:
@@ -1632,7 +1646,15 @@ def parse_kubelet(text: str, config: tuple[int, int] | None = None) -> KubeletPr
     gc: tuple[int, int, int] | None = None
     evicted: list[str] = []
     stuck = relieved = failed = 0
+    blind: list[float] = []
     for line in text.splitlines():
+        b = _KUBE_BLIND_RE.match(line)
+        if b:
+            try:
+                blind.append(datetime.fromisoformat(b.group(1)).timestamp())
+            except ValueError:
+                continue
+            continue
         e = _KUBE_EVICTED_RE.search(line)
         if e:
             evicted.append(e.group(1))
@@ -1658,7 +1680,7 @@ def parse_kubelet(text: str, config: tuple[int, int] | None = None) -> KubeletPr
         if g:
             gc = (int(g.group(1)), int(g.group(2)), int(g.group(3)))
     cfg = (None, None) if config is None else config
-    out = (tuple(evicted), stuck, relieved, failed)
+    out = (tuple(evicted), stuck, relieved, failed, tuple(blind))
     if gc is None:
         return KubeletPressure(tuple(reclaims), None, None, None, *cfg, *out)
     return KubeletPressure(tuple(reclaims), *gc, *cfg, *out)
@@ -1677,6 +1699,29 @@ def kubelet_outcome_text(kube: KubeletPressure) -> str:
         f"{kube.stuck_n} pass(es) with no evictable pod left, "
         f"{kube.relieved_n} relieved without evicting, {kube.failed_n} failed eviction(s)"
     )
+
+
+def kubelet_blind_text(kube: KubeletPressure) -> str:
+    """The eviction manager's own blindness, as one clause; empty when it
+    logged none. Pure. Passes after the last attempt are the state NOW and
+    are said as `BLIND since`; earlier ones were followed by an attempt and
+    are only counted."""
+    if not kube.blind:
+        return ""
+    tail = kube.blind_tail
+    earlier = len(kube.blind) - len(tail)
+    out = ""
+    if tail:
+        since = datetime.fromtimestamp(tail[0], UTC).strftime("%m-%d %H:%MZ")
+        last = datetime.fromtimestamp(tail[-1], UTC).strftime("%H:%MZ")
+        out = (
+            f"; eviction manager BLIND since {since}: {len(tail)} pass(es) could not read "
+            f"node stats (last {last}) -- it can neither attempt nor evict, so no attempt "
+            "after that is not relief"
+        )
+    if earlier:
+        out += f"; {earlier} blind pass(es) earlier in the window, each followed by an attempt"
+    return out
 
 
 def read_kubelet_window(hours: int = HOSTFS_WINDOW_H) -> KubeletPressure | None:
@@ -1994,7 +2039,9 @@ def host_fs_line(
     if kube is None:
         k = f"{window_h}h: kubelet journal UNREAD (no claim about evictions)"
     elif not kube.reclaims:
-        k = f"{window_h}h: kubelet quiet (0 eviction attempts)"
+        # "quiet" is a claim that it looked and found nothing to do.
+        word = "kubelet quiet" if not kube.blind else "no kubelet eviction attempt"
+        k = f"{window_h}h: {word} (0 eviction attempts)" + kubelet_blind_text(kube)
     else:
         names = sorted({r for _, r in kube.reclaims})
         first = datetime.fromtimestamp(kube.reclaims[0][0], UTC).strftime("%m-%d %H:%MZ")
@@ -2003,6 +2050,7 @@ def host_fs_line(
             f"{window_h}h: {len(kube.reclaims)} kubelet eviction attempt(s) on "
             f"{'/'.join(names)}, {first} -> {last}"
         ) + kubelet_outcome_text(kube)
+        k += kubelet_blind_text(kube)
     over_b = None
     if kube is not None and kube.high_pct is not None:
         if kube.gc_high_pct is not None:
