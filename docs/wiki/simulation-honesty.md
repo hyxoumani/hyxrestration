@@ -354,6 +354,52 @@ only under a one-tick spread gate, so a fill from an ungated strategy
 nulls `reval` rather than reporting a number built on an unmeasured
 spread.
 
+## Blind-seed window: pre-registered exclusion (2026-11-14 20:35Z)
+
+**Written and committed BEFORE any shadow report was re-run under it.**
+The last `shadow_diurnal` report on disk is 2026-11-02 02:22Z; the 11-day
+run `20261103T022100` has never been read by it.
+
+Mistakes #196: from the first per-shard `stream_gaps` row
+(`2026-11-02 08:29:16Z`, read from the table) until the fix (b66d2f4,
+run `20261114T145455`, the first with `shadow_runs.seed_floor` set), a
+shadow run seeded most books as unknown and its tradeable universe
+widened over hours as shards reconnected. Its equity is real but is the
+equity of a narrower book than the one the run is named for.
+
+**Rule.**
+
+1. *Population:* runs with `seed_floor IS NULL` and
+   `started_at >= 2026-11-02 08:29:16Z`. On today's ledger that is six
+   runs: `20261102T082927`, `20261103T022100`, `20261113T233700`,
+   `20261114T023033`, `20261114T042655`, `20261114T143236`.
+2. *Window:* every clock-hour bucket that starts before
+   `started_at + 12 h`. Twelve is the upper end of the range already
+   published from the 11-day run's 300 s lines (2.7% snapshots per event
+   in its first 6 h, 8-13% after; "blind for its first 6-12 h") -- taken
+   at the conservative end, not tuned to any downstream number.
+3. *Effect:* those buckets are flagged `blind_seed` and treated exactly
+   as bound 2's partial hours in `simulator.shadow_diurnal` (out of the
+   profile, the panel, the level test, the by-day table); the count is
+   published in the `validity` block.
+4. *Not touched:* the divergence replay (it replays a legacy run as it
+   ran, blind, by design -- the match rate is about the engine, not the
+   universe); `shadow_attribution`/`shadow_coverage` whole-life numbers
+   already published (they stand, annotated as including a blind
+   window); no strategy verdict (none rests on a post-11-02 shadow run).
+5. *No second look:* the window is not re-fitted after the re-run. If
+   12 h turns out visibly short on some run, that is recorded as a
+   finding, not as a new constant applied to the same data.
+
+**Predicted effect, with the arithmetic** (stated before the run):
+`20261103T022100` started 02:21Z, so buckets 11-03 02Z..14Z are flagged:
+13, one already partial, 12 newly excluded. 11-03 was never a whole
+clock (the run began at 02Z), so its panel-day count does not move;
+hours-of-day 03Z-14Z each lose one draw. Expected: no status changes on
+that run. The five short runs (22 min to ~18 h) lose most or all of
+their whole hours; all were under `MIN_DAYS` already, so the only
+movement is `underpowered` -> `unscorable` in the power census.
+
 ## Replay-equivalence guarantee (2026-07-08)
 
 Feeding the sim incrementally (simui's `ReplaySession.advance` in
