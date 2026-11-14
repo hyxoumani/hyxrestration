@@ -821,7 +821,8 @@ def _runs_db(tmp_path, runs):
     with duckdb.connect(str(db)) as conn:
         for run_id, started_at, n_fills in runs:
             conn.execute(
-                "INSERT INTO shadow_runs VALUES (?,?,2.0,'probe',?)",
+                "INSERT INTO shadow_runs (run_id, started_at, latency_s, strategies, anchor)"
+                " VALUES (?,?,2.0,'probe',?)",
                 [run_id, started_at, started_at],
             )
             conn.execute(
@@ -1460,3 +1461,102 @@ def test_the_export_lives_in_this_process_private_scratch_and_is_dropped(tmp_pat
     for d in dirs:
         assert private in d.parents, f"{d} is not under this process's scratch {private}"
         assert not d.exists(), f"{d} survived the run — the export is not a cache"
+
+
+def test_replay_seeds_from_where_the_run_says_it_seeded(tmp_path):
+    """Two shards. Shard 0 images M1 and never breaks again; shard 1
+    reconnects later. The daemon (2026-11-14 on, mistakes #196) seeds from
+    the EARLIEST of the shards' last breaks and records that floor; the
+    replay must seed from the recorded floor to know M1's book as the run
+    did. With no floor recorded (a run from before) it seeds as those runs
+    did -- from the newest gap row -- and is blind on M1: reproduced, not
+    rescued."""
+    from collector.venues.kalshi_ws import parse_message
+    from hyxlab.streamstore import SHARD_SID_STRIDE
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+    shadow_db = tmp_path / "shadow.duckdb"
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id=m) for m in ("M1", "M2")])
+    store.close()
+
+    def at(s):
+        return T0 + timedelta(seconds=s)
+
+    def image(mid, shard, ts):
+        return parse_message(
+            {
+                "type": "orderbook_snapshot",
+                "sid": shard * SHARD_SID_STRIDE + 1,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": mid,
+                    "yes_dollars_fp": [["0.3000", "100.00"]],  # wide: the probe waits
+                    "no_dollars_fp": [["0.6000", "100.00"]],
+                },
+            },
+            ts,
+        )[0]
+
+    def delta(mid, shard, seq, ts):  # yes bid 0.39 joins: spread 0.39/0.40, tight
+        return parse_message(
+            {
+                "type": "orderbook_delta",
+                "sid": shard * SHARD_SID_STRIDE + 1,
+                "seq": seq,
+                "msg": {
+                    "market_ticker": mid,
+                    "price_dollars": "0.3900",
+                    "delta_fp": "50.00",
+                    "side": "yes",
+                    "ts_ms": int(ts.timestamp() * 1000),
+                },
+            },
+            ts,
+        )[0]
+
+    sstore = StreamStore(stream_db)
+    sstore.append_gap("kalshi", "books", at(0), at(10), "seq_reset", shard=0)
+    sstore.append_events(image("M1", 0, at(10)))
+    sstore.append_gap("kalshi", "books", at(0), at(20), "seq_reset", shard=1)
+    sstore.append_events(image("M2", 1, at(20)))
+    sstore.append_gap("kalshi", "books", at(290), at(300), "reconnect", shard=1)
+    sstore.append_events(image("M2", 1, at(300)))
+    sstore.flush()
+
+    runner = ShadowRunner(
+        [TightSpreadProbe()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ShadowLedger(shadow_db),
+    )
+    runner.poll_once()  # anchor + seed
+    sstore.append_events(delta("M1", 0, 2, at(400)))  # a DELTA: needs M1's seeded book
+    sstore.flush()
+    runner.poll_once()
+
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        anchor, floor = conn.execute("SELECT anchor, seed_floor FROM shadow_runs").fetchone()
+        end = conn.execute("SELECT max(ts) FROM shadow_equity").fetchone()[0]
+        shadow_fills = conn.execute(
+            "SELECT market_id, side, qty, price, ts FROM shadow_fills ORDER BY ts"
+        ).fetchall()
+    assert [f[0] for f in shadow_fills] == ["M1"]  # non-vacuous: the run traded M1
+
+    def replay(seed_floor):
+        fills = replay_run(
+            runner.run_id,
+            anchor,
+            end,
+            latency=0.0,
+            strategy_names=["probe"],
+            stream_db=str(stream_db),
+            archive_db=str(archive_db),
+            seed_floor=seed_floor,
+        )
+        return [(f.market_id, f.side, f.qty, f.price, f.ts) for f in fills]
+
+    assert replay(floor) == shadow_fills
+    assert replay(None) == []  # the pre-floor seed: M1 unknown, as those runs were

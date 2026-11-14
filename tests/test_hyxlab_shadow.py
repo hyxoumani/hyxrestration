@@ -1224,3 +1224,70 @@ def test_where_the_poll_cuts_the_stream_does_not_change_a_fill(tmp_path, cut):
     assert len(every) >= 8  # non-vacuous: a latency fill per move, most of them
     assert batched == every
     assert n_batched == n_every == len(every)
+
+
+def _shard_image(mid, shard, seq, ts):
+    from hyxlab.streamstore import SHARD_SID_STRIDE
+
+    return parse_message(
+        {
+            "type": "orderbook_snapshot",
+            "sid": shard * SHARD_SID_STRIDE + 1,
+            "seq": seq,
+            "msg": {
+                "market_ticker": mid,
+                "yes_dollars_fp": [["0.4000", "100.00"]],
+                "no_dollars_fp": [["0.5900", "100.00"]],
+            },
+        },
+        ts,
+    )[0]
+
+
+def test_seed_knows_the_books_of_a_shard_that_did_not_reconnect_last(tmp_path):
+    """The stream writes one book gap row per SHARD. Shard 0 images M1 at
+    +10s and never breaks again; shard 1 images M2 at +20s, breaks, and
+    re-images at +300s. A shadow started after that must know BOTH books.
+    Seeding from the newest gap row (shard 1's reconnect) replays nothing
+    of M1's but what an unseeded book refuses -- measured 2026-11-14,
+    452,312 events seeded into 0 top states (mistakes #196). M2 must hold
+    its POST-break image: the break is replayed inside the seed."""
+    from hyxlab.store import Store
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+    shadow_db = tmp_path / "shadow.duckdb"
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id=m) for m in ("M1", "M2")])
+    store.close()
+
+    def at(s):
+        return T0 + timedelta(seconds=s)
+
+    sstore = StreamStore(stream_db)
+    sstore.append_gap("*", "*", at(0), at(5), "daemon_start")
+    sstore.append_gap("kalshi", "books", at(0), at(10), "seq_reset", shard=0)
+    sstore.append_events(_shard_image("M1", 0, 1, at(10)))
+    sstore.append_gap("kalshi", "books", at(0), at(20), "seq_reset", shard=1)
+    sstore.append_events(_shard_image("M2", 1, 1, at(20)))
+    sstore.append_gap("kalshi", "books", at(290), at(300), "reconnect", shard=1)
+    sstore.append_events(_shard_image("M2", 1, 1, at(300)))
+    sstore.flush()
+
+    runner = ShadowRunner(
+        [BuyFirst()],
+        latency=0.0,
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ShadowLedger(shadow_db),
+    )
+    assert runner.poll_once() == 0  # seeds, trades nothing
+    assert runner.replayer.depth("M1") is not None  # the shard that held
+    assert runner.replayer.depth("M2") is not None  # the shard that reconnected
+    with duckdb.connect(str(shadow_db), read_only=True) as conn:
+        anchor, floor = conn.execute("SELECT anchor, seed_floor FROM shadow_runs").fetchone()
+    # the ledger says where the seed started, for the replay that reproduces it
+    assert (anchor, floor) == (
+        at(300).replace(tzinfo=None),
+        at(10).replace(tzinfo=None),
+    )

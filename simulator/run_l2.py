@@ -26,7 +26,13 @@ import json
 from datetime import UTC, datetime
 
 from hyxlab.store import attach_wait_block, held_open, reset_attach_waits
-from simulator.bookreplay import BOOK_GAPS, BookReplayer, replay_snapshots, stream_events
+from simulator.bookreplay import (
+    BOOK_GAPS,
+    BookReplayer,
+    replay_snapshots,
+    seed_floor,
+    stream_events,
+)
 from simulator.harness import write_manifest
 from simulator.registry import STRATEGIES, build
 from simulator.shadow import STREAM_DB, held_stream_conn
@@ -63,10 +69,10 @@ def run_l2(
     with held_stream_conn(stream_db) as conn:
         # Seed books exactly as shadow/divergence do: replay history since
         # the last coverage break WITHOUT stepping the sim.
-        floor = conn.execute(
-            f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
-            [start],
-        ).fetchone()[0]
+        # `seed_floor`: the earliest of each connection's last break, not
+        # the newest gap row of any (mistakes #196).
+        sf = seed_floor(conn, start)
+        floor = sf.floor
         # Metadata for the markets THIS REPLAY CAN TOUCH, and no others.
         # `store.markets()` unfiltered is 1.87M MarketInfo objects —
         # measured 1.32 GiB resident / 1.56 GiB traced peak before the
@@ -105,6 +111,7 @@ def run_l2(
         replayer = BookReplayer()
         for _ in replay_snapshots(
             stream_events(conn, floor or datetime.min, start, prefix=prefix, lo_inclusive=True),
+            gaps=sf.gaps,
             replayer=replayer,
         ):
             pass

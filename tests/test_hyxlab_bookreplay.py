@@ -301,3 +301,109 @@ def test_a_gap_no_event_reached_still_invalidates_for_the_next_batch():
     r4 = BookReplayer()
     seed(r4)
     assert len(list(replay_snapshots([delta], replayer=r4))) == 1
+
+
+# -- the seed floor (2026-11-14, mistakes #196) --------------------------------
+#
+# Since per-shard gap rows the newest book gap is ONE connection's reconnect.
+# A seed that starts there replays only deltas for every other shard, and an
+# unseeded book refuses them: a restart at 14:32Z seeded 452,312 events into
+# 0 top states.
+
+
+N0 = T0.replace(tzinfo=None)  # the archive's timestamps are naive UTC
+
+
+def _gap_conn(rows):
+    import duckdb
+
+    conn = duckdb.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE stream_gaps (venue VARCHAR, channel VARCHAR, started_at TIMESTAMP,"
+        " ended_at TIMESTAMP, reason VARCHAR, shard INTEGER)"
+    )
+    if rows:
+        conn.executemany("INSERT INTO stream_gaps VALUES (?,?,?,?,?,?)", rows)
+    return conn
+
+
+def _g(start_s, end_s, shard, venue="kalshi", channel="books"):
+    return (
+        venue,
+        channel,
+        N0 + timedelta(seconds=start_s),
+        N0 + timedelta(seconds=end_s),
+        "seq_reset",
+        shard,
+    )
+
+
+def test_seed_floor_is_the_earliest_of_each_shards_last_break_not_the_newest_row():
+    from simulator.bookreplay import seed_floor
+
+    conn = _gap_conn(
+        [
+            _g(0, 10, None, venue="*", channel="*"),  # daemon start
+            _g(0, 20, 0),
+            _g(0, 30, 1),
+            _g(0, 40, 2),
+            _g(500, 510, 1),  # shard 1 reconnects much later
+        ]
+    )
+    sf = seed_floor(conn, N0 + timedelta(seconds=600))
+    assert sf.floor == N0 + timedelta(seconds=20)  # shard 0 never reconnected
+    assert sf.shards == 3
+    # every break after the floor is replayed in the seed, shard named
+    assert [(g[1], g[2]) for g in sf.gaps] == [
+        (N0 + timedelta(seconds=30), 1),
+        (N0 + timedelta(seconds=40), 2),
+        (N0 + timedelta(seconds=510), 1),
+    ]
+
+
+def test_seed_floor_with_no_per_shard_row_is_the_last_channel_wide_break():
+    from simulator.bookreplay import seed_floor
+
+    conn = _gap_conn([_g(0, 10, None), _g(50, 60, None)])
+    sf = seed_floor(conn, N0 + timedelta(seconds=600))
+    assert (sf.floor, sf.gaps, sf.shards) == (N0 + timedelta(seconds=60), [], 0)
+
+
+def test_a_channel_wide_break_after_a_shards_row_outranks_it():
+    from simulator.bookreplay import seed_floor
+
+    conn = _gap_conn([_g(0, 20, 0), _g(0, 30, 1), _g(100, 110, None, venue="*", channel="*")])
+    assert seed_floor(conn, N0 + timedelta(seconds=600)).floor == N0 + timedelta(seconds=110)
+
+
+def test_seed_floor_ignores_breaks_after_the_anchor_and_foreign_channels():
+    from simulator.bookreplay import seed_floor
+
+    conn = _gap_conn(
+        [
+            _g(0, 20, 0),
+            _g(0, 30, 1),
+            _g(0, 5, None, channel="trades"),
+            _g(700, 710, 0),  # after the anchor: the live poll's to apply
+        ]
+    )
+    sf = seed_floor(conn, N0 + timedelta(seconds=600))
+    assert sf.floor == N0 + timedelta(seconds=20)
+    assert all(g[1] <= N0 + timedelta(seconds=600) for g in sf.gaps)
+
+
+def test_seed_floor_is_capped_and_names_the_shards_left_unknown():
+    from simulator.bookreplay import seed_floor
+
+    anchor = N0 + timedelta(hours=30)
+    conn = _gap_conn([_g(0, 20, 0), _g(0, 30, 1), _g(3600 * 20, 3600 * 20 + 5, 1)])
+    sf = seed_floor(conn, anchor, max_lookback_h=24.0)
+    assert sf.floor == anchor - timedelta(hours=24)
+    assert sf.capped_shards == (0,)  # shard 1 re-imaged inside the lookback
+    assert seed_floor(conn, anchor, max_lookback_h=48.0).capped_shards == ()
+
+
+def test_no_gap_on_record_seeds_from_the_beginning():
+    from simulator.bookreplay import seed_floor
+
+    assert seed_floor(_gap_conn([]), N0).floor is None

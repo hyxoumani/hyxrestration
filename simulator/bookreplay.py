@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -42,6 +43,89 @@ _EMPTY: tuple = ()
 # self-inflicted blindness per Polymarket flap. ('*' rows — daemon
 # downtime, retro flush-failure marks — always apply.)
 BOOK_GAPS = "venue IN ('kalshi', '*') AND channel IN ('books', '*')"
+
+#: How far back a seed may walk for a connection that has not reconnected.
+#: A book is its image plus every delta since, so a shard whose last
+#: re-image is older than this stays unknown until it reconnects -- named
+#: in `SeedFloor.capped_shards`, never silently. The walk is ~290k rows/s
+#: inside a hold on the daemon's archive (4.07M rows in 14 s, 2026-11-02),
+#: and the shadow universe is ~0.35M events/h: 24 h is ~30 s of hold.
+SEED_MAX_LOOKBACK_H = 24.0
+
+
+@dataclass(frozen=True)
+class SeedFloor:
+    """Where a book seed starts, and the breaks it must replay on the way.
+
+    `floor` is None only when no book gap is on record (seed everything).
+    `gaps` are the book gap rows ending in (floor, anchor]: the seed spans
+    other connections' breaks now, and each must wipe its own shard's
+    books where it falls."""
+
+    floor: datetime | None
+    gaps: list[tuple]
+    shards: int
+    capped_shards: tuple[int, ...] = ()
+
+
+def seed_floor(conn, anchor: datetime, *, max_lookback_h: float = SEED_MAX_LOOKBACK_H) -> SeedFloor:
+    """The EARLIEST of each books connection's last break at or before
+    `anchor` -- not the latest break of any connection.
+
+    Until 2026-11-02 every book gap row was channel-wide, so "since the
+    last book gap" was a window in which every book had been re-imaged.
+    Since then the stream writes one row per SHARD, and the newest row is
+    one connection's reconnect: seeding from it replays only deltas for the
+    other nineteen, which an unseeded book refuses. Measured 2026-11-14:
+    a shadow restart at 14:32Z seeded from shard 17's 13:00Z reconnect --
+    452,312 events, 0 top states -- and the run before it climbed from
+    ~4k to ~39k snapshots/h over ten hours purely as shards reconnected,
+    five of twenty never (mistakes #196).
+
+    A channel-wide row (no shard: daemon start, pre-11-02 rows) still wipes
+    every book, so nothing before the last of those is worth walking; with
+    no per-shard row after it the floor is that row, as it always was."""
+    wide = conn.execute(
+        f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND shard IS NULL"
+        f" AND {BOOK_GAPS}",
+        [anchor],
+    ).fetchone()[0]
+
+    # Both reads are small by construction (one row per shard; the gap rows
+    # of at most the lookback) and still stream: the seed path never
+    # materialises a result with fetchall(), and its guard cannot tell a
+    # small table from `book_events`.
+    def _rows(res) -> list[tuple]:
+        out: list[tuple] = []
+        while chunk := res.fetchmany(1024):
+            out.extend(chunk)
+        return out
+
+    last = dict(
+        _rows(
+            conn.execute(
+                f"SELECT shard, max(ended_at) FROM stream_gaps WHERE ended_at <= ?"
+                f" AND shard IS NOT NULL AND ended_at >= ? AND {BOOK_GAPS} GROUP BY shard",
+                [anchor, wide or datetime.min],
+            )
+        )
+    )
+    if not last:
+        return SeedFloor(wide, [], 0)
+    floor = min(last.values())
+    capped: tuple[int, ...] = ()
+    cap = anchor - timedelta(hours=max_lookback_h)
+    if floor < cap:
+        capped = tuple(sorted(s for s, t in last.items() if t < cap))
+        floor = cap
+    gaps = _rows(
+        conn.execute(
+            f"SELECT started_at, ended_at, shard FROM stream_gaps"
+            f" WHERE ended_at > ? AND ended_at <= ? AND {BOOK_GAPS} ORDER BY started_at",
+            [floor, anchor],
+        )
+    )
+    return SeedFloor(floor, gaps, len(last), capped)
 
 
 class _Book:

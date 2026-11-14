@@ -46,7 +46,8 @@ def _ledger(tmp_path, runs):
     with duckdb.connect(str(db)) as conn:
         for run_id, started_at, n_fills in runs:
             conn.execute(
-                "INSERT INTO shadow_runs VALUES (?,?,2.0,'probe',?)",
+                "INSERT INTO shadow_runs (run_id, started_at, latency_s, strategies, anchor)"
+                " VALUES (?,?,2.0,'probe',?)",
                 [run_id, started_at, started_at],
             )
             conn.execute(

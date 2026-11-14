@@ -839,3 +839,14 @@
   slot (11-14: the poly sweep, 7 min in; mistakes #195). Restart a CUT
   daily unit by hand (`systemctl --user start --no-block <unit>`) unless
   its next slot is nearer than its wall time.
+- A shadow seed line with few top states for its events is a BLIND start,
+  not a boot race: the seed floor must be the earliest of each stream
+  shard's last break (`bookreplay.seed_floor`), never the newest gap row
+  (mistakes #196: `452312 archived events (0 top states)`; ten hours for
+  snapshots/h to climb 4k -> 39k as shards reconnected). Read the seed
+  line after every shadow restart -- `N shard(s)`, the gap rows replayed,
+  any shard named past the 24 h lookback -- and read snapshots per event
+  on the 300 s line; a divergence match rate cannot see a premise the
+  replay shares. The shadow's poll is 60 s since 2026-11-14 (hold is a
+  constant ~0.54 s per attach whatever the batch): on SHADOWHOLD, s/poll
+  should not have moved and duty should be ~1/3.

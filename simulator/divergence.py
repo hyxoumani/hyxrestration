@@ -70,8 +70,16 @@ def replay_run(
     archive_db: str = "data/hyxlab.duckdb",
     return_gaps: bool = False,
     series: list[str] | None = None,
+    seed_floor: datetime | None = None,
 ) -> list:
     """Reproduce a shadow run offline; returns the replay's fills.
+
+    `seed_floor` is where the RUN seeded its books from (`shadow_runs.
+    seed_floor`, recorded since 2026-11-14): the replay seeds from there
+    and replays the book gaps between it and the anchor, as the daemon
+    did. None is a run from before that, which seeded from the newest gap
+    row of any shard and so started with most books unknown (mistakes
+    #196) -- reproduced as it was, not as it should have been.
 
     `series` scopes every book_events read (market ids, seed, window) to
     markets of those Kalshi series, in SQL -- pass the shadow daemon's own
@@ -94,10 +102,20 @@ def replay_run(
     scratch = Path(duck_scratch_dir(stream_db) or ".") / f"divergence-{run_id}"
     try:
         with held_attach(stream_db, **STREAM_ATTACH) as conn:
-            floor = conn.execute(
-                f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
-                [anchor],
-            ).fetchone()[0]
+            seed_gaps: list = []
+            if seed_floor is not None:
+                floor = seed_floor
+                seed_gaps = conn.execute(
+                    f"SELECT started_at, ended_at, shard FROM stream_gaps"
+                    f" WHERE ended_at > ? AND ended_at <= ? AND {BOOK_GAPS}"
+                    f" ORDER BY started_at",
+                    [floor, anchor],
+                ).fetchall()
+            else:
+                floor = conn.execute(
+                    f"SELECT max(ended_at) FROM stream_gaps WHERE ended_at <= ? AND {BOOK_GAPS}",
+                    [anchor],
+                ).fetchone()[0]
             # Metadata for the markets THIS REPLAY CAN TOUCH, and no others
             # — derived exactly as `run_l2` derives it (EXP-1378, EXP-1379).
             # `store.markets()` unfiltered is 1.87M MarketInfo objects, 1.32
@@ -168,7 +186,7 @@ def replay_run(
         replayer = BookReplayer()
         # Seed books exactly as shadow does: replay history since the
         # last coverage break WITHOUT stepping the sim.
-        for _ in replay_snapshots(stream_exported(seed_dir), replayer=replayer):
+        for _ in replay_snapshots(stream_exported(seed_dir), gaps=seed_gaps, replayer=replayer):
             pass
         # Trade the window with full gap honesty.
         for snap in replay_snapshots(stream_exported(window_dir), gaps=gaps, replayer=replayer):
@@ -847,6 +865,19 @@ def main() -> None:
             "SELECT started_at, latency_s, strategies, anchor FROM shadow_runs WHERE run_id=?",
             [run_id],
         ).fetchone()
+        # The column exists once a daemon on the seed-floor code has opened
+        # the ledger; this report attaches read-only and cannot add it.
+        has_floor = conn.execute(
+            "SELECT count(*) FROM information_schema.columns"
+            " WHERE table_name='shadow_runs' AND column_name='seed_floor'"
+        ).fetchone()[0]
+        run_seed_floor = (
+            conn.execute("SELECT seed_floor FROM shadow_runs WHERE run_id=?", [run_id]).fetchone()[
+                0
+            ]
+            if has_floor
+            else None
+        )
         end = conn.execute("SELECT max(ts) FROM shadow_equity WHERE run_id=?", [run_id]).fetchone()[
             0
         ]
@@ -861,7 +892,10 @@ def main() -> None:
     if anchor is None:
         raise SystemExit(f"run {run_id} has no recorded anchor; pass --anchor (see journal)")
 
-    print(f"[divergence] run {run_id} anchor={anchor} end={end} latency={latency}s")
+    print(
+        f"[divergence] run {run_id} anchor={anchor} end={end} latency={latency}s"
+        f" seed_floor={run_seed_floor or 'legacy (newest gap row)'}"
+    )
     replay_fills, gaps = replay_run(
         run_id,
         anchor,
@@ -872,10 +906,12 @@ def main() -> None:
         archive_db=args.archive_db,
         return_gaps=True,
         series=shadow_universe(),
+        seed_floor=run_seed_floor,
     )
     report = {
         "run_id": run_id,
         "anchor": str(anchor),
+        "seed_floor": str(run_seed_floor) if run_seed_floor else None,
         "end": str(end),
         "latency_s": latency,
         "strategies": strategies,

@@ -5363,6 +5363,53 @@ Format: what happened → root cause → error type → prevention tier
     crash AND saw the end; a stamp that records a START is not evidence
     of a FINISH.**
 
+196. **2026-11-14 -- every shadow start since the stream began writing
+    per-shard gap rows (2026-11-02) seeded most of its books as UNKNOWN,
+    and the divergence report agreed with it because it seeded the same
+    way.** The seed window was "since the last book gap"
+    (`max(ended_at)` over `stream_gaps`), true to its comment while every
+    gap row was channel-wide: after one, every book had been re-imaged.
+    With one row per SHARD the newest row is one connection's reconnect,
+    and the seed replays only DELTAS for the other nineteen, which an
+    unseeded book rightly refuses -- so a market's book stays unknown
+    until its own connection happens to reconnect, hours later or never.
+    Found by restarting the shadow for an unrelated change (the 60 s
+    poll): `seeded books from 452312 archived events (0 top states)`,
+    floor = shard 17's 13:00Z reconnect. Measured on the run before it
+    (20261114T042655, booted with the stream, floor = the LAST shard's
+    seq_reset so only 3 of 20 shards' images were inside the window):
+    snapshots/h 4.3k, 4.2k, 11k, 4.2k, 5k, 16k, 28k, 23k, 39k across ten
+    hours while events/h FELL -- each step a burst of shard reconnects
+    in `stream_gaps` (08:49-08:52Z, 10:12-10:48Z); shards 5, 6, 14, 15
+    and 18 never reconnected. The 2 h run 20261114T023033 made 4 fills
+    against ~120/h. Nothing alarmed: the divergence replay took the same
+    floor, was blind on the same books and matched (4/4, 0.9875), and
+    #153's fix (do not wipe OTHER shards' books on a shard's row) had
+    made the live poll right while leaving the seed's premise as it was.
+    The line that said so, `0 top states`, had printed on 11-03 and
+    11-13 and was read as a boot racing the stream. Fix:
+    `bookreplay.seed_floor` -- the EARLIEST of each shard's last break
+    at or before the anchor (bounded below by the last channel-wide row,
+    which still wipes everything), with every book gap row after it
+    replayed INSIDE the seed so a later break wipes its own shard and the
+    re-image restores it; capped at `SEED_MAX_LOOKBACK_H` = 24 h (the
+    walk holds the daemon's archive at ~290k rows/s), the shards past
+    the cap NAMED on the seed line rather than silently unknown. The
+    shadow records the floor (`shadow_runs.seed_floor`, written with the
+    anchor) and the divergence replay seeds from the RECORDED floor: a
+    run from before has NULL and is replayed as it ran, blind, not as it
+    should have run. `run_l2` takes the helper too. Tests: six on the
+    helper, one end-to-end shadow test (red on the old code: `1 top
+    states` of 2), one divergence test holding both arms. **Rule: when a
+    table's rows change SCOPE (channel-wide -> per shard), every reader
+    that aggregates them is a different claim than it was, and the one
+    that takes a `max` is now about one member. Fix the writer and the
+    obvious reader and then grep for the aggregate. And an agreement
+    between a system and the replay built to check it is evidence only
+    about what they do DIFFERENTLY: a shared premise passes through a
+    match rate untouched -- read an absolute yield (snapshots per event,
+    top states per seed) beside it.**
+
 
 ## Pattern analysis (Step 5)
 

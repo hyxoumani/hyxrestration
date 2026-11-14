@@ -51,9 +51,11 @@ from hyxlab.streamstore import BookEvent
 from hyxlab.watchlist import DEFAULT_WATCHLIST, load_watchlist
 from simulator.bookreplay import (
     BOOK_GAPS,
+    SEED_MAX_LOOKBACK_H,
     SERIES_PREDICATE,
     BookReplayer,
     replay_snapshots,
+    seed_floor,
     stream_events,
 )
 from simulator.registry import build as build_strategies
@@ -262,19 +264,28 @@ class ShadowLedger:
             conn.execute(_SCHEMA)
             # pre-anchor DBs: add the column in place
             conn.execute("ALTER TABLE shadow_runs ADD COLUMN IF NOT EXISTS anchor TIMESTAMP")
+            conn.execute("ALTER TABLE shadow_runs ADD COLUMN IF NOT EXISTS seed_floor TIMESTAMP")
 
     def start_run(self, run_id: str, latency: float, strategies: list[str]) -> None:
         with held_duck(str(self.path)) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO shadow_runs VALUES (?,?,?,?,NULL)",
+                "INSERT OR REPLACE INTO shadow_runs"
+                " (run_id, started_at, latency_s, strategies, anchor) VALUES (?,?,?,?,NULL)",
                 [run_id, datetime.now(UTC).replace(tzinfo=None), latency, ",".join(strategies)],
             )
 
-    def set_anchor(self, run_id: str, anchor: datetime) -> None:
-        """Record where trading actually starts (cursor at first poll) —
-        the divergence replay needs it to reproduce the exact window."""
+    def set_anchor(self, run_id: str, anchor: datetime, seed_floor: datetime | None = None) -> None:
+        """Record where trading actually starts (cursor at first poll) and
+        where the book seed STARTED — the divergence replay reproduces the
+        run, so it needs the exact window and must seed from where the run
+        did. Runs before 2026-11-14 seeded from the newest gap row of any
+        shard (`seed_floor` NULL), and a replay that seeded them wider
+        would trade books the shadow never knew (mistakes #196)."""
         with held_duck(str(self.path)) as conn:
-            conn.execute("UPDATE shadow_runs SET anchor=? WHERE run_id=?", [_naive(anchor), run_id])
+            conn.execute(
+                "UPDATE shadow_runs SET anchor=?, seed_floor=? WHERE run_id=?",
+                [_naive(anchor), _naive(seed_floor) if seed_floor is not None else None, run_id],
+            )
 
     def record_holds(self, run_id: str, block: dict | None) -> None:
         """Persist one cumulative `attach_wait` reading for `run_id`.
@@ -431,10 +442,15 @@ class ShadowRunner:
                 self.cursor = conn.execute("SELECT max(recv_ts) FROM book_events").fetchone()[0]
                 self.gap_cursor = self.cursor
                 if self.cursor is not None:
-                    self.ledger.set_anchor(self.run_id, self.cursor)
-                    floor = conn.execute(
-                        f"SELECT max(ended_at) FROM stream_gaps WHERE {BOOK_GAPS}"
-                    ).fetchone()[0]
+                    # The EARLIEST of each connection's last break, with
+                    # the later breaks replayed inside the seed -- not the
+                    # newest gap row, which since per-shard rows (11-02) is
+                    # one connection's reconnect and leaves every other
+                    # shard's books unknown until it too reconnects
+                    # (`bookreplay.seed_floor`, mistakes #196).
+                    sf = seed_floor(conn, self.cursor)
+                    floor = sf.floor
+                    self.ledger.set_anchor(self.run_id, self.cursor, floor)
                     # Seed through `bookreplay.stream_events` — THE ONE
                     # walk over book_events — rather than a fourth
                     # hand-rolled query. That module's docstring already
@@ -485,11 +501,19 @@ class ShadowRunner:
                             yield e
 
                     seeded = 0
-                    for _ in replay_snapshots(_seed_events(), replayer=self.replayer):
+                    for _ in replay_snapshots(_seed_events(), gaps=sf.gaps, replayer=self.replayer):
                         seeded += 1
+                    capped = (
+                        f"; shard(s) {list(sf.capped_shards)} last re-imaged over"
+                        f" {SEED_MAX_LOOKBACK_H:g}h ago, unknown until they reconnect"
+                        if sf.capped_shards
+                        else ""
+                    )
                     print(
                         f"[shadow] seeded books from {n_rows} archived events"
-                        f" ({seeded} top states; trading starts at {self.cursor})",
+                        f" since {floor} ({seeded} top states, {sf.shards} shard(s),"
+                        f" {len(sf.gaps)} gap row(s) replayed{capped};"
+                        f" trading starts at {self.cursor})",
                         flush=True,
                     )
                 return [], []
