@@ -822,3 +822,14 @@
   the pressure's DURATION in ~10 s passes; its cost is the clause after it
   (`= N pod(s) evicted (...), M pass(es) with no evictable pod left, ...`,
   mistakes #190) -- quote the pods, never the attempts.
+- A last-eviction time hours old is not relief. When the control plane is
+  down the kubelet has no node object and its eviction manager logs
+  `failed to get summary stats` every 10 s instead of an attempt (11-13
+  23:37Z after a reboot: 1,109 passes in 3 h, disk 23 GB past the line;
+  mistakes #193). `HOSTFS` prints `eviction manager BLIND since ...`; while
+  it does, the pod count is frozen and says nothing about the disk.
+- Report a finished shadow run BEFORE restarting the shadow again:
+  `latest_complete_run` (the nightly divergence unit's and QA's subject)
+  is the NEWEST finished run with fills, so a restart moves it off a run
+  whose report failed without a word (11-14: the 11-day run needed
+  `python -m simulator.divergence --run <id>`; mistakes #192).
