@@ -2228,3 +2228,107 @@ def test_the_fs_line_names_a_floor_that_crossed_while_the_level_did_not() -> Non
     assert "floor" not in health.host_fs_line(
         _FS13, health.parse_kubelet(KUBELET_LINES), health.fs_pace([])
     )
+
+
+# --------------------------------------------------------------------------
+# What the journal knows about a unit's RUNS (mistakes #195). 2026-11-14: the
+# host crashed at ~04:25Z. Fields verbatim from that night's journal, ids
+# shortened: divergence failed at 01:56Z and FINISHED at 04:14Z from a hand
+# start; the poly sweep started at 04:15Z in the boot that died and has no
+# close record of any kind.
+# --------------------------------------------------------------------------
+
+DEAD_BOOT = "44bf13e13de44840b00fa43130c81426"
+LIVE_BOOT = "b7fa80fc5bf74c219877f17cfd98488a"
+JOB_START = "7d4958e842da4a758f6c1cdc7b36dcc5"
+JOB_DONE = "39f53479d3a045ac8e11786248231fbf"
+JOB_FAIL = "d9b373ed55a64feb8242e02dbe79a49c"
+DIV, POLY = "hyxlab-divergence.service", "hyxlab-poly-sweep.service"
+T_0120, T_0156, T_0357, T_0414, T_0415 = (
+    1_794_619_200,
+    1_794_621_394,
+    1_794_628_653,
+    1_794_629_647,
+    1_794_629_700,
+)
+
+
+def _job(mid: str, unit: str, at: int, inv: str, boot: str = DEAD_BOOT, **over: str) -> str:
+    rec = {
+        "MESSAGE_ID": mid,
+        "USER_UNIT": unit,
+        "__REALTIME_TIMESTAMP": str(at * 1_000_000),
+        "USER_INVOCATION_ID": inv,
+        "_BOOT_ID": boot,
+        **over,
+    }
+    return json.dumps(rec)
+
+
+CRASH_NIGHT = "\n".join(
+    [
+        _job(JOB_START, DIV, T_0120, "aa"),
+        _job(JOB_FAIL, DIV, T_0156, "aa"),
+        _job(JOB_START, DIV, T_0357, "bb"),
+        _job(JOB_DONE, DIV, T_0414, "bb", JOB_RESULT="done"),
+        _job(JOB_START, POLY, T_0415, "cc"),
+        _job(JOB_START, "hylshi-lake-nightly.service", T_0415, "dd"),
+    ]
+)
+
+
+def _crash_jobs() -> list[health.UnitJob]:
+    return health.parse_unit_jobs(CRASH_NIGHT, {DIV, POLY})
+
+
+def test_job_records_pair_into_invocations() -> None:
+    failed, finished, cut = _crash_jobs()  # the sibling's unit is out of scope
+    assert (failed.unit, failed.ok, finished.ok, cut.ok) == (DIV, False, True, None)
+    assert finished.ended.timestamp() == T_0414 and cut.ended is None
+    assert cut.boot == DEAD_BOOT
+    assert health.parse_unit_jobs("junk\n[1]\n" + CRASH_NIGHT, {POLY}) == [cut]
+
+
+def test_a_failure_the_journal_saw_finish_afterwards_is_cleared() -> None:
+    """The manager forgot, the timer never knew (a hand start), the journal did."""
+    fails = [health.UnitFailure(DIV, datetime.fromtimestamp(T_0156, UTC), "exit-code", "1")]
+    stale = timer(LastTriggerUSec=f"@{T_0120}", NextElapseUSecRealtime=f"@{T_0120 + 86400}")
+    raw = health.judge(DIV, _forgotten(), stale, T_0415 + 4 * 3600)
+    assert raw.state == "OK"
+    assert health.outlived_by_failure(raw, _forgotten(), stale, fails).state == "FAILED"
+    assert health.outlived_by_failure(raw, _forgotten(), stale, fails, _crash_jobs()) is raw
+    # ...and only a finish AFTER the failure counts: without the 04:14Z close
+    # the same journal leaves it failed.
+    earlier = [j for j in _crash_jobs() if j.ok is not True]
+    assert health.outlived_by_failure(raw, _forgotten(), stale, fails, earlier).state == "FAILED"
+
+
+def test_a_run_the_boot_ended_under_is_not_ok() -> None:
+    took_slot = timer(LastTriggerUSec=f"@{T_0415}", NextElapseUSecRealtime=f"@{T_0415 + 86400}")
+    raw = health.judge(POLY, _forgotten(), took_slot, T_0415 + 4 * 3600)
+    assert raw.state == "OK"  # the defect: the persisted stamp says the slot was taken
+    row = health.cut_by_reset(raw, _forgotten(), _crash_jobs(), LIVE_BOOT)
+    assert row.state == "CUT" and not row.ok and "11-14 04:15Z" in row.detail
+
+
+def test_a_run_still_open_in_the_running_boot_is_left_alone() -> None:
+    raw = health.UnitHealth(POLY, "OK", "x")
+    assert health.cut_by_reset(raw, _forgotten(), _crash_jobs(), DEAD_BOOT) is raw
+    assert health.cut_by_reset(raw, _forgotten(), _crash_jobs(), "") is raw  # boot unknown
+
+
+def test_a_later_run_supersedes_the_cut_one() -> None:
+    raw = health.UnitHealth(POLY, "OK", "x")
+    rerun = svc(ExecMainStartTimestamp=f"@{T_0415 + 14472}")
+    assert health.cut_by_reset(raw, rerun, _crash_jobs(), LIVE_BOOT) is raw
+    again = _crash_jobs() + [
+        health.UnitJob(POLY, datetime.fromtimestamp(T_0415 + 14472, UTC), LIVE_BOOT)
+    ]
+    assert health.cut_by_reset(raw, _forgotten(), again, LIVE_BOOT) is raw
+
+
+def test_a_finished_or_failed_last_run_is_never_cut() -> None:
+    raw = health.UnitHealth(DIV, "OK", "x")
+    assert health.cut_by_reset(raw, _forgotten(), _crash_jobs(), LIVE_BOOT) is raw
+    failed = health.UnitHealth(POLY, "FAILED", "x")
+    assert health.cut_by_reset(failed, _forgotten(), _crash_jobs(), LIVE_BOOT) is failed

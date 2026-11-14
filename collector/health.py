@@ -2874,6 +2874,144 @@ def read_unit_failures(units: set[str], hours: int = FAILURE_WINDOW_H) -> list[U
     return parse_unit_failures(proc.stdout, units)
 
 
+# ---- What the journal knows about a unit's RUNS (mistakes #195) ---------------
+#
+# The failure log above is one of three things the manager writes about an
+# invocation, and reading it alone made the digest wrong in both directions on
+# 2026-11-14, after a host crash at ~04:25Z reset the manager's memory:
+#
+# - `hyxlab-divergence` printed FAILED for its 01:56Z failure although it had
+#   FINISHED three times since (02:30Z, 03:57Z, 04:14Z). `outlived_by_failure`
+#   asked the manager and the timer for a later run; the manager had forgotten
+#   and the three runs were started by hand, so the timer never knew.
+# - `hyxlab-poly-sweep` printed `OK last ran 4.0h ago` for a run the crash
+#   killed 7 minutes in. The timer's persisted stamp said the 04:15Z slot was
+#   taken, the dead run wrote no failure record (nothing was alive to write
+#   one), and the next slot was 24 h away: a day of the sweep lost under OK.
+#
+# Both are answered by the job records: "Starting" (this id) opens an
+# invocation and "Finished"/"Started" (`JOB_RESULT=done`) or a failure record
+# closes it. An invocation with no close, in a boot that is not the running
+# one, did not finish and never will.
+UNIT_JOB_START_MESSAGE_ID = "7d4958e842da4a758f6c1cdc7b36dcc5"
+UNIT_JOB_DONE_MESSAGE_ID = "39f53479d3a045ac8e11786248231fbf"
+BOOT_ID_PATH = Path("/proc/sys/kernel/random/boot_id")
+
+
+@dataclass(frozen=True)
+class UnitJob:
+    """One invocation of a unit as the journal recorded it."""
+
+    unit: str
+    started: datetime
+    #: `_BOOT_ID` of the start record ("" when the record carried none).
+    boot: str
+    #: When the manager closed it; None = no close record was ever written.
+    ended: datetime | None = None
+    #: True = `JOB_RESULT=done`, False = a failure record, None = never closed.
+    ok: bool | None = None
+
+
+def parse_unit_jobs(stdout: str, units: set[str]) -> list[UnitJob]:
+    """Journal JSON -> one `UnitJob` per in-scope invocation, oldest first.
+    Records pair on `USER_INVOCATION_ID`; a start without one cannot be paired
+    and is dropped rather than reported as unfinished. Pure; never raises."""
+    starts: dict[str, tuple[str, datetime, str]] = {}
+    closes: dict[str, tuple[datetime, bool]] = {}
+    for line in stdout.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get("USER_UNIT") not in units:
+            continue
+        inv = rec.get("USER_INVOCATION_ID")
+        if not isinstance(inv, str) or not inv:
+            continue
+        try:
+            at = datetime.fromtimestamp(int(rec["__REALTIME_TIMESTAMP"]) / 1e6, UTC)
+        except (KeyError, TypeError, ValueError):
+            continue
+        mid = rec.get("MESSAGE_ID")
+        if mid == UNIT_JOB_START_MESSAGE_ID:
+            starts[inv] = (rec["USER_UNIT"], at, str(rec.get("_BOOT_ID") or ""))
+        elif mid == UNIT_JOB_DONE_MESSAGE_ID and rec.get("JOB_RESULT") == "done":
+            closes.setdefault(inv, (at, True))
+        elif mid == UNIT_FAILURE_MESSAGE_ID:
+            closes[inv] = (at, False)  # a failure outranks any other close
+    out = []
+    for inv, (unit, at, boot) in starts.items():
+        ended, ok = closes.get(inv, (None, None))
+        out.append(UnitJob(unit, at, boot, ended, ok))
+    return sorted(out, key=lambda j: j.started)
+
+
+def read_unit_jobs(units: set[str], hours: int = FAILURE_WINDOW_H) -> list[UnitJob]:
+    """Start/close records for the window (indexed `MESSAGE_ID` matches, so the
+    read is proportional to the number of invocations). Never raises."""
+    try:
+        proc = subprocess.run(
+            [
+                "journalctl",
+                "--user",
+                "--no-pager",
+                "--since",
+                f"-{hours}h",
+                f"MESSAGE_ID={UNIT_JOB_START_MESSAGE_ID}",
+                f"MESSAGE_ID={UNIT_JOB_DONE_MESSAGE_ID}",
+                f"MESSAGE_ID={UNIT_FAILURE_MESSAGE_ID}",
+                "-o",
+                "json",
+                "--output-fields=MESSAGE_ID,USER_UNIT,__REALTIME_TIMESTAMP,USER_INVOCATION_ID,JOB_RESULT,_BOOT_ID",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_unit_jobs(proc.stdout, units)
+
+
+def read_boot_id() -> str:
+    """The running boot's id in the journal's spelling (no dashes); "" when it
+    cannot be read, which withholds the CUT verdict rather than guessing it."""
+    try:
+        return BOOT_ID_PATH.read_text().strip().replace("-", "")
+    except OSError:
+        return ""
+
+
+def cut_by_reset(
+    row: UnitHealth, svc: dict[str, str], jobs: list[UnitJob], boot_id: str
+) -> UnitHealth:
+    """An OK row whose LAST run never finished: the journal has its start, no
+    close, and the boot it started in is over. `judge` reads OK off the timer's
+    persisted stamp -- the slot was taken -- and no failure exists to
+    contradict it, because the thing that killed the run killed the manager
+    that would have written one. A start in the RUNNING boot is left alone
+    (that is a live run, and `judge` already says RUNNING), and so is one the
+    manager has since outlived with a run it remembers."""
+    if row.state != "OK" or not boot_id:
+        return row
+    mine = [j for j in jobs if j.unit == row.unit]
+    if not mine:
+        return row
+    last = mine[-1]
+    if last.ended is not None or not last.boot or last.boot == boot_id:
+        return row
+    started = _epoch(svc.get("ExecMainStartTimestamp", ""))
+    if started is not None and started > last.started.timestamp():
+        return row
+    return UnitHealth(
+        row.unit,
+        "CUT",
+        f"last run started {last.started:%m-%d %H:%M}Z and never finished: the boot it ran "
+        "in ended first (host reset or poweroff), no failure was written and nothing has "
+        "run since -- the timer counts the slot as taken",
+    )
+
+
 # ---- Kalshi 429s, host-wide (mistakes #145) ----------------------------------
 #
 # The Kalshi public-API budget is ONE bucket per host, and two projects draw
@@ -3602,6 +3740,7 @@ def outlived_by_failure(
     svc: dict[str, str],
     timer: dict[str, str] | None,
     failures: list[UnitFailure],
+    jobs: list[UnitJob] | None = None,
 ) -> UnitHealth:
     """An OK row the journal contradicts: the unit's LAST failure is newer than
     any run the manager still remembers.
@@ -3631,6 +3770,10 @@ def outlived_by_failure(
     latest_run = max((t for t in seen if t is not None), default=None)
     if latest_run is not None and latest_run > last.at.timestamp():
         return row
+    # The journal remembers what the manager forgot: a run that FINISHED after
+    # the failure clears it, whoever started it (a hand start moves no timer).
+    if any(j.unit == row.unit and j.ok and j.ended and j.ended > last.at for j in jobs or ()):
+        return row
     return UnitHealth(
         row.unit,
         "FAILED",
@@ -3639,7 +3782,12 @@ def outlived_by_failure(
     )
 
 
-def report(now: float | None = None, failures: list[UnitFailure] | None = None) -> list[UnitHealth]:
+def report(
+    now: float | None = None,
+    failures: list[UnitFailure] | None = None,
+    jobs: list[UnitJob] | None = None,
+    boot_id: str = "",
+) -> list[UnitHealth]:
     now = now if now is not None else datetime.now(UTC).timestamp()
     seen = [
         (svc_name, show(f"{Path(svc_name).stem}.timer") if has_timer else None, show(svc_name))
@@ -3649,17 +3797,25 @@ def report(now: float | None = None, failures: list[UnitFailure] | None = None) 
     # manager already says something was oom-killed. No fault, no cost.
     victims = read_kernel_oom() if any(s.get("Result") == "oom-kill" for _, _, s in seen) else []
     return [
-        outlived_by_failure(
-            judge(
-                svc_name,
+        cut_by_reset(
+            outlived_by_failure(
+                judge(
+                    svc_name,
+                    svc_props,
+                    timer,
+                    now,
+                    oom_attribution(victims, svc_name)
+                    if svc_props.get("Result") == "oom-kill"
+                    else "",
+                ),
                 svc_props,
                 timer,
-                now,
-                oom_attribution(victims, svc_name) if svc_props.get("Result") == "oom-kill" else "",
+                failures or [],
+                jobs,
             ),
             svc_props,
-            timer,
-            failures or [],
+            jobs or [],
+            boot_id,
         )
         for svc_name, timer, svc_props in seen
     ]
@@ -3730,7 +3886,7 @@ def main() -> None:
     print(f"[health] {now:%Y-%m-%d %H:%M}Z — persisted state only; no checks re-run", flush=True)
     units = {u for u, _ in discover_units()}
     failures = read_unit_failures(units)
-    rows = report(now.timestamp(), failures)
+    rows = report(now.timestamp(), failures, read_unit_jobs(units), read_boot_id())
     width = max((len(r.unit) for r in rows), default=0)
     for r in sorted(rows, key=lambda r: (r.ok, r.unit)):
         print(f"{r.state:<10} {r.unit:<{width}}  {r.detail}", flush=True)

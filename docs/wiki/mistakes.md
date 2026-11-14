@@ -5336,6 +5336,34 @@ Format: what happened → root cause → error type → prevention tier
     owes a backlog, and the backlog needs a bound that is not "forever"
     (one per quiet day, one attempt each).**
 
+195. **2026-11-14 -- the digest read a unit's last RUN off the manager and
+    the timer, and a host crash makes both wrong, in opposite directions.**
+    The box hard-crashed at ~04:25Z (`last -x`: `crash`; no shutdown
+    lines) and booted at 04:26:55Z. At 08:15Z the digest printed
+    `FAILED hyxlab-divergence.service ... the manager remembers no run
+    since` for a 01:56Z failure the unit had FINISHED three times after
+    (02:30Z, 03:57Z, 04:14Z -- hand starts, so the timer stamp never
+    moved and `outlived_by_failure` had only the forgetful manager to
+    ask), and `OK hyxlab-poly-sweep.service last ran 4.0h ago` for a
+    sweep the crash killed 7 minutes in: the persisted `LastTriggerUSec`
+    said the 04:15Z slot was taken, the dead run left no failure record
+    (the manager that writes one died with it), and the next slot was
+    24 h away. A false alarm and a silent lost day from one cause. Class:
+    #126/10-05's "the manager forgets on restart", reaching the two
+    cases that fix did not enumerate (failure-then-success-then-reboot,
+    and start-then-reboot). Fix: `collector.health.read_unit_jobs` reads
+    the journal's start/close records per invocation
+    (`USER_INVOCATION_ID`, `_BOOT_ID`); a finish after the failure clears
+    it, and an OK row whose last start has no close in a boot that is
+    over prints `CUT` (ATTENTION). Replayed over the real journal as of
+    08:15Z: exactly one CUT, the poly sweep. +6 tests on that night's
+    records, three mutants killed. The sweep was restarted by hand at
+    08:16Z. **Rule: after a reboot, "did it run" has three witnesses --
+    manager, timer stamp, journal -- and only the journal survives the
+    crash AND saw the end; a stamp that records a START is not evidence
+    of a FINISH.**
+
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

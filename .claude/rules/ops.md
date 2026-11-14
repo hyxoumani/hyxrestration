@@ -833,3 +833,9 @@
   is the NEWEST finished run with fills, so a restart moves it off a run
   whose report failed without a word (11-14: the 11-day run needed
   `python -m simulator.divergence --run <id>`; mistakes #192).
+- After a host crash, read the digest's `CUT` rows first: a oneshot the
+  crash killed leaves a start with no close in a dead boot, its timer
+  stamp says the slot was taken, and nothing reruns it until the next
+  slot (11-14: the poly sweep, 7 min in; mistakes #195). Restart a CUT
+  daily unit by hand (`systemctl --user start --no-block <unit>`) unless
+  its next slot is nearer than its wall time.

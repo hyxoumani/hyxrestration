@@ -232,7 +232,7 @@ def test_the_digest_prints_the_drift_section(capsys, monkeypatch):
         "drift_report",
         lambda: [health.UnitDrift("hyxlab-probe.service", "DROP-IN", "o.conf")],
     )
-    monkeypatch.setattr(health, "report", lambda now=None, failures=None: [])
+    monkeypatch.setattr(health, "report", lambda *a, **k: [])
     monkeypatch.setattr(health, "show", lambda unit: {})
     monkeypatch.setattr(health, "_load_state", lambda path: {})
     health.main()
@@ -378,7 +378,7 @@ def test_the_digest_itself_still_exits_zero_and_the_subcommand_does_not(monkeypa
     monkeypatch.setattr(
         health, "drift_report", lambda: [health.UnitDrift("a.service", "DRIFT", "d")]
     )
-    monkeypatch.setattr(health, "report", lambda now=None, failures=None: [])
+    monkeypatch.setattr(health, "report", lambda *a, **k: [])
     monkeypatch.setattr(health, "show", lambda unit: {})
     monkeypatch.setattr(health, "_load_state", lambda path: {})
     assert health.cli([]) == 0
@@ -539,7 +539,7 @@ def test_the_pending_state_is_reported_not_swallowed(capsys, monkeypatch):
     assert "PENDING-PROMOTE" in out and "a.service" in out
     assert "0/1 loaded unit files match the repo" in out
 
-    monkeypatch.setattr(health, "report", lambda now=None, failures=None: [])
+    monkeypatch.setattr(health, "report", lambda *a, **k: [])
     monkeypatch.setattr(health, "show", lambda unit: {})
     monkeypatch.setattr(health, "_load_state", lambda path: {})
     health.main()

@@ -125,7 +125,7 @@ def test_the_line_and_the_attention_headline_reach_stdout(
     """A verdict computed and not printed is the defect the digest exists to
     answer; an oom_kill on a daemon must also reach the ATTENTION list, since
     `Restart=always` hides it from the unit's own state."""
-    monkeypatch.setattr(health, "report", lambda now=None, failures=None: [])
+    monkeypatch.setattr(health, "report", lambda *a, **k: [])
     monkeypatch.setattr(health, "read_unit_failures", lambda units, hours=24: [])
     monkeypatch.setattr(health, "failure_history_lines", lambda *a, **k: [])
     monkeypatch.setattr(health, "drift_report", lambda: [])
