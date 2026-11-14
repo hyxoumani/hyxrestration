@@ -264,6 +264,4 @@ def db_owner_lock_or_reason(db_path: str) -> tuple[object | None, str]:
     lock = acquire_owner_lock(db_path)
     if lock is not None:
         return lock, ""
-    return None, (
-        f"another writer owns {db_path}: {describe_holder(owner_lock_path(db_path))}"
-    )
+    return None, (f"another writer owns {db_path}: {describe_holder(owner_lock_path(db_path))}")

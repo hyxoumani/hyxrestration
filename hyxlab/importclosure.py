@@ -38,11 +38,7 @@ DATA_DEPS: dict[str, list[str]] = {
 
 def top_level_packages(root: Path) -> set[str]:
     """Importable top-level package names in the repo."""
-    return {
-        p.name
-        for p in root.iterdir()
-        if p.is_dir() and (p / "__init__.py").exists()
-    }
+    return {p.name for p in root.iterdir() if p.is_dir() and (p / "__init__.py").exists()}
 
 
 def module_to_path(module: str, root: Path) -> Path | None:

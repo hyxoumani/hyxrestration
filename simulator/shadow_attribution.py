@@ -91,6 +91,7 @@ from pathlib import Path
 
 import duckdb
 
+from hyxlab.shadowruns import blind_seed_block
 from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 
 SHADOW_DB = "data/hyxshadow.duckdb"
@@ -315,6 +316,11 @@ def build_attribution(ledger: duckdb.DuckDBPyConnection, run_id: str | None = No
                 "venues": sorted({p["venue"] for p in positions}),
                 "market_mix": [{"prefix": k, "n": v} for k, v in top_mix],
                 "bands": _band_table(positions),
+                # Every total above sums the run's WHOLE life, and for a
+                # pre-fix run part of that life traded a narrower book
+                # (mistakes #196). A total cannot drop hours, so it says
+                # how many of them were blind.
+                **blind_seed_block(ledger, rid, last_ts),
             }
         )
     return report

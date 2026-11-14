@@ -109,6 +109,7 @@ import statistics
 from datetime import UTC, datetime
 from pathlib import Path
 
+from hyxlab.shadowruns import blind_seed_block
 from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 
 # Runs pooled into the `recent` block. Five is the span over which the
@@ -419,6 +420,11 @@ def build_coverage(
                 "ended_at": end.isoformat() if end else None,
                 "life_hours": life_h,
                 "live": live,
+                # The fills counted below include any made while most
+                # books were unknown (mistakes #196): fewer fills, not
+                # different ones, so the ratio stands and the count says
+                # how much of the life it covers was blind.
+                **blind_seed_block(ledger, run_id, end),
                 # How close this reading's `live` call was to its own
                 # threshold, so the margin is in the artifact rather than
                 # implied by the boolean.

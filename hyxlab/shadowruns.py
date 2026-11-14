@@ -12,7 +12,7 @@ which is the exact failure (#46) the consumer exists to catch.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def latest_complete_run(conn) -> str | None:
@@ -92,3 +92,88 @@ def run_completed_at(conn, run_id: str) -> datetime | None:
         [run_id],
     ).fetchone()
     return row[0] if row else None
+
+
+# The blind-seed window (mistakes #196; pre-registered in
+# docs/wiki/simulation-honesty.md BEFORE any report was re-run under it).
+# From the stream's first per-shard gap row until `shadow_runs.seed_floor`
+# existed, a run seeded from the NEWEST gap row -- one connection's
+# reconnect -- and most of its books stayed unknown until their own shard
+# happened to reconnect. Its early equity is real, but it is the equity
+# of a narrower book than the run is named for. The instant is the
+# table's own `min(started_at) where shard is not null`, read 2026-11-14;
+# twelve hours is the upper end of the range measured on the 11-day run
+# (2.7% snapshots per event in its first 6 h, 8-13% after). Neither is
+# re-fitted to what the exclusion changes. Here, not in one report: three
+# reports read the same ledger, and a rule with three copies is three
+# rules the day one constant moves.
+PER_SHARD_GAPS_FROM = datetime(2026, 11, 2, 8, 29, 16)
+BLIND_SEED_HOURS = 12
+BLIND_SEED_STATUSES = ("not_in_population", "partly_blind", "wholly_blind", "unplaceable")
+
+
+def _run_start_and_floor(conn, run_id: str) -> tuple | None:
+    """(started_at, seed_floor) for a run, or None when the ledger cannot
+    say: no `shadow_runs` table, no row, or a NULL start."""
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "select column_name from information_schema.columns where table_name = 'shadow_runs'"
+        ).fetchall()
+    }
+    if "started_at" not in cols:
+        return None
+    floor = "seed_floor" if "seed_floor" in cols else "NULL"
+    row = conn.execute(
+        f"select started_at, {floor} from shadow_runs where run_id = ?", [run_id]
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return row
+
+
+def blind_seed_until(conn, run_id: str) -> datetime | None:
+    """Where this run's blind-seed window ends, or None if it has none.
+
+    A run is in the population when it started in the per-shard era and
+    recorded no `seed_floor`. A ledger with no `shadow_runs` row for the
+    run (or no such table) cannot place it in the era: None, the run is
+    read as it always was -- the rule excludes on evidence, never on a
+    missing row."""
+    row = _run_start_and_floor(conn, run_id)
+    if row is None or row[1] is not None or row[0] < PER_SHARD_GAPS_FROM:
+        return None
+    return row[0] + timedelta(hours=BLIND_SEED_HOURS)
+
+
+def blind_seed_block(conn, run_id: str, last_ts: datetime | None) -> dict:
+    """The annotation a WHOLE-LIFE number carries about the window.
+
+    The diurnal report can drop blind hours; a whole-life total (equity
+    delta, fills observed) cannot, so it says how much of the life it
+    sums was blind instead. Four states, because "no window" from a run
+    the ledger cannot place is not "no window" from a run known to be
+    outside the population: `unplaceable` is the first, and it is never
+    folded into `not_in_population`."""
+    row = _run_start_and_floor(conn, run_id)
+    if row is None:
+        return {
+            "blind_seed_status": "unplaceable",
+            "blind_seed_until": None,
+            "blind_seed_life_hours": None,
+        }
+    until = blind_seed_until(conn, run_id)
+    if until is None:
+        return {
+            "blind_seed_status": "not_in_population",
+            "blind_seed_until": None,
+            "blind_seed_life_hours": 0.0,
+        }
+    started = row[0]
+    end = last_ts if last_ts is not None else started
+    blind_h = max(0.0, (min(end, until) - started).total_seconds() / 3600)
+    return {
+        "blind_seed_status": "wholly_blind" if end <= until else "partly_blind",
+        "blind_seed_until": f"{until:%Y-%m-%dT%H:%M:%SZ}",
+        "blind_seed_life_hours": round(blind_h, 2),
+    }

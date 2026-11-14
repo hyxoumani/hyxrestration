@@ -418,6 +418,23 @@ published shadow verdict rested on a blind window**; the rule stays in
 as the bound that keeps it so. This was also the first diurnal reading
 of the 11-day run: the 12th powered run and the 12th `does_not_repeat`.
 
+**Item 4's annotation, shipped 2026-11-14 21:15Z.** The rule's
+definition moved to `hyxlab.shadowruns` (`blind_seed_until`,
+`blind_seed_block`) so the three reports share one copy, and each run in
+`shadow_attribution` and `shadow_coverage` now carries
+`blind_seed_status` (`not_in_population` / `partly_blind` /
+`wholly_blind` / `unplaceable` -- the last for a run the ledger has no
+`shadow_runs` row for, never folded into the first),
+`blind_seed_until` and `blind_seed_life_hours`. No total changes. The
+hours run from `shadow_runs.started_at`, which precedes the first equity
+tick by the seed, so a wholly blind run can read more blind hours than
+`life_hours` (2.87 vs 1.64 on `20261113T233700`). First reading over the
+66 attribution runs: 61 outside the population, 2 partly blind
+(`20261102T082927` 12.0 of 17.8 h; `20261103T022100` 12.0 of 261.2 h --
+4.6% of the life behind equity delta +706.0, realized +3,493.3, open
+carry -2,787.3), 3 wholly blind (the 11-13/11-14 short runs, 3-86
+positions, none settled).
+
 ## Replay-equivalence guarantee (2026-07-08)
 
 Feeding the sim incrementally (simui's `ReplaySession.advance` in

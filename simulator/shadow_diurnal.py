@@ -380,6 +380,7 @@ from pathlib import Path
 
 import duckdb
 
+from hyxlab.shadowruns import BLIND_SEED_HOURS, blind_seed_until
 from hyxlab.store import attach_wait_block, attach_wait_line, held_attach, reset_attach_waits
 
 SHADOW_DB = "data/hyxshadow.duckdb"
@@ -528,46 +529,9 @@ SUCCESSION_WINDOW_S = 900
 #: `no_successor`: closed and nothing followed. `open`: still writing.
 SUCCESSION_KINDS = ("open", "immediate", "after_outage", "no_successor")
 
-# The blind-seed window (mistakes #196; pre-registered in
-# docs/wiki/simulation-honesty.md BEFORE any report was re-run under it).
-# From the stream's first per-shard gap row until `shadow_runs.seed_floor`
-# existed, a run seeded from the NEWEST gap row -- one connection's
-# reconnect -- and most of its books stayed unknown until their own shard
-# happened to reconnect. Its early equity is real, but it is the equity
-# of a narrower book than the run is named for. The instant is the
-# table's own `min(started_at) where shard is not null`, read 2026-11-14;
-# twelve hours is the upper end of the range measured on the 11-day run
-# (2.7% snapshots per event in its first 6 h, 8-13% after). Neither is
-# re-fitted to what the exclusion changes.
-PER_SHARD_GAPS_FROM = datetime(2026, 11, 2, 8, 29, 16)
-BLIND_SEED_HOURS = 12
-
-
-def _blind_until(conn: duckdb.DuckDBPyConnection, run_id: str) -> datetime | None:
-    """Where this run's blind-seed window ends, or None if it has none.
-
-    A run is in the population when it started in the per-shard era and
-    recorded no `seed_floor`. A ledger with no `shadow_runs` row for the
-    run (or no such table) cannot place it in the era: None, the run is
-    read as it always was -- the rule excludes on evidence, never on a
-    missing row."""
-    cols = {
-        r[0]
-        for r in conn.execute(
-            "select column_name from information_schema.columns where table_name = 'shadow_runs'"
-        ).fetchall()
-    }
-    if "started_at" not in cols:
-        return None
-    floor = "seed_floor" if "seed_floor" in cols else "NULL"
-    row = conn.execute(
-        f"select started_at, {floor} from shadow_runs where run_id = ?", [run_id]
-    ).fetchone()
-    if row is None or row[0] is None or row[1] is not None:
-        return None
-    if row[0] < PER_SHARD_GAPS_FROM:
-        return None
-    return row[0] + timedelta(hours=BLIND_SEED_HOURS)
+# Bound 17's rule lives in the kernel (`hyxlab.shadowruns`): the two
+# whole-life reports annotate with it, and one definition serves all three.
+_blind_until = blind_seed_until
 
 
 def _lifetimes(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict[str, dict]:
