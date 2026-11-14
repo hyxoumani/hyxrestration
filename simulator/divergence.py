@@ -191,6 +191,11 @@ def replay_run(
     return (fills, gaps) if return_gaps else fills
 
 
+#: How many markets `unmatched_unexplained_dist.by_market_top` names; the
+#: rest are summed into `other_markets_fills` so the table still partitions.
+UNEXPLAINED_TOP_MARKETS = 40
+
+
 def compare(
     shadow_fills: list[tuple],
     replay_fills: list,
@@ -416,17 +421,36 @@ def compare(
     def _breakdown(unmatched, opposite_econ):
         counts = {"boundary": 0, "gap": 0, "gap_shard": 0, "reseed_twin": 0, "unexplained": 0}
         samples = []
+        by_hour: dict[str, int] = {}
+        by_market: dict[str, int] = {}
         for (m, side), f in unmatched:
             cause = _cause(f[0], (m, side, f[1], f[2]), opposite_econ)
             counts[cause] += 1
-            if cause == "unexplained" and len(samples) < 20:
+            if cause != "unexplained":
+                continue
+            hour = f"{f[0]:%Y-%m-%d %H}"
+            by_hour[hour] = by_hour.get(hour, 0) + 1
+            by_market[m] = by_market.get(m, 0) + 1
+            if len(samples) < 20:
                 samples.append(
                     {"market": m, "side": side, "ts": str(f[0]), "qty": f[1], "price": f[2]}
                 )
-        return counts, samples
+        # The 20 samples are the first 20 in MARKET order, not a draw: the
+        # 2026-11-14 backlog report's 3,871 unexplained replay fills showed
+        # five markets and could not be placed in time without replaying
+        # nine days again under a stream hold. Both tables partition `n`.
+        top = sorted(by_market.items(), key=lambda kv: (-kv[1], kv[0]))
+        dist = {
+            "n": counts["unexplained"],
+            "by_hour": dict(sorted(by_hour.items())),
+            "markets_n": len(by_market),
+            "by_market_top": dict(top[:UNEXPLAINED_TOP_MARKETS]),
+            "other_markets_fills": sum(n for _, n in top[UNEXPLAINED_TOP_MARKETS:]),
+        }
+        return counts, samples, dist
 
-    unmatched_s_by_cause, unmatched_s_samples = _breakdown(unmatched_s, replay_econ)
-    unmatched_r_by_cause, unmatched_r_samples = _breakdown(unmatched_r, shadow_econ)
+    unmatched_s_by_cause, unmatched_s_samples, unexplained_s = _breakdown(unmatched_s, replay_econ)
+    unmatched_r_by_cause, unmatched_r_samples, unexplained_r = _breakdown(unmatched_r, shadow_econ)
 
     # The nearest window's own evidence, UNCENSORED. `nearest_dt_abs_mean_s`
     # is computed over the pairs the window already admitted -- the candidate
@@ -537,6 +561,7 @@ def compare(
         "unmatched_shadow_by_cause": unmatched_s_by_cause,
         "unmatched_replay_by_cause": unmatched_r_by_cause,
         "unmatched_unexplained_samples": unmatched_s_samples + unmatched_r_samples,
+        "unmatched_unexplained_dist": {"shadow": unexplained_s, "replay": unexplained_r},
         "match_rate_vs_shadow": round(matched / n_s, 4) if n_s else None,
         "match_rate_vs_replay": round(matched / n_r, 4) if n_r else None,
         "price_delta_mean": round(sum(deltas) / len(deltas), 6) if deltas else None,

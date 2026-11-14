@@ -242,6 +242,39 @@ def test_unmatched_fills_classified_by_cause():
     assert len(samples) == 1 and samples[0]["market"] == "M2"
 
 
+def test_unexplained_fills_are_placed_by_hour_and_market_and_partition():
+    """The samples are the first 20 in market order; the distribution is
+    every unexplained fill, and both of its tables sum to `n`."""
+    anchor = datetime(2026, 7, 9, 12, 0, 0)
+    end = anchor + timedelta(hours=9)
+    n_markets = mod.UNEXPLAINED_TOP_MARKETS + 3
+    lonely = [
+        _RF(5.0, anchor + timedelta(hours=1 + (i % 2), minutes=i), market_id=f"M{i:03d}")
+        for i in range(n_markets)
+    ] + [_RF(7.0, anchor + timedelta(hours=3), market_id="M000")]
+    gap = _RF(5.0, anchor + timedelta(hours=5), market_id="G")
+    gaps = [(anchor + timedelta(hours=5), anchor + timedelta(hours=5, minutes=1))]
+
+    rep = compare([], [*lonely, gap], anchor=anchor, end=end, gaps=gaps)
+
+    dist = rep["unmatched_unexplained_dist"]
+    assert dist["shadow"] == {
+        "n": 0,
+        "by_hour": {},
+        "markets_n": 0,
+        "by_market_top": {},
+        "other_markets_fills": 0,
+    }
+    r = dist["replay"]
+    assert r["n"] == rep["unmatched_replay_by_cause"]["unexplained"] == n_markets + 1
+    assert sum(r["by_hour"].values()) == r["n"]
+    assert sum(r["by_market_top"].values()) + r["other_markets_fills"] == r["n"]
+    assert r["markets_n"] == n_markets and r["other_markets_fills"] == 3
+    assert next(iter(r["by_market_top"].items())) == ("M000", 2)  # largest first
+    assert r["by_hour"]["2026-07-09 15"] == 1 and "2026-07-09 17" not in r["by_hour"]
+    assert len(rep["unmatched_unexplained_samples"]) == 20  # frozen
+
+
 def test_cause_breakdown_takes_the_gap_rows_replay_run_returns():
     """`replay_run(return_gaps=True)` returns the rows it read for the
     replayer, and since 9bc927a those are `(started_at, ended_at, shard)`.
