@@ -5387,7 +5387,10 @@ Format: what happened → root cause → error type → prevention tier
     #153's fix (do not wipe OTHER shards' books on a shard's row) had
     made the live poll right while leaving the seed's premise as it was.
     The line that said so, `0 top states`, had printed on 11-03 and
-    11-13 and was read as a boot racing the stream. Fix:
+    11-13 and was read as a boot racing the stream. The 11-day run
+    20261103T022100 priced it: 2.7% snapshots per event and 554 fills in
+    its first 6 h, a steady 8-13% and 1,000-2,000 fills per 6 h after --
+    a long run is blind for its first 6-12 h, a short one for its life. Fix:
     `bookreplay.seed_floor` -- the EARLIEST of each shard's last break
     at or before the anchor (bounded below by the last channel-wide row,
     which still wipes everything), with every book gap row after it
