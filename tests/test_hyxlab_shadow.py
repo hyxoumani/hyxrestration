@@ -1164,3 +1164,63 @@ def test_stats_line_carries_anon_rss_and_is_the_only_renderer(monkeypatch):
     src = inspect.getsource(shadow)
     assert src.count("stream_holds={json.dumps(") == 1
     assert src.count("stats_line(") == 3  # the def + the two publishers
+
+
+class BuyEveryMove(Strategy):
+    """Takes 1 yes on every snapshot: each one a fill whose price and stamp
+    depend on WHICH later snapshot the latency model fills it against."""
+
+    name = "buy_every_move"
+
+    def on_snapshot(self, s, ctx):
+        return [Order(s.venue, s.market_id, "yes", 1, tif="IOC")]
+
+
+def _poll_cut_fills(tmp_path, cut: int):
+    """Twelve moving books 5 s apart on two markets, flushed one at a time;
+    the runner polls after every `cut` flushes (and once at the end)."""
+    from hyxlab.store import Store
+
+    stream_db = tmp_path / "stream.duckdb"
+    archive_db = tmp_path / "archive.duckdb"
+    store = Store(archive_db)
+    store.upsert_markets([MarketInfo(venue="kalshi", market_id=m) for m in ("M1", "M2")])
+    store.close()
+    sstore = StreamStore(stream_db)
+    sstore.append_events(_snapshot_frame("M1", 1, 40, 59, T0))
+    sstore.flush()
+    runner = ShadowRunner(
+        [BuyEveryMove()],
+        latency=2.0,  # the deployed unit's
+        stream_db=str(stream_db),
+        archive_db=str(archive_db),
+        ledger=ShadowLedger(tmp_path / "shadow.duckdb"),
+    )
+    runner.poll_once()  # anchor
+    for i in range(1, 13):
+        mid = "M1" if i % 3 else "M2"
+        sstore.append_events(
+            _snapshot_frame(mid, i + 1, 40 + i, 58 - i, T0 + timedelta(seconds=5 * i))
+        )
+        sstore.flush()
+        if i % cut == 0:
+            runner.poll_once()
+    runner.poll_once()
+    fills = [(f.ts, f.market_id, f.side, f.price, f.qty) for f in runner.sim.result.fills]
+    with duckdb.connect(str(tmp_path / "shadow.duckdb"), read_only=True) as conn:
+        persisted = conn.execute("SELECT count(*) FROM shadow_fills").fetchone()[0]
+    return fills, persisted
+
+
+@pytest.mark.parametrize("cut", [3, 12])
+def test_where_the_poll_cuts_the_stream_does_not_change_a_fill(tmp_path, cut):
+    """The poll period is a cost parameter (how often the daemon's archive is
+    attached), and it may be retuned only while it is not an OUTCOME
+    parameter: the sim runs on event time, so the same events must fill the
+    same orders at the same prices and stamps whether they arrive one poll
+    each (20 s polls against 15 s flushes) or several to a poll (60 s)."""
+    every, n_every = _poll_cut_fills(tmp_path / "every", 1)
+    batched, n_batched = _poll_cut_fills(tmp_path / f"cut{cut}", cut)
+    assert len(every) >= 8  # non-vacuous: a latency fill per move, most of them
+    assert batched == every
+    assert n_batched == n_every == len(every)

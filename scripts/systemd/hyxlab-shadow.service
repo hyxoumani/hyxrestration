@@ -5,7 +5,19 @@ After=network-online.target hyxlab-stream.service
 [Service]
 Type=simple
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
-ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m simulator.shadow --latency 2 --poll 20
+# --poll 60 since 2026-11-14 (was 20). Each poll attaches the stream
+# daemon's archive read-only, and that hold is a CONSTANT per attach, not a
+# cost per row: regressed over this unit's own 300 s lines (112 intervals,
+# 11-14 04:29-14:13Z) hold/poll = 0.537 s + (-1.2 us x events), r2 0.000,
+# across 829-4,010 events/poll. It is DuckDB loading the table's row-group
+# metadata (mistakes #169) and it climbs ~26 ms/day with the archive. At
+# 20 s that was a 2.6% duty and 172 of the stream's 244 `flush FAILED` a
+# day; at 60 s the same constant is paid a third as often. Not an outcome
+# parameter: the sim runs on event time
+# (tests/test_hyxlab_shadow.py::test_where_the_poll_cuts_the_stream_does_not_change_a_fill).
+# Read the digest's SHADOWHOLD line after a change here: s/poll should not
+# move, duty and the shadow's share of flush collisions should.
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m simulator.shadow --latency 2 --poll 60
 Restart=always
 RestartSec=30
 # 3G since 2026-11-02: the boot seed (every book event for the universe

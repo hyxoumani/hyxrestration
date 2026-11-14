@@ -12,9 +12,11 @@ executes with the same latency model as backtests — which makes shadow
 runs directly comparable to sim replays over the same recorded window:
 the divergence IS the fill-model calibration error.
 
-The inherent tail lag (~15–35 s behind the venue) is polling-scale
-realism, not a defect; decisions could not have been faster from this
-box. Fills/equity persist to data/hyxshadow.duckdb (own file — sim-side
+The tail lag (one stream flush plus one poll: ~15–35 s behind the venue
+at the default 20 s poll, ~15–75 s at the unit's 60 s) is wall-clock only.
+The sim runs on EVENT time, so where a poll cuts the stream changes no
+fill (test_where_the_poll_cuts_the_stream_does_not_change_a_fill); the
+period is the price of the archive attach, a constant per poll. Fills/equity persist to data/hyxshadow.duckdb (own file — sim-side
 writer, never touches the collection archives' locks).
 
 v1 scope: taker scoring via the latency model. Maker queue-position
