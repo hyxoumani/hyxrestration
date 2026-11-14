@@ -354,7 +354,7 @@ only under a one-tick spread gate, so a fill from an ungated strategy
 nulls `reval` rather than reporting a number built on an unmeasured
 spread.
 
-## Blind-seed window: pre-registered exclusion (2026-11-14 20:35Z)
+## Blind-seed window: pre-registered exclusion (2026-11-14 20:16Z)
 
 **Written and committed BEFORE any shadow report was re-run under it.**
 The last `shadow_diurnal` report on disk is 2026-11-02 02:22Z; the 11-day
@@ -400,7 +400,7 @@ that run. The five short runs (22 min to ~18 h) lose most or all of
 their whole hours; all were under `MIN_DAYS` already, so the only
 movement is `underpowered` -> `unscorable` in the power census.
 
-**Result (2026-11-14 21:00Z, `simulator.shadow_diurnal` bound 17, one
+**Result (2026-11-14 20:18Z, `simulator.shadow_diurnal` bound 17, one
 0.5 s hold on `hyxshadow.duckdb`).** The prediction held on every line.
 `20261103T022100`: 13 buckets flagged (11-03 02Z..14Z), whole hours
 260 -> 248, panel days 9 -> 9, profile `powered` (10 draws at the weakest
