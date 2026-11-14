@@ -5421,6 +5421,39 @@ Format: what happened → root cause → error type → prevention tier
     top states per seed) beside it.**
 
 
+197. **2026-11-14 -- a directory-wide formatter run restarted the stream
+    daemon, and the status entry had already said no daemon's code would
+    move.** Class: unverified-prediction / tool-scope; site: the pass
+    itself (`ruff format -q hyxlab simulator`, then `git add -A hyxlab
+    simulator ...`), surfaced by `scripts/promote.sh`. The second pass of
+    the 20:15Z run added a helper to `hyxlab/shadowruns.py` (in no
+    daemon's closure) and formatted the two DIRECTORIES it had edited
+    rather than the files. Two kernel files last touched before a style
+    change were still unformatted, and ruff rewrapped them:
+    `hyxlab/importclosure.py` and `hyxlab/lockid.py`, three lines each,
+    no token changed. `git add -A` staged them unread, the commit message
+    named one file, and the status entry -- written BEFORE the promote --
+    said "no daemon's code moved". `lockid.py` is in `collector.streamd`'s
+    and `simulator.shadow`'s closures, so the 21:15Z promote correctly
+    restarted `hyxlab-stream` (stop 21:15:50Z, clean drain, start
+    21:16:04Z; its 16.8 h run ended, and the eighteen book connections
+    came back in 30 s batches, so each shard's books were dark until its
+    own reconnect) and deferred the shadow as "runs OLD code". The restart
+    decision was right; its input was not what the pass believed it had
+    committed. The promote output that named the file (`executes changed
+    file(s): hyxlab/lockid.py`) was cut off by the `tail -n 16` the pass
+    read it through. Fix: the one remaining unformatted tracked file was
+    formatted (`scripts/daemon_imports.py`, in no closure) and
+    `tests/test_lint_scope.py::test_no_tracked_file_is_waiting_for_the_formatter`
+    holds `ruff format --check .` at zero, so a formatter run can only
+    move what its author edited. **Rule: before a promote, read
+    `git diff --name-only stable main` and run `daemon_imports.py
+    intersect` on it for each daemon root -- the prediction "nothing
+    restarts" is that command's output, never a memory of what was
+    edited. Format the files you changed, not their directories; stage by
+    name; and read a promote's output from the top, where it says what
+    moved.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

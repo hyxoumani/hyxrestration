@@ -91,11 +91,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "closure":
         if args.as_json:
-            print(json.dumps({
-                "root": args.root,
-                "files": sorted(files),
-                "lazy": sorted(lazy),
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "root": args.root,
+                        "files": sorted(files),
+                        "lazy": sorted(lazy),
+                    },
+                    indent=2,
+                )
+            )
         else:
             for f in sorted(files):
                 print(f)

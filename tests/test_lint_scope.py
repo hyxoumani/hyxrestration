@@ -136,3 +136,25 @@ def test_scripts_are_inside_the_lint_set():
     scripts = {f for f in _tracked_python_files() if f.startswith("scripts/")}
     assert scripts, "no tracked scripts/*.py -- this test has lost its subject"
     assert scripts <= scope, f"unlinted operator scripts: {sorted(scripts - scope)}"
+
+
+def test_no_tracked_file_is_waiting_for_the_formatter():
+    """A file the formatter WOULD change is a restart waiting for whoever runs it.
+
+    promote.sh restarts a daemon when a file in its import closure differs
+    between stable and main, and a whitespace-only difference is a difference.
+    The auto-format hook only formats files as they are edited, so files last
+    touched before a style change sat unformatted -- and on 2026-11-14 a
+    directory-wide `ruff format hyxlab simulator`, run to format three files,
+    also rewrapped `hyxlab/lockid.py` and `hyxlab/importclosure.py`. The first
+    is in `collector.streamd`'s closure: the promote restarted a 16.8 h stream
+    run for a change with no behaviour in it (mistakes #197). With every file
+    already formatted, a formatter run can move only what its author edited.
+    """
+    p = subprocess.run(
+        [str(REPO / ".venv/bin/ruff"), "format", "--check", "."],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    )
+    assert p.returncode == 0, f"files the formatter would rewrite:\n{p.stdout}{p.stderr}"

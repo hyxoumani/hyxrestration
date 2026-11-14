@@ -854,3 +854,12 @@
   blind starts of 11-03..11-14 and passes the fixed run. The shadow's poll is 60 s since 2026-11-14 (hold is a
   constant ~0.54 s per attach whatever the batch): on SHADOWHOLD, s/poll
   should not have moved and duty should be ~1/3.
+- Before a promote, the prediction "nothing restarts" is a command's
+  output: `git diff --name-only stable main | .venv/bin/python
+  scripts/daemon_imports.py intersect <root> --allow-empty` for
+  `collector.streamd` and `simulator.shadow`. On 2026-11-14 a
+  directory-wide `ruff format hyxlab simulator` rewrapped
+  `hyxlab/lockid.py`, `git add -A` staged it unread and the promote
+  restarted a 16.8 h stream run for whitespace (mistakes #197). Format
+  and stage FILES, by name; read promote's output from the top
+  (`== what this promotion moves ==`), never through a `tail`.
