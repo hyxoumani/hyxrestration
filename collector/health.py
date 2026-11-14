@@ -1138,6 +1138,161 @@ def parse_shadow_hold(
     return ShadowHold(recent, oldest, frozenset(pids), shadow_n, other_n)
 
 
+# --- SHADOWSEED: did the shadow start with its books known ------------------
+#
+# Mistakes #196: for twelve days every shadow start seeded most books as
+# unknown (the floor was one shard's own break), and the only line that said
+# so -- `seeded books from 452312 archived events (0 top states ...` -- was
+# read by nobody; the divergence report shared the premise and matched. The
+# absolute reading is the YIELD, snapshots per event read: a run that starts
+# whole is flat from its first hour, a run that starts blind climbs as the
+# stream's shards are re-imaged (2.7% in the 11-day run's first 6 h, 8-13% after).
+
+SHADOWSEED_WINDOW_H = 7 * 24
+#: A first hour under this share of the newest hour's yield is a blind start.
+#: The 11-day run's first 6 h read 0.25x its steady state; hour-to-hour noise
+#: on a whole run stays above 0.5x (6.4-12.2% over the first half hour).
+SHADOWSEED_BLIND_RATIO = 0.4
+#: ... and a first hour under this yield outright is blind without waiting for
+#: a second hour to compare: the blind first hours on record read 0.0% (14 of
+#: 292,416 events, 11-14 02:30Z) and 0.7%; no whole 5-min line has read under 6%.
+SHADOWSEED_MIN_YIELD = 0.02
+#: Events the first-hour span needs before its yield is judged at all.
+SHADOWSEED_MIN_SPAN_EVENTS = 50_000
+#: A seed this large with no top state at all is blind without waiting an hour.
+SHADOWSEED_MIN_EVENTS = 10_000
+_SHADOWSEED_RE = re.compile(
+    r"python\[(\d+)\]: \[shadow\] seeded books from (\d+) archived events"
+    r"(?: since \S+ \S+)? \((\d+) top states(?:, (\d+) shard\(s\), (\d+) gap row\(s\) replayed)?"
+    r"(?:; shard\(s\) \[([0-9, ]*)\] last re-imaged)?"
+)
+_SHADOWSTAT_RE = re.compile(
+    r"python\[(\d+)\]: \[shadow\] \{'snapshots': (\d+), 'events': (\d+), 'polls': (\d+)\}"
+)
+
+
+@dataclass(frozen=True)
+class ShadowSeed:
+    """The newest shadow start's seed line and the run's yield since."""
+
+    at: datetime
+    events: int
+    top_states: int
+    #: None on a seed line from before the per-shard floor (it named neither).
+    shards: int | None
+    gap_rows: int | None
+    capped_shards: tuple[int, ...]
+    #: (snapshots, events) over the run's first hour of stats lines and over
+    #: its newest hour; None until the run has a pair of lines / a second hour.
+    first_hour: tuple[int, int] | None
+    last_hour: tuple[int, int] | None
+
+    @property
+    def verdict(self) -> str:
+        if self.top_states == 0 and self.events >= SHADOWSEED_MIN_EVENTS:
+            return "BLIND"
+        if (
+            self.first_hour
+            and self.first_hour[1] >= SHADOWSEED_MIN_SPAN_EVENTS
+            and self.first_hour[0] / self.first_hour[1] < SHADOWSEED_MIN_YIELD
+        ):
+            return "BLIND-START"
+        if self.first_hour and self.last_hour and self.first_hour[1] and self.last_hour[1]:
+            first = self.first_hour[0] / self.first_hour[1]
+            last = self.last_hour[0] / self.last_hour[1]
+            if last > 0 and first < SHADOWSEED_BLIND_RATIO * last:
+                return "BLIND-START"
+        return "CAPPED" if self.capped_shards else "ok"
+
+
+def parse_shadow_seed(lines: list[str] | str) -> ShadowSeed | None:
+    """The newest `seeded books` line and the stats lines the same process
+    printed after it. None when the window holds no seed line."""
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    seed = None
+    stats: list[tuple[datetime, int, int]] = []
+    for line in lines:
+        ts = _short_iso_ts(line)
+        if ts is None:
+            continue
+        m = _SHADOWSEED_RE.search(line)
+        if m:
+            seed = (ts, m)
+            stats = []
+            continue
+        m = _SHADOWSTAT_RE.search(line)
+        if m and seed is not None and m.group(1) == seed[1].group(1):
+            stats.append((ts, int(m.group(2)), int(m.group(3))))
+    if seed is None:
+        return None
+    at, m = seed
+
+    def _span(pairs: list[tuple[datetime, int, int]]) -> tuple[int, int] | None:
+        if len(pairs) < 2:
+            return None
+        return pairs[-1][1] - pairs[0][1], pairs[-1][2] - pairs[0][2]
+
+    hour = timedelta(hours=1)
+    first = _span([x for x in stats if x[0] <= at + hour])
+    last = None
+    if stats and stats[-1][0] - at >= 2 * hour:
+        last = _span([x for x in stats if x[0] >= stats[-1][0] - hour])
+    capped = tuple(int(x) for x in m.group(6).split(",") if x.strip()) if m.group(6) else ()
+    return ShadowSeed(
+        at,
+        int(m.group(2)),
+        int(m.group(3)),
+        int(m.group(4)) if m.group(4) else None,
+        int(m.group(5)) if m.group(5) else None,
+        capped,
+        first,
+        last,
+    )
+
+
+def read_shadow_seed(
+    unit: str = SHADOWHOLD_UNIT, hours: int = SHADOWSEED_WINDOW_H
+) -> ShadowSeed | None | str:
+    text = _journal_hourly(
+        ["-u", unit, "--utc", "--grep=seeded books|'snapshots'", "-o", "short-iso"], hours
+    )
+    return "unreadable" if text is None else parse_shadow_seed(text)
+
+
+def shadow_seed_line(seed: ShadowSeed | None | str, hours: int = SHADOWSEED_WINDOW_H) -> str:
+    """Render the seed and the yield, verdict first when it is not `ok`."""
+    if seed == "unreadable":
+        return f"{hours}h: journal unreadable"
+    if seed is None:
+        return f"{hours}h: no seed line (no shadow start in the window, or the journal rotated)"
+    assert isinstance(seed, ShadowSeed)
+    scope = (
+        f"{seed.shards} shard(s), {seed.gap_rows} gap row(s) replayed"
+        if seed.shards is not None
+        else "seed line predates the per-shard floor"
+    )
+    head = (
+        f"started {seed.at:%m-%d %H:%M}Z: {seed.events:,} seed events -> "
+        f"{seed.top_states:,} top states ({scope})"
+    )
+    if seed.capped_shards:
+        head += f", shard(s) {list(seed.capped_shards)} past the seed lookback"
+
+    def _pct(pair: tuple[int, int] | None) -> str:
+        if pair is None:
+            return "--"
+        return f"{pair[0] / pair[1]:.1%} ({pair[0]:,}/{pair[1]:,})" if pair[1] else "no events"
+
+    yields = (
+        f"snapshots per event: first hour {_pct(seed.first_hour)}, newest hour "
+        f"{_pct(seed.last_hour)}"
+    )
+    verdict = seed.verdict
+    tag = "" if verdict == "ok" else f"{verdict} -- "
+    return f"{tag}{head} | {yields}"
+
+
 def read_shadow_hold(
     now: datetime | None = None,
     unit: str = SHADOWHOLD_UNIT,
@@ -3932,6 +4087,10 @@ def main() -> None:
     )
     print(
         f"{'SHADOWHOLD':<10} {SHADOWHOLD_UNIT:<{width}}  {shadow_hold_line(read_shadow_hold(now))}",
+        flush=True,
+    )
+    print(
+        f"{'SHADOWSEED':<10} {SHADOWHOLD_UNIT:<{width}}  {shadow_seed_line(read_shadow_seed())}",
         flush=True,
     )
     drift = drift_report()

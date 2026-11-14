@@ -847,6 +847,10 @@
   line after every shadow restart -- `N shard(s)`, the gap rows replayed,
   any shard named past the 24 h lookback -- and read snapshots per event
   on the 300 s line; a divergence match rate cannot see a premise the
-  replay shares. The shadow's poll is 60 s since 2026-11-14 (hold is a
+  replay shares. The digest's `SHADOWSEED` line does both readings
+  (`BLIND`: a large seed with no top state; `BLIND-START`: a first hour
+  under 2% snapshots per event, or under 0.4x the newest hour's; `CAPPED`:
+  shards past the lookback) -- replayed over the journal it flags all four
+  blind starts of 11-03..11-14 and passes the fixed run. The shadow's poll is 60 s since 2026-11-14 (hold is a
   constant ~0.54 s per attach whatever the batch): on SHADOWHOLD, s/poll
   should not have moved and duty should be ~1/3.

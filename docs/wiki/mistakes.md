@@ -5403,7 +5403,14 @@ Format: what happened → root cause → error type → prevention tier
     run from before has NULL and is replayed as it ran, blind, not as it
     should have run. `run_l2` takes the helper too. Tests: six on the
     helper, one end-to-end shadow test (red on the old code: `1 top
-    states` of 2), one divergence test holding both arms. **Rule: when a
+    states` of 2), one divergence test holding both arms. The digest
+    got the absolute reading the rule below asks for: `SHADOWSEED`
+    (seed events -> top states, shards, capped shards, snapshots per
+    event in the first and the newest hour; `BLIND` / `BLIND-START` /
+    `CAPPED`), replayed over the real journal at five instants: all four
+    blind starts flagged, the fixed run `ok`. The first cut waited for a
+    second hour to compare and so passed the 2 h run that made 14
+    snapshots from 292,416 events; it now has an absolute floor too. **Rule: when a
     table's rows change SCOPE (channel-wide -> per shard), every reader
     that aggregates them is a different claim than it was, and the one
     that takes a `max` is now about one member. Fix the writer and the
