@@ -51,6 +51,28 @@ def latest_complete_run(conn) -> str | None:
     return row[0] if row else None
 
 
+def complete_runs(conn) -> list[str]:
+    """EVERY finished shadow run that produced fills, oldest first -- the
+    same two predicates as `latest_complete_run`, without the LIMIT.
+
+    The newest one is the report's subject; the rest are what that default
+    walked past. Measured 2026-11-14: 20261014T030956 (61,812 fills, 9.5
+    days) and 20261023T143153 (29,278 fills, 9.4 days) were never reported,
+    because each was followed within the day by a second restart (a 23-min
+    run, a 6-hour run) that became "the newest finished run" before the
+    01:20Z timer came round (mistakes #194).
+    """
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT r.run_id FROM shadow_runs r"
+            " WHERE EXISTS (SELECT 1 FROM shadow_runs l WHERE l.started_at > r.started_at)"
+            "   AND EXISTS (SELECT 1 FROM shadow_fills f WHERE f.run_id = r.run_id)"
+            " ORDER BY r.started_at"
+        ).fetchall()
+    ]
+
+
 def run_completed_at(conn, run_id: str) -> datetime | None:
     """The instant `run_id` became MEASURABLE, i.e. stopped being live.
 

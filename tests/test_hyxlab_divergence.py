@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import duckdb
+import pytest
 
 import simulator.divergence as mod
 from hyxlab import importclosure
@@ -966,6 +967,73 @@ def test_if_new_still_measures_a_run_that_has_no_report(tmp_path, monkeypatch):
     calls = _main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)])
     assert len(calls) == 1
     assert json.loads((out / "done.json").read_text())["run_id"] == "done"
+
+
+_LEDGER_1114 = [
+    # The live record's shape on 2026-11-14 (mistakes #194), fills scaled down.
+    ("20261005T091924", datetime(2026, 10, 5, 9, 19), 5),
+    ("20261014T030956", datetime(2026, 10, 14, 3, 9), 6),  # 9.5 d, never reported
+    ("20261023T140831", datetime(2026, 10, 23, 14, 8), 1),  # 23 min: took the default
+    ("20261023T143153", datetime(2026, 10, 23, 14, 31), 3),  # 9.4 d, never reported
+    ("20261102T023533", datetime(2026, 11, 2, 2, 35), 1),
+    ("20261114T023033", datetime(2026, 11, 14, 2, 30), 1),  # live
+]
+
+
+def test_a_day_with_nothing_new_measures_one_run_the_default_walked_past(tmp_path, monkeypatch):
+    """The newest finished run is reported; two long runs behind it never
+    were, because a second restart followed each within the day. Each quiet
+    day pays one down, newest first, and stops when none is owed."""
+    db = _runs_db(tmp_path, _LEDGER_1114)
+    out = tmp_path / "reports"
+    out.mkdir()
+    same = json.dumps(
+        {"report_code": {"root": mod.REPORT_CODE_ROOT, "sha": mod.report_code()["sha"]}}
+    )
+    for done in ("20261005T091924", "20261023T140831", "20261102T023533"):
+        (out / f"{done}.json").write_text(same)
+    argv = ["--if-new", "--shadow-db", str(db), "--out", str(out)]
+
+    assert len(_main_with(monkeypatch, argv)) == 1
+    assert json.loads((out / "20261023T143153.json").read_text())["run_id"] == "20261023T143153"
+    assert len(_main_with(monkeypatch, argv)) == 1
+    assert (out / "20261014T030956.json").exists()
+    assert _main_with(monkeypatch, argv) == []  # nothing owed: the old no-op
+    assert not list(out.glob(f"*{mod.BACKLOG_ATTEMPT}"))  # markers cleared on success
+
+
+def test_a_backlog_run_that_dies_is_tried_once_and_never_pins_the_unit(tmp_path, monkeypatch):
+    db = _runs_db(tmp_path, _LEDGER_1114)
+    out = tmp_path / "reports"
+    out.mkdir()
+    same = json.dumps(
+        {"report_code": {"root": mod.REPORT_CODE_ROOT, "sha": mod.report_code()["sha"]}}
+    )
+    for done in ("20261014T030956", "20261023T140831", "20261102T023533"):
+        (out / f"{done}.json").write_text(same)
+
+    def _dies(*a, **k):
+        raise RuntimeError("window aged out")
+
+    monkeypatch.setattr(mod, "replay_run", _dies)
+    monkeypatch.setattr(
+        sys, "argv", ["divergence", "--if-new", "--shadow-db", str(db), "--out", str(out)]
+    )
+    with pytest.raises(RuntimeError):
+        mod.main()  # the unit fails ONCE, visibly
+    assert (out / f"20261023T143153{mod.BACKLOG_ATTEMPT}").exists()
+    assert _main_with(monkeypatch, ["--if-new", "--shadow-db", str(db), "--out", str(out)]) == []
+
+
+def test_the_backlog_stops_at_its_floor_and_never_runs_under_a_named_run(tmp_path):
+    out = tmp_path
+    runs = ["20260801T000000", "20261014T030956", "20261023T143153"]
+    assert mod.next_backlog_run(runs, out) == "20261023T143153"
+    (out / "20261023T143153.json").write_text("{}")
+    assert mod.next_backlog_run(runs, out) == "20261014T030956"
+    (out / "20261014T030956.json").write_text("{}")
+    assert mod.next_backlog_run(runs, out) is None  # 08-01 is under the floor
+    assert mod.next_backlog_run(runs, out, floor="20260101T000000") == "20260801T000000"
 
 
 def test_without_if_new_the_report_is_recomputed(tmp_path, monkeypatch):

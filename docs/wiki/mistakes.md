@@ -5309,6 +5309,33 @@ Format: what happened → root cause → error type → prevention tier
     line that tenant logs when it cannot look, and read it in the same
     pass as the events.**
 
+194. **2026-10-23 -> 2026-11-14 -- "the newest finished run" as a report's
+    default subject skips exactly the runs worth measuring.** #192's
+    self-inflicted half (a restart moved the nightly divergence unit off
+    the 11-day run before it was reported) was treated as one slip; the
+    ledger says it is the selector's normal behaviour. Read 2026-11-14
+    against `reports/shadow_divergence/`: run 20261014T030956 (61,812
+    fills, 9.5 days) and run 20261023T143153 (29,278 fills, 9.4 days --
+    the run with the 28 blind hours of #153's gap wipes) were NEVER
+    reported. Each ended at a promote that was followed within the day by
+    a second restart (a 23-minute run on 10-23; 0-fill and 6-hour runs on
+    11-02), and by the 01:20Z timer the short successor was the newest
+    finished run with fills. QA's freshness check shares the selector by
+    design (so an unrepairable past cannot pin it), which means it went
+    green on the 55-fill run and nothing owed the long one. A long run
+    ends at a promote, and promotes come in pairs. Fix: on a day the
+    newest run is already reported by this code, the unit measures ONE
+    finished run it walked past (`hyxlab.shadowruns.complete_runs`,
+    `divergence.next_backlog_run`: newest first, floor 20261014, never
+    under `--run`), behind a `.backlog-attempt` marker written before the
+    replay and removed after the report lands -- a backlog run that dies
+    fails the unit once and is not retried. QA's subject is unchanged.
+    +3 tests on the live ledger's shape. **Rule: a selector that takes the
+    newest of a population measures the population only if nothing can
+    enter it faster than the reader's cadence; when it can, the reader
+    owes a backlog, and the backlog needs a bound that is not "forever"
+    (one per quiet day, one attempt each).**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

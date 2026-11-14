@@ -35,7 +35,7 @@ from statistics import median
 from hyxlab.importclosure import closure_sha
 from hyxlab.reportdir import shared_reports
 from hyxlab.scratch import duck_scratch_dir
-from hyxlab.shadowruns import latest_complete_run
+from hyxlab.shadowruns import complete_runs, latest_complete_run
 from hyxlab.store import attach_wait_block, held_attach, held_open, reset_attach_waits
 from simulator.bookreplay import (
     BOOK_GAPS,
@@ -571,6 +571,36 @@ def _rows(by):
 #: question without importing a simulator (tests/test_boundaries.py).
 __all__ = ["compare", "latest_complete_run", "replay_run"]
 
+#: Oldest run_id the daily unit will go back for. Dated, not derived: it is
+#: the first of the two long runs found unmeasured on 2026-11-14 (mistakes
+#: #194). Runs before it were reported or passed over under earlier code and
+#: are a by-hand `--run` if anyone wants them.
+BACKLOG_FLOOR = "20261014T000000"
+
+#: Suffix of the marker written BEFORE a backlog replay and removed after its
+#: report lands. Not `.json`: QA globs that for "newest report on file".
+BACKLOG_ATTEMPT = ".backlog-attempt"
+
+
+def next_backlog_run(runs: list[str], out_dir: Path, floor: str = BACKLOG_FLOOR) -> str | None:
+    """The newest finished run at or after `floor` with neither a report nor
+    an attempt marker, or None. Pure over (runs, directory listing).
+
+    Newest first: its stream window is the surest to still be replayable.
+    A run whose backlog replay died keeps its marker and is not retried --
+    the unit fails ONCE on it, visibly, and then moves on, so an
+    unmeasurable past cannot pin the unit red (the #29/#45 shape).
+    """
+    for run_id in sorted(runs, reverse=True):
+        if run_id < floor:
+            break
+        if (out_dir / f"{run_id}.json").exists():
+            continue
+        if (out_dir / f"{run_id}{BACKLOG_ATTEMPT}").exists():
+            continue
+        return run_id
+    return None
+
 
 #: Root of the import closure whose bytes identify "the code that made this
 #: report". The root is this module and the closure is 28 repo files wide,
@@ -731,6 +761,7 @@ def main() -> None:
     # closes before the replay, so the hold is SUPPOSED to be seconds. That
     # was also true of the stream attach below right up until it wasn't --
     # the claim costs nothing to measure and everything to assume.
+    attempt: Path | None = None
     with held_attach(args.shadow_db) as conn:
         run_id = args.run or latest_complete_run(conn)
         if run_id is None:
@@ -768,12 +799,25 @@ def main() -> None:
             there = reported_code_sha(existing)
             if here["sha"] is not None and here["sha"] == there:
                 print(f"[divergence] run {run_id} already reported in {existing} — nothing to do")
-                return
-            print(
-                f"[divergence] run {run_id} is reported in {existing} but by DIFFERENT"
-                f" code (report {there} != {REPORT_CODE_ROOT} closure {here['sha']})"
-                " — re-deriving"
-            )
+                # A day with nothing new pays down ONE run the default walked
+                # past (mistakes #194). Never under `--run`: a named run is
+                # the whole request.
+                owed = None if args.run else next_backlog_run(complete_runs(conn), Path(args.out))
+                if owed is None:
+                    return
+                print(
+                    f"[divergence] backlog: run {owed} finished with fills and was never"
+                    " reported (a newer run took the default first) — measuring it"
+                )
+                run_id, prior = owed, None
+                attempt = Path(args.out) / f"{run_id}{BACKLOG_ATTEMPT}"
+                attempt.write_text(str(datetime.now(UTC).replace(tzinfo=None)) + "\n")
+            else:
+                print(
+                    f"[divergence] run {run_id} is reported in {existing} but by DIFFERENT"
+                    f" code (report {there} != {REPORT_CODE_ROOT} closure {here['sha']})"
+                    " — re-deriving"
+                )
         started_at, latency, strategies, anchor = conn.execute(
             "SELECT started_at, latency_s, strategies, anchor FROM shadow_runs WHERE run_id=?",
             [run_id],
@@ -839,6 +883,8 @@ def main() -> None:
         print(f"  {k}: {v}")
     print(rederive_line(report["rederive"]))
     print(f"[divergence] written to {out}")
+    if attempt is not None:
+        attempt.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
