@@ -418,7 +418,7 @@ published shadow verdict rested on a blind window**; the rule stays in
 as the bound that keeps it so. This was also the first diurnal reading
 of the 11-day run: the 12th powered run and the 12th `does_not_repeat`.
 
-**Item 4's annotation, shipped 2026-11-14 21:15Z.** The rule's
+**Item 4's annotation, shipped 2026-11-14 21:08Z.** The rule's
 definition moved to `hyxlab.shadowruns` (`blind_seed_until`,
 `blind_seed_block`) so the three reports share one copy, and each run in
 `shadow_attribution` and `shadow_coverage` now carries
