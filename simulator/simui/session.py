@@ -395,7 +395,7 @@ class ReplaySession:
             # the last pre-gap state; the UI greys it out. Fills are safe
             # regardless (no events → no snapshots → no executions).
             "in_gap": any(
-                g0 <= self.cursor < g1 for g0, g1 in self.gaps if self.cursor is not None
+                g0 <= self.cursor < g1 for g0, g1, *_ in self.gaps if self.cursor is not None
             ),
             "books": books,
             "tops": tops,
@@ -513,7 +513,10 @@ def load_session(
         market_ids,
         events,
         [StreamTrade(*r) for r in tr_rows],
-        [(g[0], g[1]) for g in gaps],
+        # Whole rows, shard included: 9bc927a selected the column and this
+        # line (from 07-07) kept cutting it off, so every shard's reconnect
+        # still wiped this event's books (mistakes #192).
+        list(gaps),
         markets,
         strategies_factory=strategies_factory,
         latency=latency,

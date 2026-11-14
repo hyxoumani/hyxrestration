@@ -5248,6 +5248,44 @@ Format: what happened → root cause → error type → prevention tier
     limit's, and the lever is the limit. And a dated "next weekly run"
     that nothing schedules is a sentence -- this one waited 15 days.**
 
+192. **2026-11-02 -> 2026-11-14 01:56Z -- a tuple grew a column and the
+    one consumer that only runs when there is something to classify kept
+    unpacking two.** 9bc927a (11-02) made every replay-feeding gap read
+    select `shard`, and `replay_run(return_gaps=True)` hands those rows
+    on to `compare`, whose `_cause` did `for g0, g1 in gaps`. The loop is
+    reached only by a leftover fill that is not within 60 s of a window
+    edge, in a run that has a book gap: the 18 h run 20261102T082927 was
+    re-derived three times on the new code and reproduced byte for byte,
+    so the path read as exercised. The first run with a gap was the
+    11-day 20261103T022100 (ended by the 11-13 23:33Z host reboot), and
+    the 01:20Z report died on `ValueError: too many values to unpack`
+    36 min 34 s in, AFTER the replay, at the last step (47 min CPU, 8G
+    page-cache peak). The existing test fed `compare` two-tuples it
+    wrote itself, never what `replay_run` returns. Fix (5bbba25):
+    `_cause` takes both shapes; a row naming a shard is counted as
+    `gap_shard`, apart from `gap`, because the classifier does not know
+    which connection carried the fill's market; +2 tests (three-column
+    rows through `compare`, red-verified against the old source; the
+    SELECT keeps its third column). The sweep for the class found the
+    twin in `simulator.simui.session`: the frame's `in_gap` unpacked
+    two as well, and was saved from crashing only because
+    `load_session` (a 07-07 line) cut the shard off the rows 9bc927a
+    had just taught it to select -- so the UI still wiped an event's
+    books on every connection's reconnect, the 11-01 blindness that
+    commit was written to end. Both fixed, +2 tests red-verified.
+    Second cost, self-inflicted the same
+    pass: the promote restarted the 2.9 h-old shadow run, which made IT
+    the newest finished run with fills, so the nightly unit (and QA's
+    freshness check, same selector) moved their subject off the 11-day
+    run without a word -- it was re-run by hand with `--run`. **Rule:
+    when a row shape changes, grep every unpack of it, not every
+    reader that iterates it; and a test of a consumer feeds it what
+    the producer emits (build the fixture through the producer or pin
+    the producer's shape beside it). Before restarting the shadow with
+    a report owed on the run that just ended, run the report first:
+    `latest_complete_run` forgets a run the moment a newer one
+    finishes.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external

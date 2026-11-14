@@ -357,3 +357,46 @@ def test_an_unavailable_archive_still_degrades_to_bare_tickers(tmp_path, capsys)
     hs.reset_attach_waits()
     assert _try_load_markets(str(tmp_path / "missing.duckdb"), ["KXTEST-26JUL07-B1.5"]) is None
     assert "attach_wait:" not in capsys.readouterr().out
+
+
+# -- gap rows carry a shard (mistakes #192) -----------------------------------
+
+
+def test_a_gap_naming_another_shard_leaves_this_book_and_does_not_crash_the_frame():
+    """`load_session` selects `(started_at, ended_at, shard)`. The frame's
+    `in_gap` unpacked two columns, and the loader hid that by cutting the
+    shard off -- which also meant every connection's reconnect wiped this
+    event's books. Shard 0 archived this image (sid 1); a shard-3 gap must
+    leave it, a shard-0 gap must not."""
+    tail = [ev("delta", "yes", 0.38, 20, seq=2, ts_off=25)]
+    other = make_session(image() + tail, gaps=[(at(10), at(20), 3)])
+    other.advance(at(5))
+    assert other.advance(at(15))["in_gap"] is True  # display stays conservative
+    other.advance(at(30))
+    assert other.replayer.depth("EV-M1") is not None
+
+    own = make_session(image() + tail, gaps=[(at(10), at(20), 0)])
+    own.advance(at(5))
+    own.advance(at(30))
+    assert own.replayer.depth("EV-M1") is None
+
+
+def test_load_session_hands_the_session_the_gap_rows_it_selected(tmp_path, monkeypatch):
+    import duckdb
+
+    import simulator.simui.session as session
+
+    db = str(tmp_path / "stream.duckdb")
+    store = StreamStore(db)
+    store.append_events(image(mid="KXTEST-26JUL07-B1.5"))
+    store.flush()
+    with duckdb.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO stream_gaps (venue, channel, started_at, ended_at, reason, shard)"
+            " VALUES ('kalshi', 'books', ?, ?, 'reconnect', 3)",
+            [at(10), at(20)],
+        )
+    s = session.load_session(
+        "KXTEST-26JUL07", stream_db=db, archive_db=str(tmp_path / "missing.duckdb"), latency=0.0
+    )
+    assert s.gaps == [(at(10), at(20), 3)]
