@@ -2441,3 +2441,71 @@ def test_pts_counts_distinct_samples_not_poll_reinserts():
     # "quietest" hour, it is an unsampled one.
     assert run["range_extremes"]["quietest_hour_of_day"] != 2
     assert _hod(run, 2)["mean_range"] is None
+
+
+# --- bound 17: the blind-seed window (mistakes #196) ------------------------
+
+
+def _with_runs(conn, rows):
+    """rows: [(run_id, started_at, seed_floor)] -- the column the fix added."""
+    conn.execute(
+        "CREATE TABLE shadow_runs (run_id VARCHAR, started_at TIMESTAMP, seed_floor TIMESTAMP)"
+    )
+    conn.executemany("INSERT INTO shadow_runs VALUES (?,?,?)", rows)
+    return conn
+
+
+def _era_equity(run_id, start, hours):
+    """One equity point every 2 min for `hours` hours from `start`, as
+    minutes-from-T0 rows (T0 is 2026-08-01; the era begins 2026-11-02)."""
+    m0 = int((start - T0).total_seconds() // 60)
+    return [(run_id, m0 + m, float(m)) for m in range(0, hours * 60, 2)]
+
+
+def test_blind_seed_window_drops_the_first_twelve_hours_of_a_legacy_run():
+    """A run that started in the per-shard era with no recorded seed floor
+    loses every bucket STARTING before started_at + 12 h -- including the
+    bucket the window ends in -- and they leave with the partial hours."""
+    start = datetime(2026, 11, 3, 2, 21)
+    conn = _with_runs(_ledger(_era_equity("R", start, 24)), [("R", start, None)])
+    run = _run(build_diurnal(conn))
+    blind = [h["hour"] for h in run["hours"] if h["blind_seed"]]
+    assert blind[0].endswith("11-03 02Z") and blind[-1].endswith("11-03 14Z")
+    assert len(blind) == 13
+    assert all(h["partial"] for h in run["hours"] if h["blind_seed"])
+    # 13 blind (the first is the run's own partial start) + the last bucket.
+    assert run["validity"]["blind_seed_hours_excluded"] == 13
+    assert run["validity"]["partial_hours_excluded"] == 14
+    assert run["n_whole_hours"] == run["n_hours"] - 14
+    # The profile never saw a blind hour: 03Z..14Z were sampled only on
+    # the blind morning (the run ends 02:19Z the next day, a partial bucket).
+    assert {p["hour_of_day"] for p in run["by_hour_of_day"]} == set(range(15, 24)) | {0, 1}
+
+
+def test_blind_seed_window_spares_runs_outside_the_population():
+    """Three ways out, each read as it always was: a recorded seed floor
+    (the fixed daemon), a start before the era, and no row at all."""
+    era = datetime(2026, 11, 3, 2, 21)
+    pre = datetime(2026, 11, 2, 2, 34)
+    conn = _ledger(
+        _era_equity("FIXED", era, 6) + _era_equity("PRE", pre, 6) + _era_equity("NOROW", era, 6)
+    )
+    _with_runs(conn, [("FIXED", era, era - timedelta(hours=10)), ("PRE", pre, None)])
+    report = build_diurnal(conn)
+    for rid in ("FIXED", "PRE", "NOROW"):
+        run = _run(report, rid)
+        assert run["validity"]["blind_seed_hours_excluded"] == 0, rid
+        assert run["validity"]["partial_hours_excluded"] == 2, rid
+
+
+def test_blind_seed_window_needs_no_shadow_runs_table():
+    """Every ledger before 2026-11-14 has no `seed_floor` column, and the
+    synthetic ones have no `shadow_runs` at all: neither is an error, and
+    the column's absence is a NULL floor, not an exemption."""
+    start = datetime(2026, 11, 3, 2, 21)
+    bare = _ledger(_era_equity("R", start, 6))
+    assert _run(build_diurnal(bare))["validity"]["blind_seed_hours_excluded"] == 0
+    old = _ledger(_era_equity("R", start, 6))
+    old.execute("CREATE TABLE shadow_runs (run_id VARCHAR, started_at TIMESTAMP)")
+    old.execute("INSERT INTO shadow_runs VALUES ('R', ?)", [start])
+    assert _run(build_diurnal(old))["validity"]["blind_seed_hours_excluded"] == 7

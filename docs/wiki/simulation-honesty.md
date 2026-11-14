@@ -400,6 +400,24 @@ that run. The five short runs (22 min to ~18 h) lose most or all of
 their whole hours; all were under `MIN_DAYS` already, so the only
 movement is `underpowered` -> `unscorable` in the power census.
 
+**Result (2026-11-14 21:00Z, `simulator.shadow_diurnal` bound 17, one
+0.5 s hold on `hyxshadow.duckdb`).** The prediction held on every line.
+`20261103T022100`: 13 buckets flagged (11-03 02Z..14Z), whole hours
+260 -> 248, panel days 9 -> 9, profile `powered` (10 draws at the weakest
+hour, unchanged), level `underpowered` both ways (9 panel days of the 10
+needed), shape `does_not_repeat` both ways with the weakest pair at
+rho -0.937 in both; the only movements are 10 day-pairs with 11-03 going
+unscored (9 shared hours < 12), `off_panel_deltas_excluded` 44 -> 32 and
+the loudest hour's mean range 341.3 -> 371.7. Short runs:
+`20261102T082927` 17 -> 5 whole hours (still `underpowered`);
+`20261113T233700`, `20261114T023033` and `20261114T042655` lose every
+whole hour and move `underpowered` -> `unscorable`; `20261114T143236`
+(22 min) has no equity row and was never in the report. Census over 66
+runs: 12 powered / 40 underpowered / 14 unscorable -> 12 / 37 / 17. **No
+published shadow verdict rested on a blind window**; the rule stays in
+as the bound that keeps it so. This was also the first diurnal reading
+of the 11-day run: the 12th powered run and the 12th `does_not_repeat`.
+
 ## Replay-equivalence guarantee (2026-07-08)
 
 Feeding the sim incrementally (simui's `ReplaySession.advance` in

@@ -354,6 +354,18 @@ VALIDITY BOUNDS, in the `validity` block rather than left to memory:
      in its own prose and in `settlement_check.anchor_tied_n` that the
      subject came from a tie, so nothing under it reads as attached to a
      claim the level test never made.
+ 17. A RUN THAT SEEDED BLIND IS NOT THE RUN IT IS NAMED FOR UNTIL ITS
+     BOOKS ARRIVE. From the stream's first per-shard gap row (2026-11-02
+     08:29:16Z) until `shadow_runs.seed_floor` existed (2026-11-14), a
+     run seeded from the newest gap row -- one connection's reconnect --
+     and traded a universe that widened as the other shards reconnected
+     (mistakes #196; the 11-day run read 2.7% snapshots per event in its
+     first 6 h, 8-13% after). A run in that population (`seed_floor`
+     NULL, started in the era) has every bucket starting before
+     `started_at + BLIND_SEED_HOURS` flagged `blind_seed` and dropped
+     with bound 2's partial hours, by the same flag. The rule and its
+     predicted effect were committed to docs/wiki/simulation-honesty.md
+     before this report was re-run under it; the window is not re-fitted.
 """
 
 from __future__ import annotations
@@ -516,6 +528,47 @@ SUCCESSION_WINDOW_S = 900
 #: `no_successor`: closed and nothing followed. `open`: still writing.
 SUCCESSION_KINDS = ("open", "immediate", "after_outage", "no_successor")
 
+# The blind-seed window (mistakes #196; pre-registered in
+# docs/wiki/simulation-honesty.md BEFORE any report was re-run under it).
+# From the stream's first per-shard gap row until `shadow_runs.seed_floor`
+# existed, a run seeded from the NEWEST gap row -- one connection's
+# reconnect -- and most of its books stayed unknown until their own shard
+# happened to reconnect. Its early equity is real, but it is the equity
+# of a narrower book than the run is named for. The instant is the
+# table's own `min(started_at) where shard is not null`, read 2026-11-14;
+# twelve hours is the upper end of the range measured on the 11-day run
+# (2.7% snapshots per event in its first 6 h, 8-13% after). Neither is
+# re-fitted to what the exclusion changes.
+PER_SHARD_GAPS_FROM = datetime(2026, 11, 2, 8, 29, 16)
+BLIND_SEED_HOURS = 12
+
+
+def _blind_until(conn: duckdb.DuckDBPyConnection, run_id: str) -> datetime | None:
+    """Where this run's blind-seed window ends, or None if it has none.
+
+    A run is in the population when it started in the per-shard era and
+    recorded no `seed_floor`. A ledger with no `shadow_runs` row for the
+    run (or no such table) cannot place it in the era: None, the run is
+    read as it always was -- the rule excludes on evidence, never on a
+    missing row."""
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "select column_name from information_schema.columns where table_name = 'shadow_runs'"
+        ).fetchall()
+    }
+    if "started_at" not in cols:
+        return None
+    floor = "seed_floor" if "seed_floor" in cols else "NULL"
+    row = conn.execute(
+        f"select started_at, {floor} from shadow_runs where run_id = ?", [run_id]
+    ).fetchone()
+    if row is None or row[0] is None or row[1] is not None:
+        return None
+    if row[0] < PER_SHARD_GAPS_FROM:
+        return None
+    return row[0] + timedelta(hours=BLIND_SEED_HOURS)
+
 
 def _lifetimes(conn: duckdb.DuckDBPyConnection, now: datetime) -> dict[str, dict]:
     """Every run's tenure and what followed it, read off the WHOLE ledger.
@@ -588,9 +641,13 @@ def _hours(conn: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
         ).fetchall()
     )
 
+    blind_until = _blind_until(conn, run_id)
     rows = []
     for i, (h, pts, nrows, e_end, e_min, e_max) in enumerate(eq):
         n_fills, drag, strats = fills.get(h, (0, 0.0, []))
+        # Bound 17: a bucket that STARTS inside the window is out, so the
+        # bucket the window ends in goes with it -- part of it is blind.
+        blind = blind_until is not None and h < blind_until
         rows.append(
             {
                 "hour": f"{h:%Y-%m-%d %H}Z",
@@ -611,7 +668,10 @@ def _hours(conn: duckdb.DuckDBPyConnection, run_id: str) -> list[dict]:
                 "entry_drag_modeled": _r(drag or 0.0, 2),
                 "strategies": sorted(strats or []),
                 # Bound 2: the run's first and last buckets are partial.
-                "partial": i == 0 or i == len(eq) - 1,
+                # Bound 17 rides the same flag: every reader that drops a
+                # partial hour drops a blind one, and none can forget to.
+                "partial": i == 0 or i == len(eq) - 1 or blind,
+                "blind_seed": blind,
             }
         )
 
@@ -2155,6 +2215,8 @@ def build_diurnal(ledger: duckdb.DuckDBPyConnection, run_id: str | None = None) 
                     "drag_model_valid": drag_valid,
                     "strategies": sorted({s for h in hours for s in h["strategies"]}),
                     "partial_hours_excluded": sum(1 for h in hours if h["partial"]),
+                    "blind_seed_hours_excluded": sum(1 for h in hours if h["blind_seed"]),
+                    "blind_seed_hours": BLIND_SEED_HOURS,
                     "sparse_hours": sum(1 for h in hours if h["pts"] < MIN_PTS_PER_HOUR),
                     "min_pts_per_hour": MIN_PTS_PER_HOUR,
                     "min_days": MIN_DAYS,
