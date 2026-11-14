@@ -232,12 +232,60 @@ def test_unmatched_fills_classified_by_cause():
     assert rep["unmatched_replay_by_cause"] == {
         "boundary": 1,
         "gap": 1,
+        "gap_shard": 0,
         "reseed_twin": 0,
         "unexplained": 1,
     }
     assert rep["unmatched_shadow"] == 0
     samples = rep["unmatched_unexplained_samples"]
     assert len(samples) == 1 and samples[0]["market"] == "M2"
+
+
+def test_cause_breakdown_takes_the_gap_rows_replay_run_returns():
+    """`replay_run(return_gaps=True)` returns the rows it read for the
+    replayer, and since 9bc927a those are `(started_at, ended_at, shard)`.
+    The classifier unpacked two and raised on the first leftover that
+    reached the gap loop -- 36 minutes into the 2026-11-14 report of an
+    11-day run, the first run long enough to have a book gap. A row with
+    a None shard is channel-wide (`gap`); a row naming a shard is counted
+    apart (`gap_shard`), and a channel-wide row wins where both cover."""
+    anchor = datetime(2026, 7, 12, 1, 0, 0)
+    end = anchor + timedelta(hours=4)
+    wide = _RF(5.0, anchor + timedelta(minutes=30))
+    scoped = _RF(5.0, anchor + timedelta(minutes=90), market_id="M2")
+    both = _RF(5.0, anchor + timedelta(minutes=150), market_id="M3")
+    lonely = _RF(5.0, anchor + timedelta(minutes=200), market_id="M4")
+
+    def row(minute, shard):
+        return (
+            anchor + timedelta(minutes=minute - 1),
+            anchor + timedelta(minutes=minute + 1),
+            shard,
+        )
+
+    gaps = [row(30, None), row(90, 3), row(150, 7), row(150, None)]
+
+    rep = compare([], [wide, scoped, both, lonely], anchor=anchor, end=end, gaps=gaps)
+
+    assert rep["unmatched_replay_by_cause"] == {
+        "boundary": 0,
+        "gap": 2,
+        "gap_shard": 1,
+        "reseed_twin": 0,
+        "unexplained": 1,
+    }
+
+
+def test_the_gap_rows_replay_run_reads_carry_a_shard():
+    """The pairing the test above depends on: if the gap SELECT loses its
+    third column the classifier's shard arm goes dead without a failure."""
+    import inspect
+
+    from simulator import divergence
+
+    assert "SELECT started_at, ended_at, shard FROM stream_gaps" in inspect.getsource(
+        divergence.replay_run
+    )
 
 
 def test_unmatched_fill_with_identical_twin_is_reseed_twin():

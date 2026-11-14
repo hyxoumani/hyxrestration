@@ -225,7 +225,9 @@ def compare(
     inferred from the count gap: `boundary` (within the 60s exact
     tolerance of the window edge, so a true counterpart falls just
     outside the compared window), `gap` (inside a coverage break ±window,
-    where the two streams re-seed differently), `reseed_twin` (an exact
+    where the two streams re-seed differently), `gap_shard` (inside a
+    break that named ONE books connection; whether that connection
+    carried this market is not checked, so it is counted apart), `reseed_twin` (an exact
     (market, side, qty, price) counterpart exists elsewhere in the
     OPPOSITE stream, just time-shifted beyond the match window — the
     start-of-run seed-settling signature, where both streams produce the
@@ -392,15 +394,27 @@ def compare(
             return "boundary"
         if end is not None and end - ts <= MATCH_TOLERANCE:
             return "boundary"
-        for g0, g1 in gaps or ():
+        # A gap row is `(started_at, ended_at)` or, since 9bc927a,
+        # `(started_at, ended_at, shard)` -- `replay_run` hands back the
+        # rows it fed the replayer. A row naming a shard broke ONE books
+        # connection; this classifier does not know which connection
+        # carried the fill's market at that instant, so such a hit is
+        # published under its own name instead of borrowing `gap`'s
+        # certainty. A channel-wide row wins when both cover the fill.
+        shard_hit = False
+        for g0, g1, *rest in gaps or ():
             if g0 - window <= ts <= g1 + window:
-                return "gap"
+                if not rest or rest[0] is None:
+                    return "gap"
+                shard_hit = True
+        if shard_hit:
+            return "gap_shard"
         if key in opposite_econ:
             return "reseed_twin"
         return "unexplained"
 
     def _breakdown(unmatched, opposite_econ):
-        counts = {"boundary": 0, "gap": 0, "reseed_twin": 0, "unexplained": 0}
+        counts = {"boundary": 0, "gap": 0, "gap_shard": 0, "reseed_twin": 0, "unexplained": 0}
         samples = []
         for (m, side), f in unmatched:
             cause = _cause(f[0], (m, side, f[1], f[2]), opposite_econ)
