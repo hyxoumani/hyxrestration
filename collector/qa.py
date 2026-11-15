@@ -1175,9 +1175,33 @@ _POLY_REPLAY_SLICE = """
 #: Saturday-into-Sunday window (31s) and died on the Sunday-evening one
 #: (~2x); an hour is 1/26 of either.
 POLY_SLICE_HOURS = 1
+#: Rows (polymarket snap + delta) in the busiest slice this width has been
+#: MEASURED at under the unit's 12G cap. 2026-11-15, 12G transient unit on
+#: the 03:30Z backup slot, DuckDB limit 6G: the busiest hour of the 26 h
+#: before it (11-14 16Z, 904,611 rows; the day's hours sit at 0.66-0.90M on
+#: a fixed 100-market universe) peaked at 3.5 GB anon, and one 3 h slice of
+#: 2.01M rows at 5.1 GB. `slice walks inside their measured input` fails
+#: past this -- the alarm the 2 h seq slice never had (mistakes #199).
+POLY_SLICE_MEASURED_ROWS = 2_000_000
 
 
-def _poly_replay(conn, now: datetime, hours: float) -> tuple[int, int, int, int, int, int]:
+def _note_busiest(stats: dict | None, conn, where: str, lo: datetime, hi: datetime) -> None:
+    """Record the walk's busiest slice into `stats` (`rows`, `lo`). One
+    bounded count per slice (the whole 26 h of them: 2.2 s on the 2026-11-15
+    backup slot), and only for a caller that asked."""
+    if stats is None:
+        return
+    n = conn.execute(
+        f"SELECT count(*) FROM book_events WHERE recv_ts > ? AND recv_ts <= ? AND {where}",
+        [lo, hi],
+    ).fetchone()[0]
+    if n > stats.get("rows", -1):
+        stats["rows"], stats["lo"] = n, lo
+
+
+def _poly_replay(
+    conn, now: datetime, hours: float, stats: dict | None = None
+) -> tuple[int, int, int, int, int, int]:
     """Polymarket delta replay against the venue's next snapshot; returns
     (levels, agreeing levels, gap-free intervals tested, inexact intervals,
     deltas in window, snapshot pairs carrying a delta). Walked in
@@ -1236,6 +1260,7 @@ def _poly_replay(conn, now: datetime, hours: float) -> tuple[int, int, int, int,
         conn.execute("CREATE OR REPLACE TEMP TABLE pcarry (market_id VARCHAR, recv_ts TIMESTAMP)")
         if carry:
             conn.executemany("INSERT INTO pcarry VALUES (?, ?)", list(carry.items()))
+        _note_busiest(stats, conn, "venue='polymarket'", lo, hi)
         lv, ag, iv, bad, hit = conn.execute(_POLY_REPLAY_SLICE, [lo, hi, hi]).fetchone()
         levels += lv
         agree += ag
@@ -1313,9 +1338,19 @@ _SEQ_HOLES_SLICE = """
 #: an anon peak of 6.97 GB. A slice is bounded in time, so its rows follow
 #: the venue's traffic -- re-measure when a busiest slice passes ~25M rows.
 SEQ_SLICE_HOURS = 0.5
+#: Rows in the busiest slice above which this width is past its evidence.
+#: Counted 2026-11-15 on the 03:30Z backup slot: the busiest 0.5 h slice of
+#: the 26 h before it was 27.07M rows (11-15 01:30Z; the "~25M" above was
+#: already behind). Measured there in a 12G transient unit, 6G limit, over
+#: 11-15 01:30Z..03:30Z: 0.5 h slices (<= 27.1M rows) peak at 4.7 GB anon,
+#: 1 h slices (53.4M and 48.4M rows) at 7.8 GB, both complete. A whole 26 h
+#: walk ran ~2.3 GB above the short one at 0.5 h (6.97 vs 4.7), so 53M would
+#: sit near 10 GB of the 12: the alarm is set at 40M, 1.48x today's busiest
+#: and 25% under the largest slice measured.
+SEQ_SLICE_MEASURED_ROWS = 40_000_000
 
 
-def _seq_holes(conn, hours: float, now: datetime) -> list[tuple]:
+def _seq_holes(conn, hours: float, now: datetime, stats: dict | None = None) -> list[tuple]:
     """(missing, t0, t1) for every seq hole in the window, all sids, walked
     in SEQ_SLICE_HOURS slices with a per-sid carry (see above)."""
     lo = now - timedelta(hours=int(hours))
@@ -1333,6 +1368,7 @@ def _seq_holes(conn, hours: float, now: datetime) -> list[tuple]:
         )
         if rows:
             conn.executemany("INSERT INTO carry VALUES (?, ?, ?)", rows)
+        _note_busiest(stats, conn, "sid IS NOT NULL AND seq IS NOT NULL", lo, hi)
         holes += conn.execute(_SEQ_HOLES_SLICE, [lo, hi]).fetchall()
         # The carry is the slice's LAST row per sid and the FIRST sighting of
         # its seq in the trailing run of that seq -- uniq's min(recv_ts) for
@@ -1364,6 +1400,39 @@ def _seq_holes(conn, hours: float, now: datetime) -> list[tuple]:
         lo = hi
     conn.execute("DROP TABLE IF EXISTS carry")
     return holes
+
+
+def slice_walk_check(walks: list[tuple[str, float, dict, int]]) -> None:
+    """Each sliced walk's busiest slice against the rows its width was
+    measured at. A slice is bounded in TIME, so its rows follow the venue's
+    traffic and the stream's coverage; the 2 h seq slice was sized as "~24M
+    rows", carried 80-95M on a Saturday evening, and the first reading of
+    that was the kernel's (2026-11-15 10:03Z, mistakes #199) -- which also
+    cost every check after it. This fails the day a slice passes what was
+    MEASURED, while the run can still say so."""
+    parts, past = [], []
+    for name, width_h, stats, measured in walks:
+        if "rows" not in stats:
+            parts.append(f"{name}: no slice walked")
+            continue
+        over = stats["rows"] > measured
+        parts.append(
+            f"{name} busiest {width_h:g} h slice {stats['rows'] / 1e6:.2f}M rows"
+            f" from {stats['lo']:%m-%d %H:%MZ} (measured to {measured / 1e6:g}M)"
+        )
+        if over:
+            past.append(name)
+    check(
+        "slice walks inside their measured input",
+        not past,
+        "; ".join(parts)
+        + (
+            f" -- {', '.join(past)} PAST the measured input: re-measure the anon peak at this"
+            " width against the unit's cap, or narrow the slice, before the kernel reads it"
+            if past
+            else ""
+        ),
+    )
 
 
 def _stream_checks(conn, hours: float, now: datetime) -> None:
@@ -1399,7 +1468,8 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
     # that self-cleared an hour later. Gap rows are also scoped to the channel
     # that owns these runs: a polymarket or kalshi-trades reconnect says
     # nothing about the kalshi books connection.
-    holes = _seq_holes(conn, hours, now)
+    seq_slice: dict = {}
+    holes = _seq_holes(conn, hours, now, seq_slice)
     gap_spans = conn.execute(
         "SELECT started_at, ended_at FROM stream_gaps WHERE ended_at > ?"
         " - INTERVAL 1 HOUR * CAST(? AS INTEGER)"
@@ -1575,7 +1645,8 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
     # carrying no delta are skipped too: they assert only that a snapshot
     # equals itself, and counting them would let a dead delta feed hold the
     # agreement ratio at 1.0. See POLY_REPLAY_MIN_AGREE.
-    levels, agree, ivals, bad_ivals, poly_deltas, pairs = _poly_replay(conn, now, hours)
+    poly_slice: dict = {}
+    levels, agree, ivals, bad_ivals, poly_deltas, pairs = _poly_replay(conn, now, hours, poly_slice)
     frac = agree / levels if levels else 0.0
     check(
         "poly deltas replay to the next snapshot",
@@ -1588,6 +1659,12 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
             if not ivals
             else ""
         ),
+    )
+    slice_walk_check(
+        [
+            ("seq", SEQ_SLICE_HOURS, seq_slice, SEQ_SLICE_MEASURED_ROWS),
+            ("poly replay", POLY_SLICE_HOURS, poly_slice, POLY_SLICE_MEASURED_ROWS),
+        ]
     )
 
     # `recv_ts - src_ts` is NOT latency: it is (box clock offset + transport
