@@ -536,6 +536,17 @@ the only fatal Kalshi 500 in the journal's 55 days (retention floor
 09-22); the next slot ran clean. `_GATEWAY_STATUSES` still excludes 500:
 one lost 5-minute slot in ~15,800 does not move it.
 
+**`HOSTFS` ends with btrfs's own allocation (since 2026-11-15).** Every
+other number on the line is `statvfs`, which on btrfs is an estimate: a
+write fails ENOSPC when metadata cannot grow, while `df` still reads free
+space -- the half mistakes #174 left unrehearsed. Measured 21:10Z, 3.1 d
+from full: 55.8 GB unallocated + 126.2 GB free inside data chunks (their
+sum is statvfs's 182 GB), metadata 5.47 of 12.0 GiB at 0.33% of data, so
+the 6 GiB of room covers the rest of the disk and the day count stands.
+`health.btrfs_text` says `METADATA TIGHT` when under 1 GiB of metadata
+room is left past the global reserve AND less than a DUP chunk (2 GiB
+raw) is unallocated (`tests/test_health_btrfs.py`).
+
 Four properties of systemd's persisted state had to be measured before
 they could be reported. Each is a way a naive digest lies:
 

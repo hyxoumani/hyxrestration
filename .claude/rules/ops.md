@@ -366,6 +366,12 @@
   was written against; the test passed green against an unchanged file
   and looked like a passing mutant. Assert the mutant changed the source
   (diff it, or fail the edit) before reading the test's colour.
+- A mutant RESTORED is not a mutant gone: CPython reuses a `.pyc` when the
+  source's size and whole-second mtime match, so a same-length mutant
+  restored inside one second leaves its bytecode live for the next
+  importer (mistakes #201: `1 failed, 2697 passed` on restored source).
+  Run mutants under `PYTHONDONTWRITEBYTECODE=1`, or delete the module's
+  `__pycache__` entry after the last restore.
 - A rule that makes a shared resource's cost legible has to reach every
   CALLER of that resource, not every caller that calls itself a report.
   `tests/test_hold_discipline.py` binds "measure your holds" to modules
@@ -831,6 +837,13 @@
   the pressure's DURATION in ~10 s passes; its cost is the clause after it
   (`= N pod(s) evicted (...), M pass(es) with no evictable pod left, ...`,
   mistakes #190) -- quote the pods, never the attempts.
+- `statvfs` free on btrfs is an estimate: a write fails ENOSPC when METADATA
+  cannot grow (chunks full, no unallocated space for another), whatever
+  `df` reads. The `HOSTFS` line ends with the split since 2026-11-15
+  (`btrfs: 56 GB unallocated + 126 GB free inside data chunks; metadata 5.5
+  of 12.0 GiB (6.0 GiB of room past the reserve)`); `METADATA TIGHT` there
+  means the days-to-full figure is already wrong. `btrfs filesystem usage
+  -b data` runs unprivileged.
 - A last-eviction time hours old is not relief. When the control plane is
   down the kubelet has no node object and its eviction manager logs
   `failed to get summary stats` every 10 s instead of an attempt (11-13

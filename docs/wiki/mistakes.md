@@ -5541,6 +5541,27 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+201. **2026-11-15 21:12Z -- a mutant that had been restored failed the
+    full suite anyway: the suite imported the MUTANT's bytecode.** A
+    four-mutant check of `collector/health.py` (edit, run one test file,
+    `cp` the original back) ended on `all(` -> `any(`, the same byte count
+    as the original, and the restore landed in the same second as the
+    mutant's write. CPython validates a `.pyc` by the source's mtime IN
+    WHOLE SECONDS and its size, so the restored file matched the mutant's
+    cached bytecode and the suite started one second later ran the mutant:
+    `1 failed, 2697 passed`, the traceback printing the ORIGINAL source
+    line above an error only the mutant can raise. The first pass's
+    five-mutant run had the same exposure and was green only because its
+    last mutant changed the file's length. Seven minutes of suite, and a
+    red that could as easily have been a green hiding a real defect the
+    other way round (a restored file shadowed by a mutant that passes).
+    Rule: **a mutation harness restores bytecode, not just source -- run
+    mutants with `PYTHONDONTWRITEBYTECODE=1` (or delete
+    `__pycache__/<module>.*.pyc` after the last restore) before anything
+    else imports the module. When a traceback's source line cannot raise
+    the error under it, the process is not running the file on disk.**
+    (#101's "watch the perturbation LAND", for the restore.)
+
 200. **2026-11-15 -- the fix for an import-time clock stamp moved the
     staleness into test ORDER, and the full suite was green on it.**
     [class: test-validity; wrong-instrument] #199's two leftovers, both

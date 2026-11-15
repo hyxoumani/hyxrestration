@@ -2259,6 +2259,107 @@ def host_fs_line(
     return f"{standing} | {k} | {fs_pace_text(pace, fs, over_b, window_h)}"
 
 
+# --- btrfs allocation: whether `statvfs` free is free (2026-11-15) -------------
+# Every number on the HOSTFS line is `statvfs`, and on btrfs that is an
+# ESTIMATE: data and metadata live in separately allocated chunks, and a write
+# fails with ENOSPC when METADATA cannot grow -- its chunks full and no
+# unallocated device space left for another -- while `df` still reads free
+# gigabytes. Mistakes #174 rehearsed this lab's writers against a full tmpfs
+# and left exactly this open ("metadata exhaustion arrives before `statvfs`
+# reads zero"). Measured 2026-11-15 21:10Z, 3.1 d from full by the pace clause:
+# 55.8 GB unallocated, 126.2 GB free inside data chunks (the two sum to
+# statvfs's 182 GB), metadata 5.47 of 12.0 GiB (45.6%) -- at 0.33% of data,
+# the 6 GiB of room covers the whole remaining disk, so the day count stands.
+# The clause exists so that reading is taken every pass instead of once.
+#
+# `btrfs filesystem usage -b` runs unprivileged (it warns that per-device
+# detail needs root, on stderr, and prints the totals). Metadata here is DUP:
+# a new 1 GiB metadata chunk needs 2 GiB of raw unallocated space, and the
+# global reserve is carved out of the metadata that reads as free.
+BTRFS_META_CHUNK_B = 1 << 30
+_BTRFS_RES = {
+    "unallocated_b": re.compile(r"Device unallocated:\s+(\d+)"),
+    "reserve_b": re.compile(r"Global reserve:\s+(\d+)"),
+    "data": re.compile(r"^Data,\s*\w+: Size:(\d+), Used:(\d+)", re.M),
+    "meta": re.compile(r"^Metadata,\s*(\w+): Size:(\d+), Used:(\d+)", re.M),
+}
+
+
+@dataclass(frozen=True)
+class BtrfsAlloc:
+    """`btrfs filesystem usage -b`, the five numbers that decide ENOSPC."""
+
+    unallocated_b: int
+    data_size_b: int
+    data_used_b: int
+    meta_size_b: int
+    meta_used_b: int
+    reserve_b: int
+    #: Raw copies per metadata byte (DUP/RAID1 = 2): what a new chunk costs.
+    meta_copies: int = 2
+
+    @property
+    def meta_room_b(self) -> int:
+        return self.meta_size_b - self.meta_used_b - self.reserve_b
+
+    @property
+    def meta_can_grow(self) -> bool:
+        return self.unallocated_b >= self.meta_copies * BTRFS_META_CHUNK_B
+
+
+def parse_btrfs_usage(text: str) -> BtrfsAlloc | None:
+    """The command's stdout -> the allocation; None when any number is absent
+    (not btrfs, a changed format) -- never a partial reading. Pure."""
+    m = {k: rx.search(text) for k, rx in _BTRFS_RES.items()}
+    if not all(m.values()):
+        return None
+    profile = m["meta"].group(1).lower()
+    return BtrfsAlloc(
+        unallocated_b=int(m["unallocated_b"].group(1)),
+        data_size_b=int(m["data"].group(1)),
+        data_used_b=int(m["data"].group(2)),
+        meta_size_b=int(m["meta"].group(2)),
+        meta_used_b=int(m["meta"].group(3)),
+        reserve_b=int(m["reserve_b"].group(1)),
+        meta_copies=1 if profile == "single" else 2,
+    )
+
+
+def read_btrfs_usage(path: str = HOSTFS_PATH) -> BtrfsAlloc | None:
+    """None when the tool is absent, fails or prints something else."""
+    try:
+        proc = subprocess.run(
+            ["btrfs", "filesystem", "usage", "-b", path],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_btrfs_usage(proc.stdout)
+
+
+def btrfs_text(a: BtrfsAlloc | None) -> str:
+    """The HOSTFS line's allocation clause. Pure."""
+    if a is None:
+        return "btrfs allocation unread (statvfs free is an estimate on btrfs)"
+    gib = 1 << 30
+    head = (
+        f"btrfs: {_gb_b(a.unallocated_b)} unallocated + "
+        f"{_gb_b(a.data_size_b - a.data_used_b)} free inside data chunks; metadata "
+        f"{a.meta_used_b / gib:.1f} of {a.meta_size_b / gib:.1f} GiB "
+        f"({a.meta_room_b / gib:.1f} GiB of room past the reserve)"
+    )
+    if a.meta_room_b < BTRFS_META_CHUNK_B and not a.meta_can_grow:
+        return (
+            f"{head} -- METADATA TIGHT: under 1 GiB of room and no unallocated space "
+            "for another chunk; writes can fail ENOSPC while statvfs still reads free"
+        )
+    if a.meta_room_b < BTRFS_META_CHUNK_B:
+        return f"{head} -- metadata near its chunks' end, another chunk still fits"
+    return f"{head} -- metadata has room, the free figure is usable"
+
+
 # --- RAWFRAMES: the raw-frame writer's burn BY CHANNEL, against its own past --
 # `data/raw_frames/<day>/<HH>-<channel>.jsonl.zst` is the archive's largest
 # single burn (~17 GB/day in the 11-03..11-06 band, mistakes #164: the prune
@@ -4219,7 +4320,8 @@ def main() -> None:
     )
     print(
         f"{'HOSTFS':<10} {'(host)':<{width}}  "
-        f"{host_fs_line(read_hostfs(), read_kubelet_window(), _read_fs_pace())}",
+        f"{host_fs_line(read_hostfs(), read_kubelet_window(), _read_fs_pace())}"
+        f" | {btrfs_text(read_btrfs_usage())}",
         flush=True,
     )
     print(
