@@ -5541,6 +5541,44 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+200. **2026-11-15 -- the fix for an import-time clock stamp moved the
+    staleness into test ORDER, and the full suite was green on it.**
+    [class: test-validity; wrong-instrument] #199's two leftovers, both
+    paid this pass. (b) first: `tests/test_hyxlab_qa.py`,
+    `tests/test_qa_holds.py` and `tests/test_sweep_untraded_skip.py` read
+    the wall clock at IMPORT (`NOW = datetime.now(UTC)`), and pytest
+    imports every module at collection, so the stamp is as old as the
+    suite's progress. Reproduced by aging the stamp 943 s: QA's own
+    300 s / 20 min freshness budgets fail on fixtures built "now". Fixed
+    with a per-test autouse stamp, and
+    `tests/test_clock_stamp_discipline.py` discovers every tracked test
+    module and forbids a wall-clock read outside a function body -- it
+    found the third site, which a grep for the name `NOW` had missed
+    (`T0`). THE SLIP: the first cut (f5bb06f) gave `test_qa_holds.py` a
+    fixture-stamped `NOW` while `test_qa_stream_snapshot.py` imports its
+    `_stream` helper. An autouse fixture does not follow an imported
+    function: the importer raised `NameError` run alone, and the full
+    suite passed 2667/2667 only because `test_qa_holds` runs first and
+    leaves its last stamp in the global -- the same staleness, now a
+    function of test order. Found one commit later by running the
+    importing file by itself. Repaired in a6408ce (the helper stamps at
+    the call; a second discipline test forbids importing from a module
+    with a fixture-stamped global). (a): a run KILLED mid-section never
+    reaches `_stream_snapshot`'s `finally`; the unit now runs
+    `python -m collector.qa --clear-snapshot` as a second `ExecStopPost`.
+    Rehearsed in a transient unit on a scratch archive: main PID SIGKILLed
+    -> `stop-post: cleared 2 leftover entries`; a whole-cgroup
+    `systemctl kill -s KILL` killed the stop-post too (`code=killed`),
+    both entries left -- that arm is covered only by the next run's
+    pre-clean. Two structure tests objected on the way and were right to:
+    no exit may precede the run record in `qa.main` (the flag is its own
+    entry, `qa.stop_post`), and the unit's stop-posts are pinned by name
+    (`STOP_POST_OK`). **Rule: a full-suite green is evidence about the
+    suite in ITS order; after changing how a test module gets its state,
+    run each module that imports from it alone. And a module-level value
+    in a test file is evaluated at collection -- anything that must be
+    "now" is stamped inside the test.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
