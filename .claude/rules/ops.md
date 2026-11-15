@@ -788,7 +788,11 @@
   poll's rows -- so it does not stop. Read the digest's `SHADOWHOLD` line
   (hold/poll now vs the 7 d window's start, `CLIMB` at x1.25, flush
   collisions by holder); the levers are the poll period (amortises the
-  constant) and the archive layout, neither taken yet. The constant is
+  constant) and the archive layout, neither taken yet. Since 2026-11-15
+  the ratio is taken WITHOUT a single 300 s line that carried 10% or more
+  of the span's held seconds, and the line names it (`one line carried
+  66.3 s of the 260.2 s (11-14 22:02Z), 0.565 s/poll without it`): chase
+  that by its timestamp, it is not the constant climbing. The constant is
   DuckDB loading the table's row-group metadata on a fresh attach (78.6k
   groups at 9.66B rows, ~5 us each), measured 2026-11-11: the first
   filtered statement pays it -- at PLAN time under statistics propagation
