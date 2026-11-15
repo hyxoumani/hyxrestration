@@ -5504,6 +5504,16 @@ Format: what happened → root cause → error type → prevention tier
     test now states the base for both states. On this DuckDB the 48 GiB
     default belongs only to an UNCAPPED process -- which is what QA was
     on 09-25 and what this unit was until today.
+    Re-measured the same day in a transient SERVICE, not a scope
+    (`systemd-run --user --wait --pipe -p MemoryMax=2G`): default
+    `memory_limit` 1.5 GiB. DuckDB has been pinned at 1.5.2 since
+    2026-07-07, before the 08-26 reading, so "a 2G service believes it
+    has 48.2 GiB" was most likely read in an uncapped login shell and
+    attributed to the unit; the 08-26 kill is still explained (1.5 GiB of
+    pool plus the host process against a 2G cap) and the 50% share is
+    still the fix. QUEUED, not done: correct the two docstrings
+    (`hyxlab/memcap.py`, `store.cgroup_memory_limit`) in the next promote
+    that restarts the daemons for a real reason -- a docstring is not one.
 
 ## Pattern analysis (Step 5)
 
