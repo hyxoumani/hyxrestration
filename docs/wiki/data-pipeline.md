@@ -1888,3 +1888,21 @@ classes past `POLY_TAIL_STOP_BUDGET` = 1,000/day (worst clean day 446 on
 check sees only a TOTAL tail death, this one a partial failure or a new
 class on the first day. Live baseline for the v2 endpoint, 2026-11-04
 02:25Z: one tail 134 prints in 0.26 s, 0 stops.
+**500 is an absorbed class since 2026-11-15**, licensed per market and
+per depth: the Data API began answering a sparse 500 on tail pages on
+11-14 (7 stops that run, 4 on 11-15, 11 distinct markets, stops at 0-2,500
+prints), and the 11-15 sweep re-fetched all 7 of 11-14's deeper than the
+stop -- 4 open markets (2000/0/500/0 at the stop -> 5,764/3,094/4,654/1,850
+archived) and 3 first seen CLOSED (5-minute BTC markets; 1000/0/500 ->
+1,642/1,546/1,864), the cohort whose re-fetch exists only because
+`Store.poly_resolved_complete` keeps a market that owes a tail out of the
+skip set. A live re-read of 11-15's four 3.5 h after their stops: 26
+pages, 0 x 500 -- the fault is transient, not per market. The class
+carries its own band, `POLY_TAIL_STOP_CLASS_BUDGET[500]` = 50/day (~7x
+the worst measured run), under the shared 1,000: 500 by the hundred is
+their incident and reads red. It also stops refusing the day as the
+ETA's prior (`11-14 refused: 7 x 500` rode every 11-15 progress line).
+Not taken: an in-run retry of a 500 page in `trades_tail` -- it would
+recover the tail the same day, but `collector/venues/polymarket.py` is in
+the stream daemon's import closure, so it rides the next promote that
+restarts the stream for its own reason.

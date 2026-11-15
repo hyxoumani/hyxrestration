@@ -645,6 +645,12 @@ POLY_TAIL_STOP_CLASSES = TAIL_STOP_CLASSES
 #: re-fetch argument is unmeasured -- this is the edge of the evidence, not
 #: a loss model; the 11-03 retirement would have read 7,871.
 POLY_TAIL_STOP_BUDGET = 1000
+#: A tighter edge for a class whose evidence is thinner than the shared band's.
+#: 500 was licensed on 2026-11-15 from two runs carrying 7 and 4 stops (of
+#: ~6.6k tails fetched a run): 50 is ~7x the worst of them, the edge of what
+#: was measured and not a loss model. The Data API answering 500 by the
+#: hundred is an incident on their side, read here before the shared 1,000.
+POLY_TAIL_STOP_CLASS_BUDGET = {500: 50}
 #: One sweep cadence: at the 10:00Z QA the prior day's stops are 25h+ old.
 POLY_TAIL_STOP_WINDOW_H = 24.0
 
@@ -3076,6 +3082,19 @@ def qa_poly_tail_stop_classes(conn, now: datetime) -> None:
             f"{POLY_TAIL_STOP_WINDOW_H:g}h carry a status outside the absorbed "
             f"classes {sorted(POLY_TAIL_STOP_CLASSES)}: {by_class} -- a class the "
             f"next-sweep re-fetch was never measured to absorb",
+        )
+        return
+    over = [(s, n) for s, n in rows if n > POLY_TAIL_STOP_CLASS_BUDGET.get(s, total)]
+    if over:
+        check(
+            name,
+            False,
+            f"{total} stop(s) in the last {POLY_TAIL_STOP_WINDOW_H:g}h ({by_class}): "
+            + ", ".join(
+                f"{s} x{n} against that class's own {POLY_TAIL_STOP_CLASS_BUDGET[s]} band edge"
+                for s, n in over
+            )
+            + " -- the absorber is unmeasured for the class at this rate",
         )
         return
     if total > POLY_TAIL_STOP_BUDGET:

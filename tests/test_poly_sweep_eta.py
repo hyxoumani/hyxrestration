@@ -166,7 +166,22 @@ def test_qa_reads_the_stop_ledger_against_the_sweeps_own_absorbed_classes():
     from collector import qa
 
     assert qa.POLY_TAIL_STOP_CLASSES is ps.TAIL_STOP_CLASSES
-    assert frozenset({429, 408}) == ps.TAIL_STOP_CLASSES
+    assert frozenset({429, 408, 500}) == ps.TAIL_STOP_CLASSES
+
+
+def test_a_sparse_500_day_is_still_a_prior(tmp_path):
+    """11-14 shape: 7 tails of ~6.6k stopped on 500 and the run fetched
+    everything else, so its walls price the next run (the line read
+    `11-14 refused: 7 x 500` all through the 11-15 sweep)."""
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        now = datetime(2026, 11, 15, 4, 15)
+        yesterday = datetime(2026, 11, 14, 8, 57)
+        store.insert_poly_sweep_log([("m1", yesterday, 5.0)])
+        store.conn.execute("INSERT INTO poly_tail_stops VALUES ('m1', ?, 2000, 500)", [yesterday])
+        assert ps.load_prior(store, now=now) == ({"m1": 5.0}, "")
+    finally:
+        store.close()
 
 
 def test_prior_is_empty_without_an_archive_or_a_readable_table(tmp_path):

@@ -89,3 +89,30 @@ def test_budget_sits_above_the_measured_worst_clean_day():
     """446 stops on 2026-10-01 was a clean day; the band edge must not
     re-read it as a failure."""
     assert qa.POLY_TAIL_STOP_BUDGET > 446
+
+
+def test_a_500_inside_its_own_band_passes(tmp_path, capsys):
+    """The 11-14/11-15 shape: a handful of tails a run answered 500, each
+    re-fetched deeper by the next sweep (measured 2026-11-15, 7 of 7)."""
+    recent = NOW - timedelta(hours=5)
+    _run(tmp_path, [(f"0x{i:04x}", recent, 500 * (i % 3), 500) for i in range(7)])
+    assert qa._failures == []
+    assert "500 x7" in capsys.readouterr().out
+
+
+def test_a_500_past_its_own_band_fails_under_the_shared_one(tmp_path, capsys):
+    """500 by the hundred is the Data API failing, not the sparse fault the
+    class was licensed on -- red long before the shared 1,000."""
+    recent = NOW - timedelta(hours=3)
+    n = qa.POLY_TAIL_STOP_CLASS_BUDGET[500] + 1
+    assert n < qa.POLY_TAIL_STOP_BUDGET
+    stops = [(f"0x{i:05x}", recent, 0, 500) for i in range(n)]
+    stops += [(f"0xb{i:04x}", recent, 0, 429) for i in range(3)]
+    _run(tmp_path, stops)
+    assert qa._failures == [NAME]
+    out = capsys.readouterr().out
+    assert f"500 x{n} against that class's own" in out and "429 x3" in out
+
+
+def test_every_class_with_its_own_band_is_an_absorbed_class():
+    assert set(qa.POLY_TAIL_STOP_CLASS_BUDGET) <= qa.POLY_TAIL_STOP_CLASSES

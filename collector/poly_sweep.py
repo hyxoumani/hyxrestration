@@ -132,9 +132,18 @@ PROGRESS_EVERY = 200
 ETA_PRIOR_LOOKBACK_H = 30
 #: Tail-stop classes the #81 absorber is licensed for (the next sweep
 #: re-fetches a truncated tail): every one of the 3,418 stops over
-#: 2026-09-06..11-02 carried 429 or 408. Owned here because the absorber is
-#: this module's; `collector.qa` reads the ledger against the same set.
-TAIL_STOP_CLASSES = frozenset({429, 408})
+#: 2026-09-06..11-02 carried 429 or 408. 500 joined on 2026-11-15, measured
+#: per market and per depth: the Data API began answering a sparse 500 on
+#: tail pages on 11-14 (7 stops that run, 4 the next, 11 distinct markets),
+#: and the 11-15 sweep re-fetched all 7 of 11-14's deeper than the stop --
+#: 4 open (2000/0/500/0 prints at the stop -> 5764/3094/4654/1850 archived)
+#: and 3 FIRST SEEN CLOSED, where the re-fetch exists only because
+#: `Store.poly_resolved_complete` keeps a market that owes a tail out of the
+#: skip set (1000/0/500 -> 1642/1546/1864). A live re-read of 11-15's four
+#: 3.5 h later: 26 pages, 0 x 500. QA holds the class to a tighter band of
+#: its own (`qa.POLY_TAIL_STOP_CLASS_BUDGET`). Owned here because the absorber
+#: is this module's; `collector.qa` reads the ledger against the same set.
+TAIL_STOP_CLASSES = frozenset({429, 408, 500})
 #: Days the lookback walks back, one run each, to find a prior run whose
 #: tail-stop ledger carries NO foreign class. A run whose tails all stopped
 #: on a class outside `TAIL_STOP_CLASSES` recorded a wall per market with
