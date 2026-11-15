@@ -13,6 +13,26 @@ Type=oneshot
 # 2026-07-20 intent), while a 1.6G stranger @200 = 817 already outranks them.
 # See tests/test_systemd_units.py for the arithmetic.
 OOMScoreAdjust=220
+# A cap, since 2026-11-15 (mistakes #198). This unit is a shell script, so the
+# import walk in tests/test_unit_memory_caps.py cannot see that it opens a
+# DuckDB -- but a pass runs ad-hoc `python - <<E` reads of the live archives
+# from inside this cgroup, and with no cap hyxlab.memcap leaves DuckDB at its
+# host-RAM default (80% = 48 GiB of a box with ~46 GiB available). Measured
+# 2026-11-14 22:01Z: one two-window GROUP BY over hyxstream.duckdb reached
+# anon-rss 46.4 GiB in 85 s, the kernel's GLOBAL OOM killer was invoked by the
+# kubelet, and the default OOMPolicy=stop ended the whole run on SIGTERM
+# mid-pass (result=oom-kill). 20G: memcap hands DuckDB half (10 GiB), a
+# read-only scan costs ~2 GB over the limit (#191), and the rest is claude
+# plus the test suite. The unit's journal peaks of 9-18G are page cache,
+# which memory.max reclaims rather than kills. This is a blast-radius bound,
+# not a budget (ops.md): the kill now lands on the query, inside this cgroup.
+MemoryMax=20G
+# continue: a query killed at the cap is one failed command (exit 137) the
+# pass can read and write down, not the end of the run.
+OOMPolicy=continue
+# ExecStopPost runs inside the cgroup after the main process is gone: the
+# last reader of memory.events (max / oom_kill) before the cgroup is removed.
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 WorkingDirectory=/home/devs/workspace/hyxrestration
 ExecStart=/home/devs/workspace/hyxrestration/scripts/autoloop.sh
 TimeoutStartSec=3h

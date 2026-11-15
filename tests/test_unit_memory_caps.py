@@ -175,11 +175,32 @@ def test_the_walk_finds_the_unit_that_actually_died():
 
 
 def test_autoloop_is_not_claimed_by_a_walk_that_cannot_see_it():
-    """`hyxlab-autoloop` runs a shell script. Its 45.2G peak is Claude,
-    not a query, and the import walk has no opinion about it -- so it
-    must be neither capped-by-this-rule nor listed as DuckDB debt."""
+    """`hyxlab-autoloop` runs a shell script, and the import walk has no
+    opinion about it -- so it must be neither capped-by-this-rule nor
+    listed as DuckDB debt. (This docstring used to add "its 45.2G peak is
+    Claude, not a query". It was a query: see the test below.)"""
     assert "hyxlab-autoloop.service" not in duckdb_units()
     assert "hyxlab-autoloop.service" not in UNCAPPED
+
+
+def test_autoloop_is_capped_and_survives_a_kill_at_its_cap():
+    """The unit the walk cannot see reaches DuckDB anyway: a pass runs
+    ad-hoc reads of the live archives from inside its cgroup. Uncapped,
+    `hyxlab.memcap` left DuckDB at 80% of host RAM and one GROUP BY took
+    46.4 GiB anon on 2026-11-14 22:01Z -- a GLOBAL OOM kill, and the
+    default `OOMPolicy=stop` ended the run mid-pass (mistakes #198)."""
+    text = _units()["hyxlab-autoloop.service"]
+    caps = _field(text, "MemoryMax")
+    assert caps, "hyxlab-autoloop declares no MemoryMax: an ad-hoc DuckDB read gets 48 GiB"
+    cap_b = parse_size(caps[-1])
+    assert cap_b is not None, f"unparseable MemoryMax {caps!r}"
+    # Half the cap is DuckDB's (memcap.DUCK_SHARE) plus ~2 GB the limit does
+    # not count (#191); that must fit the box beside the capture daemons.
+    assert 8 * 1024**3 <= cap_b <= 24 * 1024**3, caps
+    assert _field(text, "OOMPolicy") == ["continue"], (
+        "without OOMPolicy=continue a kill at the cap stops the whole unit "
+        "(SIGTERM to claude mid-pass), which is what the cap is there to avoid"
+    )
 
 
 def test_every_duckdb_unit_declares_a_memory_cap():

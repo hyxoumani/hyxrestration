@@ -863,3 +863,13 @@
   restarted a 16.8 h stream run for whitespace (mistakes #197). Format
   and stage FILES, by name; read promote's output from the top
   (`== what this promotion moves ==`), never through a `tail`.
+- Two time windows on the stream archive are two queries (or a `UNION
+  ALL` of two single-range selects), never one `OR`: DuckDB's zone maps
+  prune a conjunction on `recv_ts` and do not prune a disjunction.
+  Measured 2026-11-15 on a 400M-row sorted synthetic: one range 0.010 s /
+  4 MB pool, the OR of two 0.329 s / 176 MB, a full scan 0.516 s / 275 MB,
+  the UNION ALL 0.019 s / 6 MB. On the real archive the OR form ran 85 s
+  to 46.4 GiB anon from the then-uncapped autoloop unit and the global OOM
+  killer ended the run (mistakes #198). `hyxlab-autoloop.service` is now
+  `MemoryMax=20G` + `OOMPolicy=continue`: an ad-hoc read that dies with
+  exit 137 hit that cap -- fix the predicate, do not retry it.

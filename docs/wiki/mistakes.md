@@ -5454,6 +5454,43 @@ Format: what happened → root cause → error type → prevention tier
     name; and read a promote's output from the top, where it says what
     moved.**
 
+198. **2026-11-14 22:01Z -- an autoloop pass's ad-hoc archive read took
+    46.4 GiB and the kernel's global OOM killer ended the run.** The fifth
+    pass of the 20:15Z run was armed with "do NOT attach the stream archive
+    again unless a line shows a real fault", attached it anyway (21:59:56Z)
+    and asked for two ten-minute windows of `book_events` as ONE predicate:
+    `(recv_ts in window A) OR (recv_ts in window B)`. The fourth pass's
+    read of the same half hour, one conjunctive range, held the file 0.9 s.
+    This one ran 85 s to `anon-rss:48628816kB`; the kubelet invoked the
+    global OOM killer, the python was killed, and the unit's default
+    `OOMPolicy=stop` SIGTERMed claude mid-pass (`result=oom-kill`, 46.8G
+    peak). Cost to the stream: one 84.8 s stall episode, 504,279 rows
+    pending at peak, 0 spilled, drained at 22:01:31Z; no other process was
+    killed. Two causes, each sufficient to matter. (a) **The unit was
+    uncapped**, so `hyxlab.memcap` left DuckDB at 80% of host RAM (48 GiB
+    on a box with ~46 GiB available) -- #87's QA failure again, in the one
+    unit `tests/test_unit_memory_caps.py` excused, on a docstring that
+    said "its 45.2G peak is Claude, not a query". Nobody had measured
+    that; the import walk cannot see a shell script, and the carve-out's
+    argument was about the walk, not about what runs in the cgroup (the
+    #96 shape). (b) **An OR of two ranges on the sort column is not a
+    bound.** Measured 2026-11-15 on a synthetic 400M-row table sorted by
+    `recv_ts`, DuckDB 1.5.2, 4 threads, fresh read-only attach each: one
+    range 0.010 s / 4 MB of buffer pool; the OR of two such ranges 0.329 s
+    / 176 MB; an unprunable predicate (full scan) 0.516 s / 275 MB; the
+    same two ranges as `UNION ALL` of two single-range selects 0.019 s /
+    6 MB. The zone maps prune a conjunction and do not prune a
+    disjunction. NOT measured: the killed query's plan on the real archive
+    (it is not being re-run). Fix: `hyxlab-autoloop.service` declares
+    `MemoryMax=20G` (memcap hands DuckDB 10 GiB), `OOMPolicy=continue` (a
+    kill at the cap is one command's exit 137, not the run) and the
+    `cgmem.sh` stop reporter; `test_autoloop_is_capped_and_survives_a_kill_at_its_cap`
+    holds both, red-verified by deleting the cap line. **Rule: two windows
+    are two queries (or a `UNION ALL`), never an `OR`; and a unit is
+    "not a DuckDB unit" only if nothing that runs in its cgroup opens one
+    -- the entrypoint's import graph is one way to reach a database, a
+    heredoc is another.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
