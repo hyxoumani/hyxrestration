@@ -5515,6 +5515,32 @@ Format: what happened → root cause → error type → prevention tier
     (`hyxlab/memcap.py`, `store.cgroup_memory_limit`) in the next promote
     that restarts the daemons for a real reason -- a docstring is not one.
 
+199. **2026-11-15 10:03Z -- QA was cgroup-OOM-killed inside the check that
+    #142 had "bounded", because the bound was a width in HOURS.** The seq
+    check walked `SEQ_SLICE_HOURS = 2` slices, commented "~24M rows at the
+    expansion's measured rate". Counted on the killed run's own snapshot:
+    the thirteen slices of its 26 h window held 20-95M rows, 80-95M each
+    from 11-14 18Z to 11-15 04Z (a Saturday evening), ~700M in all. The
+    11-08 run passed with its evening slices at 65-78M; this one died at
+    `anon-rss:12540776kB` against the 12G cap (DuckDB limit 6G), three
+    minutes in, and every check after it -- the whole daily record -- went
+    unread. A bound on the work has to be in the unit the memory follows,
+    and a time slice's rows follow the venue's traffic: the average the
+    constant was sized on is not the slice that kills. Fix: 0.5 h, measured
+    on the same snapshot at a 6G limit -- 192 s for the window, anon peak
+    6.97 GB; the deployed width is in the oracle test's parameters.
+    Promoted 10:15Z and QA re-run by hand. Two things the kill exposed and
+    this pass did not fix: (a) a killed QA leaves its 340 GB-nominal
+    reflink snapshot in `data/qa-snapshot` until the next run empties it
+    (615 MB exclusive after ten minutes, growing with every block the live
+    file rewrites, on a disk past the kubelet's line); (b)
+    `tests/test_hyxlab_qa.py` stamps `NOW` at import, so a suite slowed
+    past ~15 min by host I/O pressure (the sibling's lake nightly, PSI io
+    full 36%) fails 15 freshness tests on its own clock and blocks the
+    promote -- it cost this pass one promote attempt. **Rule: size a slice
+    on the busiest hour's rows, say so next to the constant, and name the
+    row count at which it must be re-measured.**
+
 ## Pattern analysis (Step 5)
 
 `wrong-assumption` cluster (1, 3, and arguably 7): claims about external
