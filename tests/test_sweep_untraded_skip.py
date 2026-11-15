@@ -16,13 +16,23 @@ proves nothing about the field.
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from collector import sweep as sweep_mod
 from hyxlab.store import Store
 
 # Inside the sweep's default look-back: with no watermark the floor is
 # `now - days`, and a close older than that cannot move `max_close`.
-T0 = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=30)
+#: Stamped per test (tests/test_clock_stamp_discipline.py: an import-time
+#: stamp ages with the suite).
+T0: datetime
 FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_t0():
+    global T0
+    T0 = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=30)
 
 
 def _m(ticker: str, hours: int, volume="0.00") -> dict:

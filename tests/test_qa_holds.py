@@ -38,7 +38,19 @@ from collector.venues.kalshi_ws import parse_message
 from hyxlab.store import Store, attach_wait_block, attach_wait_line, reset_attach_waits
 from hyxlab.streamstore import StreamStore
 
-NOW = datetime.now(UTC)
+#: Stamped per TEST by `_fresh_now`, never at import. The module is imported at
+#: collection, so an import-time stamp ages by however long the suite takes to
+#: reach this file: on 2026-11-15 a suite running ~3x slow under host I/O
+#: pressure got here 943 s late and every "fresh" fixture read as stale against
+#: QA's own clock -- 15 failures that reddened the promote gate with nothing
+#: wrong (tests/test_clock_stamp_discipline.py forbids the shape).
+NOW: datetime
+
+
+@pytest.fixture(autouse=True)
+def _fresh_now():
+    global NOW
+    NOW = datetime.now(UTC)
 
 
 @pytest.fixture(autouse=True)
