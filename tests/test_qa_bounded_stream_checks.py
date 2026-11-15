@@ -61,7 +61,7 @@ def _seq_fixture(seed: int) -> list[BookEvent]:
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3])
-@pytest.mark.parametrize("slice_h", [1, 2, 5])
+@pytest.mark.parametrize("slice_h", [0.5, 1, 2, 5])
 def test_sliced_seq_walk_finds_exactly_the_whole_window_holes(tmp_path, monkeypatch, seed, slice_h):
     conn = _book(tmp_path / "s.duckdb", _seq_fixture(seed))
     old = conn.execute(OLD_SEQ, [NOW, 26]).fetchall()

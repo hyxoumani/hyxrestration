@@ -1270,9 +1270,16 @@ _SEQ_HOLES_SLICE = """
         FROM uniq WINDOW w AS (PARTITION BY sid, run ORDER BY seq)
         QUALIFY missing > 0
 """
-#: Width of one seq-check slice. ~24M rows at the expansion's measured
-#: rate -- the size a whole day's sid ran at inside the 6G limit.
-SEQ_SLICE_HOURS = 2
+#: Width of one seq-check slice, sized on ROWS at the busiest hours and not
+#: on the average: 2 h was "~24M rows at the expansion's measured rate" and
+#: is 80-95M on a Saturday evening (2026-11-14 18Z..11-15 04Z; the widest
+#: sid 19.4M in one slice). The 11-08 run passed at 65-78M; the 11-15 run was
+#: cgroup-killed inside this check at anon 12.54G of the 12G cap, three
+#: minutes in, and every check after it went unread. Measured on that run's
+#: own snapshot at a 6G limit: 0.5 h walks the same 26 h window in 192 s at
+#: an anon peak of 6.97 GB. A slice is bounded in time, so its rows follow
+#: the venue's traffic -- re-measure when a busiest slice passes ~25M rows.
+SEQ_SLICE_HOURS = 0.5
 
 
 def _seq_holes(conn, hours: float, now: datetime) -> list[tuple]:
