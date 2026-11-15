@@ -68,10 +68,21 @@ LIMIT_CALL = "cgroup_memory_limit"
 
 
 def test_the_default_limit_is_host_ram_and_not_the_cgroup_cap():
-    """DuckDB sizes itself from `/proc/meminfo`. That is the whole bug.
+    """Uncapped, DuckDB sizes itself from `/proc/meminfo`: 80% of the box.
 
-    Asserted, not remembered: the day DuckDB reads `memory.max` itself,
-    this reddens and `hyxlab.memcap` has no reason to exist.
+    Asserted, not remembered. The original said "the day DuckDB reads
+    `memory.max` itself, this reddens and `hyxlab.memcap` has no reason to
+    exist" -- and it reddened on 2026-11-15, the first time the suite ran
+    under a cap (mistakes #198): DuckDB 1.5.2 in a `MemoryMax=20G` scope
+    defaults to 16.0 GiB, in a 2G scope to 1.5 GiB, i.e. 80% of the CAP.
+    The test had only ever run uncapped, where the two readings agree.
+    `memcap` still has its reason: 80% of a cap leaves the host process,
+    its buffers and the page cache `memory.max` charges 20% (see the
+    module docstring, "WHY A FRACTION AND NOT THE CAP"), so the kernel
+    pins `DUCK_SHARE` of the cap instead. What this test holds now is the
+    base DuckDB takes its 80% from, in whichever state the suite runs:
+    the tightest cgroup cap when one binds, host RAM when none does --
+    the state `hyxlab-qa` (#87) and `hyxlab-autoloop` (#198) were in.
     """
     total = None
     for line in Path("/proc/meminfo").read_text().splitlines():
@@ -79,13 +90,15 @@ def test_the_default_limit_is_host_ram_and_not_the_cgroup_cap():
             total = int(line.split()[1]) * 1024
             break
     assert total, "no MemTotal — cannot state the premise"
+    cap = cgroup_memory_max()
+    base = min(total, cap) if cap else total
     with duckdb.connect() as conn:
         raw = conn.execute("SELECT current_setting('memory_limit')").fetchone()[0]
     got = _parse_size(raw)
-    # DuckDB's documented default is 80% of physical memory.
-    assert 0.75 * total <= got <= 0.85 * total, (
-        f"default memory_limit {raw} is not ~80% of host RAM {total}B —"
-        " DuckDB may now be cgroup-aware; re-read hyxlab/memcap.py"
+    # DuckDB's documented default is 80% of physical memory (or of the cap).
+    assert 0.70 * base <= got <= 0.85 * base, (
+        f"default memory_limit {raw} is not ~80% of {base}B (host RAM {total}B, "
+        f"cgroup cap {cap}) — re-read hyxlab/memcap.py"
     )
 
 

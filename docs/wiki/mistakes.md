@@ -5490,6 +5490,20 @@ Format: what happened → root cause → error type → prevention tier
     "not a DuckDB unit" only if nothing that runs in its cgroup opens one
     -- the entrypoint's import graph is one way to reach a database, a
     heredoc is another.**
+    A second finding came from proving the cap. The full suite inside a
+    `MemoryMax=20G` scope (2654 passed; `max 0`, `oom_kill 0`, peak 15.0G,
+    page cache) failed ONE test,
+    `test_the_default_limit_is_host_ram_and_not_the_cgroup_cap`, whose
+    docstring said it would redden "the day DuckDB reads `memory.max`
+    itself". DuckDB 1.5.2 does: its default in a 20G scope is 16.0 GiB,
+    in a 2G scope 1.5 GiB -- 80% of the CAP. The test had only ever run
+    uncapped, where both readings agree. `memcap` keeps its reason (it
+    pins 50% of the cap, not 80%); its docstring's "believing it had 48.2
+    GiB" under a 2G cap is a 2026-08-26 reading not re-measured here and
+    left unedited (the module is in every daemon's closure, #197); the
+    test now states the base for both states. On this DuckDB the 48 GiB
+    default belongs only to an UNCAPPED process -- which is what QA was
+    on 09-25 and what this unit was until today.
 
 ## Pattern analysis (Step 5)
 
