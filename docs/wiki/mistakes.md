@@ -5578,6 +5578,12 @@ Format: what happened → root cause → error type → prevention tier
     run each module that imports from it alone. And a module-level value
     in a test file is evaluated at collection -- anything that must be
     "now" is stamped inside the test.**
+    Second pass, same day, #199's rule made executable: "name the row
+    count at which it must be re-measured" was a sentence beside
+    `SEQ_SLICE_HOURS` (~25M) and the busiest slice was already 27.07M when
+    counted. QA now counts each walk's busiest slice and fails past the
+    measured rows (`slice walks inside their measured input`; 40M seq,
+    2.0M poly, both measured on a backup slot under the unit's cap).
 
 ## Pattern analysis (Step 5)
 

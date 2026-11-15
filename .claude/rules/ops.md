@@ -602,7 +602,12 @@
   with a per-key carry), measure anon peak vs slice width inside the run
   (`RssAnon`; the cgroup's `memory.peak` is page cache and read 11.3G for a
   run that only did `max(recv_ts)`), and re-measure a cap rationale when
-  its query's input moves an order of magnitude (#134 was 20x).
+  its query's input moves an order of magnitude (#134 was 20x). Since
+  2026-11-15 QA reads that itself: `slice walks inside their measured input`
+  prints each walk's busiest slice and fails past the rows its width was
+  measured at (#199). Count archive rows for such a measurement on a BACKUP
+  SLOT (`/home/devs/hyx-backups/hyxstream.<Day>.duckdb`) in a `MemoryMax`
+  transient unit: no live hold, and the cap is the unit's, not the run's.
 - A read-only SCAN of the stream archive costs anon RSS of `memory_limit`
   plus ~2 GB the limit does not count, whatever the query does after it:
   measured 2026-11-13 in a 4G transient unit, the econ bracket's hold
