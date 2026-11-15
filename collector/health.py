@@ -1022,6 +1022,14 @@ SHADOWHOLD_WINDOW_H = 7 * 24
 SHADOWHOLD_RECENT_H = 6
 #: now / oldest at or above this is a CLIMB.
 SHADOWHOLD_CLIMB_RATIO = 1.25
+#: One 300 s line carrying at least this share of a span's held seconds is an
+#: EVENT inside the span, not the per-attach constant the climb is about, and
+#: the ratio is taken without it. A 6 h span is 72 lines (1.4% each). Measured
+#: 2026-11-15 02:15Z: the line read `0.752 s/poll, x1.57 = CLIMB` where eleven
+#: of twelve hours sat at 0.52-0.61; one 64.6 s hold at 11-14 22:02Z, the
+#: shadow stalled under the host's global OOM (mistakes #198), was 25% of the
+#: span's 257 s. A mean is one number for two populations (#94's shape).
+SHADOWHOLD_EVENT_SHARE = 0.10
 _SHADOWHOLD_LINE_RE = re.compile(r"python\[(\d+)\]: \[shadow\] .* stream_holds=(\{.*\})\s*$")
 _FLUSH_FAILED_RE = re.compile(r"\[streamd\] \S+ flush FAILED \(.*?\bPID (\d+)\b")
 
@@ -1034,10 +1042,31 @@ class HoldReading:
     end: datetime
     polls: int
     held_s: float
+    #: The single line pair that held longest: its seconds, polls and end.
+    worst_s: float = 0.0
+    worst_polls: int = 0
+    worst_at: datetime | None = None
 
     @property
     def per_poll_s(self) -> float:
         return self.held_s / self.polls
+
+    @property
+    def event(self) -> bool:
+        """One line carried enough of the span to be read apart from it."""
+        return (
+            self.worst_at is not None
+            and self.polls > self.worst_polls
+            and self.worst_s >= SHADOWHOLD_EVENT_SHARE * self.held_s
+        )
+
+    @property
+    def steady_per_poll_s(self) -> float:
+        """Hold per poll without the event line, or the plain mean when no
+        line stands out -- the subject of the climb."""
+        if not self.event:
+            return self.per_poll_s
+        return (self.held_s - self.worst_s) / (self.polls - self.worst_polls)
 
     @property
     def duty(self) -> float:
@@ -1057,9 +1086,9 @@ class ShadowHold:
 
     @property
     def climb(self) -> float | None:
-        if self.oldest is None or self.oldest.per_poll_s <= 0:
+        if self.oldest is None or self.oldest.steady_per_poll_s <= 0:
             return None
-        return self.recent.per_poll_s / self.oldest.per_poll_s
+        return self.recent.steady_per_poll_s / self.oldest.steady_per_poll_s
 
 
 def _hold_samples(lines: list[str]) -> tuple[list[tuple[datetime, int, float]], set[int]]:
@@ -1090,16 +1119,19 @@ def _reading(samples: list[tuple[datetime, int, float]]) -> HoldReading | None:
     polls = 0
     held = 0.0
     start = end = None
+    worst: tuple[float, int, datetime | None] = (0.0, 0, None)
     for (t0, n0, s0), (t1, n1, s1) in zip(samples, samples[1:], strict=False):
         if n1 < n0 or s1 < s0:
             continue
         polls += n1 - n0
         held += s1 - s0
+        if s1 - s0 > worst[0]:
+            worst = (s1 - s0, n1 - n0, t1)
         start = t0 if start is None else start
         end = t1
     if polls <= 0 or start is None or end is None:
         return None
-    return HoldReading(start, end, polls, held)
+    return HoldReading(start, end, polls, held, *worst)
 
 
 def parse_shadow_hold(
@@ -1333,6 +1365,11 @@ def shadow_hold_line(
         f"hold on hyxstream.duckdb: {r.per_poll_s:.3f} s/poll over {r.polls:,} polls in the last "
         f"{SHADOWHOLD_RECENT_H}h ({r.duty:.1%} duty)"
     )
+    if r.event and r.worst_at is not None:
+        head += (
+            f"; one line carried {r.worst_s:.1f} s of the {r.held_s:.1f} s "
+            f"({r.worst_at:%m-%d %H:%M}Z), {r.steady_per_poll_s:.3f} s/poll without it"
+        )
     if hold.oldest is None:
         trend = f"no span {SHADOWHOLD_RECENT_H}h earlier in the {hours}h window to compare"
     else:
@@ -1340,9 +1377,9 @@ def shadow_hold_line(
         ratio = hold.climb or 0.0
         tag = "CLIMB" if ratio >= SHADOWHOLD_CLIMB_RATIO else "flat"
         days = max((r.end - o.start).total_seconds() / 86400, 1e-9)
-        slope = (r.per_poll_s - o.per_poll_s) / days
+        slope = (r.steady_per_poll_s - o.steady_per_poll_s) / days
         trend = (
-            f"{o.per_poll_s:.3f} s/poll at {o.start:%m-%d %H:%M}Z, x{ratio:.2f} = {tag} "
+            f"{o.steady_per_poll_s:.3f} s/poll at {o.start:%m-%d %H:%M}Z, x{ratio:.2f} = {tag} "
             f"({slope * 1000:+.0f} ms/poll/day)"
         )
     total = hold.collisions_shadow + hold.collisions_other

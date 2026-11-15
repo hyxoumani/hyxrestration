@@ -116,6 +116,46 @@ def test_rendered_line_moves_with_every_field() -> None:
         replace(base, oldest=replace(base.oldest, start=NOW - timedelta(hours=160))),
         replace(base, collisions_shadow=11),
         replace(base, collisions_other=3),
+        replace(base, recent=replace(base.recent, worst_s=90.0, worst_polls=5, worst_at=NOW)),
     ]
+    ev = replace(base, recent=replace(base.recent, worst_s=90.0, worst_polls=5, worst_at=NOW))
+    ev_line = health.shadow_hold_line(ev)
+    for v in (
+        replace(ev, recent=replace(ev.recent, worst_s=95.0)),
+        replace(ev, recent=replace(ev.recent, worst_polls=50)),
+        replace(ev, recent=replace(ev.recent, worst_at=NOW - timedelta(hours=1))),
+        replace(ev, oldest=replace(ev.oldest, worst_s=90.0, worst_polls=5, worst_at=NOW)),
+    ):
+        assert health.shadow_hold_line(v) != ev_line
     for v in variants:
         assert health.shadow_hold_line(v) != line
+
+
+def test_one_long_hold_is_named_and_does_not_read_as_a_climb() -> None:
+    """Mistakes #198's reading: `0.752 s/poll, x1.57 = CLIMB` at 11-15 02:15Z
+    was one 64.6 s hold under the host's OOM inside a flat 0.56 s span."""
+    old = _run(NOW - timedelta(hours=48), 6, 0.48, 798)
+    recent = []
+    for i in range(73):  # one line per 300 s, 5 polls a line (the 60 s poll)
+        n = 100_000 + 5 * i
+        held = 48_000.0 + 5 * i * 0.56 + (64.0 if i >= 20 else 0.0)
+        recent.append(_hold(NOW - timedelta(hours=6) + timedelta(seconds=300 * i), 798, n, held))
+    hold = health.parse_shadow_hold(old + recent, [], NOW)
+    assert hold is not None and hold.recent.event
+    assert hold.recent.per_poll_s == pytest.approx((360 * 0.56 + 64.0) / 360)  # 0.738
+    assert hold.recent.steady_per_poll_s == pytest.approx(0.56)
+    assert hold.recent.worst_at == NOW - timedelta(hours=6) + timedelta(seconds=300 * 20)
+    assert hold.climb == pytest.approx(0.56 / 0.48)
+    line = health.shadow_hold_line(hold)
+    assert "0.738 s/poll over 360 polls" in line
+    assert (
+        "; one line carried 66.8 s of the 265.6 s (11-09 15:55Z), 0.560 s/poll without it" in line
+    )
+    assert "x1.17 = flat" in line
+
+
+def test_a_uniform_span_names_no_event() -> None:
+    hold = health.parse_shadow_hold(_run(NOW - timedelta(hours=6), 6, 0.458, 798), [], NOW)
+    assert hold is not None and not hold.recent.event
+    assert hold.recent.steady_per_poll_s == hold.recent.per_poll_s
+    assert "one line carried" not in health.shadow_hold_line(hold)
