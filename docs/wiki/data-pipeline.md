@@ -519,6 +519,23 @@ the very defect it exists to answer. Preferred to a `WantedBy` on a
 checker unit for the readback pass's reason: another reader inside
 journald is another unread verdict.
 
+**The `RECENT` line says why (since 2026-11-15).** For each unit's newest
+`exit-code` failure the digest prints the failed run's own last line:
+`... CLEARED: exit-code/1 11-15 17:52Z | the 17:52Z run's last line:
+requests.exceptions.HTTPError: 500 Server Error ... /markets?...`. A
+Python crash ends on its exception, QA on `[qa] N FAILURES: [...]`, a
+skip on the line naming the holder. The run's log does not end with the
+main process -- `ExecStopPost` (`cgmem.sh`, QA's `--clear-snapshot`)
+prints under the same invocation id -- so the main PID is taken from the
+last record at or before the manager's "Main process exited" record
+(`health.parse_last_line`, `tests/test_health_failure_cause.py`). One
+indexed journal read per failing unit; kills are not read (no last word,
+and the kernel's attribution is already on the row). First reading: that
+17:52Z breadth failure was ONE Kalshi 500 on the first `/markets` page,
+the only fatal Kalshi 500 in the journal's 55 days (retention floor
+09-22); the next slot ran clean. `_GATEWAY_STATUSES` still excludes 500:
+one lost 5-minute slot in ~15,800 does not move it.
+
 Four properties of systemd's persisted state had to be measured before
 they could be reported. Each is a way a naive digest lies:
 

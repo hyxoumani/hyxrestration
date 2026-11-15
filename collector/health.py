@@ -2984,6 +2984,12 @@ class UnitFailure:
     #: not a crash); None when the result is not an exit or the record of it
     #: was not read -- never guessed.
     status: str | None = None
+    #: systemd's id for the run that failed, and the instant (epoch us) the
+    #: manager recorded its main process exiting -- the two keys
+    #: `read_failure_causes` needs to find the run's own last line. None when
+    #: the record carried neither; never guessed.
+    invocation: str | None = None
+    exit_us: int | None = None
 
     @property
     def label(self) -> str:
@@ -3012,6 +3018,17 @@ def parse_unit_failures(stdout: str, units: set[str]) -> list[UnitFailure]:
         and rec.get("USER_INVOCATION_ID")
         and rec.get("EXIT_STATUS") is not None
     }
+    exits: dict[str, int] = {}
+    for rec in recs:
+        if (
+            isinstance(rec, dict)
+            and rec.get("MESSAGE_ID") == UNIT_EXIT_MESSAGE_ID
+            and rec.get("USER_INVOCATION_ID")
+        ):
+            try:
+                exits[rec["USER_INVOCATION_ID"]] = int(rec["__REALTIME_TIMESTAMP"])
+            except (KeyError, TypeError, ValueError):
+                continue
     out = []
     for rec in recs:
         if not isinstance(rec, dict) or rec.get("MESSAGE_ID") != UNIT_FAILURE_MESSAGE_ID:
@@ -3026,7 +3043,8 @@ def parse_unit_failures(stdout: str, units: set[str]) -> list[UnitFailure]:
         m = _RESULT_RE.search(str(rec.get("MESSAGE", "")))
         result = m.group("result") if m else "failed"
         status = statuses.get(rec.get("USER_INVOCATION_ID")) if result == "exit-code" else None
-        out.append(UnitFailure(unit, at, result, status))
+        inv = rec.get("USER_INVOCATION_ID") or None
+        out.append(UnitFailure(unit, at, result, status, inv, exits.get(inv)))
     return sorted(out, key=lambda f: f.at)
 
 
@@ -3064,6 +3082,87 @@ def read_unit_failures(units: set[str], hours: int = FAILURE_WINDOW_H) -> list[U
     except (OSError, subprocess.SubprocessError):
         return []
     return parse_unit_failures(proc.stdout, units)
+
+
+# WHAT THE FAILED RUN SAID LAST (2026-11-15).
+# `exit-code/1` names the manager's verdict and nothing about why. On 11-15 the
+# line read `hyxlab-breadth.service 1x in 24h, CLEARED: exit-code/1 11-15
+# 17:52Z` and the reader dug the journal to learn it was Kalshi answering one
+# `/markets` request with a 500 -- the same digging the exit STATUS was added
+# to end on 10-07, one level further down. The process already wrote the
+# answer: a Python crash ends its traceback on the exception, QA ends on
+# `[qa] N FAILURES: [...]`, a skip ends on the line naming the holder.
+#
+# Which record is "last" was measured on that day's two failures, because the
+# invocation's log does NOT end with the main process: `ExecStopPost` runs in
+# the same invocation and `cgmem.sh` (and QA's `--clear-snapshot`, itself a
+# python) print after it. The manager's "Main process exited" record splits
+# them -- stop-post is started after it -- so the main PID is the PID of the
+# last record at or before that instant, and the cause is that PID's last
+# record anywhere in the invocation (journald stamps a pipe's lines when it
+# reads them, which may be after the manager's own record).
+#
+# Only the NEWEST `exit-code` failure per unit is read: one indexed journal
+# read per failing unit, not per failure (the 10-07 OOM loop was 189). A kill
+# has no last word of its own and already carries the kernel's attribution.
+CAUSE_MAX_CHARS = 160
+
+
+def parse_last_line(stdout: str, exit_us: int) -> str | None:
+    """One invocation's journal JSON -> the main process's last line. Pure."""
+    recs = []
+    for line in stdout.splitlines():
+        try:
+            rec = json.loads(line)
+            recs.append((int(rec["__REALTIME_TIMESTAMP"]), rec.get("_PID"), rec.get("MESSAGE")))
+        except (ValueError, KeyError, TypeError):
+            continue
+    recs.sort(key=lambda r: r[0])
+    before = [r for r in recs if r[0] <= exit_us]
+    if not before:
+        return None
+    main_pid = before[-1][1]
+    for _, pid, message in reversed(recs):
+        # journald hands a non-UTF-8 MESSAGE back as a list of bytes; that is
+        # not a line a reader can use, so it is skipped rather than rendered.
+        if pid == main_pid and isinstance(message, str) and message.strip():
+            text = " ".join(message.split())
+            if len(text) > CAUSE_MAX_CHARS:
+                text = text[: CAUSE_MAX_CHARS - 1] + "…"
+            return text
+    return None
+
+
+def read_failure_causes(failures: list[UnitFailure]) -> dict[str, tuple[datetime, str]]:
+    """unit -> (when, last line) for each unit's newest `exit-code` failure.
+    A unit whose line cannot be read is absent, never guessed. Never raises."""
+    newest: dict[str, UnitFailure] = {}
+    for f in sorted(failures, key=lambda f: f.at):
+        if f.result == "exit-code" and f.invocation and f.exit_us is not None:
+            newest[f.unit] = f
+    out: dict[str, tuple[datetime, str]] = {}
+    for unit, f in newest.items():
+        try:
+            proc = subprocess.run(
+                [
+                    "journalctl",
+                    "--user",
+                    "--no-pager",
+                    f"_SYSTEMD_INVOCATION_ID={f.invocation}",
+                    "-o",
+                    "json",
+                    "--output-fields=MESSAGE,_PID,__REALTIME_TIMESTAMP",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        text = parse_last_line(proc.stdout, f.exit_us)
+        if text:
+            out[unit] = (f.at, text)
+    return out
 
 
 # ---- What the journal knows about a unit's RUNS (mistakes #195) ---------------
@@ -3811,6 +3910,7 @@ def failure_history_lines(
     floor: datetime | None = None,
     hours: int = FAILURE_WINDOW_H,
     width: int = 0,
+    causes: dict[str, tuple[datetime, str]] | None = None,
 ) -> list[str]:
     """The recent-failure section: per-unit recurrence, then one summary.
 
@@ -3830,7 +3930,13 @@ def failure_history_lines(
         # alarm -- the count beside it is recurrence, which the row cannot carry.
         status = "still failed" if unit in still_bad else "CLEARED"
         when = _render_hits(hits)
-        lines.append(f"{'RECENT':<10} {unit:<{width}}  {len(hits)}x in {hours}h, {status}: {when}")
+        said = ""
+        if causes and unit in causes:
+            at, text = causes[unit]
+            said = f" | the {at:%H:%M}Z run's last line: {text}"
+        lines.append(
+            f"{'RECENT':<10} {unit:<{width}}  {len(hits)}x in {hours}h, {status}: {when}{said}"
+        )
     covered = hours
     if floor is not None:
         covered = min(covered, (now - floor).total_seconds() / 3600.0)
@@ -4082,7 +4188,9 @@ def main() -> None:
     width = max((len(r.unit) for r in rows), default=0)
     for r in sorted(rows, key=lambda r: (r.ok, r.unit)):
         print(f"{r.state:<10} {r.unit:<{width}}  {r.detail}", flush=True)
-    for line in failure_history_lines(failures, rows, now, journal_floor(), width=width):
+    for line in failure_history_lines(
+        failures, rows, now, journal_floor(), width=width, causes=read_failure_causes(failures)
+    ):
         print(line, flush=True)
     killed: list[str] = []
     for c in live_cgmem(sorted(units)):
