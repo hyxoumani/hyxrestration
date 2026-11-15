@@ -75,8 +75,11 @@ ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
 # is the one party a SIGKILL cannot skip. After cgmem.sh, so the cgroup line
 # is read before this allocates anything; `-`: a failed cleanup never changes
 # the unit's result (the next run's own pre-clean is the backstop).
-# Rehearsed 2026-11-15 in a transient unit on a scratch archive: main PID
-# SIGKILLed -> `stop-post: cleared 2 leftover entries`. NOT covered: a
+# Rehearsed 2026-11-15 in transient units on a scratch archive: main PID
+# SIGKILLed -> `stop-post: cleared 2 leftover entries`; and the production
+# arm, a kernel kill at the unit's own MemoryMax (400M, the section
+# allocating) -> the [cgmem] line with oom_kill=1, then the same cleared
+# line, result 'oom-kill'. NOT covered: a
 # `systemctl kill` of the whole cgroup, which killed the stop-post as well
 # (code=killed 9/KILL, both entries left) -- stop the unit, do not kill it.
 ExecStopPost=-/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.qa --clear-snapshot
