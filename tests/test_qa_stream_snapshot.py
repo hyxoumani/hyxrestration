@@ -85,3 +85,82 @@ def test_the_section_still_raises_through_the_snapshot_and_cleans_up(tmp_path, m
     with pytest.raises(RuntimeError):
         qa.qa_stream(26.0, path=str(path))
     assert list((tmp_path / qa.STREAM_SNAPSHOT_DIRNAME).iterdir()) == []
+
+
+# --- a KILLED run: the `finally` above is not a cleanup SIGKILL reaches -------
+
+_REPO = Path(__file__).resolve().parent.parent
+_KILLED_RUN = """
+import sys, time
+import collector.qa as qa
+def body(conn, hours, now):
+    print("IN", flush=True)
+    time.sleep(120)
+qa._stream_checks = body
+qa.qa_stream(26.0)
+"""
+
+
+def _run_qa(cwd, *args, **kw):
+    import subprocess
+    import sys
+
+    return subprocess.Popen(
+        [sys.executable, "-u", *args],
+        cwd=cwd,
+        env={"PYTHONPATH": str(_REPO), "PATH": "/usr/bin:/bin"},
+        stdout=subprocess.PIPE,
+        text=True,
+        **kw,
+    )
+
+
+def test_a_killed_run_leaves_its_snapshot_and_the_stop_post_clears_it(tmp_path):
+    """Both arms, from outside the process. The 2026-11-15 10:03Z run was
+    killed at its cgroup cap mid-section; nothing in the process can clean up
+    after SIGKILL, so the unit's ExecStopPost does (`--clear-snapshot`)."""
+    (tmp_path / "data").mkdir()
+    _stream(tmp_path / "data" / "hyxstream.duckdb")
+    snap_dir = tmp_path / "data" / qa.STREAM_SNAPSHOT_DIRNAME
+
+    child = _run_qa(tmp_path, "-c", _KILLED_RUN)
+    try:
+        lines = iter(child.stdout.readline, "")
+        assert any(ln.strip() == "IN" for ln in lines), "the section never started"
+    finally:
+        child.kill()
+        child.wait()
+    left = list(snap_dir.iterdir())
+    assert left, "vacuity: the killed run left nothing, so this test proves nothing"
+
+    post = _run_qa(tmp_path, "-m", "collector.qa", "--clear-snapshot")
+    out, _ = post.communicate(timeout=60)
+    assert post.returncode == 0
+    assert list(snap_dir.iterdir()) == []
+    assert "stop-post: cleared" in out and "GB apparent" in out
+    assert (tmp_path / "data" / "hyxstream.duckdb").exists(), "the cleanup touched the archive"
+
+    # A run that reached its own cleanup: the stop-post says so and removes nothing.
+    again = _run_qa(tmp_path, "-m", "collector.qa", "--clear-snapshot")
+    out, _ = again.communicate(timeout=60)
+    assert again.returncode == 0 and "already empty" in out
+    # It ran no check: no section record, no run record, in the cwd it was given.
+    assert not (tmp_path / "reports").exists()
+
+
+def test_clear_snapshot_without_a_directory_is_a_clean_zero(tmp_path):
+    assert qa.clear_stream_snapshot(str(tmp_path / "data" / "hyxstream.duckdb")) == (0, 0)
+
+
+def test_the_qa_unit_clears_the_snapshot_at_stop_after_the_cgroup_read():
+    unit = (_REPO / "scripts/systemd/hyxlab-qa.service").read_text()
+    posts = [ln for ln in unit.splitlines() if ln.startswith("ExecStopPost=")]
+    assert len(posts) == 2
+    assert posts[0].endswith("scripts/cgmem.sh"), "the cgroup read must come first"
+    # `-`: a failed cleanup never changes the unit's result.
+    assert posts[1].startswith("ExecStopPost=-/")
+    assert posts[1].endswith("-m collector.qa --clear-snapshot")
+    start = next(ln for ln in unit.splitlines() if ln.startswith("ExecStart="))
+    assert posts[1].split()[0].removeprefix("ExecStopPost=-") == start.split()[0].removeprefix(
+        "ExecStart="
+    ), "the stop-post must run the same interpreter as the run"

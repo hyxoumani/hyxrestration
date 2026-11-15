@@ -38,20 +38,6 @@ from collector.venues.kalshi_ws import parse_message
 from hyxlab.store import Store, attach_wait_block, attach_wait_line, reset_attach_waits
 from hyxlab.streamstore import StreamStore
 
-#: Stamped per TEST by `_fresh_now`, never at import. The module is imported at
-#: collection, so an import-time stamp ages by however long the suite takes to
-#: reach this file: on 2026-11-15 a suite running ~3x slow under host I/O
-#: pressure got here 943 s late and every "fresh" fixture read as stale against
-#: QA's own clock -- 15 failures that reddened the promote gate with nothing
-#: wrong (tests/test_clock_stamp_discipline.py forbids the shape).
-NOW: datetime
-
-
-@pytest.fixture(autouse=True)
-def _fresh_now():
-    global NOW
-    NOW = datetime.now(UTC)
-
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -66,6 +52,9 @@ def _isolated(tmp_path, monkeypatch):
 
 
 def _stream(path):
+    # Stamped at the CALL: this helper is imported by other test modules, and
+    # an import-time stamp ages with the suite (test_clock_stamp_discipline).
+    now = datetime.now(UTC)
     store = StreamStore(path)
     frame = {
         "type": "trade",
@@ -76,11 +65,11 @@ def _stream(path):
             "yes_price_dollars": "0.4000",
             "count_fp": "5.00",
             "taker_side": "yes",
-            "ts": int(NOW.timestamp()),
-            "ts_ms": int(NOW.timestamp() * 1000),
+            "ts": int(now.timestamp()),
+            "ts_ms": int(now.timestamp() * 1000),
         },
     }
-    store.append_trades(parse_message(frame, NOW)[1])
+    store.append_trades(parse_message(frame, now)[1])
     store.flush()
     return path
 
@@ -223,7 +212,7 @@ def test_the_stale_stream_still_trips_its_check_through_the_seam(tmp_path):
     must not have moved them out of the section. A hold measured around a body
     that no longer runs is the worst of both."""
     store = StreamStore(tmp_path / "s.duckdb")
-    old = NOW - timedelta(hours=2)
+    old = datetime.now(UTC) - timedelta(hours=2)
     frame = {
         "type": "trade",
         "sid": 1,
@@ -243,4 +232,3 @@ def test_the_stale_stream_still_trips_its_check_through_the_seam(tmp_path):
     assert any("stream fresh" in f for f in qa._failures), (
         "the stream freshness check did not run inside the held section"
     )
-    assert datetime.now(UTC) > NOW - timedelta(days=1)  # clock sanity, not a claim

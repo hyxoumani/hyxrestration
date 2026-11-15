@@ -998,6 +998,39 @@ def _rm_tree(p: Path) -> None:
         p.unlink(missing_ok=True)
 
 
+def _tree_bytes(p: Path) -> int:
+    """Apparent bytes under `p` (`st_size`): a reflinked snapshot reads at the
+    source's full size here whatever it holds exclusively (mistakes #139)."""
+    try:
+        if p.is_dir() and not p.is_symlink():
+            return sum(_tree_bytes(c) for c in p.iterdir())
+        return p.lstat().st_size
+    except OSError:
+        return 0
+
+
+def clear_stream_snapshot(path: str = STREAM) -> tuple[int, int]:
+    """Empty the snapshot directory beside `path`; (entries removed, apparent
+    bytes). The unit's `ExecStopPost` calls this (`--clear-snapshot`) because
+    `_stream_snapshot`'s `finally` is not a cleanup a KILL reaches: the
+    2026-11-15 10:03Z run was OOM-killed at its cgroup cap inside the seq
+    check and left its copy of the stream archive, with DuckDB's spill
+    directory, in `data/qa-snapshot` -- found only because a pass re-ran QA by
+    hand 12 minutes later. Unattended it stays until the next day's run,
+    pinning every block the live file rewrites in between on a disk already
+    past the kubelet's threshold (ops rule: cleanup that must survive SIGKILL
+    belongs with the supervisor, not in a handler)."""
+    snap_dir = Path(path).parent / STREAM_SNAPSHOT_DIRNAME
+    if not snap_dir.is_dir():
+        return 0, 0
+    n = size = 0
+    for stale in snap_dir.iterdir():
+        size += _tree_bytes(stale)
+        _rm_tree(stale)
+        n += 1
+    return n, size
+
+
 @contextmanager
 def _stream_snapshot(path: str):
     """Yield (path to attach, snapshotted?) for the stream section.
@@ -5382,5 +5415,25 @@ def main() -> None:
     print("[qa] all checks pass", flush=True)
 
 
+def stop_post() -> None:
+    """`python -m collector.qa --clear-snapshot`, the unit's second
+    ExecStopPost. Deliberately NOT a branch of `main`: no exit may precede
+    the run record there (tests/test_qa_prior_run.py), and this runs no check,
+    reads no verdict and writes no record."""
+    n, size = clear_stream_snapshot()
+    if n:
+        print(
+            f"[qa] stop-post: cleared {n} leftover entr{'y' if n == 1 else 'ies'} from"
+            f" data/{STREAM_SNAPSHOT_DIRNAME} ({size / 1e9:.1f} GB apparent) -- the run"
+            " ended without reaching its own cleanup",
+            flush=True,
+        )
+    else:
+        print(f"[qa] stop-post: data/{STREAM_SNAPSHOT_DIRNAME} already empty", flush=True)
+
+
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--clear-snapshot"]:
+        stop_post()
+    else:
+        main()

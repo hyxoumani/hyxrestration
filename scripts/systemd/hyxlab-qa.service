@@ -68,6 +68,18 @@ MemoryMax=12G
 # ExecStopPost runs inside the cgroup after the main process is gone: the
 # last reader. Reports only; never fails the unit (scripts/cgmem.sh).
 ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh
+# A run KILLED mid-section (the cgroup cap, 2026-11-15 10:03Z; a stop; a
+# timeout) never reaches `_stream_snapshot`'s `finally`, and its copy of the
+# stream archive plus DuckDB's spill directory stay in data/qa-snapshot until
+# the next run -- a day, on a disk past the kubelet's threshold. The manager
+# is the one party a SIGKILL cannot skip. After cgmem.sh, so the cgroup line
+# is read before this allocates anything; `-`: a failed cleanup never changes
+# the unit's result (the next run's own pre-clean is the backstop).
+# Rehearsed 2026-11-15 in a transient unit on a scratch archive: main PID
+# SIGKILLed -> `stop-post: cleared 2 leftover entries`. NOT covered: a
+# `systemctl kill` of the whole cgroup, which killed the stop-post as well
+# (code=killed 9/KILL, both entries left) -- stop the unit, do not kill it.
+ExecStopPost=-/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m collector.qa --clear-snapshot
 WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # EXP-2203: the disk-headroom check counts the backup slots where they live.
 Environment=HYXLAB_BACKUP_DIR=/home/devs/hyx-backups

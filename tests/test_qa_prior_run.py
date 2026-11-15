@@ -315,6 +315,14 @@ def test_reporting_an_unread_failure_does_not_make_it_report_forever(monkeypatch
 # --- the premise: nothing outside qa reads qa -------------------------------
 
 
+#: The two stop-posts that are not consumers of a unit's result: the cgroup
+#: REPORTER (2026-10-13) and QA's snapshot CLEANER (2026-11-15), which empties
+#: data/qa-snapshot after a killed run. Neither may read the result.
+STOP_POST_OK = (
+    r"^ExecStopPost=(.*/scripts/cgmem\.sh|-\S+/python -u -m collector\.qa --clear-snapshot)$"
+)
+
+
 def test_nothing_outside_qa_reads_qa(monkeypatch):
     """The finding's premise, kept honest. If a real consumer of the unit's
     state is ever added — an `OnFailure=`, a `systemctl is-failed`, a mailer —
@@ -346,11 +354,22 @@ def test_nothing_outside_qa_reads_qa(monkeypatch):
         "cgmem.sh now reads the unit's result; it is a consumer, and the premise "
         "of this test (and qa_prior_run) must be rewritten"
     )
+    stop_post = ast.get_source_segment(
+        QA.read_text(),
+        next(
+            n
+            for n in ast.parse(QA.read_text()).body
+            if isinstance(n, ast.FunctionDef) and n.name == "stop_post"
+        ),
+    )
+    assert not re.search(
+        r"SERVICE_RESULT|EXIT_STATUS|EXIT_CODE|is-failed|_record|STATE", stop_post
+    ), "QA's stop-post now reads or writes a verdict; it was admitted as a cleaner only"
     out = [
         f
         for f in out
         if any(
-            not re.match(r"^ExecStopPost=.*/scripts/cgmem\.sh$", line)
+            not re.match(STOP_POST_OK, line)
             for line in (REPO / f).read_text().splitlines()
             if re.search(r"OnFailure=|ExecStopPost=|is-failed|systemctl .*--failed", line)
         )
@@ -360,7 +379,8 @@ def test_nothing_outside_qa_reads_qa(monkeypatch):
     service = (REPO / "scripts/systemd/hyxlab-qa.service").read_text()
     assert "Type=oneshot" in service
     assert not re.search(r"^(OnFailure|Restart)=", service, re.M)
-    assert not re.search(r"^ExecStopPost=(?!.*/scripts/cgmem\.sh$)", service, re.M)
+    posts = re.findall(r"^ExecStopPost=.*$", service, re.M)
+    assert posts and all(re.match(STOP_POST_OK, ln) for ln in posts), posts
     # the project's only journal reader, and it does not cover this unit
     assert "hyxlab-qa.timer" not in qa.BATCH_RUN_BUDGET_H
 

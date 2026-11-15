@@ -104,3 +104,42 @@ def test_no_test_module_stamps_the_clock_at_import():
         "wall clock read at import -- it ages with the suite; stamp it per test "
         f"in an autouse fixture instead: {offenders}"
     )
+
+
+def _fixture_stamped_globals(tree: ast.Module) -> list[str]:
+    """Module-level names declared without a value (`NOW: datetime`): the
+    per-test replacement for an import-time stamp, assigned by an autouse
+    fixture that runs only for tests IN that module."""
+    return [
+        n.target.id
+        for n in tree.body
+        if isinstance(n, ast.AnnAssign) and n.value is None and isinstance(n.target, ast.Name)
+    ]
+
+
+def test_a_module_with_a_fixture_stamped_global_exports_nothing():
+    """The first cut of the fix above gave `tests/test_qa_holds.py` a
+    fixture-stamped `NOW` while `tests/test_qa_stream_snapshot.py` imports its
+    `_stream` helper: an autouse fixture does not follow an imported function,
+    so the importer raised NameError run alone and passed in the full suite
+    only on whatever stamp the exporter's last test had left behind."""
+    modules = _test_modules()
+    stamped = {
+        "tests." + p.stem: names
+        for p in modules
+        if (names := _fixture_stamped_globals(ast.parse(p.read_text())))
+    }
+    assert stamped, "vacuity: no module uses the per-test stamp any more -- delete this test"
+    importers = {}
+    for p in modules:
+        for node in ast.walk(ast.parse(p.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module in stamped:
+                importers[str(p.relative_to(ROOT))] = (node.module, stamped[node.module])
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in stamped:
+                        importers[str(p.relative_to(ROOT))] = (alias.name, stamped[alias.name])
+    assert not importers, (
+        "imports from a module whose globals are stamped by its own autouse "
+        f"fixture -- the fixture does not run for the importer's tests: {importers}"
+    )
