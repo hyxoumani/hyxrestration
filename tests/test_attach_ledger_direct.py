@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import time
 
 import duckdb
@@ -167,7 +168,20 @@ def test_the_retry_ladder_holds_nothing_while_it_sleeps(tmp_path, monkeypatch):
     p = _db(tmp_path)
     monkeypatch.setattr(store, "spill_cap", _boom)
     seen: list[bool] = []
-    monkeypatch.setattr(time, "sleep", lambda _s: seen.append(_writable_from_outside(p)))
+    # Only THIS thread's sleeps are the ladder's. `time.sleep` is patched
+    # process-wide, and a daemon thread left running by an earlier test in a
+    # full-suite run sleeps through the same name: measured 2026-11-16, a
+    # promote's suite read `[True, True, True]` here -- three clean probes,
+    # one of them not the ladder's -- and the promote was refused.
+    me = threading.get_ident()
+    real_sleep = time.sleep
+
+    def _sleep(s):
+        if threading.get_ident() != me:
+            return real_sleep(s)
+        seen.append(_writable_from_outside(p))
+
+    monkeypatch.setattr(time, "sleep", _sleep)
     with pytest.raises(duckdb.Error):
         store.connect_retry(str(p), retries=3, delay=0.01)
     monkeypatch.undo()
