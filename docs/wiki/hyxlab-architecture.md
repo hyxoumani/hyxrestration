@@ -163,6 +163,9 @@ harness manifests (simulator/harness.py → data/runs/)  +  self-tests (tests/)
   the shadow daemon has restarted or the report's import closure has
   moved (then it re-derives, ~20 min / 8G, and the report's `rederive`
   field says what the new code reproduced of the old body);
+  since 2026-11-16 it replays from the newest stream BACKUP SLOT taken
+  >= 1 h after the run's end (`hyxlab/backupslot.py`, zero live hold;
+  the report's `stream_source` says which file it read);
   `collector.qa`'s `divergence` section is the reader that makes the
   result an alarm rather than a file.
 - `hyxlab/shadowruns.py` — which shadow run a report should measure

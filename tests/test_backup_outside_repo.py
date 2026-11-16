@@ -42,7 +42,9 @@ def _env_value(unit: str, key: str) -> str | None:
 # -- 1. the deployed destination ------------------------------------------
 
 
-@pytest.mark.parametrize("unit", ["hyxlab-backup.service", "hyxlab-qa.service"])
+@pytest.mark.parametrize(
+    "unit", ["hyxlab-backup.service", "hyxlab-qa.service", "hyxlab-divergence.service"]
+)
 def test_units_point_the_backups_outside_every_work_tree(unit):
     dest = _env_value(unit, "HYXLAB_BACKUP_DIR")
     assert dest is not None, f"{unit} must set HYXLAB_BACKUP_DIR (EXP-2203)"
@@ -55,9 +57,10 @@ def test_units_point_the_backups_outside_every_work_tree(unit):
         assert not (dest == tree or dest.startswith(tree + "/")), f"{dest} is inside {tree}"
 
 
-def test_writer_and_qa_agree_on_where_the_slots_are():
+@pytest.mark.parametrize("reader", ["hyxlab-qa.service", "hyxlab-divergence.service"])
+def test_writer_and_readers_agree_on_where_the_slots_are(reader):
     assert _env_value("hyxlab-backup.service", "HYXLAB_BACKUP_DIR") == _env_value(
-        "hyxlab-qa.service", "HYXLAB_BACKUP_DIR"
+        reader, "HYXLAB_BACKUP_DIR"
     )
 
 

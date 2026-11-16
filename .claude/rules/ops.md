@@ -614,6 +614,19 @@
   measured at (#199). Count archive rows for such a measurement on a BACKUP
   SLOT (`/home/devs/hyx-backups/hyxstream.<Day>.duckdb`) in a `MemoryMax`
   transient unit: no live hold, and the cap is the unit's, not the run's.
+- A report on a CLOSED window reads a backup slot, not the live archive.
+  The seven day-named slots in `/home/devs/hyx-backups` are reflinks
+  (~0.2 GB exclusive each) and a read of one holds nothing a daemon
+  writes: the divergence replay of a 36.5 h run cost 33.7 s on
+  `hyxstream.Mon.duckdb` and 0 s live, where the nightly unit's live
+  holds were 14.3 s and 81.0 s (2026-11-16). `simulator.divergence` does
+  it by default when a slot was taken >= 1 h after the run's end
+  (`hyxlab.backupslot.covering_slot`; needs `HYXLAB_BACKUP_DIR`, set in
+  the unit -- export it for a by-hand run) and says which in its
+  `stream source:` line. A slot lacks rows that LANDED after it was
+  taken, so it cannot serve a window still open; to read a RUNNING
+  shadow run, point `--shadow-db/--stream-db/--archive-db` at the same
+  night's three slots and a scratch `--out`.
 - A read-only SCAN of the stream archive costs anon RSS of `memory_limit`
   plus ~2 GB the limit does not count, whatever the query does after it:
   measured 2026-11-13 in a 4G transient unit, the econ bracket's hold

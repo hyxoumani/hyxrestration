@@ -33,6 +33,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
 
+from hyxlab.backupslot import BACKUP_DIR_ENV, SLOT_MARGIN, covering_slot
 from hyxlab.importclosure import closure_sha
 from hyxlab.reportdir import shared_reports
 from hyxlab.scratch import duck_scratch_dir
@@ -785,6 +786,39 @@ def rederive_line(delta: dict) -> str:
     )
 
 
+def stream_source_for(explicit: str | None, end: datetime | None) -> tuple[str, dict]:
+    """The stream archive file this report replays from, and why.
+
+    An explicit `--stream-db` is obeyed. Otherwise a backup slot taken
+    `SLOT_MARGIN` or more after the run's end stands in for the live
+    file: the run is over, so the slot has every row it traded on, and
+    reading it excludes `collector.streamd` for zero seconds where the
+    live read cost it 14-81 s a night. No such slot (a run that ended
+    since the last backup, or no `HYXLAB_BACKUP_DIR`) reads live as before.
+    """
+    if explicit is not None:
+        return explicit, {"kind": "explicit", "path": explicit, "taken": None}
+    slot = covering_slot(STREAM_DB, end)
+    if slot is None:
+        return STREAM_DB, {"kind": "live", "path": STREAM_DB, "taken": None}
+    return str(slot.path), {"kind": "backup_slot", "path": str(slot.path), "taken": str(slot.taken)}
+
+
+def stream_source_line(source: dict) -> str:
+    if source["kind"] == "backup_slot":
+        return (
+            f"[divergence] stream source: backup slot {source['path']} (taken"
+            f" {source['taken']}Z) -- no hold on the live archive"
+        )
+    if source["kind"] == "live":
+        return (
+            f"[divergence] stream source: LIVE {source['path']} -- no backup slot taken"
+            f" {SLOT_MARGIN} or more after the run's end (${BACKUP_DIR_ENV}); this read"
+            " excludes the stream daemon for its length"
+        )
+    return f"[divergence] stream source: {source['path']} (--stream-db)"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="shadow-vs-replay divergence report")
     ap.add_argument(
@@ -794,7 +828,13 @@ def main() -> None:
     )
     ap.add_argument("--anchor", default=None, help="ISO ts override for the trading anchor")
     ap.add_argument("--shadow-db", default=SHADOW_DB)
-    ap.add_argument("--stream-db", default=STREAM_DB)
+    ap.add_argument(
+        "--stream-db",
+        default=None,
+        help="stream archive to replay from; default: the newest backup slot taken"
+        f" >= {SLOT_MARGIN} after the run's end (${BACKUP_DIR_ENV}), which holds"
+        " nothing the stream daemon writes, else the live archive",
+    )
     ap.add_argument("--archive-db", default="data/hyxlab.duckdb")
     # Rooted, not cwd-relative: the daily unit runs from the stable
     # worktree and `collector.qa` reads the result from there too, while
@@ -920,6 +960,8 @@ def main() -> None:
         f"[divergence] run {run_id} anchor={anchor} end={end} latency={latency}s"
         f" seed_floor={run_seed_floor or 'legacy (newest gap row)'}"
     )
+    stream_db, stream_source = stream_source_for(args.stream_db, end)
+    print(stream_source_line(stream_source))
     universe = shadow_universe()
     replay_fills, gaps = replay_run(
         run_id,
@@ -927,7 +969,7 @@ def main() -> None:
         end,
         latency,
         strategies.split(","),
-        stream_db=args.stream_db,
+        stream_db=stream_db,
         archive_db=args.archive_db,
         return_gaps=True,
         series=universe,
@@ -938,6 +980,9 @@ def main() -> None:
         "anchor": str(anchor),
         "seed_floor": str(run_seed_floor) if run_seed_floor else None,
         "end": str(end),
+        # Which FILE the replay read (a backup slot holds nothing live; a
+        # slot can lack a row that landed late -- `hyxlab.backupslot`).
+        "stream_source": stream_source,
         "latency_s": latency,
         "strategies": strategies,
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None)),

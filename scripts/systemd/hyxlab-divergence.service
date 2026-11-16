@@ -25,6 +25,10 @@ WorkingDirectory=/home/devs/workspace/hyxrestration-stable
 # tests/test_shared_reports.py enforces that every unit reaching
 # hyxlab.reportdir carries this line, with the same value.
 Environment=HYXLAB_REPORTS_DIR=/home/devs/workspace/hyxrestration/reports
+# Where the replay looks for a backup slot of the stream archive to read in
+# place of the live file (hyxlab.backupslot): a finished run needs nothing
+# newer, and the live read cost streamd 14-81 s a night (2026-11-16).
+Environment=HYXLAB_BACKUP_DIR=/home/devs/hyx-backups
 # --if-new is what makes this daily unit affordable. The subject is
 # `latest_complete_run`, which advances only when the shadow daemon restarts,
 # so on almost every day the report already exists and the unit exits 0 in
