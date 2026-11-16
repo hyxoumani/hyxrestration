@@ -231,6 +231,7 @@ def test_unmatched_fills_classified_by_cause():
 
     assert rep["unmatched_replay"] == 3
     assert rep["unmatched_replay_by_cause"] == {
+        "out_of_scope": 0,
         "boundary": 1,
         "gap": 1,
         "gap_shard": 0,
@@ -302,6 +303,7 @@ def test_cause_breakdown_takes_the_gap_rows_replay_run_returns():
     rep = compare([], [wide, scoped, both, lonely], anchor=anchor, end=end, gaps=gaps)
 
     assert rep["unmatched_replay_by_cause"] == {
+        "out_of_scope": 0,
         "boundary": 0,
         "gap": 2,
         "gap_shard": 1,
@@ -1560,3 +1562,53 @@ def test_replay_seeds_from_where_the_run_says_it_seeded(tmp_path):
 
     assert replay(floor) == shadow_fills
     assert replay(None) == []  # the pre-floor seed: M1 unknown, as those runs were
+
+
+def test_fill_outside_the_replays_series_scope_is_out_of_scope_before_any_other_cause():
+    """Run 20261014T030956 (reported 2026-11-16): the shadow traded 41
+    series the replay was never scoped to for its last 82 minutes, and
+    all 3,583 such fills were filed as unexplained (3,526), boundary (37)
+    and gap (20). The scope is the one cause that is certain, so it is
+    asked first -- an out-of-scope fill beside the window edge or inside a
+    gap is still out of scope -- and it is exact on the series field."""
+    anchor = datetime(2026, 10, 14, 3, 0, 0)
+    end = anchor + timedelta(hours=4)
+    mid = anchor + timedelta(hours=2)
+    gaps = [(anchor + timedelta(minutes=29), anchor + timedelta(minutes=31))]
+    shadow = [
+        _shadow(5.0, mid, market_id="KXNFLSPREAD-26OCT23-A"),  # out, clear window
+        _shadow(5.0, end - timedelta(seconds=10), market_id="KXNFLSPREAD-26OCT23-B"),  # out, edge
+        _shadow(5.0, anchor + timedelta(minutes=30), market_id="KXBTCD-26OCT2317-T1"),  # out, gap
+        _shadow(5.0, mid, market_id="KXHIGHT-26OCT23-T75"),  # a longer name than KXHIGH: out
+        _shadow(5.0, mid, market_id="KXHIGH-26OCT23-T75"),  # in scope, lonely: unexplained
+        _shadow(5.0, end - timedelta(seconds=10), market_id="KXFED-26OCT-T1"),  # in, edge
+    ]
+
+    rep = compare(shadow, [], anchor=anchor, end=end, gaps=gaps, series=["KXHIGH", "KXFED"])
+
+    assert rep["unmatched_shadow_by_cause"] == {
+        "out_of_scope": 4,
+        "boundary": 1,
+        "gap": 0,
+        "gap_shard": 0,
+        "reseed_twin": 0,
+        "unexplained": 1,
+    }
+    dist = rep["unmatched_unexplained_dist"]["shadow"]
+    assert dist["n"] == 1 and list(dist["by_market_top"]) == ["KXHIGH-26OCT23-T75"]
+
+    # No scope given (every caller before this one): nothing is out of scope.
+    unscoped = compare(shadow, [], anchor=anchor, end=end, gaps=gaps)
+    assert unscoped["unmatched_shadow_by_cause"]["out_of_scope"] == 0
+    assert unscoped["unmatched_shadow_by_cause"]["unexplained"] == 3
+
+
+def test_main_classifies_against_the_universe_it_scoped_the_replay_to(tmp_path, monkeypatch):
+    """The scope reaches `compare` from `main`, not only from a test: the
+    fixture's fills are in series `M1`, which no watchlist names, and the
+    replay (scoped, so it cannot see them) returns nothing."""
+    db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
+    out = tmp_path / "reports"
+    _main_with(monkeypatch, ["--shadow-db", str(db), "--out", str(out)])
+    rep = json.loads((out / "done.json").read_text())
+    assert rep["unmatched_shadow_by_cause"]["out_of_scope"] == rep["shadow_fills"] == 5

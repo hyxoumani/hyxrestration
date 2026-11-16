@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
@@ -222,6 +223,7 @@ def compare(
     anchor: datetime | None = None,
     end: datetime | None = None,
     gaps: list | None = None,
+    series: Sequence[str] | None = None,
 ) -> dict:
     """Tiered per-(market, side) matching; price deltas per tier.
 
@@ -247,7 +249,10 @@ def compare(
     "boundary/coverage, not price disagreement" reading is verified, not
     inferred from the count gap: `boundary` (within the 60s exact
     tolerance of the window edge, so a true counterpart falls just
-    outside the compared window), `gap` (inside a coverage break ±window,
+    outside the compared window), `out_of_scope` (only when `series` is
+    given: the market's series is outside the universe the replay was
+    scoped to, so the replay cannot have traded it -- asked before every
+    other cause), `gap` (inside a coverage break ±window,
     where the two streams re-seed differently), `gap_shard` (inside a
     break that named ONE books connection; whether that connection
     carried this market is not checked, so it is counted apart), `reseed_twin` (an exact
@@ -412,7 +417,19 @@ def compare(
     shadow_econ = {(m, side, qty, price) for m, side, qty, price, *_ in shadow_fills}
     replay_econ = {(f.market_id, f.side, f.qty, f.price) for f in replay_fills}
 
+    scope = None if series is None else frozenset(series)
+
     def _cause(ts, key, opposite_econ):
+        # Asked FIRST, because it is the one cause that is a certainty: the
+        # replay never read this market's book (`replay_run(series=...)`
+        # scopes every read in SQL), so no counterpart can exist and the
+        # fill's distance from an edge or a gap is a coincidence. The run
+        # 20261014T030956 put 3,583 shadow fills here -- 82 minutes of an
+        # unfiltered shadow on a freshly expanded stream (mistakes #134) --
+        # and the report filed them as 3,526 unexplained, 37 boundary and
+        # 20 gap.
+        if scope is not None and key[0].split("-", 1)[0] not in scope:
+            return "out_of_scope"
         if anchor is not None and ts - anchor <= MATCH_TOLERANCE:
             return "boundary"
         if end is not None and end - ts <= MATCH_TOLERANCE:
@@ -437,7 +454,14 @@ def compare(
         return "unexplained"
 
     def _breakdown(unmatched, opposite_econ):
-        counts = {"boundary": 0, "gap": 0, "gap_shard": 0, "reseed_twin": 0, "unexplained": 0}
+        counts = {
+            "out_of_scope": 0,
+            "boundary": 0,
+            "gap": 0,
+            "gap_shard": 0,
+            "reseed_twin": 0,
+            "unexplained": 0,
+        }
         samples = []
         by_hour: dict[str, int] = {}
         by_market: dict[str, int] = {}
@@ -896,6 +920,7 @@ def main() -> None:
         f"[divergence] run {run_id} anchor={anchor} end={end} latency={latency}s"
         f" seed_floor={run_seed_floor or 'legacy (newest gap row)'}"
     )
+    universe = shadow_universe()
     replay_fills, gaps = replay_run(
         run_id,
         anchor,
@@ -905,7 +930,7 @@ def main() -> None:
         stream_db=args.stream_db,
         archive_db=args.archive_db,
         return_gaps=True,
-        series=shadow_universe(),
+        series=universe,
         seed_floor=run_seed_floor,
     )
     report = {
@@ -930,6 +955,7 @@ def main() -> None:
             anchor=anchor,
             end=end,
             gaps=gaps,
+            series=universe,
         ),
     }
     # What this derivation reproduced of the one it replaces (identical, or

@@ -149,6 +149,19 @@ taker-side haircut ≈ 0 conclusion has no unexplained residual left to
 hide behind. The twin test is existence-only (asserts an identical
 fill exists opposite, does not net counts).
 
+`out_of_scope` (2026-11-16) is asked before all of them: the fill's
+series is outside the universe the replay was scoped to
+(`shadow_universe()`), so the replay cannot have traded it. Found on
+run 20261014T030956 (10-14 -> 10-23, 61,812 shadow fills, 0.942 vs
+shadow / 1.0 vs replay, reported 3,526 `unexplained`): read against the
+shadow ledger, ALL 3,583 unmatched shadow fills are in 41 series outside
+the universe, the first at 10-23 12:47:17Z -- two minutes after the
+12:45Z promote that expanded the stream's coverage under a shadow still
+running its unfiltered reader (mistakes #134) -- and the 58,229
+in-universe fills are exactly the 58,229 matched. Nine and a half days,
+in-universe match 1.0 both ways, price delta 0.0: the cost of #134 in
+fills, not a fill-model divergence.
+
 **2026-07-18 — first PERFECT convergence, on a second independent
 multi-day run.** Run 20260716T130721 (post-restart successor to the
 07-13 run; 2.3 days, 11,228 fills, first divergence check): 100.00%

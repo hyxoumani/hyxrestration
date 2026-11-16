@@ -247,10 +247,23 @@ def test_divergence_replay_ignores_planted_extra_series_rows(tmp_path):
     assert {f[0] for f in unscoped[0]} > {f[0] for f in before[0]}  # control
 
 
-def test_divergence_main_replays_the_shadow_universe():
-    import inspect
+def test_divergence_main_replays_the_shadow_universe(tmp_path, monkeypatch):
+    """Behavioural since 2026-11-16: the source scrape this replaces pinned
+    the literal `series=shadow_universe()` and went red when the call was
+    hoisted into a local shared with `compare`."""
 
     from simulator import divergence
+    from tests.test_hyxlab_divergence import _runs_db
 
-    src = inspect.getsource(divergence.main)
-    assert "series=shadow_universe()" in src
+    seen = {}
+
+    def _replay(*a, **k):
+        seen.update(k)
+        return [], []
+
+    db = _runs_db(tmp_path, [("done", datetime(2026, 8, 29), 5), ("live", datetime(2026, 9, 7), 1)])
+    monkeypatch.setattr(divergence, "replay_run", _replay)
+    argv = ["divergence", "--shadow-db", str(db), "--out", str(tmp_path / "reports")]
+    monkeypatch.setattr(sys, "argv", argv)
+    divergence.main()
+    assert seen["series"] == shadow_universe() and seen["series"]
