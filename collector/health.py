@@ -1010,7 +1010,7 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
 # the shadow's 20 s poll) went 22/day -> 150/day. No digest line named either.
 # The attach is a flat ~0.02 s; a count-only probe showed a ~0.27 s CONSTANT
 # per poll independent of rows returned (the scan's setup over a 9.0B-row
-# table that grows ~100M rows/day), plus ~0.8 us per row fetched -- so the
+# table then thought to grow ~100M rows/day -- see SHADOWHOLD_LIVE_DB), plus ~0.8 us per row fetched -- so the
 # climb is the ARCHIVE's size, not the poll's. The shadow publishes the
 # reading itself (`stream_holds={...}` on every 300 s line: `held_n`,
 # `held_s_total`, cumulative); this line differences it, so a hold that
@@ -1032,6 +1032,117 @@ SHADOWHOLD_CLIMB_RATIO = 1.25
 SHADOWHOLD_EVENT_SHARE = 0.10
 _SHADOWHOLD_LINE_RE = re.compile(r"python\[(\d+)\]: \[shadow\] .* stream_holds=(\{.*\})\s*$")
 _FLUSH_FAILED_RE = re.compile(r"\[streamd\] \S+ flush FAILED \(.*?\bPID (\d+)\b")
+
+
+#: The archive's size is read from files, never an attach: the live file's
+#: `st_size` now and each rotated backup slot's (`st_size` at its mtime -- a
+#: reflink reports the full size of the file it copied, which is the number
+#: wanted here). Measured 2026-11-16: the 0.27 s "constant" of 11-09 follows
+#: the FILE, not the "~100M rows/day" written above -- the stats line receives
+#: ~650M events/day since the 10-23 expansion and the file grew 273 -> 352 GB
+#: over the six slots 11-10..11-16 (x1.29) while the hold went 0.47 -> 0.63
+#: s/poll (x1.34): 1.72 vs 1.79 ms per GB. So a CLIMB that matches the file is
+#: the known mechanism (#169) and one that outruns it is something new.
+SHADOWHOLD_LIVE_DB = "data/hyxstream.duckdb"
+SHADOWHOLD_BACKUP_UNIT = "scripts/systemd/hyxlab-backup.service"
+#: A size outside the slots' span is extrapolated from the two nearest points
+#: for at most this long (seven daily slots reach 6.4-7.4 days back, the
+#: window's first span starts 7 days back); past it the size is unread.
+SHADOWHOLD_SIZE_EXTRAPOLATE_H = 24.0
+#: Hold per GB now / at the window's start at or above this, on a CLIMB, is a
+#: climb the archive's growth does not account for. The climb's own ratio:
+#: replayed 2026-11-16 at five instants three hours apart, hold per GB read
+#: x0.93, x0.94, x0.96, x1.09, x1.12 on one day (the hold swings ~10% with the
+#: hour), so anything tighter would fire on the time of day.
+SHADOWHOLD_BEYOND_RATIO = 1.25
+
+
+@dataclass(frozen=True)
+class ArchiveGrowth:
+    """The stream archive's file size at the middle of each compared span."""
+
+    then_b: float
+    now_b: float
+
+    @property
+    def ratio(self) -> float:
+        return self.now_b / self.then_b
+
+
+def archive_size_at(
+    points: list[tuple[datetime, int]],
+    at: datetime,
+    max_extrapolate_h: float = SHADOWHOLD_SIZE_EXTRAPOLATE_H,
+) -> float | None:
+    """Pure: file size at `at`, linear between the two points that bracket it;
+    outside them, along the nearest two for at most `max_extrapolate_h`. None
+    with under two points, past that reach, or for a non-positive answer."""
+    pts = sorted(points)
+    if len(pts) < 2:
+        return None
+    if at < pts[0][0]:
+        (t0, b0), (t1, b1) = pts[0], pts[1]
+        reach = (t0 - at).total_seconds()
+    elif at > pts[-1][0]:
+        (t0, b0), (t1, b1) = pts[-2], pts[-1]
+        reach = (at - t1).total_seconds()
+    else:
+        i = max(1, bisect.bisect_left([p[0] for p in pts], at))
+        (t0, b0), (t1, b1) = pts[i - 1], pts[i]
+        reach = 0.0
+    span = (t1 - t0).total_seconds()
+    if reach > max_extrapolate_h * 3600 or span <= 0:
+        return None
+    size = b0 + (b1 - b0) * (at - t0).total_seconds() / span
+    return size if size > 0 else None
+
+
+def archive_growth(
+    points: list[tuple[datetime, int]], oldest: HoldReading | None, recent: HoldReading
+) -> ArchiveGrowth | None:
+    """Pure: the file's size at the midpoint of each span, or None when either
+    is out of the points' reach (or there is no older span to compare)."""
+    if oldest is None:
+        return None
+    then = archive_size_at(points, oldest.start + (oldest.end - oldest.start) / 2)
+    now = archive_size_at(points, recent.start + (recent.end - recent.start) / 2)
+    if then is None or now is None:
+        return None
+    return ArchiveGrowth(then, now)
+
+
+def read_archive_sizes(
+    now: datetime,
+    live: str | Path | None = None,
+    backup_dir: str | Path | None = None,
+) -> list[tuple[datetime, int]]:
+    """(instant, bytes) for the live stream archive now and for each backup
+    slot at its mtime. `stat` only -- no file is opened. The slot directory is
+    `HYXLAB_BACKUP_DIR`, else the one the backup unit's own file sets; an
+    unreadable piece is left out and the caller prints the size as unread."""
+    live_p = Path(SHADOWHOLD_LIVE_DB if live is None else live)
+    root = backup_dir if backup_dir is not None else os.environ.get("HYXLAB_BACKUP_DIR")
+    if not root:
+        try:
+            m = re.search(
+                r"^Environment=HYXLAB_BACKUP_DIR=(\S+)",
+                (REPO / SHADOWHOLD_BACKUP_UNIT).read_text(),
+                re.M,
+            )
+        except OSError:
+            m = None
+        root = m.group(1) if m else None
+    files: list[tuple[Path, datetime | None]] = [(live_p, now)]
+    if root:
+        files += [(p, None) for p in Path(root).glob(f"{live_p.stem}.*.duckdb")]
+    points: list[tuple[datetime, int]] = []
+    for path, at in files:
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        points.append((at or datetime.fromtimestamp(st.st_mtime, UTC), st.st_size))
+    return points
 
 
 @dataclass(frozen=True)
@@ -1083,6 +1194,16 @@ class ShadowHold:
     #: whether the holder PID was a shadow process.
     collisions_shadow: int
     collisions_other: int
+    #: The archive file's size across the same two spans; None when unread.
+    archive: ArchiveGrowth | None = None
+
+    @property
+    def beyond(self) -> float | None:
+        """Hold per GB now over hold per GB then: the part of the climb the
+        archive's growth does not account for."""
+        if self.archive is None or self.climb is None:
+            return None
+        return self.climb / self.archive.ratio
 
     @property
     def climb(self) -> float | None:
@@ -1341,7 +1462,12 @@ def read_shadow_hold(
     )
     if shadow is None or stream is None:
         return "unreadable"
-    return parse_shadow_hold(shadow, stream, now or datetime.now(UTC))
+    now = now or datetime.now(UTC)
+    hold = parse_shadow_hold(shadow, stream, now)
+    if hold is None:
+        return None
+    growth = archive_growth(read_archive_sizes(now), hold.oldest, hold.recent)
+    return replace(hold, archive=growth)
 
 
 def shadow_hold_line(
@@ -1382,6 +1508,22 @@ def shadow_hold_line(
             f"{o.steady_per_poll_s:.3f} s/poll at {o.start:%m-%d %H:%M}Z, x{ratio:.2f} = {tag} "
             f"({slope * 1000:+.0f} ms/poll/day)"
         )
+        g = hold.archive
+        beyond = hold.beyond
+        if g is None or beyond is None:
+            trend += "; archive size over the same spans unread"
+        else:
+            verdict = (
+                "BEYOND THE ARCHIVE"
+                if tag == "CLIMB" and beyond >= SHADOWHOLD_BEYOND_RATIO
+                else "tracks the archive"
+                if tag == "CLIMB"
+                else "archive"
+            )
+            trend += (
+                f"; {verdict}: file {g.then_b / 1e9:.0f} -> {g.now_b / 1e9:.0f} GB x{g.ratio:.2f}, "
+                f"hold per GB x{beyond:.2f}"
+            )
     total = hold.collisions_shadow + hold.collisions_other
     coll = (
         f"stream flush FAILED {collision_hours}h: {total} "

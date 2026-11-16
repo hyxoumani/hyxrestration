@@ -808,10 +808,14 @@
   17 days while its per-poll hold on `hyxstream.duckdb` climbed 0.085 s
   -> 0.46 s (the stream's `flush FAILED` 22 -> 150/day was filed as a
   plateau; mistakes #169). The climb is ~0.27 s of per-attach scan setup
-  over a 9B-row table growing 100M rows/day -- the archive's size, not the
-  poll's rows -- so it does not stop. Read the digest's `SHADOWHOLD` line
-  (hold/poll now vs the 7 d window's start, `CLIMB` at x1.25, flush
-  collisions by holder); the levers are the poll period (amortises the
+  over a table that follows the FILE (273 -> 352 GB over 11-10..11-16,
+  +13 GB/day, ~0.3-0.65B rows/day; 1.72 -> 1.79 ms of hold per GB) -- the
+  archive's size, not the poll's rows -- so it does not stop. Read the
+  digest's `SHADOWHOLD` line (hold/poll now vs the 7 d window's start,
+  `CLIMB` at x1.25, flush collisions by holder; since 2026-11-16 `tracks
+  the archive: file A -> B GB xR, hold per GB xS` from `stat` of the live
+  file and the backup slots -- chase only `BEYOND THE ARCHIVE`, hold per
+  GB up x1.25; mistakes #202); the levers are the poll period (amortises the
   constant) and the archive layout, neither taken yet. Since 2026-11-15
   the ratio is taken WITHOUT a single 300 s line that carried 10% or more
   of the span's held seconds, and the line names it (`one line carried

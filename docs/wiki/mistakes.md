@@ -5541,6 +5541,46 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+202. **2026-11-09 -> 2026-11-16 14:15Z -- the digest's `SHADOWHOLD` line
+    printed `CLIMB` on every read for a week, and the explanation carried
+    beside it ("a 9B-row table growing 100M rows/day -- the archive's
+    size") could not be checked from the line and was wrong by 3-6x on
+    the rate.** The line went x1.28 -> x1.49 between the 08:15Z and 14:15Z
+    reads and this pass chased it as drift. Bucketed by 3 h from the
+    shadow's own 300 s lines (8 days, no attach): 0.44-0.47 s/poll on
+    11-09, 0.50-0.53 on 11-10/11, 0.57-0.60 on 11-12/13, 0.62-0.69 on
+    11-16 -- +47% in a week. At 100M rows/day on 9B rows the archive grew
+    8% in that week, so either the model was wrong or something new was.
+    The file sizes answer it without opening anything: the seven backup
+    slots are the live file's `st_size` at each 03:30Z, 273.2 -> 287.3 ->
+    300.3 -> 311.0 -> 322.7 -> 337.8 -> 352.1 GB (11-10..11-16), +13.2
+    GB/day, x1.29 in six days against the hold's x1.34 (1.72 vs 1.79 ms
+    per GB). The stream's stats line says the same of the rows: a median
+    2.28M events per 300 s round, ~650M/day (and #169's own two counts,
+    9.02B on 11-09 and 9.66B on 11-11, are 320M/day). So the mechanism
+    is the one #169 measured and the rate written next to it was a
+    pre-expansion figure nobody re-read; the jump inside the day is the
+    baseline span sliding onto 11-09's low hours plus a ~10% swing by the
+    hour. Fix (`collector.health`): the line prices the archive file at
+    the midpoint of each compared span (`read_archive_sizes`: `stat` of
+    the live file and of each slot at its mtime; linear between slots,
+    at most 24 h past them, else `archive size over the same spans
+    unread`) and says `tracks the archive: file 267 -> 355 GB x1.33, hold
+    per GB x1.12`, or `BEYOND THE ARCHIVE` when a CLIMB's hold per GB is
+    itself up x1.25. Replayed at five instants three hours apart before
+    the threshold was set: x0.93, x0.94, x0.96, x1.09, x1.12 (a first cut
+    at x1.15 sat one hour-of-day swing from firing). +8 tests, 9 mutants
+    red, each asserted landed, under `PYTHONDONTWRITEBYTECODE=1`. What it
+    costs, restated with the right rate: +30 ms/poll/day at a 60 s poll
+    is 1.1% duty today and ~1 s/poll by 11-27; the levers are unchanged
+    (a `book_events` retention caps both the file and the hold -- the
+    user's decision; a small tail table for the shadow to poll -- not
+    built). Rule: **a standing alarm with a known cause carries the
+    cause's own measurement on the same line, or every read of it is a
+    fresh chase; and a growth RATE quoted in a rule is a reading with a
+    date -- when the thing it prices moved 20x (#134, #142), re-read the
+    rate, not just the level.**
+
 201. **2026-11-15 21:12Z -- a mutant that had been restored failed the
     full suite anyway: the suite imported the MUTANT's bytecode.** A
     four-mutant check of `collector/health.py` (edit, run one test file,

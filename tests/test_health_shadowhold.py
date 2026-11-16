@@ -64,7 +64,8 @@ def test_climb_is_recent_over_oldest_and_collisions_split_by_holder() -> None:
     line = health.shadow_hold_line(hold)
     assert line.startswith(
         "hold on hyxstream.duckdb: 0.458 s/poll over 1,080 polls in the last 6h (2.3% duty) | "
-        "0.275 s/poll at 11-02 20:15Z, x1.67 = CLIMB (+26 ms/poll/day) | "
+        "0.275 s/poll at 11-02 20:15Z, x1.67 = CLIMB (+26 ms/poll/day); "
+        "archive size over the same spans unread | "
         "stream flush FAILED 24h: 4 (shadow 3, other 1)"
     )
 
@@ -159,3 +160,130 @@ def test_a_uniform_span_names_no_event() -> None:
     assert hold is not None and not hold.recent.event
     assert hold.recent.steady_per_poll_s == hold.recent.per_poll_s
     assert "one line carried" not in health.shadow_hold_line(hold)
+
+
+# --- the climb against the archive's own growth (2026-11-16) -----------------
+
+GB = 10**9
+
+
+def _base(archive: health.ArchiveGrowth | None, recent_held: float = 400.0) -> health.ShadowHold:
+    return health.ShadowHold(
+        health.HoldReading(NOW - timedelta(hours=6), NOW, 1000, recent_held),
+        health.HoldReading(NOW - timedelta(hours=168), NOW - timedelta(hours=162), 1000, 300.0),
+        frozenset({798}),
+        10,
+        2,
+        archive,
+    )
+
+
+def test_archive_size_is_interpolated_and_extrapolated_only_within_reach() -> None:
+    t0 = NOW - timedelta(days=6)
+    pts = [(t0 + timedelta(days=1), 110 * GB), (t0, 100 * GB), (NOW, 160 * GB)]
+    assert health.archive_size_at(pts, t0 + timedelta(hours=12)) == pytest.approx(105 * GB)
+    assert health.archive_size_at(pts, t0) == pytest.approx(100 * GB)
+    assert health.archive_size_at(pts, NOW) == pytest.approx(160 * GB)
+    # before the oldest slot: along the first two points, 10 GB/day
+    assert health.archive_size_at(pts, t0 - timedelta(hours=12)) == pytest.approx(95 * GB)
+    assert health.archive_size_at(pts, t0 - timedelta(hours=25)) is None
+    assert health.archive_size_at(pts, NOW + timedelta(hours=25)) is None
+    assert health.archive_size_at(pts[:1], t0) is None
+    assert health.archive_size_at([], t0) is None
+
+
+def test_growth_is_priced_at_each_span_midpoint() -> None:
+    hold = _base(None)
+    t0 = NOW - timedelta(hours=168)
+    pts = [(t0, 100 * GB), (NOW, 268 * GB)]  # 1 GB/h
+    g = health.archive_growth(pts, hold.oldest, hold.recent)
+    assert g is not None
+    assert g.then_b == pytest.approx(103 * GB)
+    assert g.now_b == pytest.approx(265 * GB)
+    assert health.archive_growth(pts, None, hold.recent) is None
+    assert health.archive_growth(pts[:1], hold.oldest, hold.recent) is None
+
+
+def test_a_climb_the_file_matches_tracks_the_archive_and_one_it_does_not_is_beyond() -> None:
+    # hold x1.33 on both; the file x1.30 in one and flat in the other
+    tracks = health.shadow_hold_line(_base(health.ArchiveGrowth(270 * GB, 351 * GB)))
+    assert "x1.33 = CLIMB" in tracks
+    assert "; tracks the archive: file 270 -> 351 GB x1.30, hold per GB x1.03 |" in tracks
+    assert "BEYOND" not in tracks
+    beyond = health.shadow_hold_line(_base(health.ArchiveGrowth(270 * GB, 272 * GB)))
+    assert "; BEYOND THE ARCHIVE: file 270 -> 272 GB x1.01, hold per GB x1.32 |" in beyond
+    # the boundary is the constant, not a literal
+    edge = 4.0 / 3.0 / health.SHADOWHOLD_BEYOND_RATIO
+    assert "BEYOND" in health.shadow_hold_line(
+        _base(health.ArchiveGrowth(270 * GB, 270 * GB * edge * 0.999))
+    )
+    assert "tracks" in health.shadow_hold_line(
+        _base(health.ArchiveGrowth(270 * GB, 270 * GB * edge * 1.001))
+    )
+
+
+def test_an_unread_size_says_so_and_a_flat_hold_is_never_beyond() -> None:
+    assert "; archive size over the same spans unread |" in health.shadow_hold_line(_base(None))
+    # hold flat while the file SHRANK (a retention): per GB is up, but nothing climbed
+    flat = health.shadow_hold_line(_base(health.ArchiveGrowth(400 * GB, 200 * GB), 300.0))
+    assert "= flat" in flat and "BEYOND" not in flat and "tracks" not in flat
+    assert "; archive: file 400 -> 200 GB x0.50, hold per GB x2.00 |" in flat
+
+
+def test_archive_fields_reach_the_rendered_line() -> None:
+    from dataclasses import replace
+
+    base = _base(health.ArchiveGrowth(270 * GB, 351 * GB))
+    line = health.shadow_hold_line(base)
+    for v in (
+        replace(base, archive=health.ArchiveGrowth(280 * GB, 351 * GB)),
+        replace(base, archive=health.ArchiveGrowth(270 * GB, 361 * GB)),
+        replace(base, archive=None),
+    ):
+        assert health.shadow_hold_line(v) != line
+
+
+def test_sizes_are_stat_of_the_live_file_now_and_each_slot_at_its_mtime(tmp_path) -> None:
+    import os
+
+    live = tmp_path / "hyxstream.duckdb"
+    live.write_bytes(b"x" * 500)
+    slots = tmp_path / "slots"
+    slots.mkdir()
+    for day, size, age_d in (("Mon", 400, 1), ("Sun", 300, 2)):
+        p = slots / f"hyxstream.{day}.duckdb"
+        p.write_bytes(b"x" * size)
+        ts = (NOW - timedelta(days=age_d)).timestamp()
+        os.utime(p, (ts, ts))
+    (slots / "hyxlab.Mon.duckdb").write_bytes(b"x" * 999)  # another archive's slot
+    (slots / "hyxstream.Mon.duckdb.tmp").mkdir()  # a spill directory, not a slot
+    pts = sorted(health.read_archive_sizes(NOW, live, slots))
+    assert pts == [
+        (NOW - timedelta(days=2), 300),
+        (NOW - timedelta(days=1), 400),
+        (NOW, 500),
+    ]
+    # a missing live file leaves the slots; a missing directory leaves nothing
+    assert len(health.read_archive_sizes(NOW, tmp_path / "absent.duckdb", slots)) == 0
+    assert health.read_archive_sizes(NOW, live, tmp_path / "nowhere") == [(NOW, 500)]
+
+
+def test_the_slot_directory_falls_back_to_the_backup_units_own_setting(monkeypatch) -> None:
+    """The digest is run by hand and by the autoloop, neither with the
+    variable set; the unit file is the one place the directory is written."""
+    import re
+
+    text = (health.REPO / health.SHADOWHOLD_BACKUP_UNIT).read_text()
+    assert re.search(r"^Environment=HYXLAB_BACKUP_DIR=\S+", text, re.M)
+    monkeypatch.delenv("HYXLAB_BACKUP_DIR", raising=False)
+    seen: list[str] = []
+    real_glob = health.Path.glob
+
+    def glob(self, pattern):
+        seen.append(str(self))
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(health.Path, "glob", glob)
+    health.read_archive_sizes(NOW, "data/absent-for-test.duckdb")
+    want = re.search(r"^Environment=HYXLAB_BACKUP_DIR=(\S+)", text, re.M).group(1)
+    assert seen == [want]
