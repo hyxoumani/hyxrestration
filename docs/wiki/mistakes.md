@@ -5541,6 +5541,38 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+204. **2026-11-16 20:15Z -- the disk-pace clause went `unresolved` two days
+    from full, because its deletion rule was a share of a number that
+    shrinks.** `HOSTFS` read `pace: unresolved (8 hourly ceiling(s) over
+    4.8h since a +14 GB rise, under 6h)` with 130 GB free and ~58 GB/day
+    of burn. The reset rule (#160/#161) calls a ceiling rise above 10% of
+    the previous ceiling a deletion; it was measured at 577 GB free, where
+    10% is 58 GB. At 124 GB free it is 12 GB -- inside the 7-43 GB of the
+    sibling's nightly lake spill (#189), which on 11-16 sat under every
+    sample from 07:30Z to 13:00Z (5.5 h, so the hourly ceilings fell with
+    it) and lifted between the 12:30Z (115.4 GB) and 13:15Z (137.8 GB)
+    samples: +13.6 GB ceiling to ceiling, 11%, a "deletion". Second
+    finding in the same clause: `full in N d` divided the LEVEL by the
+    burn, on the line whose own floor clause exists because the threshold
+    was crossed by the dip and not the level (#189). The same is true of
+    the last byte. Fix: the reset needs `max(10% of the ceiling,
+    FS_PACE_RESET_FLOOR_B = 50 GB)`; `FsPace.dip_max_b` is the window's
+    largest fall of a sample under its own hour's ceiling, and both
+    `full in` horizons (net and gross) carry `first ENOSPC in N d at the
+    window's largest dip (26 GB)`, `NOW` when the level no longer covers
+    it. Replayed at 17 six-hourly checkpoints over 11-12..11-16: the 15
+    resolved readings are unchanged to the decimal, the two `unresolved`
+    ones read 60.1 and 55.4 GB/day; the dip was 22-34 GB at every one.
+    First reading: `net burn 55 GB/day over 22.0h ..., full in 2.3 d,
+    first ENOSPC in 1.9 d ...; gross burn 70 GB/day -> full in 1.8 d,
+    first ENOSPC in 1.5 d`. Stated limit: the dip is a lower bound (a
+    spill present a whole hour lowers that hour's ceiling too, and one
+    hour's own burn, ~2.4 GB, reads as a dip). +2 tests, 6 mutants red,
+    each landed. **Rule: a threshold expressed as a fraction of a
+    quantity is a different threshold at every value of the quantity --
+    before reusing one, evaluate it at the value where the instrument
+    matters most, which for a horizon is the end of it.**
+
 203. **2026-11-16 14:34Z -> 15:25Z -- a flaky test was "fixed" for a cause
     nobody had observed, and the code comment said `measured`.** A promote
     was refused by `tests/test_attach_ledger_direct.py::

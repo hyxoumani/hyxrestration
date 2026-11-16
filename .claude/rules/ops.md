@@ -738,7 +738,12 @@
   assumes they do not; act on the nearer one. Replay a new instrument over the window it
   will live in BEFORE shipping its first reading: the 1 GB-reset version
   shipped at 02:40Z read `unresolved` at 18 of 24 three-hourly checkpoints
-  of the prior 72h (mistakes #161); ceilings resolve 22 of 25.
+  of the prior 72h (mistakes #161); ceilings resolve 22 of 25. Since
+  2026-11-16 a rise resets only above `max(10%, 50 GB)` -- at 124 GB free
+  the sibling's spill lifting (+13.6 GB) was "a deletion" and the clause
+  read `unresolved` 2 d from full -- and `full in N d` is followed by
+  `first ENOSPC in M d at the window's largest dip`: quote the second
+  (mistakes #204).
 - A retention window's plateau is the PRUNER's comparison, not its
   constant: `RawFrameWriter.prune` drops `name < today - RETAIN_DAYS`, so
   with 14 it holds 15 day directories (14 closed + the running day) and
