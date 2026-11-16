@@ -2143,6 +2143,17 @@ FS_PACE_MIN_H = 6.0
 FS_PACE_END_K = 3
 #: A ceiling-to-ceiling rise under this is jitter: not named, not summed.
 FS_PACE_RISE_FLOOR_B = 10**9
+#: A rise is a deletion only above this, whatever share of free space it is.
+#: The reset rule is relative to FREE, and free shrinks as the disk fills: at
+#: 124 GB free the sibling's nightly spill lifting (115.4 -> 137.8 GB between
+#: the 12:30Z and 13:15Z samples of 2026-11-16, after sitting 5.5 h under
+#: every hourly ceiling) was +13.6 GB = 11% and restarted the pace, so the
+#: clause read `unresolved` at ~2 d from full -- the one day a time was owed.
+#: That spill is 7-43 GB at the 5-min samples (mistakes #189) and recurs
+#: nightly, so it nets into the burn like every other recurring free; 50 GB
+#: is above it and under every deletion that ever reset the series (59 GB in
+#: steps on 11-08 did not, by design; 339 GB on 11-05 did).
+FS_PACE_RESET_FLOOR_B = 50 * 10**9
 _FS_FREE_RE = re.compile(r"fs_free_b=(\d+)")
 
 
@@ -2174,6 +2185,11 @@ class FsPace:
     floor_b: int | None = None
     floor_ts: float | None = None
     floor_dip_b: int = 0
+    #: The largest fall of a sample under its own clock hour's ceiling in the
+    #: whole window: what a transient (the sibling's nightly spill) takes on
+    #: top of the level. A LOWER bound -- a spill present all hour lowers the
+    #: ceiling too, and the kubelet-grade truth is sampled every 10 s, not 300.
+    dip_max_b: int = 0
 
     @property
     def gross_b_per_day(self) -> float | None:
@@ -2235,6 +2251,7 @@ def fs_pace(
     min_h: float = FS_PACE_MIN_H,
     reset_frac: float = DISK_RISE_RESET_FRAC,
     end_k: int = FS_PACE_END_K,
+    reset_floor_b: int = FS_PACE_RESET_FLOOR_B,
 ) -> FsPace:
     """Net pace over the hourly ceilings at or after the youngest reset (a
     ceiling higher than the previous hour's by more than `reset_frac` of it),
@@ -2244,12 +2261,19 @@ def fs_pace(
     if samples:
         floor_ts, floor_b = min(samples, key=lambda c: c[1])
         hour_ceil = max(f for t, f in samples if int(t) // 3600 == int(floor_ts) // 3600)
-        fl = {"floor_b": floor_b, "floor_ts": floor_ts, "floor_dip_b": hour_ceil - floor_b}
+        by_hour = {int(t) // 3600: f for t, f in ceils}
+        dip_max = max(by_hour[int(t) // 3600] - f for t, f in samples)
+        fl = {
+            "floor_b": floor_b,
+            "floor_ts": floor_ts,
+            "floor_dip_b": hour_ceil - floor_b,
+            "dip_max_b": dip_max,
+        }
     start = 0
     reset = None
     for i in range(1, len(ceils)):
         prev, cur = ceils[i - 1][1], ceils[i][1]
-        if prev > 0 and cur - prev > reset_frac * prev:
+        if prev > 0 and cur - prev > max(reset_frac * prev, reset_floor_b):
             start, reset = i, cur - prev
     ceils = ceils[start:]
     rises = [b[1] - a[1] for a, b in zip(ceils, ceils[1:], strict=False)]
@@ -2307,7 +2331,7 @@ def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: 
         if fs.free_b is not None and over_b is not None and over_b < 0:
             rise += f" -> threshold in {-over_b / gross:.1f} d"
         elif fs.free_b is not None:
-            rise += f" -> full in {fs.free_b / gross:.1f} d"
+            rise += f" -> {_full_text(fs.free_b, gross, pace.dip_max_b)}"
     if pace.burn_b_per_day <= 0:
         return f"pace: not filling (net) {span}{rise}"
     burn = f"pace: net burn {_gb_b(int(pace.burn_b_per_day))}/day {span}"
@@ -2315,7 +2339,20 @@ def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: 
         return f"{burn}{rise}"
     if over_b is not None and over_b < 0:
         return f"{burn}, threshold in {-over_b / pace.burn_b_per_day:.1f} d{rise}"
-    return f"{burn}, full in {fs.free_b / pace.burn_b_per_day:.1f} d{rise}"
+    return f"{burn}, {_full_text(fs.free_b, pace.burn_b_per_day, pace.dip_max_b)}{rise}"
+
+
+def _full_text(free_b: int, burn_b_per_day: float, dip_b: int) -> str:
+    """Days to full at the LEVEL, and -- when the window held a transient dip
+    of a GB or more -- days until that dip reaches zero, which is when the
+    first write fails. The threshold was crossed by the floor, not the level
+    (mistakes #189); the last byte is too. `now` when the dip already would."""
+    full = f"full in {free_b / burn_b_per_day:.1f} d"
+    if dip_b < FS_PACE_RISE_FLOOR_B:
+        return full
+    left = free_b - dip_b
+    when = f"in {left / burn_b_per_day:.1f} d" if left > 0 else "NOW"
+    return f"{full}, first ENOSPC {when} at the window's largest dip ({_gb_b(dip_b)})"
 
 
 def fs_floor_text(pace: FsPace | None, size_b: int, high_pct: float, window_h: int) -> str:

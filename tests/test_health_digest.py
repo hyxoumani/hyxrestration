@@ -2042,6 +2042,62 @@ def test_a_deletion_restarts_the_pace_and_a_recurring_free_does_not() -> None:
     assert p2.burn_b_per_day is not None and 0 < p2.burn_b_per_day < 60e9
 
 
+def test_a_spill_lifting_near_full_does_not_restart_the_pace() -> None:
+    """2026-11-16 20:15Z: `pace: unresolved (8 hourly ceiling(s) over 4.8h
+    since a +14 GB rise, under 6h)` at ~2 d from full. The rise was the
+    sibling's nightly spill lifting -- 11% of the 124 GB then free, under 3% of
+    the 577 GB the 10% rule was measured at."""
+    # 14h at 58 GB/day from 158 GB, a 16 GB spill present through hours 3..7.
+    base = _series(14, 58.0, start_gb=158.0)
+    spilled = [(t, f - 16_000_000_000 if 3 * 3600 <= t - _T0 < 8 * 3600 else f) for t, f in base]
+    pace = health.fs_pace(spilled)
+    assert pace.reset_b is None and pace.hours == 15
+    assert pace.burn_b_per_day is not None and abs(pace.burn_b_per_day / 1e9 - 58.0) < 0.5
+    # Vacuity guard: without the absolute floor this rise IS a reset ...
+    old = health.fs_pace(spilled, reset_floor_b=0)
+    assert old.reset_b is not None and old.hours == 7
+    # ... and a deletion above the floor still restarts the series near full.
+    freed = [(t, f + 60_000_000_000 if t - _T0 >= 8 * 3600 else f) for t, f in base]
+    assert health.fs_pace(freed).reset_b is not None
+
+
+def test_the_full_horizon_is_charged_the_windows_largest_dip() -> None:
+    """The threshold was crossed by the floor, not the level (#189); the last
+    byte is too. 130 GB at 55 GB/day is 2.4 d to full and 1.9 d to the first
+    failed write when a 26 GB spill recurs nightly."""
+    base = _series(14, 58.0, start_gb=158.0)
+    # One 5-min sample 26 GB under its hour's ceiling, and a smaller one.
+    dipped = [
+        (t, f - (26_000_000_000 if i == 40 else 9_000_000_000 if i == 90 else 0))
+        for i, (t, f) in enumerate(base)
+    ]
+    pace = health.fs_pace(dipped)
+    # (plus the 0.8 GB the hour had burned by then: the ceiling is its first sample)
+    assert 26.0 <= pace.dip_max_b / 1e9 < 27.0 and pace.reset_b is None
+    # An hour's own burn is a fall under its ceiling too: 58 / 24 = 2.4 GB.
+    assert 2.0 < health.fs_pace(base).dip_max_b / 1e9 < 2.5
+    fs = health.HostFs(free_b=130_000_000_000, size_b=1_999_000_000_000)
+    p = dataclasses.replace(_PACE, burn_b_per_day=55e9, reset_b=None, dip_max_b=26_000_000_000)
+    assert health.host_fs_line(fs, None, p).endswith(
+        "full in 2.4 d, first ENOSPC in 1.9 d at the window's largest dip (26 GB)"
+    )
+    # Each GB of dip moves the line; under a GB it is jitter and silent.
+    assert "first ENOSPC in 1.6 d" in health.host_fs_line(
+        fs, None, dataclasses.replace(p, dip_max_b=40_000_000_000)
+    )
+    assert "ENOSPC" not in health.host_fs_line(fs, None, dataclasses.replace(p, dip_max_b=10**8))
+    # A dip the level no longer covers is not a negative number of days.
+    tight = health.HostFs(free_b=20_000_000_000, size_b=1_999_000_000_000)
+    assert "first ENOSPC NOW at" in health.host_fs_line(tight, None, p)
+    # The gross horizon is charged the same dip; a threshold horizon is not.
+    g = dataclasses.replace(p, freed_b=14_000_000_000, rise_b=14_000_000_000, span_h=24.0)
+    assert "gross burn 69 GB/day -> full in 1.9 d, first ENOSPC in 1.5 d" in health.host_fs_line(
+        fs, None, g
+    )
+    roomy = health.HostFs(free_b=400_000_000_000, size_b=1_900_000_000_000)
+    assert "ENOSPC" not in health.host_fs_line(roomy, health.parse_kubelet(KUBELET_LINES), p)
+
+
 def test_a_short_span_is_unresolved_not_a_number() -> None:
     short = health.fs_pace(_series(3, 60.0))
     assert short.burn_b_per_day is None and short.hours == 4 and abs(short.span_h - 3.0) < 0.01
