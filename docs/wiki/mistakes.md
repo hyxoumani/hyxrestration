@@ -5541,6 +5541,33 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+203. **2026-11-16 14:34Z -> 15:25Z -- a flaky test was "fixed" for a cause
+    nobody had observed, and the code comment said `measured`.** A promote
+    was refused by `tests/test_attach_ledger_direct.py::
+    test_the_retry_ladder_holds_nothing_while_it_sleeps` reading `[True,
+    True, True]` for `[True, True]`: the test patches `time.sleep`
+    process-wide to probe, from a subprocess, whether `connect_retry`
+    holds the file while its ladder sleeps. The ladder has one sleep site
+    per failed attempt, so the first read was "another thread slept",
+    and 28f41a1 shipped a thread filter with a comment naming a daemon
+    thread left by an earlier test -- after 6 of 6 isolated runs had
+    passed WITHOUT the fix, i.e. with nothing reproduced. The next pass
+    ran the whole suite under a scratch plugin listing live threads after
+    every test: none survives any test. The third call came from the
+    test's own thread: `subprocess.run(..., timeout=)` ends in
+    `Popen._wait(timeout)`, which polls `waitpid(WNOHANG)` with
+    `time.sleep(delay)` whenever the child has closed its pipes but not
+    yet exited (`subprocess.py:2078` on 3.14.5) -- so under a loaded box
+    the probe re-entered itself through the patched name. The filter did
+    not cover it. Fix: a re-entrancy guard (a sleep inside a probe is the
+    real sleep), and a `lingering-exit` arm whose child closes its pipes
+    and sleeps 0.3 s -- red with the guard removed, green with it. Rule:
+    **a flake fix ships with the flake reproduced, or it is labelled a
+    guess where it is written; "the only way this can happen" is a claim
+    about every caller of the patched name, including the standard
+    library under the probe itself. Patching a process-wide name
+    (`time.sleep`) patches it for the code the patch calls.**
+
 202. **2026-11-09 -> 2026-11-16 14:15Z -- the digest's `SHADOWHOLD` line
     printed `CLIMB` on every read for a week, and the explanation carried
     beside it ("a 9B-row table growing 100M rows/day -- the archive's
