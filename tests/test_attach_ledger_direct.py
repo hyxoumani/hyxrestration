@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import threading
 import time
 
 import duckdb
@@ -135,9 +134,17 @@ def _boom(*_a, **_k):
 WRITER = "import duckdb,sys; duckdb.connect(sys.argv[1]).close()"
 
 
-def _writable_from_outside(db) -> bool:
+#: The same probe from a child that is slow to EXIT: it closes its pipes and
+#: lingers, which is the window `Popen._wait` polls across with `time.sleep`.
+LINGERING_WRITER = (
+    "import duckdb,os,sys,time; duckdb.connect(sys.argv[1]).close();"
+    " os.close(1); os.close(2); time.sleep(0.3)"
+)
+
+
+def _writable_from_outside(db, writer: str = WRITER) -> bool:
     """True when another PROCESS can take `db` read-write right now."""
-    proc = subprocess.run([sys.executable, "-c", WRITER, str(db)], capture_output=True, timeout=120)
+    proc = subprocess.run([sys.executable, "-c", writer, str(db)], capture_output=True, timeout=120)
     return proc.returncode == 0
 
 
@@ -154,7 +161,10 @@ def test_a_held_attach_is_refused_from_outside(tmp_path):
     assert _writable_from_outside(p) is True
 
 
-def test_the_retry_ladder_holds_nothing_while_it_sleeps(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "writer", [WRITER, LINGERING_WRITER], ids=["prompt-exit", "lingering-exit"]
+)
+def test_the_retry_ladder_holds_nothing_while_it_sleeps(tmp_path, monkeypatch, writer):
     """THE ARM WITH A DURATION, and the reason this is a bug rather than
     an untidiness.
 
@@ -168,18 +178,26 @@ def test_the_retry_ladder_holds_nothing_while_it_sleeps(tmp_path, monkeypatch):
     p = _db(tmp_path)
     monkeypatch.setattr(store, "spill_cap", _boom)
     seen: list[bool] = []
-    # Only THIS thread's sleeps are the ladder's. `time.sleep` is patched
-    # process-wide, and a daemon thread left running by an earlier test in a
-    # full-suite run sleeps through the same name: measured 2026-11-16, a
-    # promote's suite read `[True, True, True]` here -- three clean probes,
-    # one of them not the ladder's -- and the promote was refused.
-    me = threading.get_ident()
+    # The probe must not count ITS OWN wait. `subprocess.run(..., timeout=)`
+    # ends in `Popen._wait(timeout)`, which polls `waitpid(WNOHANG)` with
+    # `time.sleep(delay)` between tries whenever the child has closed its
+    # pipes but not yet exited -- through the name patched here. Measured
+    # 2026-11-16: a promote's suite read `[True, True, True]`, three clean
+    # probes for a two-sleep ladder, and the promote was refused; a child
+    # that lingers 0.3 s after closing its pipes reproduces it every time
+    # (the `lingering-exit` arm; red with this guard removed).
     real_sleep = time.sleep
+    probing = False
 
     def _sleep(s):
-        if threading.get_ident() != me:
+        nonlocal probing
+        if probing:
             return real_sleep(s)
-        seen.append(_writable_from_outside(p))
+        probing = True
+        try:
+            seen.append(_writable_from_outside(p, writer))
+        finally:
+            probing = False
 
     monkeypatch.setattr(time, "sleep", _sleep)
     with pytest.raises(duckdb.Error):
