@@ -5583,10 +5583,16 @@ Format: what happened → root cause → error type → prevention tier
     ~18 s -> 26.5-28 s, from 11-15, reclaim counts unchanged), and btrfs
     going from 56 GB unallocated (11-15 21:20Z) to 0. A direct write
     benchmark was refused by the safety hook and not worked around.
-    By-product, a lever not taken: the poly flush's `insert_trades`
-    dedup is scoped by `market_id BETWEEN`, which prunes nothing on
-    random hex ids -- it reads all 907M trades, ~7-9 s and 4.2 GB anon
-    per flush, ~180 times a run. **Rule: a lock in FRONT of an
+    By-product, measured on the Tue slot and NOT a predicate-level
+    lever: the poly flush's `insert_trades` dedup reads `trade_id` for
+    every poly trade (the `market_id BETWEEN` prunes the Kalshi row
+    groups, 907M -> 145M rows, and nothing inside the hex ids): 5.8-7.6 s
+    and 4.5 GB anon per flush, ~180 a run. Adding `ts BETWEEN` the
+    batch's range: 5.0 s (a batch spans 90 days); a bound `IN` list of
+    the 51 markets without the BETWEEN: 11.6-13.2 s, worse; materialising
+    the markets' trade_ids first: 5.8-6.6 s, equal. All four return the
+    same 2,498 of 5,000. The cost is decoding 145M `trade_id` strings,
+    so only a layout or watermark change removes it. **Rule: a lock in FRONT of an
     instrumented attach is a second queue, and every caller of it owes
     the wait its own number -- an instrument one caller of a shared lock
     has is evidence the other caller lacks it.**
