@@ -33,6 +33,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
 
+from hyxlab.atomicio import write_text_atomic
 from hyxlab.backupslot import BACKUP_DIR_ENV, SLOT_MARGIN, covering_slot
 from hyxlab.importclosure import closure_sha
 from hyxlab.reportdir import shared_reports
@@ -1059,7 +1060,10 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{run_id}.json"
-    out.write_text(json.dumps(report, indent=2, default=str) + "\n")
+    # Whole or not at all (mistakes #206): this file is the prior derivation
+    # `rederive_delta` just read, and a truncate-then-write that meets a full
+    # disk destroys it and leaves nothing in its place.
+    write_text_atomic(out, json.dumps(report, indent=2, default=str) + "\n")
     for k, v in report.items():
         print(f"  {k}: {v}")
     print(rederive_line(report["rederive"]))

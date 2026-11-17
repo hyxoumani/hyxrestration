@@ -5541,6 +5541,44 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+206. **2026-11-17 08:20Z -- QA's own record (`reports/qa/sections.json`)
+    and the divergence report were written with `Path.write_text`, which
+    TRUNCATES first; with the disk 1.7-2.5 d from its first ENOSPC, a write
+    that fails after the truncate leaves an empty or torn file, and
+    `qa._load_state` reads that as `{}` inside an `except OSError: pass`.**
+    Every section clock (`first_seen`/`last_ok`, what bounds a standing
+    skip) and the prior-run record the digest's `QA` line prints would go
+    in silence on the first full-disk morning; #174 rehearsed the stream
+    store and #205 the shadow ledger, and neither named the small files.
+    Rehearsed on a real full filesystem (`unshare -Urm`, 4 MB tmpfs): (a) a
+    rewrite that fits the block its own truncate freed SUCCEEDS -- 3,700 ->
+    3,800 B `ok` at `f_bavail` 0 -- so the first probe read clean and proved
+    nothing; (b) one block more fails part-way: 3,700 -> 4,200 B raises
+    ENOSPC with 4,096 torn bytes on disk; (c) btrfs is copy-on-write and
+    does not hand the truncated extent back before the write asks, so in
+    production every rewrite is expected to be case (b) -- NOT measured,
+    there is no unprivileged way to fill a btrfs here. SHIPPED:
+    `hyxlab.atomicio.write_text_atomic` (sibling temporary, `fsync`,
+    `os.replace`; raises with the old file untouched and the temporary
+    removed) under `qa._save_state` and `simulator.divergence`'s report;
+    QA prints `WARNING qa record unwritable, ... left as it was` once per
+    run instead of passing. `tests/test_state_enospc.py`, 4 mutants red.
+    **The first two of those mutants were red for the wrong reason:** the
+    record sat ~150 B short of the block boundary, the reverted
+    truncate-then-write therefore SUCCEEDED on the full tmpfs, and the test
+    failed `assert 40 == 34` -- the record had grown, not died. A red
+    mutant was read as a caught mutant until the number in the assertion
+    was; padded to 4,090 B the same mutants fail `assert 5 == 34`. Left as
+    is, named: `hyxlab.lockid.note_holder` has the same truncate-first
+    write (a witness file; `read_holder` degrades to `holder unrecorded`),
+    and it is in both daemons' import closures -- it rides the next promote
+    that restarts them anyway, not a restart of its own (#197). Rule: **a
+    state file that a reader degrades on is replaced by rename, never
+    rewritten in place -- "unreadable means empty" plus "truncate then
+    write" is a full disk erasing history politely. And a mutant is caught
+    only when it fails the assertion it was written for, at the value the
+    defect produces: read the number, not the colour.**
+
 205. **2026-11-17 03:10Z -- `ShadowLedger.persist` was three autocommitted
     statements under a caller that retries the WHOLE batch on any raise.**
     `ShadowRunner.poll_once` advances `_n_fills_persisted` only when

@@ -35,6 +35,7 @@ from collector.poly_sweep import TAIL_STOP_CLASSES
 from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.rawframes import held_day_dirs as raw_held_day_dirs
 from collector.venues import alfred
+from hyxlab.atomicio import write_text_atomic
 from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run, run_completed_at
 from hyxlab.store import (
@@ -725,12 +726,24 @@ def _load_state(path: Path | None = None) -> dict:
         return {}
 
 
+_state_unwritable = False
+
+
 def _save_state(state: dict) -> None:
     try:
         STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
-    except OSError:
-        pass  # QA is read-only by contract; losing the record must not fail the run
+        # Whole or not at all: `write_text` truncates first, and on a full
+        # disk that leaves an empty or torn record `_load_state` reads as {}
+        # -- every section clock and the prior run gone (mistakes #206).
+        write_text_atomic(STATE, json.dumps(state, indent=1, sort_keys=True))
+    except OSError as exc:
+        # QA is read-only by contract; losing the UPDATE must not fail the
+        # run -- but it is said, once per run: the next run reads a record
+        # one run stale and nothing else would tell it why.
+        global _state_unwritable
+        if not _state_unwritable:
+            _state_unwritable = True
+            print(f"WARNING qa record unwritable, {STATE} left as it was ({exc})", flush=True)
 
 
 def _note_seen(section: str, now: datetime) -> None:
