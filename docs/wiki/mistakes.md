@@ -5541,6 +5541,37 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+209. **2026-11-17 21:15Z -- the poly sweep's flush printed one number for
+    eight statements, so a 60% rise in its hold on the collector's file had
+    no owner.** #208 left it open: `held ~180 for 3,091-3,768 s` on
+    11-10..11-14 became 4,097 / 5,647 / 4,835 s on 11-15/16/17 (`flush_min`
+    54-76 -> 100.9 / 92.6) with the same flushes and rows, and no write-path
+    code moved (`git log 11-13..11-17 -- hyxlab collector`: health, QA and
+    unit files only). The only way to ask "the dedup read, the insert or
+    the checkpoint?" was to replay statements on backup slots by hand,
+    which answered for the read (flat) and cannot answer for the write.
+    The burst is `open` -> markets upsert -> stats -> prices (unscoped
+    anti-join, 0.2 s) -> trades (anti-join decoding 145M `trade_id`s,
+    5.8-7.6 s) -> tail stops -> sweep log -> `close` (DuckDB's checkpoint),
+    and the run printed their sum. SHIPPED: `_flush` charges each
+    statement's wall to `FLUSH_STEPS` (charged when it raises too), the
+    done line carries `flush_steps_min`, a flush holding `LONG_FLUSH_S`
+    (60 s) or more prints `[poly] long flush: held Ns after Ns queued
+    (prices .., trades .., close ..) for N prices + M trades staged`
+    stamped by the journal, and QA's breach line reads `flush N min (lock
+    N min) = trades .., close .., prices ..`. 5 tests + 3 clause cases, 8
+    mutants red, each asserted to land. First reading: the 11-18 04:15Z
+    run's done line (~10:45Z). What it decides, written before it exists:
+    `trades` near 180 x 6-7 s = 18-21 min means the dedup is at its
+    slot-measured cost and the excess (~20-35 min over the old band) is
+    in `close` or the inserts = the WRITE side, i.e. the filesystem at 0
+    unallocated or the checkpoint; `trades` well above 21 min means the
+    read is slower in production than on a quiet slot = page cache or
+    host I/O in the sweep hours, and the long-flush lines' clock times
+    say whether it is the sibling's 07:00Z lake nightly. **Rule: a hold
+    made of several statements is published as its split the first time
+    its sum is published -- the sum can only say that something moved.**
+
 208. **2026-11-17 20:15Z -- the Kalshi sweep queued on `data/writer.lock`
     for an unmeasured share of its wall, and its attach ledger called the
     run uncontended.** Found reading the 11-17 done line against the 12.5 h

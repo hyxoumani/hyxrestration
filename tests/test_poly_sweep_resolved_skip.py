@@ -252,6 +252,7 @@ def test_the_done_line_splits_markets_rows_and_wall_by_segment(monkeypatch, tmp_
     assert sum(v["markets"] for v in seg.values()) == totals["markets"] == 7
     assert all(v["wall_min"] >= 0.0 and "wall_s" not in v for v in seg.values())
     assert totals["flush_min"] >= 0.0
+    assert tuple(totals["flush_steps_min"]) == ps.FLUSH_STEPS
 
 
 def test_a_market_whose_fetch_raised_keeps_neither_its_gamma_nor_its_stats_row(

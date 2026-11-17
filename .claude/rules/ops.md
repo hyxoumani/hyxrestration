@@ -924,3 +924,10 @@
   or the host. It overlaps the poly sweep 06:10Z -> ~10:45Z, so the poly
   sweep's `held ... in total` is this sweep's queue (mistakes #208:
   poly holds 3,487 -> 5,647 s, small class +2,700 s, wall 12.46 h of 12.5).
+- The poly sweep's hold on `hyxlab.duckdb` is a SUM of statements: read
+  the done line's `flush_steps_min` (`trades` = the dedup that decodes
+  every poly `trade_id`, ~6-7 s a flush on a quiet slot; `close` = the
+  checkpoint) and the `[poly] long flush:` lines' clock times before
+  attributing a slow flush to the disk, the sibling or the table
+  (mistakes #209). A predicate rewrite of that dedup does not help
+  (ts bound -30%, bound IN list x1.9 worse, two-step equal; #208).

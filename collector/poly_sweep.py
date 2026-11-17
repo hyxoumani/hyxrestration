@@ -80,47 +80,109 @@ def _open(db: str):
     return store
 
 
+#: The statements of one flush burst, in the order they run. `open` is the
+#: attach (its retry ladder included) and precedes the hold; the rest ARE the
+#: hold, `close` being DuckDB's checkpoint. The run's holds rose from a
+#: 3,091-3,768 s band to 4,097 / 5,647 / 4,835 s on 2026-11-15..17 for the
+#: same ~180 flushes and the same rows, and nothing said which statement:
+#: the archive's state was ruled out only by replaying the dedup reads on
+#: two backup slots (mistakes #208, #209). Summed on the done line as
+#: `flush_steps_min`.
+FLUSH_STEPS = ("open", "markets", "stats", "prices", "trades", "tail_stops", "sweep_log", "close")
+#: A flush whose hold reaches this prints its own line with the split. The
+#: routine hold is 17-32 s and a run's worst 75-109 s (11-10..11-17), so this
+#: is the tail: a handful of lines a day, each stamped by the journal.
+LONG_FLUSH_S = 60.0
+
+
+def _step(spent: dict, name: str, fn):
+    """Run `fn`, charging its wall to `spent[name]` whether or not it raised:
+    a statement that failed after 80 s held the file for 80 s."""
+    t = time.monotonic()
+    try:
+        return fn()
+    finally:
+        spent[name] = spent.get(name, 0.0) + (time.monotonic() - t)
+
+
+def long_flush_line(spent: dict, lock_s: float, n_prices: int, n_trades: int) -> str | None:
+    """The journal line for one flush, or None under `LONG_FLUSH_S`. The hold
+    is every step but `open`; zero steps are left out."""
+    held = sum(v for k, v in spent.items() if k != "open")
+    if held < LONG_FLUSH_S:
+        return None
+    split = ", ".join(f"{k} {spent[k]:.1f}" for k in FLUSH_STEPS if spent.get(k, 0.0) >= 0.05)
+    return (
+        f"[poly] long flush: held {held:.1f}s after {lock_s:.1f}s queued ({split})"
+        f" for {n_prices} prices + {n_trades} trades staged"
+    )
+
+
 def _flush(db: str, batch: dict) -> None:
-    with open(LOCK_FILE, "a") as lock:
-        # The flock is a SECOND lock in front of the attach, shared with the
-        # 5-min collector, the kalshi sweep, signals, migrate -- and the
-        # attach ledger (`[poly] attach_wait:`) starts its clock AFTER it:
-        # 2026-10-23's done line carried `flush 157.6 min` with the ledger
-        # explaining 2 min of waiting and 110 min of holding, ~45 min of
-        # flush wall spent in neither (10-22: ~1 min). Timed here so the
-        # done line can say whether that gap is this queue.
-        t_l = time.monotonic()
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        batch["lock_wait_s"] = batch.get("lock_wait_s", 0.0) + (time.monotonic() - t_l)
-        note_holder(LOCK_FILE)
-        store = _open(db)
-        try:
-            # `charge_hold`: `_open` is a wrapper (open + thread pin) that
-            # hands the connection here, so THIS body is the hold -- on the
-            # 5-minute collector's file, one burst per batch across a 15-17h
-            # run, summed on the `[poly] attach_wait:` line after `done:`.
-            # It closes the store in its own `finally` (close, THEN clock).
-            with charge_hold(store.close):
-                if batch["infos"]:
-                    store.upsert_markets(batch["infos"])
-                if batch["stats"]:
-                    store.insert_poly_stats(batch["stats"])
-                if batch["prices"]:
-                    batch["n_prices"] += store.insert_poly_prices(batch["prices"])
-                if batch["trades"]:
-                    batch["n_trades"] += store.insert_trades(batch["trades"])
-                # Carried in the batch, not drained from the client here: a
-                # failed flush holds the batch and retries it, and a stop
-                # drained inside the failing burst would be the one row the
-                # retry no longer has -- archiving a short tail with no record
-                # that it was short, which is precisely the blindness this
-                # table removes.
-                if batch["tail_stops"]:
-                    batch["n_tail_stops"] += store.insert_poly_tail_stops(batch["tail_stops"])
-                if batch.get("swept"):
-                    store.insert_poly_sweep_log(batch["swept"])
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+    spent: dict[str, float] = {}
+    lock_s = [0.0]  # seconds queued on the flock, legible to the `finally`
+    staged = (len(batch["prices"]), len(batch["trades"]))
+    try:
+        with open(LOCK_FILE, "a") as lock:
+            # The flock is a SECOND lock in front of the attach, shared with the
+            # 5-min collector, the kalshi sweep, signals, migrate -- and the
+            # attach ledger (`[poly] attach_wait:`) starts its clock AFTER it:
+            # 2026-10-23's done line carried `flush 157.6 min` with the ledger
+            # explaining 2 min of waiting and 110 min of holding, ~45 min of
+            # flush wall spent in neither (10-22: ~1 min). Timed here so the
+            # done line can say whether that gap is this queue.
+            t_l = time.monotonic()
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            lock_s[0] = time.monotonic() - t_l
+            batch["lock_wait_s"] = batch.get("lock_wait_s", 0.0) + lock_s[0]
+            note_holder(LOCK_FILE)
+            store = _step(spent, "open", lambda: _open(db))
+            try:
+                # `charge_hold`: `_open` is a wrapper (open + thread pin) that
+                # hands the connection here, so THIS body is the hold -- on the
+                # 5-minute collector's file, one burst per batch across a 15-17h
+                # run, summed on the `[poly] attach_wait:` line after `done:`.
+                # It closes the store in its own `finally` (close, THEN clock).
+                with charge_hold(lambda: _step(spent, "close", store.close)):
+                    if batch["infos"]:
+                        _step(spent, "markets", lambda: store.upsert_markets(batch["infos"]))
+                    if batch["stats"]:
+                        _step(spent, "stats", lambda: store.insert_poly_stats(batch["stats"]))
+                    if batch["prices"]:
+                        batch["n_prices"] += _step(
+                            spent, "prices", lambda: store.insert_poly_prices(batch["prices"])
+                        )
+                    if batch["trades"]:
+                        batch["n_trades"] += _step(
+                            spent, "trades", lambda: store.insert_trades(batch["trades"])
+                        )
+                    # Carried in the batch, not drained from the client here: a
+                    # failed flush holds the batch and retries it, and a stop
+                    # drained inside the failing burst would be the one row the
+                    # retry no longer has -- archiving a short tail with no record
+                    # that it was short, which is precisely the blindness this
+                    # table removes.
+                    if batch["tail_stops"]:
+                        batch["n_tail_stops"] += _step(
+                            spent,
+                            "tail_stops",
+                            lambda: store.insert_poly_tail_stops(batch["tail_stops"]),
+                        )
+                    if batch.get("swept"):
+                        _step(
+                            spent, "sweep_log", lambda: store.insert_poly_sweep_log(batch["swept"])
+                        )
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    finally:
+        # Summed and printed on the failure path too: a burst that died at
+        # its trades insert is the one whose split is wanted.
+        total = batch.setdefault("step_s", {})
+        for k, v in spent.items():
+            total[k] = total.get(k, 0.0) + v
+        line = long_flush_line(spent, lock_s[0], *staged)
+        if line:
+            print(line, flush=True)
     batch["infos"], batch["stats"], batch["prices"], batch["trades"] = [], [], [], []
     batch["tail_stops"], batch["swept"] = [], []
 
@@ -546,6 +608,11 @@ def sweep(
     # The part of `flush_min` spent queued on `data/writer.lock` before the
     # attach; the ledger line after `done:` has the rest (sleep + hold).
     totals["flush_lock_min"] = round(batch.get("lock_wait_s", 0.0) / 60, 1)
+    # Where the flush bursts' time went, by statement (`FLUSH_STEPS`); every
+    # step but `open` is hold on the 5-minute collector's file.
+    totals["flush_steps_min"] = {
+        k: round(batch.get("step_s", {}).get(k, 0.0) / 60, 1) for k in FLUSH_STEPS
+    }
     totals["n_tail_stops"] = batch["n_tail_stops"]
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["error_classes"] = error_classes

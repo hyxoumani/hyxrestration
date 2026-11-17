@@ -699,6 +699,18 @@ def test_a_unit_with_no_done_line_renders_no_brackets(monkeypatch, capsys):
         ({"flush_min": 12.34}, " [flush 12.3 min]"),
         ({"flush_min": 12.34, "flush_lock_min": 3.21}, " [flush 12.3 min (lock 3.2 min)]"),
         ({"flush_min": 12.34, "flush_lock_min": "x"}, " [flush 12.3 min]"),
+        # The burst's statements ride the flush, largest first; zeros and
+        # junk are left out.
+        (
+            {
+                "flush_min": 92.6,
+                "flush_lock_min": 10.8,
+                "flush_steps_min": {"open": 0.1, "prices": 8.12, "trades": 55.04, "close": 0.0},
+            },
+            " [flush 92.6 min (lock 10.8 min) = trades 55.0, prices 8.1, open 0.1]",
+        ),
+        ({"flush_min": 1.0, "flush_steps_min": {"trades": "x", "close": 0.0}}, " [flush 1.0 min]"),
+        ({"flush_min": 1.0, "flush_steps_min": 7}, " [flush 1.0 min]"),
         ({"segments": {"open": {"markets": "x", "wall_min": 1.0}}}, ""),
         (
             {"segments": {"open": {"markets": 10, "wall_min": 2.0}}, "flush_min": None},

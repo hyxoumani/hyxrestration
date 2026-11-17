@@ -4855,7 +4855,19 @@ def _segments_clause(done: dict) -> str:
     if isinstance(flush, int | float):
         lock = done.get("flush_lock_min")
         queued = f" (lock {lock:.1f} min)" if isinstance(lock, int | float) else ""
-        parts.append(f"flush {flush:.1f} min{queued}")
+        # The burst's own statements, largest first (mistakes #209): a flush
+        # over its band says whether it was the dedup, the insert or the
+        # checkpoint without a replay on a backup slot.
+        steps = done.get("flush_steps_min")
+        split = ""
+        if isinstance(steps, dict):
+            shown = sorted(
+                ((v, k) for k, v in steps.items() if isinstance(v, int | float) and v >= 0.05),
+                reverse=True,
+            )
+            if shown:
+                split = " = " + ", ".join(f"{k} {v:.1f}" for v, k in shown)
+        parts.append(f"flush {flush:.1f} min{queued}{split}")
     for name, cls in (done.get("by_class") or {}).items():
         if not isinstance(cls, dict):
             continue
