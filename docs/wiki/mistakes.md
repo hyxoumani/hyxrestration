@@ -5541,6 +5541,28 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+205. **2026-11-17 03:10Z -- `ShadowLedger.persist` was three autocommitted
+    statements under a caller that retries the WHOLE batch on any raise.**
+    `ShadowRunner.poll_once` advances `_n_fills_persisted` only when
+    persist returns ("held for retry", the 2026-08-10 lesson) and re-sends
+    the same fills when it raises. That is exactly-once only if a raise
+    wrote nothing; fills, settlements and the equity point each committed
+    alone, so a failure on the second or third left the fills in the
+    ledger and the next poll inserted them again -- doubled
+    `shadow_fills`, which the divergence report would read as a halved
+    match rate. Found by reading the shadow's writes against the full
+    disk the HOSTFS line schedules for ~11-18 (#174 rehearsed the stream
+    store and DuckDB's commit, not this caller): a disk filling between
+    two WAL writes is the case that splits the three. NOT observed: 0
+    `persist declined` lines in 30 d of journal. Fixed with one
+    `BEGIN`..`COMMIT`; pinned by a real DuckDB error on the last statement
+    (`test_a_persist_that_fails_part_way_lands_nothing_so_the_retry_writes_once`,
+    red before: fills 1 != 0). Live at the shadow's next restart (the
+    promote deferred it; the young-run guard). Rule: **"hold for retry"
+    is a claim about the write as well as the counter -- a retry of a
+    batch is safe only if the failed attempt was atomic. Read the write a
+    retry loop wraps before trusting the loop.**
+
 204. **2026-11-16 20:15Z -- the disk-pace clause went `unresolved` two days
     from full, because its deletion rule was a share of a number that
     shrinks.** `HOSTFS` read `pace: unresolved (8 hourly ceiling(s) over

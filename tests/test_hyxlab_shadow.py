@@ -183,6 +183,40 @@ def test_shadow_tails_only_the_future_and_persists_fills(tmp_path):
         assert conn.execute("SELECT count(*) FROM shadow_fills").fetchone()[0] == 1
 
 
+def test_a_persist_that_fails_part_way_lands_nothing_so_the_retry_writes_once(tmp_path):
+    """`poll_once` advances its persisted-counters only when `persist`
+    returns, and re-sends the same fills when it raises. That is correct only
+    if a raising persist wrote NOTHING -- and persist was three autocommitted
+    statements, so one that died on the settlements or the equity point (a
+    disk filling between two WAL writes is the scheduled case, 2026-11-17)
+    left the fills committed and the retry inserted them again. A real
+    DuckDB error on the last statement, no mock: a non-numeric equity."""
+    from types import SimpleNamespace
+
+    ledger = ShadowLedger(tmp_path / "shadow.duckdb")
+    fill = SimpleNamespace(
+        strategy="s", venue="kalshi", market_id="M1", side="yes",
+        qty=5.0, price=0.45, fee=0.01, maker=False, ts=T0,
+    )  # fmt: skip
+    settle = SimpleNamespace(
+        strategy="s", venue="kalshi", market_id="M1", side="yes",
+        qty=5.0, result="yes", payout=5.0, ts=T0,
+    )  # fmt: skip
+
+    def counts():
+        with duckdb.connect(str(tmp_path / "shadow.duckdb"), read_only=True) as conn:
+            return [
+                conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                for t in ("shadow_fills", "shadow_settlements", "shadow_equity")
+            ]
+
+    with pytest.raises(duckdb.Error):
+        ledger.persist("r", [fill], (T0, "not a number"), [settle])
+    assert counts() == [0, 0, 0]
+    ledger.persist("r", [fill], (T0, 100.0), [settle])  # the retry poll_once makes
+    assert counts() == [1, 1, 1]
+
+
 def test_shadow_holds_fills_for_retry_when_ledger_is_locked(tmp_path):
     """Regression (run 20260808T063109 death, 2026-08-10 02:16 UTC): an
     ad-hoc reader writer-locked the ledger DB and the unhandled

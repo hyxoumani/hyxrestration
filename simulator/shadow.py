@@ -324,6 +324,14 @@ class ShadowLedger:
         if not fills and equity is None and not settlements:
             return
         with held_duck(str(self.path)) as conn:
+            # ONE transaction. The caller advances its persisted-counters
+            # only when this returns and re-sends the same fills when it
+            # raises, which is correct only if a raise wrote nothing: as
+            # three autocommits, a failure on the settlements or the equity
+            # point left the fills committed and the retry doubled them. An
+            # exception leaves the transaction open and the `with` closes
+            # the connection, which rolls it back.
+            conn.execute("BEGIN")
             if fills:
                 conn.executemany(
                     "INSERT INTO shadow_fills VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -366,6 +374,7 @@ class ShadowLedger:
                     "INSERT INTO shadow_equity VALUES (?,?,?)",
                     [run_id, _naive(equity[0]), equity[1]],
                 )
+            conn.execute("COMMIT")
 
 
 class ShadowRunner:
