@@ -251,6 +251,15 @@ about the window either way, which is itself worth knowing).
     per-derivation stamp fields (`generated_at`, `report_code`,
     `attach_wait`, `rederive`); the journal line is
     `[divergence] re-derive vs prior sha ...: identical over N field(s)`.
+    Since 2026-11-17 the delta also carries `detail`: HOW each changed
+    field moved (`was`/`now`, or for a dict field its `added` /
+    `removed` / `changed` keys with values), because the derivation
+    overwrites the prior report -- its only witness. The 11-17 01:20Z
+    line `changed 2: unmatched_replay_by_cause,
+    unmatched_shadow_by_cause` was one new all-zero bucket
+    (`out_of_scope`, from 0dbcb16), readable only by diffing two nights
+    of journal; it now prints `unmatched_replay_by_cause
+    (+out_of_scope=0)`.
     The closure is deliberately NOT narrowed to "files that could change
     the numbers" -- that judgment is the hand-bumped version constant
     #76 replaced; one honest re-derive per change is the price.

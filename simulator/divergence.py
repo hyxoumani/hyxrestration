@@ -744,6 +744,7 @@ def rederive_delta(prior: dict | None, report: dict) -> dict:
             "changed": [],
             "added": [],
             "removed": [],
+            "detail": {},
         }
     # The prior went through json.dumps(default=str); normalise the new
     # body the same way so a datetime compares to the string it was saved as.
@@ -762,7 +763,53 @@ def rederive_delta(prior: dict | None, report: dict) -> dict:
         "changed": changed,
         "added": added,
         "removed": removed,
+        # The prior report is OVERWRITTEN by this derivation, so this is the
+        # only place its values survive: HOW each changed field moved.
+        "detail": {k: _field_delta(old[k], new[k]) for k in changed},
     }
+
+
+def _field_delta(old, new) -> dict:
+    """How one changed field moved between two derivations.
+
+    Two dicts are compared one level down -- keys `added` / `removed` /
+    `changed` with their values -- because the report's dict fields are
+    breakdowns whose KEY SET moves with the code: on 2026-11-17 the line
+    read `changed 2: unmatched_replay_by_cause, unmatched_shadow_by_cause`
+    for one new all-zero bucket (`out_of_scope: 0`), and telling that from
+    1,245 fills changing cause took two nights of journal. Anything else
+    is `was` -> `now`, whole.
+    """
+    if isinstance(old, dict) and isinstance(new, dict):
+        both = old.keys() & new.keys()
+        return {
+            "added": {k: new[k] for k in sorted(new.keys() - old.keys())},
+            "removed": {k: old[k] for k in sorted(old.keys() - new.keys())},
+            "changed": {k: [old[k], new[k]] for k in sorted(both) if old[k] != new[k]},
+        }
+    return {"was": old, "now": new}
+
+
+#: A value longer than this is cut in the journal line (the artifact keeps
+#: it whole): `unexplained_by_hour` is a list of dozens of rows.
+_DELTA_VALUE_CHARS = 48
+
+
+def _short(value) -> str:
+    text = json.dumps(value, default=str)
+    return text if len(text) <= _DELTA_VALUE_CHARS else text[: _DELTA_VALUE_CHARS - 2] + ".."
+
+
+def _field_delta_text(name: str, how: dict | None) -> str:
+    """`name (+k=v, -k=v, k: a -> b)` for a dict field, `name (a -> b)` else."""
+    if not how:
+        return name
+    if "was" in how or "now" in how:
+        return f"{name} ({_short(how.get('was'))} -> {_short(how.get('now'))})"
+    bits = [f"+{k}={_short(v)}" for k, v in how.get("added", {}).items()]
+    bits += [f"-{k}={_short(v)}" for k, v in how.get("removed", {}).items()]
+    bits += [f"{k}: {_short(v[0])} -> {_short(v[1])}" for k, v in how.get("changed", {}).items()]
+    return f"{name} ({', '.join(bits)})"
 
 
 def rederive_line(delta: dict) -> str:
@@ -775,7 +822,9 @@ def rederive_line(delta: dict) -> str:
         return f"[divergence] re-derive vs {prior}: identical over {delta['fields']} field(s)"
     parts = []
     if delta["changed"]:
-        parts.append(f"changed {len(delta['changed'])}: {', '.join(delta['changed'])}")
+        detail = delta.get("detail") or {}
+        named = "; ".join(_field_delta_text(k, detail.get(k)) for k in delta["changed"])
+        parts.append(f"changed {len(delta['changed'])}: {named}")
     if delta["added"]:
         parts.append(f"added {len(delta['added'])}: {', '.join(delta['added'])}")
     if delta["removed"]:

@@ -1134,6 +1134,43 @@ def test_rederive_delta_names_changed_added_and_removed_fields():
     assert (delta["changed"], delta["added"], delta["removed"]) == (["matched"], ["new"], ["gone"])
 
 
+def test_rederive_delta_says_how_a_changed_field_moved_one_level_into_a_dict():
+    """2026-11-17 01:20Z: `DIFFERS ... changed 2: unmatched_replay_by_cause,
+    unmatched_shadow_by_cause` was one new all-zero bucket (`out_of_scope`),
+    and the prior report -- the only witness -- is overwritten by the very
+    derivation that prints the line. The delta keeps how each field moved."""
+    was = {"boundary": 0, "gap": 20, "unexplained": 3526, "legacy": 1}
+    now = {"out_of_scope": 3526, "boundary": 0, "gap": 20, "unexplained": 0}
+    prior = {"run_id": "r", "matched": 1, "by_cause": was}
+    delta = mod.rederive_delta(prior, {"run_id": "r", "matched": 2, "by_cause": now})
+    assert delta["changed"] == ["by_cause", "matched"]
+    assert delta["detail"] == {
+        "by_cause": {
+            "added": {"out_of_scope": 3526},
+            "removed": {"legacy": 1},
+            "changed": {"unexplained": [3526, 0]},
+        },
+        "matched": {"was": 1, "now": 2},
+    }
+
+
+def test_rederive_line_tells_a_new_empty_bucket_from_fills_changing_cause():
+    """The two journal lines the 11-17 reading could not tell apart."""
+    zero = {"boundary": 0, "unexplained": 0}
+    shape = mod.rederive_delta({"by_cause": zero}, {"by_cause": {"out_of_scope": 0, **zero}})
+    moved = mod.rederive_delta(
+        {"by_cause": {"boundary": 0, "unexplained": 9}},
+        {"by_cause": {"out_of_scope": 9, "boundary": 0, "unexplained": 0}},
+    )
+    assert "by_cause (+out_of_scope=0)" in mod.rederive_line(shape)
+    assert "by_cause (+out_of_scope=9, unexplained: 9 -> 0)" in mod.rederive_line(moved)
+    scalar = mod.rederive_delta({"matched": 1, "rows": []}, {"matched": 2, "rows": [1] * 99})
+    line = mod.rederive_line(scalar)
+    assert "matched (1 -> 2)" in line
+    assert "rows ([] -> [1, 1, " in line and len(line) < 250  # a long value is cut
+    assert scalar["detail"]["rows"]["now"] == [1] * 99  # ...in the line only
+
+
 def test_rederive_delta_with_no_prior_is_unknown_not_identical():
     """A first derivation reproduced nothing (mistakes #74: an unknown is
     never reported as the cheap answer)."""
@@ -1151,9 +1188,11 @@ def test_rederive_line_changes_when_any_field_of_the_delta_changes():
         "changed": ["matched"],
         "added": ["x"],
         "removed": ["y"],
+        "detail": {"matched": {"was": 1, "now": 2}},
     }
     line = mod.rederive_line(base)
     bumps = {
+        "detail": {"matched": {"was": 1, "now": 3}},
         "prior_sha": "b" * 64,
         "identical": True,
         "fields": 40,
