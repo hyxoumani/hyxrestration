@@ -715,6 +715,16 @@ def test_a_unit_with_no_done_line_renders_no_brackets(monkeypatch, capsys):
             {"by_class": {"dense": {"n": 0, "wall_s": 0.0, "markets": 0}}},
             " [dense 0 series/0 mkts 0.0 min]",
         ),
+        # The Kalshi sweep's queue on the writer flock rides after its classes.
+        (
+            {
+                "by_class": {"dense": {"n": 0, "wall_s": 0.0, "markets": 0}},
+                "lock_wait": {"n": 8718, "min": 41.26, "worst_s": 94.06, "long_n": 31},
+            },
+            " [dense 0 series/0 mkts 0.0 min; writer-lock queue 41.3 min (worst 94.1 s)]",
+        ),
+        ({"lock_wait": {"min": "x", "worst_s": 1.0}}, ""),
+        ({"lock_wait": 3}, ""),
     ],
 )
 def test_segments_clause_leaves_out_what_it_cannot_render(done, clause):

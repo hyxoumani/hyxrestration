@@ -35,7 +35,7 @@ import requests
 
 from collector.netwait import OutagePause
 from collector.venues import kalshi
-from hyxlab.lockid import instance_lock_or_reason, note_holder
+from hyxlab.lockid import describe_holder, instance_lock_or_reason, note_holder
 from hyxlab.store import (
     Store,
     attach_budget_s,
@@ -204,6 +204,54 @@ BURST_OPEN_DELAY_S = 2.0
 # A write burst held longer than this prints its own journal line. Half the
 # routine worst of a run (64-73 s, 11-05..11-11), so a handful of lines a day.
 LONG_BURST_S = 30.0
+# `writer_burst` queues on `data/writer.lock` BEFORE the attach its hold is
+# timed from, and until 2026-11-17 nothing timed the queue: the attach ledger
+# starts its clock after the flock, so a burst that waited 90 s behind the
+# poly sweep's flush printed a perfect `attach_wait` (mistakes #208). The two
+# sweeps overlap 06:10Z -> ~10:45Z; on 11-16 the poly sweep's holds rose to
+# 5,647 s (worst 94.1 s) from a 3,091-3,768 s band and this sweep's
+# zero-market series -- one listing request and two bursts each -- ran to
+# 97.4 s against a 0.55 s median, 2,381 s of them over 5 s (681 s on 11-13).
+# A queue this long prints its own line, naming the last recorded holder.
+LONG_LOCK_WAIT_S = 30.0
+_LOCK_WAIT = {"n": 0, "total_s": 0.0, "worst_s": 0.0, "long_n": 0}
+
+
+def reset_lock_wait() -> None:
+    _LOCK_WAIT.update(n=0, total_s=0.0, worst_s=0.0, long_n=0)
+
+
+def lock_wait_block() -> dict:
+    """This process's queue on the writer flock since the last reset: bursts,
+    minutes queued in total, the worst single wait, and how many waits
+    reached `LONG_LOCK_WAIT_S`. The done line's `lock_wait`."""
+    return {
+        "n": _LOCK_WAIT["n"],
+        "min": round(_LOCK_WAIT["total_s"] / 60, 1),
+        "worst_s": round(_LOCK_WAIT["worst_s"], 1),
+        "long_n": _LOCK_WAIT["long_n"],
+    }
+
+
+def _note_lock_wait(lock_file: str, waited: float) -> None:
+    """Ledger one flock wait. Called with the flock WON and before
+    `note_holder` overwrites the record, so the holder file still names whoever
+    held it last -- the process this burst queued behind (or the last of
+    several). A witness: it must not raise into the burst."""
+    _LOCK_WAIT["n"] += 1
+    _LOCK_WAIT["total_s"] += waited
+    _LOCK_WAIT["worst_s"] = max(_LOCK_WAIT["worst_s"], waited)
+    if waited >= LONG_LOCK_WAIT_S:
+        _LOCK_WAIT["long_n"] += 1
+        try:
+            who = describe_holder(lock_file)
+        except Exception as e:  # noqa: BLE001 -- an instrument, never a participant
+            who = f"holder unreadable ({type(e).__name__})"
+        print(
+            f"[burst] long lock wait: queued {waited:.1f}s on {Path(lock_file).name};"
+            f" last holder {who}",
+            flush=True,
+        )
 
 
 # The `~N min left` line is an ETA over SERIES, and the run's cost is per
@@ -490,7 +538,9 @@ def writer_burst(db: str, lock_file: str | None = None):
     """
     lock_file = lock_file or LOCK_FILE
     with open(lock_file, "a") as lock:
+        t_lock = time.monotonic()
         fcntl.flock(lock, fcntl.LOCK_EX)
+        _note_lock_wait(lock_file, time.monotonic() - t_lock)
         note_holder(lock_file)  # name the holder BEFORE open_retry can spin for 300s
         # readers (QA/doctor/backtest) don't take the flock, so the open
         # can still lose to one — hence the widened budget above.
@@ -858,6 +908,7 @@ def run_sweep(
     global _TAPES_SKIPPED, _UNTRADED_SKIPPED
     _TAPES_SKIPPED = 0
     _UNTRADED_SKIPPED = 0
+    reset_lock_wait()
     totals = {
         "series": len(targets),
         # The enumeration against the prior run's series set, or None on a
@@ -1002,6 +1053,7 @@ def run_sweep(
     totals["net_pauses"] = pause.block()
     totals["tapes_skipped"] = _TAPES_SKIPPED
     totals["untraded_skipped"] = _UNTRADED_SKIPPED
+    totals["lock_wait"] = lock_wait_block()
     totals["elapsed_min"] = round((time.monotonic() - t0) / 60, 1)
     totals["slowest"] = slowest_series(series_wall)
     totals["by_class"] = wall_by_class(series_wall)

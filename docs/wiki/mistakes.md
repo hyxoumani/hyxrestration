@@ -5541,6 +5541,56 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+208. **2026-11-17 20:15Z -- the Kalshi sweep queued on `data/writer.lock`
+    for an unmeasured share of its wall, and its attach ledger called the
+    run uncontended.** Found reading the 11-17 done line against the 12.5 h
+    budget: 746.2 min = 12.46 h, 2 min inside, on a day with FEWER markets
+    than 11-03's 709 min (68,863 vs 74,220). The excess is not the work:
+    `small` ran 11,538 s for 4,314 series / 4,476 markets against ~8,700 s
+    at the 11-04/11-08 rates (1.16 s/series + 0.82 s/market), +2,700 s on
+    11-16 and +2,860 s on 11-17. Read per series from `sweep_log` on the
+    Tue backup slot (no live hold): zero-market series -- one listing
+    request, two bursts -- keep a 0.55-0.59 s median, and their tail over
+    5 s grew 681 s (11-13) -> 1,544 s (11-15) -> 2,381 s (11-16), single
+    series at 30-97 s clustered 09:09-10:18Z with no 429 and no `long
+    write burst` line beside them. The poly sweep overlaps this one
+    06:10Z -> ~10:45Z, and its own holds on the same file rose from a
+    3,091-3,768 s band (11-10..11-14) to 4,097 / 5,647 / 4,835 s on
+    11-15/16/17 for the same ~180 flushes; its worst hold and this
+    sweep's worst zero-market series agree to the second on two days
+    (94.1 s vs 97.4 s on 11-16, 76.3 vs 76.6 on 11-15). `writer_burst`
+    takes the flock BEFORE `held_open`, so the ledger's clock starts
+    after the queue: `34 contended ... 82.0s slept in total` on a run
+    that waited tens of minutes. The poly sweep has timed this queue
+    since 10-23 (`flush_lock_min`); the Kalshi side, the one with 8,700
+    bursts a run, never did -- #91's rule (measure what contention cost
+    the caller) applied to one of two callers of one lock.
+    SHIPPED: `writer_burst` times the flock wait into a per-run ledger,
+    the done line carries `lock_wait: {n, min, worst_s, long_n}`, a wait
+    of `LONG_LOCK_WAIT_S` (30 s) prints `[burst] long lock wait: queued
+    Ns on writer.lock; last holder <unit pid since>` (the holder record
+    read before this burst overwrites it), and QA's breach line ends
+    `writer-lock queue N min (worst N s)`. 6 tests + 3 clause cases, 7
+    mutants red, each asserted to land. NOT ESTABLISHED: why both
+    sweeps' holds stepped on 11-15/16 (this sweep's own: 2,108-2,885 s ->
+    3,670 / 3,706 s). Refuted: the archive's state (the flush's dedup
+    reads time the same on the Sat 11-14 and Tue 11-17 slots: scoped
+    trades anti-join 8.7/7.0 s vs 8.5/6.9 s); generic write slowness (the
+    collector's `write_s` median is 3.7-4.0 s on every day from 584 GB
+    free to 90 GB; the KXBTC15M flushes are ~58 s per ~275k trades on
+    11-13, 11-15, 11-16 and 11-17). Moving with it: both units' memory
+    PSI (`psi_full_us` sweep 0.25-1.7 s -> 11.1 / 14.7 / 12.0 s, poly
+    ~18 s -> 26.5-28 s, from 11-15, reclaim counts unchanged), and btrfs
+    going from 56 GB unallocated (11-15 21:20Z) to 0. A direct write
+    benchmark was refused by the safety hook and not worked around.
+    By-product, a lever not taken: the poly flush's `insert_trades`
+    dedup is scoped by `market_id BETWEEN`, which prunes nothing on
+    random hex ids -- it reads all 907M trades, ~7-9 s and 4.2 GB anon
+    per flush, ~180 times a run. **Rule: a lock in FRONT of an
+    instrumented attach is a second queue, and every caller of it owes
+    the wait its own number -- an instrument one caller of a shared lock
+    has is evidence the other caller lacks it.**
+
 207. **2026-11-17 14:20Z -- three ledger appends ran ahead of, or inside,
     the work they record, and each raises on a full disk: the instrument
     aborts what it observes.** Found reading every non-DuckDB write of the

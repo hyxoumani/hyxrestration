@@ -261,6 +261,19 @@ def test_the_nightly_run_skips_for_the_named_series_only(monkeypatch):
     assert totals["untraded_skipped"] == 0
 
 
+def test_the_done_totals_carry_the_runs_writer_lock_queue(monkeypatch):
+    # Seeded with a prior run's queue: the run resets it and reports its own.
+    sweep_mod._LOCK_WAIT.update(n=9, total_s=600.0, worst_s=90.0, long_n=4)
+    _, totals = _dispatch(monkeypatch)
+    assert totals["lock_wait"] == {"n": 0, "min": 0.0, "worst_s": 0.0, "long_n": 0}
+
+
+def test_the_lock_wait_block_reports_minutes_and_the_worst_wait():
+    sweep_mod._LOCK_WAIT.update(n=9, total_s=600.0, worst_s=94.06, long_n=4)
+    assert sweep_mod.lock_wait_block() == {"n": 9, "min": 10.0, "worst_s": 94.1, "long_n": 4}
+    sweep_mod.reset_lock_wait()
+
+
 def test_an_explicit_budget_or_a_repair_pass_fetches_everything(monkeypatch):
     calls, _ = _dispatch(monkeypatch, max_markets=5)
     assert calls["KXHYPE"] == (5, False)

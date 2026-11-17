@@ -4870,6 +4870,15 @@ def _segments_clause(done: dict) -> str:
             # host. A class with no markets has no rate.
             rate = f" ({wall / mk:.3f} s/mkt)" if mk > 0 else ""
             parts.append(f"{name} {int(n):,} series/{int(mk):,} mkts {wall / 60:.1f} min{rate}")
+    # The Kalshi sweep's queue on `data/writer.lock`, which sits inside every
+    # class's wall and in no attach ledger (mistakes #208): a breach whose
+    # classes ran at their band's rate plus this many minutes is the OTHER
+    # writer's holds, not this unit's work.
+    lw = done.get("lock_wait")
+    if isinstance(lw, dict):
+        q, worst = lw.get("min"), lw.get("worst_s")
+        if isinstance(q, int | float) and isinstance(worst, int | float):
+            parts.append(f"writer-lock queue {q:.1f} min (worst {worst:.1f} s)")
     return f" [{'; '.join(parts)}]" if parts else ""
 
 

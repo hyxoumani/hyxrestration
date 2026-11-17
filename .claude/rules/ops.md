@@ -917,3 +917,10 @@
   killer ended the run (mistakes #198). `hyxlab-autoloop.service` is now
   `MemoryMax=20G` + `OOMPolicy=continue`: an ad-hoc read that dies with
   exit 137 hit that cap -- fix the predicate, do not retry it.
+- The Kalshi sweep's wall includes its QUEUE on `data/writer.lock`, which
+  no attach ledger sees (the flock is taken before `held_open`): read the
+  done line's `lock_wait` (`min`, `worst_s`) and the `[burst] long lock
+  wait ... last holder` lines before calling a slow `small` class the API
+  or the host. It overlaps the poly sweep 06:10Z -> ~10:45Z, so the poly
+  sweep's `held ... in total` is this sweep's queue (mistakes #208:
+  poly holds 3,487 -> 5,647 s, small class +2,700 s, wall 12.46 h of 12.5).
