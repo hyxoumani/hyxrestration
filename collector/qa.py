@@ -2047,9 +2047,21 @@ def _raw_frames_at_rest(raw_dir: Path) -> tuple[float, int] | None:
 
 
 def _record_free(series: Path, now: datetime, free: int) -> None:
-    series.parent.mkdir(parents=True, exist_ok=True)
-    with series.open("a") as fh:
-        fh.write(json.dumps({"ts": now.isoformat(), "free": int(free)}) + "\n")
+    """Append today's sample. Never raises: this runs INSIDE the disk check,
+    ahead of its verdict, and a full disk refuses the append -- rehearsed
+    2026-11-17 on a full tmpfs, `OSError 28` here took the run down before
+    the headroom line, the eleven sections after it and the run record
+    (mistakes #207). The check must outlive the condition it reports."""
+    try:
+        series.parent.mkdir(parents=True, exist_ok=True)
+        with series.open("a") as fh:
+            fh.write(json.dumps({"ts": now.isoformat(), "free": int(free)}) + "\n")
+    except OSError as exc:
+        print(
+            f"[qa] WARNING free-space series unwritable ({type(exc).__name__}: {exc});"
+            " today's sample is lost, the verdict below stands",
+            flush=True,
+        )
 
 
 #: A sample-to-sample RISE in free space larger than this share of the

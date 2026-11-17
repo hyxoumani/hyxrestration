@@ -45,6 +45,7 @@ mistake #46 with a cap on it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
@@ -205,12 +206,20 @@ def note(event: str, path: str | None = None, **extra: Any) -> None:
 
     Beside the archive rather than in it, for `record_skip`'s reason: the
     archive is precisely what could not be opened.
+
+    Never raises (mistakes #207). It runs AFTER the thing it records: a
+    refused append inside `spool_cycle` would report a cycle that IS on disk
+    as "spool failed, cycle LOST", and inside `drain` it would abort the run
+    between a drained file and the live cycle's own write.
     """
     p = Path(path or SPOOL_LOG)
-    p.parent.mkdir(exist_ok=True)
     rec = {"at": datetime.now(UTC).isoformat(), "event": event, **extra}
-    with open(p, "a") as fh:
-        fh.write(json.dumps(rec) + "\n")
+    try:
+        p.parent.mkdir(exist_ok=True)
+        with open(p, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError as e:
+        print(f"[spool] WARNING journal unwritable ({event}): {type(e).__name__}: {e}", flush=True)
 
 
 def spooled(spool_dir: str | None = None) -> list[Path]:
@@ -241,8 +250,15 @@ def spool_cycle(
     name = f"cycle-{ts.astimezone(UTC):%Y%m%dT%H%M%S%f}Z.json"
     target = d / name
     tmp = d / (name + ".partial")
-    tmp.write_text(json.dumps(payload))
-    os.replace(tmp, target)
+    try:
+        tmp.write_text(json.dumps(payload))
+        os.replace(tmp, target)
+    except OSError:
+        # A refused write leaves a torn `.partial` holding blocks on the disk
+        # that just ran out of them; nothing ever names it again.
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
     n_rows = sum(len(v) for v in rows.values())
     note("spooled", path=log_path, file=name, rows=n_rows)
 

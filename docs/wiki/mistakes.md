@@ -5541,6 +5541,48 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+207. **2026-11-17 14:20Z -- three ledger appends ran ahead of, or inside,
+    the work they record, and each raises on a full disk: the instrument
+    aborts what it observes.** Found reading every non-DuckDB write of the
+    collection side against the disk's scheduled first ENOSPC (11-18;
+    #174 = stream store, #205 = shadow ledger, #206 = state files), then
+    rehearsed on a real full filesystem (`unshare -Urm`, 4 MB tmpfs,
+    vacuity guard = a new file refused with errno 28): (a)
+    `collect.record_skip` is the FIRST statement of `_skip_cycle`, outside
+    the `try` that guards the spool -- `OSError 28` there meant the rows in
+    hand were never offered to the spool, and the `skipped:` line and the
+    designed exit 75 became a traceback and exit 1; the docstring two lines
+    up says "a spool failure must never mask the skip" and the skip's own
+    ledger masked both. (b) `qa._record_free` appends the day's free-space
+    sample INSIDE `qa_disk_headroom`, ahead of its verdict, and `main` has a
+    `finally` but no `except`: the disk alarm would have died of the full
+    disk before printing its line, with the eleven sections after it and
+    the run record unwritten -- the 10:00Z run on the day the disk fills
+    reads as a crash instead of `archive disk headroom FAIL`. (c)
+    `spool.note` runs after the payload is renamed into place (a refusal
+    reports a cycle that IS on disk as "spool failed, cycle LOST") and
+    after a drained file is unlinked (a refusal aborts the run between the
+    drain and the live cycle's write; on the tmpfs the unlink itself freed
+    the block the note needed, so this arm did not fire in the rehearsal --
+    read from the code, not measured). (d) a refused `spool_cycle` left its
+    torn `.partial` holding blocks nothing would ever name again. LATENT:
+    0 occurrences in production (the disk has not filled). Fixed: all three
+    appends print a `WARNING ... unwritable` line and return; the `.partial`
+    is unlinked on failure; `tests/test_collect_enospc.py` (real full
+    tmpfs, one test, 0.2 s), four mutants red, each watched to land. A lost
+    skip line is still seen: `qa_collect_skips` counts exit-75 runs from
+    systemd against the ledger. Stated limit: tmpfs refuses only an append
+    that needs a NEW page, so the rehearsal starts from absent ledgers;
+    btrfs is copy-on-write and expected to refuse every append -- not
+    measured. Rule: **an append that records an event goes AFTER the event
+    and cannot raise into it -- `lockid.note_holder` said so in its
+    docstring ("a witness, not a participant") and three neighbours written
+    later did not inherit it. And a check that reports a resource running
+    out must be read for every write IT makes to that resource before its
+    verdict line: the alarm is the first thing the condition gets to
+    kill.** (#174's "a full filesystem fails whichever write comes first",
+    applied to the instruments instead of the stores.)
+
 206. **2026-11-17 08:20Z -- QA's own record (`reports/qa/sections.json`)
     and the divergence report were written with `Path.write_text`, which
     TRUNCATES first; with the disk 1.7-2.5 d from its first ENOSPC, a write

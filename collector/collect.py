@@ -19,6 +19,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import functools
 import json
@@ -120,15 +121,24 @@ def record_skip(
     missing key would read as an older-format row instead.
     """
     path = path or SKIP_LOG
-    Path(path).parent.mkdir(exist_ok=True)
+    with contextlib.suppress(OSError):
+        Path(path).parent.mkdir(exist_ok=True)
     rec = {
         "at": datetime.now(UTC).isoformat(),
         "reason": reason,
         "waited_s": round(waited_s, 1),
         "holder": holder,
     }
-    with open(path, "a") as fh:
-        fh.write(json.dumps(rec) + "\n")
+    # Never raises (mistakes #207): `_skip_cycle` calls this BEFORE it spools
+    # the rows in hand, and on a full disk the append is refused -- rehearsed
+    # 2026-11-17, `OSError 28` here skipped the spool attempt, the skip line
+    # and the exit 75. QA counts exit-75 runs against this ledger, so a lost
+    # line is still seen (`qa_collect_skips`).
+    try:
+        with open(path, "a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+    except OSError as e:
+        print(f"[collect] WARNING skip ledger unwritable: {type(e).__name__}: {e}", flush=True)
 
 
 @dataclass
