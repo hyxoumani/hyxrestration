@@ -75,6 +75,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -620,6 +621,10 @@ class FlushOutcome:
 
     rows: int
     touched: bool
+    #: Seconds the archive was held by this flush, from the moment the
+    #: connection existed to the moment it was closed. None when the file
+    #: was never opened -- an unmeasured hold is never 0.0 (mistakes #91).
+    held_s: float | None = None
 
 
 #: How far back `announced_opens` reads `stream_lifecycle` for `created`
@@ -654,6 +659,15 @@ class StreamStore:
         # with `spilled`: a lost row does not become un-lost once the file
         # drains, and the operator needs to see it after the fact.
         self.spill_corrupt = 0
+        # The OWNER's holds on its own file, which nothing measured until
+        # 2026-11-18 (mistakes #211): every reader of `hyxstream.duckdb`
+        # ledgers what it held, and the writer that holds it most -- one
+        # write attach every flush period, for the daemon's whole life --
+        # published only the rows it wrote. Counted per flush that OPENED
+        # the file, failed inserts included (the lock was held either way),
+        # and handed out by `take_flush_holds`, which resets them: a
+        # lifetime maximum would be the cold boot's forever.
+        self._holds: tuple[int, float, float] = (0, 0.0, 0.0)
         # One writer at a time, across THREADS -- not a DuckDB lock, which
         # excludes nothing here because both racers are this same process.
         # `streamd.flusher()` runs `flush()` on an `asyncio.to_thread`
@@ -968,17 +982,32 @@ class StreamStore:
             lifecycles, self._lifecycles = self._lifecycles, []
             heartbeats, self._heartbeats = self._heartbeats, []
             subevents, self._subevents = self._subevents, []
+            # Timed from when the CONNECTION EXISTS (the open takes the
+            # lock, not the first statement) to after the `with` has closed
+            # it (the close is the checkpoint, and is part of the hold), and
+            # recorded in `finally`: a flush whose insert raised held the
+            # file exactly as long as one that committed.
+            t_open: float | None = None
+            held_s: float | None = None
             try:
-                with duck_connect(str(self.path)) as conn:
-                    # Parse the sidecar only once the write lock is held: in
-                    # a wedge it can hold hours of rows, and a flush that is
-                    # about to fail on connect must not pay to load it. It
-                    # drains in its own chunked transactions, ahead of the
-                    # buffer -- recv order kept, memory bounded by a chunk.
-                    n += self._drain_spill(conn)
-                    self._insert(
-                        conn, events, trades, gaps, tickers, lifecycles, heartbeats, subevents
-                    )
+                try:
+                    with duck_connect(str(self.path)) as conn:
+                        t_open = time.monotonic()
+                        # Parse the sidecar only once the write lock is held:
+                        # in a wedge it can hold hours of rows, and a flush
+                        # that is about to fail on connect must not pay to
+                        # load it. It drains in its own chunked transactions,
+                        # ahead of the buffer -- recv order kept, memory
+                        # bounded by a chunk.
+                        n += self._drain_spill(conn)
+                        self._insert(
+                            conn, events, trades, gaps, tickers, lifecycles, heartbeats, subevents
+                        )
+                finally:
+                    if t_open is not None:
+                        held_s = time.monotonic() - t_open
+                        h_n, h_s, h_max = self._holds
+                        self._holds = (h_n + 1, h_s + held_s, max(h_max, held_s))
             except BaseException:
                 self._events[:0] = events
                 self._trades[:0] = trades
@@ -992,7 +1021,21 @@ class StreamStore:
             self._spill_done_path.unlink(missing_ok=True)
             self._spill_path.unlink(missing_ok=True)
             self.spilled = 0
-            return FlushOutcome(rows=n, touched=True)
+            return FlushOutcome(rows=n, touched=True, held_s=held_s)
+
+    def take_flush_holds(self) -> tuple[int, float, float]:
+        """`(flushes that opened the archive, seconds held in total, longest
+        single hold)` since the last call, and reset. The stats line's
+        period is the caller's, so the counters are handed over rather than
+        read: two readers would each see half a period.
+
+        Takes NO lock: the shutdown publisher calls this after a drain that
+        may have been refused because a flush still holds `_flush_lock` on
+        its worker thread, and a shutdown path must not be able to block.
+        The price is that a flush finishing in the same instant can have its
+        one sample land on either side of the reset, or be dropped."""
+        out, self._holds = self._holds, (0, 0.0, 0.0)
+        return out
 
     def spill_all(self) -> int:
         """Move EVERY pending row to the sidecar; returns rows moved.

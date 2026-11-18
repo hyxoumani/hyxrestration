@@ -81,8 +81,9 @@ def test_an_increment_gets_its_own_warning_line_in_that_period(tmp_path, monkeyp
     _run_one_stats_round(tmp_path, monkeypatch, [441, 450])
     lines = capsys.readouterr().out.splitlines()
     stats = [ln for ln in lines if " stats {" in ln]
-    assert stats[0].endswith("sock_throttled=441 (+0)")
-    assert stats[1].endswith("sock_throttled=450 (+9)")
+    # The flush-hold clause (mistakes #211) follows the counter on the line.
+    assert " sock_throttled=441 (+0) flush_hold=" in stats[0]
+    assert " sock_throttled=450 (+9) flush_hold=" in stats[1]
     warn = [ln for ln in lines if "WARNING sock_throttled +9 this period" in ln]
     assert len(warn) == 1
     # The warning follows the stats line of ITS period, not the first one.

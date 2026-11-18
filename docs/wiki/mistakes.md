@@ -5541,6 +5541,43 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+211. **2026-11-18 03:54Z -- the owner of the stream archive was the one
+    holder of it nobody measured** (class: an instrument built for every
+    caller except the largest). After the 03:51Z power-off the shadow
+    started with the stream (03:54:37Z) and seeded at 03:59:14Z: three
+    attach ladders on `hyxstream.duckdb` exhausted at 28 s each
+    (`exhausted_n 3`, `budget_frac_max 1.0`), 4 min 37 s locked out. The
+    journal has nothing between streamd's 03:54:50Z token line and the
+    03:59:13Z `flush FAILED`: `mark_startup_gap` returned inside 3 s, so
+    the holder was the periodic flush itself, back to back on a cold page
+    cache, and the daemon prints only the ROWS a flush wrote. The same
+    shape on the two earlier cold boots, read back from the journal:
+    11-13 23:37:01Z -> seeded 23:40:15Z (3 min 14 s), 11-14 04:26:56Z ->
+    04:29:36Z (2 min 40 s) -- growing with the file, never named. Every
+    READER of that file ledgers its hold (#91, #96, #102) and the digest
+    differences the shadow's (`SHADOWHOLD`, 0.70 s/poll, 1.1% duty); the
+    writer attaches it 5,760 times a day and was left out because
+    `tests/test_hold_discipline.py` reasons "`streamstore` IS the
+    owner's writer, so it holds no file anyone else wants" -- true of
+    the attach LEDGER's purpose, false of the lock: the shadow's
+    `contended_n` (5 of 86 polls in a warm five minutes, i.e. roughly a
+    0.9 s hold per 15 s flush by inference) is this hold seen from the
+    other side. SHIPPED: `StreamStore.flush_outcome` times each flush
+    from the moment the connection exists through its close (the
+    checkpoint), in `finally` so a failed insert counts and a refused
+    open does not; `FlushOutcome.held_s` (None when the file was never
+    opened); the stats line and the shutdown line carry
+    `flush_hold=<flushes>/<total s>/<max s>` for the period through the
+    one renderer, reset per line so the cold boot's maximum does not
+    stand forever; a flush holding a whole `FLUSH_SECS` prints
+    `long flush: held Ns for N rows` with its clock time.
+    `take_flush_holds` takes no lock -- the shutdown publisher runs after
+    a drain that may have been refused BY that lock. Rule: **when a
+    discipline exempts the owner of a resource, check the exemption is
+    about the resource and not about the ledger -- the owner is usually
+    the largest holder, and its hold is every other tenant's wait.**
+    5 tests, 8 mutants red, each asserted to land.
+
 210. **2026-11-18 01:20Z -- the divergence re-derive line said `DIFFERS`
     for a replay that reproduced every number** (class: a comparison
     widened by a field added later). `rederive_delta` exists to answer

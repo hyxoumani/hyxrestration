@@ -84,6 +84,10 @@ FLUSH_SECS = 15.0
 # `retry_s` when this delay closed it, so a reader differencing a ~2s span
 # knows which floor it is looking at (collector.qa._hold_phrase).
 LOCK_RETRY_SECS = 2.0
+#: A single flush that holds the archive this long gets its own journal
+#: line. One flush period: at that length consecutive flushes leave no gap
+#: a reader's retry ladder can land in.
+LONG_FLUSH_HOLD_S = FLUSH_SECS
 STATS_SECS = 300.0
 TICKER_REFRESH_SECS = 3600.0  # poly token-set refresh
 # Kalshi book-set REST reconciliation, the backstop under the lifecycle
@@ -297,7 +301,32 @@ def _log(msg: str) -> None:
     print(f"[streamd] {datetime.now(UTC):%H:%M:%S} {msg}", flush=True)
 
 
-def stats_line(prefix: str, stats: dict, flushed: int | None, sock: str | None) -> str:
+def flush_holds_clause(holds: tuple[int, float, float]) -> str:
+    """`flush_hold=<flushes>/<total s>/<max s>`: what this daemon's own write
+    attaches held `hyxstream.duckdb` for since the last stats line. The
+    owner is the file's largest holder and was its only unmeasured one
+    (mistakes #211); a reader's `contended_n` is this number seen from the
+    other side."""
+    n, total, worst = holds
+    return f"flush_hold={n}/{total:.1f}/{worst:.1f}"
+
+
+def long_flush_line(held_s: float | None, rows: int) -> str | None:
+    """The journal line for ONE flush that held the archive a whole flush
+    period or more, else None. A flush that never opened the file
+    (`held_s` None) held nothing and prints nothing."""
+    if held_s is None or held_s < LONG_FLUSH_HOLD_S:
+        return None
+    return f"long flush: held {held_s:.1f}s for {rows} rows"
+
+
+def stats_line(
+    prefix: str,
+    stats: dict,
+    flushed: int | None,
+    sock: str | None,
+    holds: tuple[int, float, float] | None = None,
+) -> str:
     """The daemon's periodic / shutdown stats line, rendered in ONE place.
 
     Two publishers (the `STATS_SECS` report and `shutdown;`) carry the same
@@ -320,7 +349,10 @@ def stats_line(prefix: str, stats: dict, flushed: int | None, sock: str | None) 
     # received totals are the counters in `stats`, differenced by the reader.
     flushed_s = "" if flushed is None else f" (last flush {flushed} rows)"
     sock_s = "" if sock is None else f" {sock}"
-    return f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}"
+    holds_s = "" if holds is None else f" {flush_holds_clause(holds)}"
+    return (
+        f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}{holds_s}"
+    )
 
 
 class SockThrottleWatch:
@@ -1606,6 +1638,12 @@ class Daemon:
             # not `period_s` and is not bounded by it.
             if out.touched:
                 self.stalls.ok(datetime.now(UTC))
+            # A hold as long as the flush period means the file was never
+            # free between two flushes: every reader's ladder meets a
+            # writer. Its own line, with a clock time, because the stats
+            # line's maximum says only which five minutes (mistakes #211).
+            if (long := long_flush_line(out.held_s, out.rows)) is not None:
+                _log(long)
             # A drain that skipped sidecar records is a real archive hole
             # (torn append from a host crash). The store no longer stalls on
             # it, so the journal is the only place it can surface (EXP-936).
@@ -1619,7 +1657,8 @@ class Daemon:
             now = asyncio.get_event_loop().time()
             if now - last_stats >= STATS_SECS:
                 sock, throttled = self.sock_throttle.note()
-                _log(stats_line("", self.report_stats(), out.rows, sock))
+                holds = self.store.take_flush_holds()
+                _log(stats_line("", self.report_stats(), out.rows, sock, holds))
                 if throttled:
                     # Its own line, so a grep for the word finds the PERIOD
                     # it landed in, not every stats line ever printed.
@@ -1898,7 +1937,8 @@ class Daemon:
             # the daemon is going down, which is exactly what they should say.
             self.hb.roll_partial()
             self._final_drain()
-            _log(stats_line("shutdown; ", self.report_stats(), None, None))
+            holds = self.store.take_flush_holds()
+            _log(stats_line("shutdown; ", self.report_stats(), None, None, holds))
 
 
 def main() -> None:

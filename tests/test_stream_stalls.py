@@ -187,9 +187,13 @@ class _Store:
     # The real guard: the drain takes the store's writer lock before it
     # decides anything (tests/test_flush_concurrency.py).
     exclusive = streamd.StreamStore.exclusive
+    # The real hand-over of the flush-hold counters, read by both stats
+    # publishers (mistakes #211).
+    take_flush_holds = streamd.StreamStore.take_flush_holds
 
     def __init__(self) -> None:
         self._flush_lock = threading.RLock()
+        self._holds = (0, 0.0, 0.0)
         self.wedged = True
         self.sidecar_rows = 0
         self.pending = 1234

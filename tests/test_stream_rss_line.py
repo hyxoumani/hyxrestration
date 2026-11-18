@@ -103,3 +103,120 @@ def test_glibc_arena_heaps_counts_only_64mib_aligned_anonymous_heaps():
     # Empty / garbage input is a zero reading, not a crash.
     assert memcap.glibc_arena_heaps_from_smaps("") == (0, 0.0)
     assert memcap.glibc_arena_heaps_from_smaps("garbage\nRss: 5 kB\n") == (0, 0.0)
+
+
+# -- the owner's own holds on its archive (mistakes #211) --------------------
+
+
+def test_stats_line_carries_the_flush_holds_and_omits_an_unmeasured_period(monkeypatch):
+    monkeypatch.setattr(streamd, "rss_anon_mb", lambda: 1.0)
+    monkeypatch.setattr(streamd, "glibc_arena_heaps", lambda: None)
+    line = streamd.stats_line("", {"a": 1}, 5, None, (19, 17.34, 2.06))
+    assert line.endswith(" rss_anon_mb=1.0 arena_mb=None flush_hold=19/17.3/2.1")
+    # Perturbation, one field at a time: each reaches the line (#95).
+    for holds in ((20, 17.34, 2.06), (19, 18.34, 2.06), (19, 17.34, 3.06)):
+        assert streamd.stats_line("", {"a": 1}, 5, None, holds) != line
+    # No reading is no clause -- never a zero that reads as an idle file.
+    assert "flush_hold" not in streamd.stats_line("", {"a": 1}, 5, None)
+    # Both publishers hand the store's counters to the one renderer.
+    src = inspect.getsource(streamd)
+    assert src.count("holds = self.store.take_flush_holds()") == 2
+    assert src.count("sock, holds))") == 1 and src.count("None, None, holds))") == 1
+
+
+def test_a_flush_that_holds_a_whole_period_gets_its_own_line():
+    assert streamd.LONG_FLUSH_HOLD_S == streamd.FLUSH_SECS
+    assert streamd.long_flush_line(None, 10) is None
+    assert streamd.long_flush_line(streamd.FLUSH_SECS - 0.1, 10) is None
+    assert streamd.long_flush_line(streamd.FLUSH_SECS, 10) == "long flush: held 15.0s for 10 rows"
+    assert streamd.long_flush_line(37.26, 133483) == "long flush: held 37.3s for 133483 rows"
+    # The flusher is the one caller, and it passes what the flush returned.
+    src = inspect.getsource(streamd)
+    assert src.count("long_flush_line(out.held_s, out.rows)") == 1
+
+
+def test_a_flush_times_its_hold_from_the_open_through_the_close(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    from hyxlab import streamstore
+    from hyxlab.streamstore import StreamStore
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    # Nothing buffered: the file is never opened, so nothing was held.
+    out = store.flush_outcome()
+    assert out.touched is False and out.held_s is None
+    assert store.take_flush_holds() == (0, 0.0, 0.0)
+
+    # A clock that advances one second per reading: the hold is then the
+    # number of readings between the open and the close, and a hold timed
+    # from BEFORE the connect or read before the close has a different one.
+    ticks = iter(range(1000))
+    order: list[str] = []
+    monkeypatch.setattr(streamstore.time, "monotonic", lambda: order.append("t") or next(ticks))
+    real_connect = streamstore.duck_connect
+
+    class Conn:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            order.append("close")
+            return self._inner.__exit__(*exc)
+
+    def connect(*a, **kw):
+        conn = Conn(real_connect(*a, **kw))  # the attach ledger reads the clock too
+        order.append("open")
+        return conn
+
+    monkeypatch.setattr(streamstore, "duck_connect", connect)
+    now = datetime.now(UTC)
+    store.append_gap("kalshi", "books", now, now, "reconnect")
+    out = store.flush_outcome()
+    assert out.touched is True and out.rows == 1
+    # One reading right after the open, the next right after the close.
+    assert order[-4:] == ["open", "t", "close", "t"]
+    assert out.held_s == 1.0
+    store.append_gap("kalshi", "books", now, now, "reconnect")
+    assert store.flush_outcome().held_s == 1.0
+    assert store.take_flush_holds() == (2, 2.0, 1.0)
+    # Taken is reset: the next period starts from nothing.
+    assert store.take_flush_holds() == (0, 0.0, 0.0)
+
+
+def test_a_flush_that_fails_after_the_open_still_counts_its_hold(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    import pytest
+
+    from hyxlab.streamstore import StreamStore
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    now = datetime.now(UTC)
+    store.append_gap("kalshi", "books", now, now, "reconnect")
+
+    def boom(*a, **kw):
+        raise RuntimeError("insert failed")
+
+    monkeypatch.setattr(store, "_insert", boom)
+    with pytest.raises(RuntimeError):
+        store.flush_outcome()
+    n, total, worst = store.take_flush_holds()
+    assert n == 1 and total > 0 and worst == total
+    assert store.pending == 1  # and the batch is back in the buffer
+
+    # A flush REFUSED at the open held nothing and counts nothing.
+    from hyxlab import streamstore
+
+    def refused(*a, **kw):
+        raise OSError("Could not set lock on file")
+
+    monkeypatch.setattr(streamstore, "duck_connect", refused)
+    with pytest.raises(OSError):
+        store.flush_outcome()
+    assert store.take_flush_holds() == (0, 0.0, 0.0)

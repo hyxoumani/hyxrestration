@@ -931,3 +931,11 @@
   attributing a slow flush to the disk, the sibling or the table
   (mistakes #209). A predicate rewrite of that dedup does not help
   (ts bound -30%, bound IN list x1.9 worse, two-step equal; #208).
+- The stream daemon's own hold on `hyxstream.duckdb` is on its stats line
+  since 2026-11-18: `flush_hold=<flushes>/<total s>/<max s>` per 300 s
+  period, and `long flush: held Ns for N rows` for any flush holding a
+  whole 15 s period (mistakes #211). After a COLD boot the flushes run
+  back to back for minutes (the shadow sat locked out 2.7 / 3.2 / 4.6 min
+  on 11-14 / 11-13 / 11-18 with `exhausted_n 3`): read those lines before
+  chasing a late shadow seed, and read `total / 300` as the writer's duty
+  on the file before pricing any reader's retry ladder against it.
