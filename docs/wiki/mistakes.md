@@ -5628,7 +5628,18 @@ Format: what happened → root cause → error type → prevention tier
     digest reads the holder side as `STREAMHOLD` (s/flush, duty over the
     lines that carry the clause, worst flush, `LONG:` with a clock time;
     `UNMEASURED` rather than a zero for pre-#211 lines): 4 tests on
-    lines rendered by the daemon's own functions, 7 mutants red. Rules:
+    lines rendered by the daemon's own functions, 7 mutants red. WHAT
+    THE 11% IS (09:26Z, offline, a reflink copy of the Wed slot in a 4G
+    unit, flush-shaped write attaches): open 0.04 s, inserts ~0.95 s,
+    commit 0.05 s, close 1.1-1.5 s, total 2.2 s -- and a flush of TEN
+    rows costs the same 2.18 s as one of 97,000. The hold is a constant
+    per attach (table metadata loaded to append, then rewritten by the
+    checkpoint at close; ~25 MB of copy-on-write per flush on btrfs),
+    so it follows the FILE like the shadow's constant (#202), not the
+    traffic: no flush-side tuning removes it, a longer flush period
+    only amortises it against a wider crash window (not taken), and
+    the retention decision already on the user's list is the one lever
+    that shrinks it. Rules:
     **when a discipline exempts the owner of a resource, check the
     exemption is about the resource and not about the ledger -- the
     owner is usually the largest holder, and its hold is every other
