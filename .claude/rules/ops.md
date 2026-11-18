@@ -931,6 +931,14 @@
   attributing a slow flush to the disk, the sibling or the table
   (mistakes #209). A predicate rewrite of that dedup does not help
   (ts bound -30%, bound IN list x1.9 worse, two-step equal; #208).
+- A long write burst's cost is ~0.22-0.25 ms per STAGED row in production
+  (poly 300,000 trades -> `trades 73.1`; Kalshi 251,425 -> `held 55.1s`)
+  and 1-10 s on every replay of the same batch (mistakes #212, cause not
+  established). Read the `[by statement: stage .., dedup .., python ..;
+  cpu N s main thread, N s process]` tail both long-burst lines carry
+  since 2026-11-18 against the replay baseline `stage 1.1, dedup 7.2; cpu
+  4.9 / 15.0` before touching the dedup, the batch size or the disk; #212
+  says what each shape means.
 - The stream daemon's own hold on `hyxstream.duckdb` is on its stats line
   since 2026-11-18: `flush_hold=<flushes>/<total s>/<max s>` per 300 s
   period, `long flush: held Ns for N rows` for any flush holding a whole

@@ -34,6 +34,7 @@ import duckdb
 import requests
 
 from collector.netwait import OutagePause
+from collector.stmtcost import StatementCost
 from collector.venues import kalshi
 from hyxlab.lockid import describe_holder, instance_lock_or_reason, note_holder
 from hyxlab.store import (
@@ -556,9 +557,11 @@ def writer_burst(db: str, lock_file: str | None = None):
         # block is the sweep's total exclusion of the archive — the number
         # the 08-02 fix claimed to shrink and never printed.
         t_open: float | None = None
+        cost: StatementCost | None = None
         try:
             with held_open(db, retries=BURST_OPEN_RETRIES, delay=BURST_OPEN_DELAY_S) as store:
                 t_open = time.monotonic()
+                cost = StatementCost.attach(store)
                 try:
                     yield store
                 finally:
@@ -576,7 +579,14 @@ def writer_burst(db: str, lock_file: str | None = None):
             if t_open is not None:
                 held = time.monotonic() - t_open
                 if held >= LONG_BURST_S:
-                    print(f"[burst] long write burst: held {Path(db).name} {held:.1f}s", flush=True)
+                    # By statement kind, with CPU: a 251,425-trade flush held
+                    # 55.1 s on 2026-11-18 and replays in 1.2 s (mistakes #212).
+                    by_kind = cost.clause() if cost is not None else ""
+                    print(
+                        f"[burst] long write burst: held {Path(db).name} {held:.1f}s"
+                        + (f" [by statement: {by_kind}]" if by_kind else ""),
+                        flush=True,
+                    )
 
 
 def refresh_series(

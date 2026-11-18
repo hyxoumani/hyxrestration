@@ -5541,6 +5541,65 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+212. **2026-11-18 14:15Z -- a decision rule was written for a per-call
+    number from a measurement at 1/60th of the call's real input, and the
+    first reading fit neither branch.** #209 split the poly flush by
+    `Store` call and predicted `trades` near 180 x 6-7 s = 18-21 min (the
+    dedup at its slot cost) or "well above" (the read slower in the sweep
+    hours). The 11-18 done line: `trades 52.2` of `flush_min 69.2`, and
+    six `long flush` lines 04:25-04:58Z at `trades` 64.2-79.7 s for
+    224,438-300,000 trades staged -- 0.244-0.247 ms per staged row on the
+    first four. The 6-7 s was measured on a 5,000-row batch; the run stages
+    5.17M rows, 300,000 in each of its first flushes. NOT the cause, each
+    measured the same day on a reflink copy of the Wed slot in a 6G unit
+    (copy removed after): the batch size itself (the real
+    `Store.insert_trades`, 300,000 staged / 6,000 new: 9.2 s cold, 7.7 s
+    warm = stage 1.1 + anti-join insert 6.3-7.8); the batch's content (the
+    real `collector.poly_sweep` run for its first 200 markets against the
+    copy, tails fetched from the API: `trades 10.2` and `9.7` for 300,000
+    and 297,268 staged); memory squeeze (1.7 GB of ballast, anon 5.8 of
+    6 GB: 7.7-9.4 s); the garbage collector (3.7M tracked objects held:
+    7.1-8.5 s, same with `gc.disable()`); the live file (one read-only
+    dedup read of the same batch on `data/hyxlab.duckdb`, 14:40Z: 8.27 s);
+    the code or DuckDB build (stable and dev trees identical, 1.5.2 both).
+    The Kalshi sweep shows the same shape on another code path: its
+    14:10Z `KXSOL15M mid-series flush at 21 candles + 251425 trades` held
+    55.1 s (0.219 ms/row; 11:04Z 254,850 -> 53.9 s, 12:03Z 256,634 ->
+    54.3 s) and the same insert, 251,425 all-new rows of that series,
+    replays in 1.18 s. So both sweeps pay ~0.22-0.25 ms per staged row
+    that no replay pays: about 30 of the poly sweep's 52 `trades` minutes
+    on the collector's file (5.17M staged rows; the other ~21 are the
+    dedup at its slot cost) and an unmeasured share of the Kalshi sweep's
+    long bursts (29 `long write burst` lines of 41-98 s by 14:10Z, on a
+    sweep that ran 72 s over its 12.5 h budget on 11-11) -- and the cause
+    is NOT ESTABLISHED. A `/proc` sampler on the running Kalshi
+    sweep (per-thread CPU while it holds `writer.lock`, read from
+    `/proc/locks`) caught no long burst before this run's cutoff.
+    SHIPPED: `collector.stmtcost.StatementCost`, a proxy on `store.conn`
+    that files every statement a burst runs under `stage` (the bind into
+    the temp table), `dedup` (the anti-join insert), `other`, `close`, with
+    `python` the wall outside any statement, and reads CPU for the calling
+    thread and the process; both long-burst lines end `[by statement:
+    stage .., dedup .., close .., python ..; cpu N s main thread, N s
+    process]`. In `collector/`, not `hyxlab/store.py`: no daemon's closure
+    moved. Baseline from the replay: `held 8.8s ... [by statement: stage
+    1.1, dedup 7.2, close 0.2, python 0.3; cpu 4.9s main thread, 15.0s
+    process]`. What the first production line decides, written before it
+    exists: the excess in `stage` with main-thread CPU near the wall = the
+    Python-to-DuckDB bind is slow in the long-lived process (look at the
+    row values and the allocator, #140); in `dedup` with process CPU near
+    the replay's 15 s = the statement WAITED (I/O or a lock inside DuckDB;
+    read `/proc/pressure/io` at those minutes); in `dedup` with CPU far
+    above 15 s = a different plan on the live file (take `EXPLAIN ANALYZE`
+    from a writable copy made that hour); in `python` = the normalisation.
+    8 tests, 8 mutants red, each asserted to land (one was GREEN first:
+    the frozen-clock test rendered before it moved the clocks). **Rule: a
+    decision rule for a number is only as good as the input size it was
+    measured at -- before writing "N seconds means X", read the largest
+    batch the production journal shows and measure there; and when a
+    replay cannot reproduce a production cost, stop varying the replay
+    and instrument the production line.**
+
 211. **2026-11-18 03:54Z -- the owner of the stream archive was the one
     holder of it nobody measured, and the shadow never said who refused
     it** (class: an instrument built for every caller except the

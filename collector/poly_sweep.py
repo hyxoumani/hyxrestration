@@ -33,6 +33,7 @@ import duckdb
 import requests
 
 from collector.netwait import OutagePause
+from collector.stmtcost import StatementCost
 from collector.venues import polymarket as poly
 from hyxlab.lockid import instance_lock_or_reason, note_holder
 from hyxlab.store import (
@@ -105,16 +106,22 @@ def _step(spent: dict, name: str, fn):
         spent[name] = spent.get(name, 0.0) + (time.monotonic() - t)
 
 
-def long_flush_line(spent: dict, lock_s: float, n_prices: int, n_trades: int) -> str | None:
+def long_flush_line(
+    spent: dict, lock_s: float, n_prices: int, n_trades: int, cost: StatementCost | None = None
+) -> str | None:
     """The journal line for one flush, or None under `LONG_FLUSH_S`. The hold
-    is every step but `open`; zero steps are left out."""
+    is every step but `open`; zero steps are left out. `cost` adds where the
+    hold went by statement kind and how much of it was CPU (mistakes #212:
+    `trades 73.1` is three kinds of work, and 10 s of it on a replay)."""
     held = sum(v for k, v in spent.items() if k != "open")
     if held < LONG_FLUSH_S:
         return None
     split = ", ".join(f"{k} {spent[k]:.1f}" for k in FLUSH_STEPS if spent.get(k, 0.0) >= 0.05)
+    by_kind = cost.clause() if cost is not None else ""
     return (
         f"[poly] long flush: held {held:.1f}s after {lock_s:.1f}s queued ({split})"
         f" for {n_prices} prices + {n_trades} trades staged"
+        + (f" [by statement: {by_kind}]" if by_kind else "")
     )
 
 
@@ -122,6 +129,7 @@ def _flush(db: str, batch: dict) -> None:
     spent: dict[str, float] = {}
     lock_s = [0.0]  # seconds queued on the flock, legible to the `finally`
     staged = (len(batch["prices"]), len(batch["trades"]))
+    cost: StatementCost | None = None
     try:
         with open(LOCK_FILE, "a") as lock:
             # The flock is a SECOND lock in front of the attach, shared with the
@@ -137,6 +145,7 @@ def _flush(db: str, batch: dict) -> None:
             batch["lock_wait_s"] = batch.get("lock_wait_s", 0.0) + lock_s[0]
             note_holder(LOCK_FILE)
             store = _step(spent, "open", lambda: _open(db))
+            cost = StatementCost.attach(store)
             try:
                 # `charge_hold`: `_open` is a wrapper (open + thread pin) that
                 # hands the connection here, so THIS body is the hold -- on the
@@ -180,7 +189,7 @@ def _flush(db: str, batch: dict) -> None:
         total = batch.setdefault("step_s", {})
         for k, v in spent.items():
             total[k] = total.get(k, 0.0) + v
-        line = long_flush_line(spent, lock_s[0], *staged)
+        line = long_flush_line(spent, lock_s[0], *staged, cost=cost)
         if line:
             print(line, flush=True)
     batch["infos"], batch["stats"], batch["prices"], batch["trades"] = [], [], [], []
