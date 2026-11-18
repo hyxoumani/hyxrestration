@@ -5577,9 +5577,11 @@ Format: what happened → root cause → error type → prevention tier
     had 2,329 s of CPU (2,114 user) in a 9.66 h life whose ordinary
     fetching burns 1.8% of a core (163 ticks in 90 s, ~630 s if that rate
     held all day), and its 29 long bursts had held 1,628 s -- so the bursts
-    look WORKED on the Python thread, not waited, at 50x the replay's
-    per-row cost. Not conclusive (the fetch rate was sampled in one
-    class). Also refuted after that: a fragmented heap (4.2M mixed-size
+    look WORKED, not waited. That is all it says: DuckDB executes on the
+    calling thread too (the replay's 8.8 s flush is 4.9 s of main-thread
+    CPU), so main-thread CPU does not separate Python from DuckDB -- the
+    new line's `stage` / `dedup` / `python` split does. Not conclusive
+    either way (the fetch rate was sampled in one class). Also refuted after that: a fragmented heap (4.2M mixed-size
     allocations made and mostly freed before the insert: 1.35 s vs 1.21),
     the unit's environment (same variable names as a transient unit's),
     and optional modules DuckDB's binding might consult (the sweep maps
