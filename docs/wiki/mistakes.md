@@ -5611,7 +5611,13 @@ Format: what happened → root cause → error type → prevention tier
     through `last_recv_ts_once`, one attach per channel however many
     shards ask. 4 tests (statement spy: one venue read, bounded; the
     three-tier ladder; 18 calls = 1 attach; a failed read is not
-    memoised), 6 mutants red, each asserted to land. SHIPPED, victim
+    memoised), 6 mutants red, each asserted to land. VERIFIED at the
+    09:20:00Z promote restart (8e352f0): trades / lifecycle / ticker
+    connected at +2-3 s, all 19 books shards between 09:20:03Z and
+    09:20:05Z (was 08:44:27Z -> 08:48:04Z an hour earlier on the same
+    warm host), and the shadow's `exhausted_n` stayed 5 across it --
+    the first stream restart since at least 11-11 to cost it no ladder.
+    First period `flush_hold=18/30.3/2.2`. SHIPPED, victim
     side:
     `shadow.PollFailures` prints the first failure of an episode with
     the holder resolved from /proc while it is alive (`poll FAILED x1
