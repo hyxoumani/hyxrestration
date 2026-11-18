@@ -5590,7 +5590,10 @@ Format: what happened → root cause → error type → prevention tier
     -- when a DuckDB upgrade caches the miss that test goes red and the
     pin can go. Cost of the fix: +38 MB anon and ~0.2 s wall per process
     that binds a value, running daemons included (the import is retried,
-    so they load pandas at their next bind without a restart). **Rule: a
+    so they load pandas at their next bind without a restart). First production reading, same evening:
+    the 5-min collector's `write_s` 3.5-3.8 -> 1.0-1.2 from the 20:35Z
+    cycle, breadth's hold 1.3 -> 0.5 s -- the tax was on every writer,
+    not only the two that printed a long-burst line. **Rule: a
     replay reproduces production only if it runs production's
     interpreter -- `hyxrestration-stable/.venv/bin/python`, not the dev
     venv -- and when a production-only cost survives every variation of
