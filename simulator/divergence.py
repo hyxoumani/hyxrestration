@@ -714,6 +714,15 @@ RUN_STAMP_FIELDS: frozenset[str] = frozenset(
 )
 
 
+#: Fields that say WHERE this derivation read its inputs. They are compared
+#: (a move is reported with its values) but a report that differs from its
+#: prior only here reproduced the SUBJECT: the nightly unit reads the newest
+#: covering backup slot, the slot rotates every night, and from 11-17 the
+#: line read `DIFFERS ... changed 1: stream_source` for a byte-identical
+#: replay -- the word that should mean "new code moved the result".
+SOURCE_FIELDS: frozenset[str] = frozenset({"stream_source"})
+
+
 def load_report(path: Path) -> dict | None:
     """The on-disk report as a dict, or None (missing, unreadable, not an object)."""
     try:
@@ -741,6 +750,7 @@ def rederive_delta(prior: dict | None, report: dict) -> dict:
         return {
             "prior_sha": None,
             "identical": None,
+            "status": "no_prior",
             "fields": 0,
             "changed": [],
             "added": [],
@@ -757,9 +767,19 @@ def rederive_delta(prior: dict | None, report: dict) -> dict:
     added = sorted(new.keys() - old.keys())
     removed = sorted(old.keys() - new.keys())
     stamp = prior.get("report_code")
+    moved = set(changed) | set(added) | set(removed)
+    if not moved:
+        status = "identical"
+    elif moved <= SOURCE_FIELDS:
+        status = "source_moved"
+    else:
+        status = "differs"
     return {
         "prior_sha": stamp.get("sha") if isinstance(stamp, dict) else None,
-        "identical": not (changed or added or removed),
+        # Frozen: True only when EVERY compared field reproduced, sources
+        # included. `status` refines it (identical <=> status "identical").
+        "identical": not moved,
+        "status": status,
         "fields": len(both),
         "changed": changed,
         "added": added,
@@ -830,6 +850,12 @@ def rederive_line(delta: dict) -> str:
         parts.append(f"added {len(delta['added'])}: {', '.join(delta['added'])}")
     if delta["removed"]:
         parts.append(f"removed {len(delta['removed'])}: {', '.join(delta['removed'])}")
+    if delta.get("status") == "source_moved":
+        subject = delta["fields"] - len(set(delta["changed"]) & SOURCE_FIELDS)
+        return (
+            f"[divergence] re-derive vs {prior}: subject identical over {subject}"
+            f" field(s), read from a different source -- {'; '.join(parts)}"
+        )
     return (
         f"[divergence] re-derive vs {prior}: DIFFERS over {delta['fields']} compared"
         f" field(s) -- {'; '.join(parts)}"

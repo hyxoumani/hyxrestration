@@ -1171,6 +1171,49 @@ def test_rederive_line_tells_a_new_empty_bucket_from_fills_changing_cause():
     assert scalar["detail"]["rows"]["now"] == [1] * 99  # ...in the line only
 
 
+def _slot(day: str, taken: str) -> dict:
+    path = f"/home/devs/hyx-backups/hyxstream.{day}.duckdb"
+    return {"kind": "backup_slot", "path": path, "taken": taken}
+
+
+def test_rederive_delta_tells_a_rotated_backup_slot_from_a_moved_subject():
+    """2026-11-18 01:20Z: `DIFFERS over 44 compared field(s) -- changed 1:
+    stream_source` for a replay that reproduced every number. The nightly
+    unit reads the newest covering slot and the slot rotates nightly, so
+    the line could never again say what it exists to say."""
+    prior = {"run_id": "r", "matched": 7, "stream_source": _slot("Mon", "2026-11-16 03:30:01")}
+    same = {"run_id": "r", "matched": 7, "stream_source": _slot("Tue", "2026-11-17 03:30:03")}
+    delta = mod.rederive_delta(prior, same)
+    assert delta["status"] == "source_moved"
+    assert delta["identical"] is False  # frozen: every compared field, sources too
+    assert delta["changed"] == ["stream_source"]  # still named, with its values
+    line = mod.rederive_line(delta)
+    assert "subject identical over 2 field(s)" in line and "DIFFERS" not in line
+    assert "hyxstream.Mon.duckdb" in line and "hyxstream.Tue.duckdb" in line
+    # A subject field moving WITH the source is a difference, whatever moved beside it.
+    both = mod.rederive_delta(prior, {**same, "matched": 8})
+    assert both["status"] == "differs" and "DIFFERS" in mod.rederive_line(both)
+    # ...and so is a subject field appearing or vanishing.
+    assert mod.rederive_delta(prior, {**same, "new": 0})["status"] == "differs"
+    assert mod.rederive_delta({**prior, "gone": 0}, same)["status"] == "differs"
+
+
+def test_rederive_status_refines_identical():
+    """`status` is a strict refinement of the frozen boolean (reports rule)."""
+    prior = {"run_id": "r", "matched": 7, "stream_source": _slot("Mon", "t")}
+    cases = [
+        (None, None, "no_prior"),
+        (prior, dict(prior), "identical"),
+        (prior, {**prior, "stream_source": _slot("Tue", "u")}, "source_moved"),
+        (prior, {**prior, "matched": 8}, "differs"),
+    ]
+    for old, new, status in cases:
+        delta = mod.rederive_delta(old, new or {})
+        assert delta["status"] == status
+        assert (delta["identical"] is True) == (status == "identical")
+        assert (delta["identical"] is None) == (status == "no_prior")
+
+
 def test_rederive_delta_with_no_prior_is_unknown_not_identical():
     """A first derivation reproduced nothing (mistakes #74: an unknown is
     never reported as the cheap answer)."""
@@ -1184,6 +1227,7 @@ def test_rederive_line_changes_when_any_field_of_the_delta_changes():
     base = {
         "prior_sha": "a" * 64,
         "identical": False,
+        "status": "differs",
         "fields": 41,
         "changed": ["matched"],
         "added": ["x"],
@@ -1195,6 +1239,7 @@ def test_rederive_line_changes_when_any_field_of_the_delta_changes():
         "detail": {"matched": {"was": 1, "now": 3}},
         "prior_sha": "b" * 64,
         "identical": True,
+        "status": "source_moved",
         "fields": 40,
         "changed": ["replay_fills"],
         "added": ["z"],

@@ -5541,6 +5541,28 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+210. **2026-11-18 01:20Z -- the divergence re-derive line said `DIFFERS`
+    for a replay that reproduced every number** (class: a comparison
+    widened by a field added later). `rederive_delta` exists to answer
+    one question -- did the SUBJECT move under new code -- and leaves out
+    the fields that move on every derivation (`RUN_STAMP_FIELDS`). On
+    2026-11-16 the report gained `stream_source` (which backup slot the
+    replay read); the nightly unit reads the newest covering slot and
+    the slot rotates every night, so from the second night on the line
+    read `DIFFERS over 44 compared field(s) -- changed 1: stream_source
+    (hyxstream.Mon.duckdb -> hyxstream.Tue.duckdb)` and would have every
+    night after. The status page had predicted `identical` for this run
+    four passes in a row. Not silenced: a move from a slot to the LIVE
+    file is a real change of what was read and stays named with its
+    values. Fix: `SOURCE_FIELDS` + a `status` enum (`no_prior` /
+    `identical` / `source_moved` / `differs`) that strictly refines the
+    frozen `identical` boolean; the line for `source_moved` reads
+    `subject identical over N field(s), read from a different source --
+    changed 1: stream_source (...)`. Rule: **a field added to a compared
+    structure joins the comparison by default; when adding one, say
+    which of the comparison's questions it belongs to.** 2 tests, 5
+    mutants red, each asserted to land. Suite 2756.
+
 209. **2026-11-17 21:15Z -- the poly sweep's flush printed one number for
     eight statements, so a 60% rise in its hold on the collector's file had
     no owner.** #208 left it open: `held ~180 for 3,091-3,768 s` on
