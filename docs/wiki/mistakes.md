@@ -5590,7 +5590,31 @@ Format: what happened → root cause → error type → prevention tier
     sweep holds `writer.lock`, the hold read from `/proc/locks`) caught no
     long burst in 50 min and was left running as the bounded transient
     unit `hyxprobe-burstsample` (3 h, read-only, 200M), writing
-    `~/scratch/dedup300k/bursts.out`.
+    `~/scratch/dedup300k/bursts.out`. IT CAUGHT ONE at 16:08:17Z (`KXWTI15M
+    mid-series flush at 22 candles + 251542 trades`, journal `held
+    53.0s`): for 51 of 52 sampled seconds the MAIN thread alone ran at
+    0.93 s user + 0.08 s sys per second, all 46 other threads asleep and
+    0 MB of disk read; the workers woke for one second at the end (0.85
+    CPU-s, 9 MB read) -- the real insert, at the replay's cost. So the
+    burst is ~51 s of single-threaded work on the calling thread BEFORE
+    the parallel statement, about 200 us per staged row, with a steady
+    stream of system calls. The process read 921 MB through `read()` in
+    those 52 s = 3,661 B per trade row, and `/etc/localtime` on this box
+    is a 3,592 B regular file: one full read of the timezone file per
+    staged row is the hypothesis that fits both the bytes and the
+    per-row CPU (opening and parsing a TZif file is ~200 us). NOT
+    REPRODUCED: 5,000 rows built by `kalshi.trade_row` / `poly_trade_row`
+    / naive, inserted through `Store.insert_trades` under `strace -e
+    openat`, open `/etc/localtime` once -- on a fresh archive and on a
+    copy with the live schema (`ts TIMESTAMP`, session `TimeZone`
+    `America/Chicago`); and a whole replayed burst (22 candles, 251,425
+    trades, swept marks) takes 2.5 s with the bind 0.9 s of main-thread
+    CPU. So the per-row reader runs only in the long-lived unit and I
+    have not found what calls it. The sampler was restarted as
+    `hyxprobe-burstsample2` with read bytes AND read-syscall counts per
+    second (first capture kept as `bursts.1.out`): ~4,900 reads/s of
+    ~3.6 KB through a burst confirms the file; the new line's `stage`
+    seconds say which statement they sit in.
     SHIPPED: `collector.stmtcost.StatementCost`, a proxy on `store.conn`
     that files every statement a burst runs under `stage` (the bind into
     the temp table), `dedup` (the anti-join insert), `other`, `close`, with
