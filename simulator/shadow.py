@@ -44,6 +44,8 @@ from hyxlab.store import (
     connect_retry,
     held_duck,
     held_store,
+    lock_holder,
+    lock_refused,
     reset_attach_waits,
     spill_cap,
 )
@@ -127,6 +129,58 @@ def stream_conn(path: str) -> duckdb.DuckDBPyConnection:
         conn.close()
         raise
     return conn
+
+
+#: A poll that keeps failing reprints its reason every this many polls (an
+#: hour at the 60 s period), so a permanent failure is not one line long.
+POLL_FAIL_REPEAT = 60
+
+
+class PollFailures:
+    """Why a poll of the stream archive failed, said once per episode.
+
+    `poll_once` swallowed every `duckdb.Error` under the comment "daemon
+    mid-flush; next poll catches up" -- a cause nobody checked. The ledger
+    counts an exhausted ladder (`exhausted_n`) and keeps no error, so after
+    each stream restart the shadow lost one to three 28 s ladders (seven
+    restarts 11-11..11-18, 4 min 37 s after the 11-18 cold boot) and
+    nothing recorded WHO refused it; the stream's own flushes, once timed,
+    held at most 2.5 s through one of them (mistakes #211). A query error
+    after a schema change would have been swallowed the same way, forever.
+
+    Pure but for the injected clock and holder lookup: `failed` returns the
+    line to print (the episode's first failure, then every
+    `POLL_FAIL_REPEAT`th), `ok` the recovery line with the episode's count
+    and span. The holder is read at the FIRST failure because /proc can name
+    it only while it is alive (`store.lock_holder`).
+    """
+
+    def __init__(self, clock=time.monotonic, holder=lock_holder) -> None:
+        self._clock = clock
+        self._holder = holder
+        self.n = 0
+        self._started = 0.0
+
+    def failed(self, exc: BaseException) -> str | None:
+        self.n += 1
+        if self.n == 1:
+            self._started = self._clock()
+        elif self.n % POLL_FAIL_REPEAT:
+            return None
+        text = " ".join(str(exc).split())[:240]
+        if lock_refused(exc):
+            who = self._holder(exc) or "a holder no longer alive"
+            why = f"refused by {who}"
+        else:
+            why = "NOT a lock refusal"
+        return f"[shadow] poll FAILED x{self.n} ({why}; {type(exc).__name__}: {text})"
+
+    def ok(self) -> str | None:
+        if self.n == 0:
+            return None
+        n, span = self.n, self._clock() - self._started
+        self.n = 0
+        return f"[shadow] poll recovered after {n} failed poll(s) over {span:.0f}s"
 
 
 def stats_line(prefix: str, stats: dict, fills_n: int, holds: dict | None) -> str:
@@ -410,6 +464,7 @@ class ShadowRunner:
         self._markets_loaded_at = time.monotonic() if markets else float("-inf")
         self.ledger.start_run(self.run_id, latency, [s.name for s in strategies])
         self.stats = {"snapshots": 0, "events": 0, "polls": 0}
+        self.poll_failures = PollFailures()
 
     def _try_load_markets(self) -> dict | None:
         # The unfiltered markets dict is ~430MB and grows ~13k rows/day
@@ -558,8 +613,15 @@ class ShadowRunner:
                 print(f"[shadow] market metadata loaded ({len(markets)})", flush=True)
         try:
             events, gaps = self._read_new()
-        except duckdb.Error:
-            return 0  # daemon mid-flush; next poll catches up
+        except duckdb.Error as exc:
+            # Usually the stream daemon mid-flush past the whole ladder, and
+            # the next poll catches up -- but SAID, with the holder, since
+            # "usually" was never checked (`PollFailures`).
+            if (line := self.poll_failures.failed(exc)) is not None:
+                print(line, flush=True)
+            return 0
+        if (line := self.poll_failures.ok()) is not None:
+            print(line, flush=True)
         n = 0
         for snap in replay_snapshots(events, gaps=gaps, replayer=self.replayer):
             self.sim.step(snap)

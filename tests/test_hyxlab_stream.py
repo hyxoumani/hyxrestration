@@ -5,7 +5,7 @@ import contextlib
 import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1525,3 +1525,116 @@ def test_shard_column_is_added_to_an_archive_created_before_it(tmp_path):
         ("books", "seq_gap", None),
         ("books", "seq_reset", 5),
     ]
+
+
+# -- last_recv_ts is bounded by the table's own tail (mistakes #211) ---------
+
+
+def _spy_sql(monkeypatch):
+    """Record every statement the store runs, and how many times it attached."""
+    from hyxlab import streamstore
+
+    seen: list[str] = []
+    real = streamstore.duck_connect
+
+    class Conn:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def execute(self, sql, *a, **kw):
+            seen.append(" ".join(sql.split()))
+            return self._inner.execute(sql, *a, **kw)
+
+    def connect(*a, **kw):
+        seen.append("ATTACH")
+        return Conn(real(*a, **kw))
+
+    monkeypatch.setattr(streamstore, "duck_connect", connect)
+    return seen
+
+
+def _book(venue, ts):
+    return BookEvent(venue, "M1", ts, None, 1, 1, "snap", "yes", 0.4, 1.0)
+
+
+def test_last_recv_ts_answers_from_the_tail_without_the_unbounded_scan(tmp_path, monkeypatch):
+    from hyxlab import streamstore
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    store.append_events([_book("kalshi", RECV - timedelta(minutes=5)), _book("polymarket", RECV)])
+    store.flush()
+    seen = _spy_sql(monkeypatch)
+    assert store.last_recv_ts("kalshi", "books") == (RECV - timedelta(minutes=5)).replace(
+        tzinfo=None
+    )
+    venue_reads = [s for s in seen if "WHERE venue = ?" in s]
+    # One venue-filtered statement, and it carries the recv_ts bound: the
+    # form without it reads all of book_events (43.6 s on the live archive).
+    assert len(venue_reads) == 1 and venue_reads[0].endswith("AND recv_ts > ?")
+    assert streamstore.LAST_RECV_LOOKBACKS_H == (1.0, 24.0)
+
+
+def test_last_recv_ts_widens_until_it_finds_the_venue_and_never_changes_the_answer(
+    tmp_path, monkeypatch
+):
+    store = StreamStore(tmp_path / "s.duckdb")
+    old = RECV - timedelta(days=9)  # past every lookback behind the table's tail
+    mid = RECV - timedelta(hours=5)  # past the first, inside the second
+    store.append_events([_book("kalshi", old), _book("polymarket", RECV)])
+    store.flush()
+    seen = _spy_sql(monkeypatch)
+    assert store.last_recv_ts("kalshi", "books") == old.replace(tzinfo=None)
+    venue_reads = [s for s in seen if "WHERE venue = ?" in s]
+    assert [s.endswith("AND recv_ts > ?") for s in venue_reads] == [True, True, False]
+    # A venue the table has never held is still None, after the full ladder.
+    assert store.last_recv_ts("nowhere", "books") is None
+    seen.clear()
+    store.append_events([_book("kalshi", mid)])
+    store.flush()
+    seen.clear()
+    assert store.last_recv_ts("kalshi", "books") == mid.replace(tzinfo=None)
+    assert [s.endswith("AND recv_ts > ?") for s in seen if "WHERE venue = ?" in s] == [True, True]
+
+
+def test_eighteen_shards_asking_at_boot_are_one_attach(tmp_path, monkeypatch):
+    import inspect
+
+    from collector import streamd
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    store.append_events([_book("kalshi", RECV)])
+    store.flush()
+    seen = _spy_sql(monkeypatch)
+    answers = {store.last_recv_ts_once("kalshi", "books") for _ in range(18)}
+    assert answers == {RECV.replace(tzinfo=None)} and seen.count("ATTACH") == 1
+    # Another channel is another table: its own read, once.
+    assert store.last_recv_ts_once("kalshi", "trades") is None
+    assert store.last_recv_ts_once("kalshi", "trades") is None
+    assert seen.count("ATTACH") == 2
+    # A failed read is not remembered as an answer.
+    fresh = StreamStore(tmp_path / "t.duckdb")
+    calls = {"n": 0}
+
+    def flaky(venue, channel):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("locked")
+        return RECV
+
+    monkeypatch.setattr(fresh, "last_recv_ts", flaky)
+    with pytest.raises(OSError):
+        fresh.last_recv_ts_once("kalshi", "books")
+    assert fresh.last_recv_ts_once("kalshi", "books") == RECV
+    # The daemon's boot path is the caller.
+    src = inspect.getsource(streamd)
+    assert src.count("self.store.last_recv_ts_once") == 1
+    assert "self.store.last_recv_ts," not in src

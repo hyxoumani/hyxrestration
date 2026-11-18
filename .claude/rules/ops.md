@@ -933,9 +933,19 @@
   (ts bound -30%, bound IN list x1.9 worse, two-step equal; #208).
 - The stream daemon's own hold on `hyxstream.duckdb` is on its stats line
   since 2026-11-18: `flush_hold=<flushes>/<total s>/<max s>` per 300 s
-  period, and `long flush: held Ns for N rows` for any flush holding a
-  whole 15 s period (mistakes #211). After a COLD boot the flushes run
-  back to back for minutes (the shadow sat locked out 2.7 / 3.2 / 4.6 min
-  on 11-14 / 11-13 / 11-18 with `exhausted_n 3`): read those lines before
-  chasing a late shadow seed, and read `total / 300` as the writer's duty
-  on the file before pricing any reader's retry ladder against it.
+  period, `long flush: held Ns for N rows` for any flush holding a whole
+  15 s period, and the digest's `STREAMHOLD` row sums the window (first
+  readings 1.1 -> 2.0 s/flush, 7 -> 12% duty; mistakes #211). Read `total
+  / 300` as the writer's duty on the file before pricing any reader's
+  retry ladder against it.
+- Until 2026-11-18 every stream restart locked readers out of the
+  stream archive for 1-4.5 min and held every books shard back from
+  connecting: each at-boot shard ran `max(recv_ts) FROM book_events WHERE
+  venue = ?`, a 43.6 s full scan (mistakes #211). `last_recv_ts` is now
+  bounded by the table's own tail (0.69 s) and read once per channel.
+  After a stream restart, read the gap between `starting` and the last
+  `kalshi-books-N: connected`, and the shadow's `exhausted_n`: shards
+  minutes apart or a ladder lost again means a boot read has outgrown its
+  bound. Any query the daemon runs at boot gets the #158 rule first --
+  bound it on `recv_ts`. The shadow prints `poll FAILED x1 (refused by
+  <unit> pid N; ...)` / `NOT a lock refusal` once it runs post-#211 code.

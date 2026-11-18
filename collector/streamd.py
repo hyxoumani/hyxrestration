@@ -1306,7 +1306,9 @@ class Daemon:
         resume_since = None
         if shard is None or shard.at_boot:
             try:
-                resume_since = await asyncio.to_thread(self.store.last_recv_ts, "kalshi", channel)
+                resume_since = await asyncio.to_thread(
+                    self.store.last_recv_ts_once, "kalshi", channel
+                )
             except Exception as exc:
                 _log(f"kalshi-{label}: last_recv_ts unavailable ({type(exc).__name__}: {exc})")
         while True:

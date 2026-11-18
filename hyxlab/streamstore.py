@@ -633,6 +633,11 @@ class FlushOutcome:
 #: series announced a week out without scanning the whole table.
 ANNOUNCED_LOOKBACK_S = 7 * 86400.0
 
+#: `last_recv_ts` tries these lookbacks behind the table's newest row, in
+#: order, before the unbounded scan. Measured 2026-11-18 on `book_events`
+#: (13.4B rows): 1 h 0.69 s, 24 h 2.27 s, unbounded 43.57 s.
+LAST_RECV_LOOKBACKS_H = (1.0, 24.0)
+
 
 class StreamStore:
     """Buffered writer. append_*() only buffers; flush() opens a
@@ -685,6 +690,10 @@ class StreamStore:
         # across its decision and then calls `flush`/`spill_all` under it;
         # see `exclusive` and `streamd.DRAIN_LOCK_WAIT_S`.
         self._flush_lock = threading.RLock()
+        # `last_recv_ts_once`: its own lock, never the flush lock -- a boot
+        # read must not queue behind (or hold up) a flush.
+        self._last_recv_lock = threading.Lock()
+        self._last_recv_memo: dict[tuple[str, str], datetime | None] = {}
         # Create schema up front so readers see the tables immediately.
         with duck_connect(str(self.path)) as conn:
             conn.execute(_SCHEMA)
@@ -1368,10 +1377,40 @@ class StreamStore:
             "ticker": "stream_ticker",
             "lifecycle": "stream_lifecycle",
         }.get(channel, "book_events")
+        # BOUNDED BY THE TABLE'S OWN TAIL (mistakes #211). The venue filter
+        # makes `max` a scan -- the table-level statistics that answer an
+        # unfiltered `max(recv_ts)` cannot -- and the unbounded form reads
+        # all of `book_events`: 43.6 s on the 13.4B-row archive (measured
+        # 2026-11-18 on a backup slot), run once per books shard at boot,
+        # which is what locked every reader out for minutes after each
+        # restart and held each shard back from connecting. The table is
+        # written in recv order, so a `recv_ts >` bound prunes by zone map:
+        # 0.69 s for the last hour, the same answer. A venue silent for
+        # longer than the widest lookback still gets the full scan -- the
+        # answer must not change, only its price.
+        bounded = f"SELECT max(recv_ts) FROM {table} WHERE venue = ? AND recv_ts > ?"
         with duck_connect(str(self.path)) as conn:
+            top = conn.execute(f"SELECT max(recv_ts) FROM {table}").fetchone()[0]
+            if top is None:
+                return None
+            for hours in LAST_RECV_LOOKBACKS_H:
+                got = conn.execute(bounded, [venue, top - timedelta(hours=hours)]).fetchone()[0]
+                if got is not None:
+                    return got
             return conn.execute(
                 f"SELECT max(recv_ts) FROM {table} WHERE venue = ?", [venue]
             ).fetchone()[0]
+
+    def last_recv_ts_once(self, venue: str, channel: str) -> datetime | None:
+        """`last_recv_ts`, read at most once per (venue, channel) for this
+        store's life. For the daemon's boot, where every books shard asks
+        the same question of the same table in the same second: eighteen
+        answers are one attach. A failed read is not remembered."""
+        key = (venue, channel)
+        with self._last_recv_lock:
+            if key not in self._last_recv_memo:
+                self._last_recv_memo[key] = self.last_recv_ts(venue, channel)
+            return self._last_recv_memo[key]
 
     def announced_opens(
         self, now: datetime | None = None, lookback_s: float = ANNOUNCED_LOOKBACK_S

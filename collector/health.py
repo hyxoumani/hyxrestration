@@ -699,6 +699,9 @@ STREAMFLOW_LOCAL_ROUNDS = 6
 STREAMFLOW_DEAD_FRAC = 0.10
 STREAMFLOW_WINDOW_H = 24
 STREAMFLOW_UNIT = "hyxlab-stream.service"
+#: streamd's `LONG_FLUSH_HOLD_S` (= its `FLUSH_SECS`), pinned here like the
+#: period (no daemon import); `tests/test_health_streamhold.py` ties the two.
+STREAMHOLD_LONG_S = 15.0
 #: The stats-dict counters that count RECEIVED events (not drops, not
 #: bookkeeping). Missing keys read as 0, so an older line still parses.
 STREAMFLOW_RECV_KEYS = (
@@ -888,6 +891,136 @@ def read_stream_flow(
 
 def _mins(s: float) -> str:
     return f"{s / 60:.1f} min"
+
+
+# --- STREAMHOLD: what the stream daemon's OWN writes hold its archive for ----
+# Every reader of `hyxstream.duckdb` ledgers its hold and SHADOWHOLD
+# differences the shadow's; the writer, which attaches the file every
+# `FLUSH_SECS` for its whole life, published only rows until 2026-11-18
+# (mistakes #211). Its stats line now ends `flush_hold=<flushes>/<total s>/
+# <max s>` for the period the line closes, and a flush holding a whole
+# flush period prints `long flush: held Ns for N rows` at its own clock time.
+# This row sums the window: seconds per flush, the writer's duty on the file
+# (held seconds over the seconds the carrying lines span -- lines, not the
+# window, so a daemon that was down is not credited with idle time), the
+# worst single flush and where to look for it. `shutdown;` lines are left
+# out of the duty: they close a partial period.
+
+_STREAMHOLD_RE = re.compile(r" flush_hold=(\d+)/([0-9.]+)/([0-9.]+)\s*$")
+_LONG_FLUSH_RE = re.compile(r" long flush: held ([0-9.]+)s for (\d+) rows")
+
+
+@dataclass(frozen=True)
+class StreamHold:
+    #: Periodic stats lines in the window, and how many carry the clause.
+    lines: int
+    carrying: int
+    flushes: int
+    held_s: float
+    #: The largest per-line maximum and the line that printed it (the END of
+    #: the period the flush fell in -- a five-minute address, not an instant).
+    worst_s: float
+    worst_at: datetime | None
+    #: `long flush:` lines: count, the longest, and ITS clock time.
+    long_n: int
+    long_worst_s: float
+    long_worst_at: datetime | None
+
+
+def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
+    """Pure: the unit's `-o short-iso` lines -> the window's reading, or None
+    when it holds no periodic stats line at all."""
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    n_lines = carrying = flushes = long_n = 0
+    held = worst = long_worst = 0.0
+    worst_at = long_worst_at = None
+    for line in lines:
+        ts = _short_iso_ts(line)
+        if ts is None:
+            continue
+        lm = _LONG_FLUSH_RE.search(line)
+        if lm:
+            long_n += 1
+            if float(lm.group(1)) > long_worst:
+                long_worst, long_worst_at = float(lm.group(1)), ts
+            continue
+        if not _STREAMFLOW_LINE_RE.search(line):
+            continue  # the shutdown line has no `(last flush N rows)`
+        n_lines += 1
+        m = _STREAMHOLD_RE.search(line)
+        if not m:
+            continue
+        carrying += 1
+        flushes += int(m.group(1))
+        held += float(m.group(2))
+        if float(m.group(3)) > worst:
+            worst, worst_at = float(m.group(3)), ts
+    if n_lines == 0:
+        return None
+    return StreamHold(
+        n_lines, carrying, flushes, held, worst, worst_at, long_n, long_worst, long_worst_at
+    )
+
+
+def read_stream_hold(
+    unit: str = STREAMFLOW_UNIT, hours: int = STREAMFLOW_WINDOW_H
+) -> StreamHold | None | str:
+    text = _journal_hourly(
+        [
+            "-u",
+            unit,
+            "--utc",
+            r"--grep=\((last flush [0-9]+ rows|flushed [0-9]+ this round)\)|long flush: held",
+            "-o",
+            "short-iso",
+        ],
+        hours,
+    )
+    if text is None:
+        return "unreadable"
+    return parse_stream_hold(text)
+
+
+def stream_hold_line(hold: StreamHold | None | str, hours: int = STREAMFLOW_WINDOW_H) -> str:
+    """Render the reading. An unmeasured window says so and never prints a
+    zero: lines written before the daemon carried the clause hold no reading,
+    and a period in which no flush opened the file has no per-flush figure."""
+    if hold == "unreadable":
+        return f"{hours}h: journal unreadable"
+    if hold is None:
+        return f"{hours}h: no stats lines (unit down the whole window, or the journal rotated)"
+    assert isinstance(hold, StreamHold)
+    if hold.carrying == 0:
+        return (
+            f"{hours}h: own hold on hyxstream.duckdb UNMEASURED -- none of {hold.lines} stats "
+            "line(s) carries flush_hold (daemon on pre-#211 code)"
+        )
+    span_s = hold.carrying * STREAMFLOW_PERIOD_S
+    cover = (
+        ""
+        if hold.carrying == hold.lines
+        else f" ({hold.carrying} of {hold.lines} stats lines carry it)"
+    )
+    if hold.flushes == 0:
+        head = f"{hours}h: own hold on hyxstream.duckdb: no flush opened the file{cover}"
+    else:
+        head = (
+            f"{hours}h: own hold on hyxstream.duckdb: {hold.held_s / hold.flushes:.2f} s/flush "
+            f"over {hold.flushes:,} flushes = {hold.held_s / span_s:.1%} duty across "
+            f"{hold.carrying} stats line(s){cover}"
+        )
+    at = "?" if hold.worst_at is None else f"{hold.worst_at:%m-%d %H:%MZ}"
+    worst = f"worst flush {hold.worst_s:.1f} s (in the period ending {at})"
+    if hold.long_n:
+        lat = "?" if hold.long_worst_at is None else f"{hold.long_worst_at:%m-%d %H:%M:%SZ}"
+        longs = (
+            f"LONG: {hold.long_n} flush(es) held a whole {STREAMHOLD_LONG_S:.0f} s period or "
+            f"more, longest {hold.long_worst_s:.1f} s at {lat}"
+        )
+    else:
+        longs = f"no flush held a whole {STREAMHOLD_LONG_S:.0f} s period"
+    return f"{head} | {worst} | {longs}"
 
 
 def _k(n: int) -> str:
@@ -4509,6 +4642,10 @@ def main() -> None:
     )
     print(
         f"{'STREAMFLOW':<10} {STREAMFLOW_UNIT:<{width}}  {stream_flow_line(read_stream_flow())}",
+        flush=True,
+    )
+    print(
+        f"{'STREAMHOLD':<10} {STREAMFLOW_UNIT:<{width}}  {stream_hold_line(read_stream_hold())}",
         flush=True,
     )
     print(
