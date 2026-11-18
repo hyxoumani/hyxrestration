@@ -5577,11 +5577,11 @@ Format: what happened → root cause → error type → prevention tier
     refuted on the way: a tracked-object count effect on the Python half
     (0.09 s at 0, 3M, 10M and 30M live objects, gc on or off), an index on
     `trades` (none; `trades_swept`'s PK upsert of 96 new keys 0.25 s), a
-    large read at open (26 MB on the copy). The older "`executemany` is
-    80-240 us/row" measurements in this repo (`_stage_rows`,
-    `upsert_markets`, the stream store's CSV path) were taken on the same
-    venv and are at least partly this tax, not DuckDB's prepared-statement
-    cost. FIX: `numpy==2.4.4` + `pandas==3.0.2` pinned in
+    large read at open (26 MB on the copy). CHECKED AFTER THE FIX, and my first guess was wrong: `executemany` is
+    NOT this tax -- 20,000 rows x 4 through it on the fixed stable venv
+    cost 3.71 s, 186 us/row with pandas loaded, so the repo's older
+    "80-240 us/row" figures stand as DuckDB's per-statement cost and the
+    set-based stage remains the right shape. FIX: `numpy==2.4.4` + `pandas==3.0.2` pinned in
     `scripts/requirements-stable.txt` (nothing of ours imports them);
     promote's smoke import names pandas; `collector.stmtcost.bind_tax_warning` prints a
     WARNING once per process, at a writer's first burst, when pandas is
