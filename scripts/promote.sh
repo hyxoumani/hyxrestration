@@ -252,7 +252,9 @@ echo "== sync stable venv deps =="
 "$STABLE/.venv/bin/pip" install -q -r "$DEV/scripts/requirements-stable.txt"
 
 echo "== smoke-import in stable venv =="
-(cd "$STABLE" && .venv/bin/python -c "import collector.streamd, collector.collect, collector.sweep, simulator.shadow, simulator.simui.server")
+# pandas: imported by DuckDB's binding, never by us -- absent, every bound
+# value costs two failed imports (mistakes #212).
+(cd "$STABLE" && .venv/bin/python -c "import pandas, collector.streamd, collector.collect, collector.sweep, simulator.shadow, simulator.simui.server")
 
 install_units
 

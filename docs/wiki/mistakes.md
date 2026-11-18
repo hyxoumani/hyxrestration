@@ -5541,6 +5541,63 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+213. **2026-11-18 20:15Z -- #212's cause: the stable venv has no pandas,
+    and every replay ran from the venv that does** (class: a replay that
+    shares the code and not the interpreter's site-packages; a fact
+    observed and filed as an exclusion). DuckDB's Python binding consults
+    pandas for every value it converts from Python, and a FAILED import is
+    not cached: two `import pandas` attempts per bound value, each a walk
+    of `sys.path` (no syscalls -- the path finders cache their directory
+    listings -- so it reads as pure user CPU on the calling thread).
+    `Store._stage_rows` binds a list per column: 250,000 rows x 8 columns
+    = 4M failed imports. Measured in the stable venv with a bare
+    in-memory DuckDB: 50.04 s; with pandas importable (dev venv) 0.46 s;
+    with `sys.modules["pandas"] = None` 5.60 s. The stable venv is built
+    from `scripts/requirements-stable.txt` (duckdb, requests, websockets,
+    cryptography), the dev venv from `requirements.txt`, which has pandas
+    for the phase-0 research code -- so `Store.insert_trades` cost 1 s in
+    every probe of #212 and 45-80 s in both sweeps, per 250k-row flush, on
+    the 5-min collector's archive. How it was found: the real
+    `collector.sweep.sweep_series` for KXWTI15M against a reflink copy of
+    the Wed slot, tape fetched from the API, ran its 252,991-trade
+    mid-series flush in 1.63 s from the dev tree (`stage 0.9, dedup 0.8`)
+    -- and in 210.8 s under cProfile (`stage 210.2 ... cpu 210.5s main
+    thread`; ~50 s without the profiler) the moment the same script ran on
+    the stable tree's interpreter in a 4G transient unit:
+    `importlib._bootstrap._find_and_load` 4,047,876 calls = 252,991 x 16.
+    The 14:15Z pass had LOOKED at this -- "optional modules DuckDB's
+    binding might consult (the sweep maps `_duckdb`, `charset_normalizer`
+    and one mypyc library, no numpy or pandas)" -- and filed the absence
+    as a refutation: nothing optional is loaded, so nothing optional can
+    cost. The absence was the cost. The timezone-file hypothesis is
+    REFUTED by the second sampler capture (16:34Z, 16:35Z, 16:50Z bursts):
+    the reads are ~2,000-2,500 of ~256 KB (DuckDB blocks) in the first and
+    last second, zero read syscalls through the 21-51 s between; 3,661 B
+    per row against a 3,592 B file was a coincidence of two totals. Also
+    refuted on the way: a tracked-object count effect on the Python half
+    (0.09 s at 0, 3M, 10M and 30M live objects, gc on or off), an index on
+    `trades` (none; `trades_swept`'s PK upsert of 96 new keys 0.25 s), a
+    large read at open (26 MB on the copy). The older "`executemany` is
+    80-240 us/row" measurements in this repo (`_stage_rows`,
+    `upsert_markets`, the stream store's CSV path) were taken on the same
+    venv and are at least partly this tax, not DuckDB's prepared-statement
+    cost. FIX: `numpy==2.4.4` + `pandas==3.0.2` pinned in
+    `scripts/requirements-stable.txt` (nothing of ours imports them);
+    promote's smoke import names pandas; `collector.stmtcost.bind_tax_warning` prints a
+    WARNING once per process, at a writer's first burst, when pandas is
+    not importable (in `collector/`, so no daemon's closure moved); `tests/test_bind_tax.py` proves the mechanism from a
+    subprocess with pandas hidden (>= 1 import per value) and shown (< 50)
+    -- when a DuckDB upgrade caches the miss that test goes red and the
+    pin can go. Cost of the fix: +38 MB anon and ~0.2 s wall per process
+    that binds a value, running daemons included (the import is retried,
+    so they load pandas at their next bind without a restart). **Rule: a
+    replay reproduces production only if it runs production's
+    interpreter -- `hyxrestration-stable/.venv/bin/python`, not the dev
+    venv -- and when a production-only cost survives every variation of
+    the INPUT, diff the two environments' `pip list` before the next
+    hypothesis. "X is not loaded" is a finding about cost only after
+    asking what the code does when X is missing.**
+
 212. **2026-11-18 14:15Z -- a decision rule was written for a per-call
     number from a measurement at 1/60th of the call's real input, and the
     first reading fit neither branch.** #209 split the poly flush by

@@ -931,14 +931,19 @@
   attributing a slow flush to the disk, the sibling or the table
   (mistakes #209). A predicate rewrite of that dedup does not help
   (ts bound -30%, bound IN list x1.9 worse, two-step equal; #208).
-- A long write burst's cost is ~0.22-0.25 ms per STAGED row in production
-  (poly 300,000 trades -> `trades 73.1`; Kalshi 251,425 -> `held 55.1s`)
-  and 1-10 s on every replay of the same batch (mistakes #212, cause not
-  established). Read the `[by statement: stage .., dedup .., python ..;
-  cpu N s main thread, N s process]` tail both long-burst lines carry
-  since 2026-11-18 against the replay baseline `stage 1.1, dedup 7.2; cpu
-  4.9 / 15.0` before touching the dedup, the batch size or the disk; #212
-  says what each shape means.
+- A replay reproduces production only on production's INTERPRETER:
+  `hyxrestration-stable/.venv/bin/python`, never the dev venv. DuckDB's
+  binding retries a failed `import pandas` twice per bound Python value
+  (~25 us each, pure user CPU on the calling thread): a 250,000-row x 8
+  stage was 50.0 s in the stable venv and 0.46 s in the dev one, which was
+  both sweeps' 45-80 s `long write burst` for months and invisible to every
+  dev-venv replay (mistakes #212, #213). pandas/numpy are pinned in
+  `scripts/requirements-stable.txt` for DuckDB alone; a `[store] WARNING:
+  pandas is not importable` line means the tax is back. Read a long burst's
+  `[by statement: stage .., dedup .., python ..; cpu N s main thread, N s
+  process]` tail against `stage 0.9, dedup 0.8` (252,991 Kalshi trades) and
+  `stage 1.1, dedup 7.2` (300,000 poly); when a production-only cost
+  survives every variation of the input, diff the two venvs' `pip list`.
 - The stream daemon's own hold on `hyxstream.duckdb` is on its stats line
   since 2026-11-18: `flush_hold=<flushes>/<total s>/<max s>` per 300 s
   period, `long flush: held Ns for N rows` for any flush holding a whole

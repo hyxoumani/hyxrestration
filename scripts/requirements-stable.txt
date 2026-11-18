@@ -3,5 +3,17 @@
 # Bump pins here, then run scripts/promote.sh.
 cryptography==49.0.0
 duckdb==1.5.2
+# pandas is here for DuckDB, not for us: nothing in the stable tree imports
+# it. DuckDB's Python binding consults pandas for EVERY value it binds, and
+# when the import fails it is not cached -- two failed `import pandas` walks
+# of sys.path per value, ~25 us each. A 250,000-row x 8-column stage is 4M
+# failed imports: 50.0 s without pandas, 0.46 s with it (measured 2026-11-18;
+# this was the sweeps' 45-80 s `long write burst`, mistakes #212). numpy is
+# pandas' own dependency; it, dateutil and six are pinned at the versions the
+# dev venv tests pandas with, so the deploy is reproducible.
+numpy==2.4.4
+pandas==3.0.2
+python-dateutil==2.9.0.post0
+six==1.17.0
 requests==2.33.1
 websockets==16.0

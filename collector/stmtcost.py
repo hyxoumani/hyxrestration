@@ -24,6 +24,8 @@ batch units is not worth restarting them.
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 import time
 
 #: Statement kinds, in the order a line prints them. `stage` is the bind of
@@ -33,6 +35,35 @@ import time
 PARTS = ("stage", "dedup", "other", "close", "python")
 #: A part under this many seconds is left off the line.
 MIN_PART_S = 0.05
+
+
+#: Seconds one bound Python value costs when pandas cannot be imported:
+#: 50.04 s for 250,000 rows x 8 columns, measured 2026-11-18 in the stable venv.
+BIND_TAX_S_PER_VALUE = 25e-6
+_TAX_WARNED = False
+
+
+def bind_tax_warning(pandas_importable: bool | None = None) -> str | None:
+    """The line a writer prints once when DuckDB's bind tax is on, or None.
+
+    DuckDB's binding consults pandas for every value it converts from
+    Python, and a FAILED import is not cached: each value walks `sys.path`
+    twice. Both sweeps held the collector's archive 45-80 s per 250,000-row
+    flush for that alone while every replay -- run from the dev venv, which
+    has pandas -- took 1 s (mistakes #212, #213). The stable venv pins
+    pandas now; this line is what says so if it goes missing again."""
+    if pandas_importable is None:
+        pandas_importable = (
+            "pandas" in sys.modules or importlib.util.find_spec("pandas") is not None
+        )
+    if pandas_importable:
+        return None
+    return (
+        "[store] WARNING: pandas is not importable -- DuckDB retries the import twice per"
+        f" bound value, ~{BIND_TAX_S_PER_VALUE * 2e6:.0f}s of this thread per million values"
+        " staged, inside the hold (mistakes #213; pin pandas in"
+        " scripts/requirements-stable.txt)"
+    )
 
 
 def kind(sql: str) -> str:
@@ -62,6 +93,12 @@ class StatementCost:
         """Time `store`'s statements from here on. The proxy replaces
         `store.conn`, so `store.close()` closes the real connection through
         it and is itself charged (`close`)."""
+        global _TAX_WARNED
+        if not _TAX_WARNED:
+            _TAX_WARNED = True
+            tax = bind_tax_warning()
+            if tax:
+                print(tax, flush=True)
         cost = cls(store.conn)
         store.conn = cost
         return cost
