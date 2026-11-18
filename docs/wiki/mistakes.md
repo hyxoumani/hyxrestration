@@ -5572,9 +5572,23 @@ Format: what happened → root cause → error type → prevention tier
     dedup at its slot cost) and an unmeasured share of the Kalshi sweep's
     long bursts (29 `long write burst` lines of 41-98 s by 14:10Z, on a
     sweep that ran 72 s over its 12.5 h budget on 11-11) -- and the cause
-    is NOT ESTABLISHED. A `/proc` sampler on the running Kalshi
-    sweep (per-thread CPU while it holds `writer.lock`, read from
-    `/proc/locks`) caught no long burst before this run's cutoff.
+    is NOT ESTABLISHED. One reading points at
+    the calling thread: at 15:50Z the running Kalshi sweep's main thread
+    had 2,329 s of CPU (2,114 user) in a 9.66 h life whose ordinary
+    fetching burns 1.8% of a core (163 ticks in 90 s, ~630 s if that rate
+    held all day), and its 29 long bursts had held 1,628 s -- so the bursts
+    look WORKED on the Python thread, not waited, at 50x the replay's
+    per-row cost. Not conclusive (the fetch rate was sampled in one
+    class). Also refuted after that: a fragmented heap (4.2M mixed-size
+    allocations made and mostly freed before the insert: 1.35 s vs 1.21),
+    the unit's environment (same variable names as a transient unit's),
+    and optional modules DuckDB's binding might consult (the sweep maps
+    `_duckdb`, `charset_normalizer` and one mypyc library, no numpy or
+    pandas). A `/proc` sampler (per-thread CPU and I/O at 1 Hz while the
+    sweep holds `writer.lock`, the hold read from `/proc/locks`) caught no
+    long burst in 50 min and was left running as the bounded transient
+    unit `hyxprobe-burstsample` (3 h, read-only, 200M), writing
+    `~/scratch/dedup300k/bursts.out`.
     SHIPPED: `collector.stmtcost.StatementCost`, a proxy on `store.conn`
     that files every statement a burst runs under `stage` (the bind into
     the temp table), `dedup` (the anti-join insert), `other`, `close`, with
