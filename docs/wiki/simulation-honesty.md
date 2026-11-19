@@ -217,7 +217,25 @@ s per 18), worst flush 1.7-2.1 -> 1.5 s, duty 9.8% -> 8.1%. The "about
 half" predicted on 11-19 02:50Z priced the staging at the bench's 300k
 events a flush; production flushes ~105k rows, so the staging was ~0.2 s
 of the hold and the other ~1.35 s is DuckDB's own insert, commit and
-checkpoint-at-close on a 391 GB file -- unmeasured by step. Owed: the
+checkpoint-at-close on a 391 GB file. MEASURED BY STEP the same pass
+(`flush_steps=<stage in hold>/<load>/<commit>/<close>` on the stats line,
+`by step` on the digest's STREAMHOLD row; second restart 15:23:19Z): two
+periods of 18 flushes, 28.1 and 27.7 s held -- load 1.80 / 1.48 s, commit
+5.21 / 5.20 s, CLOSE 21.13 / 21.01 s. The hold is the checkpoint DuckDB
+runs when the connection closes: 1.17 s of 1.55 s a flush (75%), commit
+0.29 s, load 0.09 s. Scratch probe of the lever
+(`~/scratch/prio1119/ckpt.py`, stable venv, one synthetic table): `PRAGMA
+disable_checkpoint_on_shutdown` on the writer makes the close 0.002 s
+and leaves a 7.8 MB WAL per 105k-row flush, which the NEXT flush's
+commit checkpoints at DuckDB's 16 MB default -- one checkpoint per two
+flushes; a read-only attach that meets the WAL replays it (open 0.046 s
+against 0.006 s), does not remove it, and sees every committed row;
+151,470,000 of 151,470,000 rows after eight such flushes. NOT
+reproduced there: the cost itself -- the scratch close was a flat
+0.044-0.050 s from 10M to 150M rows (82 -> 1,230 row groups), so whether
+production's 1.17 s is per-checkpoint overhead of a 13B-row, ~100k-group,
+seven-table file (deferral then divides it) or follows the bytes written
+(deferral then only moves it) is open. Owed: the
 00-04Z hours (p99 250-501 ms on both nights before) from the Fri backup
 slot. Probes: `~/scratch/prio1119/convoy.py`, `convoy2.py`, `gil.py`,
 `signed.py`. The before/after instrument already exists and needs no

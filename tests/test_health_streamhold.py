@@ -126,5 +126,8 @@ def test_the_row_splits_the_hold_by_step_over_the_lines_that_carry_the_split(mon
         steps[i] += 3.6
         moved = [old, _stats_steps("08:49:36", (18, 24.0, 1.5), tuple(steps), monkeypatch), new[1]]
         assert health.stream_hold_line(health.parse_stream_hold(moved)) != line
+    # The parts can out-sum a total rounded to 0.1 s: never a negative `other`.
+    over = [_stats_steps("08:49:36", (18, 24.0, 1.5), (0.0, 9.0, 4.2, 10.84), monkeypatch)]
+    assert health.stream_hold_line(health.parse_stream_hold(over)).endswith("other 0.00")
     # No line carries it: no clause, and never a zero per step.
     assert "by step" not in health.stream_hold_line(health.parse_stream_hold([old]))

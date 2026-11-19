@@ -1063,7 +1063,9 @@ def _stream_hold_steps(hold: StreamHold) -> str:
     parts = ", ".join(
         f"{name} {s / n:.2f}" for name, s in zip(STREAMHOLD_STEPS, hold.steps_s, strict=True)
     )
-    rest = (hold.steps_held_s - sum(hold.steps_s)) / n
+    # Clamped: the daemon rounds the total to 0.1 s and the parts to 0.01 s,
+    # so the difference can land a hair under zero and print `-0.00`.
+    rest = max(0.0, (hold.steps_held_s - sum(hold.steps_s)) / n)
     return f" | by step, s/flush over {n:,} flushes: {parts}, other {rest:.2f}"
 
 

@@ -959,6 +959,9 @@
   until one lands; what is left of the hold is DuckDB's insert, commit
   and checkpoint. A prediction priced on a bench's 300k-row flush missed
   by 2x at production's ~105k: size a bench input from the stats line.
+  The line also carries `flush_steps=<stage in hold>/<load>/<commit>/
+  <close>` (STREAMHOLD `by step`): first reading close 1.17 of 1.55 s a
+  flush -- the hold is the checkpoint at connection close.
 - Until 2026-11-18 every stream restart locked readers out of the
   stream archive for 1-4.5 min and held every books shard back from
   connecting: each at-boot shard ran `max(recv_ts) FROM book_events WHERE
