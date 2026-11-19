@@ -261,7 +261,17 @@ a writer on a young file (5k groups: 0.20 s a flush, a third of today's)
 with the history in a file nobody writes is the change that moves both
 `STREAMHOLD` and `SHADOWHOLD`; it is a design item (every reader's
 `book_events` predicate, the backup's slot set, `covering_slot`), not
-started. Owed: the
+started. The cheap version of it -- a young TABLE in the same file, the
+history renamed beside it under a `UNION ALL` view -- was probed the same
+pass (`ckpt_tbl.py`: `hist` 110k groups + `hot` 5M rows in one 3.2 GB
+file) and is HALF a lever: a reader of `hot` alone holds 0.002 s where a
+reader of `hist` holds 0.46-0.50 s + 0.07-0.10 s of close, and the view
+costs the same 0.002 s for a window past `hist`'s newest row (pruned on
+table statistics), so the shadow's per-attach constant would go; but the
+WRITER's flush into `hot` still holds 0.65-0.68 s (commit 0.03, close
+0.60-0.63 against 0.18 / 0.44 into `hist`): the checkpoint at close pays
+for every table in the file, written or not. The writer's hold needs a
+separate FILE; the readers' needs only a separate table. Owed: the
 00-04Z hours (p99 250-501 ms on both nights before) from the Fri backup
 slot. Probes: `~/scratch/prio1119/convoy.py`, `convoy2.py`, `gil.py`,
 `signed.py`. The before/after instrument already exists and needs no
