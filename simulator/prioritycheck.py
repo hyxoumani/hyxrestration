@@ -180,7 +180,13 @@ def check_rows(market_id: str, trades: list, deltas: list) -> dict:
         "neg_deltas": len(deltas),
         "exact_match": 0,  # exact-size decrement at predicted level, ±EXACT_WINDOW
         "absorb_match": 0,  # exact-size decrement at predicted level, ±ABSORB_WINDOW
-        "naive_would_match": 0,  # no-match where same-side mapping WOULD match
+        "naive_would_match": 0,  # exact-window miss where same-side mapping WOULD match
+        # ...and the predicted level never absorbed the print: the only
+        # naive fit that is evidence against the mapping. `naive_would_match`
+        # is asked of every exact-window miss, 99.8% of which the predicted
+        # level then absorbs late, so it moves with the LATE share (our own
+        # receive lag between two sockets) and not with the mapping.
+        "naive_only_match": 0,
         "late_decrement": 0,  # predicted decrement present but outside EXACT_WINDOW
         "no_decrement_at_level": 0,  # nothing at predicted level within ABSORB_WINDOW (gap)
         "batched_with_cancels": 0,  # decrement present but size != trade (merged)
@@ -215,6 +221,8 @@ def check_rows(market_id: str, trades: list, deltas: list) -> dict:
             abs(dec - q) < PRICE_EPS for _, dec in within(naive_level(taker, p), ts, ABSORB_WINDOW)
         ):
             res["naive_would_match"] += 1
+            if late is None:
+                res["naive_only_match"] += 1
     return res
 
 
@@ -306,6 +314,7 @@ def main() -> None:
             "exact_match",
             "absorb_match",
             "naive_would_match",
+            "naive_only_match",
             "late_decrement",
             "no_decrement_at_level",
             "batched_with_cancels",
@@ -330,13 +339,26 @@ def main() -> None:
         "exact_match_frac": round(agg["exact_match"] / tot, 4) if tot else None,
         "absorb_match_frac": round(agg["absorb_match"] / tot, 4) if tot else None,
         **agg,
+        # the naive fit as a share of the prints it was ASKED of (every
+        # exact-window miss): comparable across readings whose late share
+        # differs, which the bare count is not.
+        "naive_frac_of_exact_misses": (
+            round(agg["naive_would_match"] / (tot - agg["exact_match"]), 4)
+            if tot - agg["exact_match"]
+            else None
+        ),
         "timing": timing,
         "note": (
             "absorb_match_frac = prints with an exact-size decrement at the"
             " PREDICTED complement level within the model's 2s window."
-            " naive_would_match must stay ~0: it is the same-side mapping the"
-            " complement rule replaces — a nonzero value would mean the"
-            " mapping is ambiguous. no_decrement_at_level is coverage (gap),"
+            " naive_only_match must stay ~0: the same-side mapping the"
+            " complement rule replaces fits AND the predicted level never"
+            " absorbed the print. naive_would_match is asked of every"
+            " exact-window miss, most of which the predicted level absorbs"
+            " late, so it scales with late_decrement (receive lag between"
+            " the trade and book sockets); read it as"
+            " naive_frac_of_exact_misses, never as a bare count."
+            " no_decrement_at_level is coverage (gap),"
             " not a mapping miss. `timing` is the pairing delay over EVERY"
             " absorb-window match, late ones included, so it can report a"
             " delay wider than the window it sizes; `timing.exact_window`"

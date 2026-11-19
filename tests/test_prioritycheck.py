@@ -75,6 +75,30 @@ def test_yes_taker_maps_to_no_complement_and_same_side_never_fits(conn):
     assert r["naive_would_match"] == 1  # the decoy is exactly the naive fit
 
 
+def test_naive_fit_beside_a_late_predicted_decrement_is_not_evidence(conn):
+    """A same-side decrement of the print's size inside 2s is asked of every
+    exact-window miss. When the predicted level absorbs the print late, the
+    naive fit says nothing about the mapping -- only a naive fit with NO
+    predicted absorption does (2026-11-19: 6,249 naive fits on KXBTC15M,
+    tripled from 10-29, at an unchanged ~13% of the exact-window misses)."""
+    _trade(conn, "2026-07-13 12:00:00.000", 0.40, 5, "yes")  # -> no@0.60
+    _delta(conn, "2026-07-13 12:00:00.500", "no", 0.60, -5)  # predicted, late
+    _delta(conn, "2026-07-13 12:00:00.100", "yes", 0.40, -5)  # naive fits too
+    r = check_market(conn, "M", T0)
+    assert r["late_decrement"] == 1
+    assert r["naive_would_match"] == 1
+    assert r["naive_only_match"] == 0
+
+
+def test_naive_fit_with_no_predicted_absorption_is_the_count_that_matters(conn):
+    _trade(conn, "2026-07-13 12:00:00.000", 0.40, 5, "yes")  # -> no@0.60
+    _delta(conn, "2026-07-13 12:00:00.000", "yes", 0.40, -5)  # only the naive level
+    r = check_market(conn, "M", T0)
+    assert r["absorb_match"] == 0
+    assert r["naive_would_match"] == 1
+    assert r["naive_only_match"] == 1
+
+
 def test_late_decrement_misses_exact_but_lands_in_absorb_window(conn):
     _trade(conn, "2026-07-13 12:00:00.000", 0.40, 7, "no")
     _delta(conn, "2026-07-13 12:00:01.000", "yes", 0.40, -7)  # +1s: outside 5ms, inside 2s
@@ -303,6 +327,7 @@ def _brute_force_check_rows(market_id, trades, deltas):
             "exact_match",
             "absorb_match",
             "naive_would_match",
+            "naive_only_match",
             "late_decrement",
             "no_decrement_at_level",
             "batched_with_cancels",
@@ -343,6 +368,7 @@ def _brute_force_check_rows(market_id, trades, deltas):
             for dts, dec in idx.get(naive, [])
         ):
             res["naive_would_match"] += 1
+            res["naive_only_match"] += late is None
     return res
 
 

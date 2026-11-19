@@ -105,6 +105,32 @@ it stays a watch, not a falsification (a falsification is naive
 approaching absorb). Cost: one 13.1s hold on `hyxstream.duckdb`,
 rss_anon peak 4.35 GB for the 1.05M-row market -- this probe is not
 sized for a 1G-capped unit at this density.
+**Re-read 2026-11-19 02:19Z, both populations, on the Wed backup slot**
+(`--stream-db /home/devs/hyx-backups/hyxstream.Wed.duckdb`, window ending
+11-18 03:30Z, 8G transient units, zero live hold; first live runs of the
+11-13 copy-out path). Weather 24h (`20261119T021912.json`): 11,270
+prints, absorb 0.999, exact 0.9495 (back up from 0.801), late 558,
+no_decrement 11, naive 10. KXBTC15M 5h (`20261119T021929.json`): 572,586
+prints, absorb 0.9999, no_decrement 41, exact 0.921 (was 0.969), late
+45,110 = 7.9% (was 3.0%), over 500 ms 9,423 = 1.6% (was 0.6%), median
+-0.43 ms, max 1,627 ms. **The mapping holds; what moved is the late
+share, in opposite directions on the two populations.** `naive_would_match`
+read 6,249, four times the 10-29 count, and that is NOT the watch above
+firing: the naive level is only asked about prints that missed the ±5 ms
+window, 99.8% of which the predicted level then absorbs late, so the bare
+count scales with `late_decrement`. As a share of the prints it was asked
+of it is 13.8% against 12.2% on 10-29 (weather 1.8%) -- the density
+coincidence rate, flat. The report now carries that share
+(`naive_frac_of_exact_misses`) and the count that is evidence:
+`naive_only_match`, a naive fit where the predicted level never absorbed
+the print -- **0 of 11,270 on weather, 11 of 572,586 on KXBTC15M** (of 68
+unabsorbed prints). Read those two; never the bare `naive_would_match`.
+NOT explained: why the late share moves (a pairing delay is the gap
+between our trade socket's and a books shard's `recv_ts`, so it is
+receive lag on this host, not the venue); the timing minimum sits at the
+window edge (-1,999.9 ms), so a handful of the latest pairings may be
+coincidental same-size decrements. Cost per run: 3-16 s on the slot,
+rss_anon peak 2.5-2.9 GB.
 
 ## Runtime accounting invariants
 
