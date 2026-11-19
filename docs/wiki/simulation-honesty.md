@@ -151,7 +151,7 @@ hours the tape runs 1.0-1.2M prints against 0.4-0.9M; the share past
 500 ms is 0.5-1.0% there and under 0.1% in 33 of the other 38 hours. So
 the late share is load at the US-evening peak, not a drift across weeks,
 and the 10-29 (15-20Z) vs 11-19 (22:30-03:30Z) difference is the
-window's clock time. **And it is OURS, not the venue's (02:55Z):** in
+window's clock time. **And it is OURS, not the venue's (02:45Z):** in
 the 11-18 02Z hour, 26,711 of 1,166,031 prints were received more than
 300 ms after `src_ts`, and 99.3% of them sit in 178 bursts about one
 second long whose starts are 17-18 s apart (median 18, quartiles
@@ -174,7 +174,21 @@ which is inside the writer's hold. NOT changed this pass: it is a
 `streamd` change (a stream restart) and the lever that costs nothing is
 structural -- encode each row to its CSV line on the loop at append time
 (~3.7 us a row against ~75 us a frame) so the flush thread only writes
-bytes. Probes: `~/scratch/prio1119/convoy.py`, `gil.py`, `signed.py`.
+bytes. A voluntary yield between staging chunks buys the same thing at
+the same price (`convoy2.py`, `time.sleep(0)` every K rows: K=2000 8.2%
+of solo, 500 15.6%, 100 37.3% with the staging 1.28 -> 2.32 s; a 0.1 ms
+sleep every 100 rows 42.0% at 2.74 s). The price is only a price because
+the staging runs INSIDE the hold: `_insert` builds and writes every CSV
+after `duck_connect` and `BEGIN`, though it needs no connection. Staged
+before the open, the ~1.1 s leaves the writer's hold (1.8 s/flush, 11%
+duty on STREAMHOLD) and a yield in it costs the archive nothing -- that
+is the change to make, with the ENOSPC and restore-the-buffers paths
+(`tests/test_stream_enospc.py`, #62, #119) re-proved around the new
+order. Probes: `~/scratch/prio1119/convoy.py`, `convoy2.py`, `gil.py`,
+`signed.py`. The before/after instrument already exists and needs no
+daemon change: `recv_ts - src_ts` per hour over `stream_trades` on a
+backup slot (p99 and the share past 300/500 ms), and the 17-18 s burst
+spacing.
 Consequences until then: `recv_ts` carries up to ~0.5 s of our own flush
 jitter once every ~18 s, on every channel at once but not equally (the
 priority check's late tail is the trade socket behind a books shard); a
