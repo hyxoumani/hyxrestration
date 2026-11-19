@@ -975,7 +975,19 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   SPILL_CAP 2M (~8 min, memory-bound). Raw frames kept 14 days. Measured
   growth ~8.6 GB/day DuckDB (~19 B/book row, ~48 B/ticker row; since
   2026-11-11 each flush's book events are stored grouped by connection,
-  `_book_order`, measured -31% to ~14 B/row on a real slice, mistakes #178) + ~8 GB/day
+  `_book_order`, measured -31% to ~14 B/row on a real slice, mistakes #178; since
+  2026-11-19 each flush's ticker rows are stored grouped by market,
+  `_ticker_order` -- rebuilt in production-shaped 15 s flushes from the Thu
+  backup slot, 49.9 -> 44.4 B/row at 14k rows a flush and 51.8 -> 41.1 at
+  33k, where the 11-11 slice at ~9k rows a flush had read -6%; the ceiling
+  is the sort WINDOW, 26.5 / 20.9 / 19.4 B/row at 1 / 5 / 20 min buckets,
+  which a 15 s flush cannot reach. Measured the same pass on the Wed and
+  Thu slots: the file has no free blocks (75 of 1,482,379), a day adds
+  12.86 GB for 656.7M rows = 19.6 B/row blended -- book 544.2M at ~14.3,
+  ticker 94.5M at ~49 (4.6 GB/day, a table with no reader in this repo),
+  trades 17.6M at ~26 -- and the ticker table as written matches one bulk
+  load of the same rows in arrival order, 48.0-49.1 B/row, so the per-flush
+  checkpoint itself costs no compression) + ~8 GB/day
   raw -- the full-file hyxstream backup is unbounded at that rate.
   **Re-measured in production 2026-10-24 (mistakes #136):** `hyxstream.duckdb`
   43.99 GB at the 10-23 03:30Z backup -> 51.41 GB at 10-24 03:30Z (7.4 GB

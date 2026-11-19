@@ -622,6 +622,34 @@ def _book_group(e: BookEvent) -> int:
     return -1 if e.sid is None else e.sid
 
 
+def _ticker_order(rows: list[StreamTicker]) -> list[StreamTicker]:
+    """One flush's ticker rows grouped by market, arrival order kept inside
+    each market. Returns a NEW list, for `_book_order`'s reason.
+
+    Why: a ticker row repeats its market's last price, quote and volume
+    with one field moved, and in arrival order 90k markets interleave so no
+    column runs. The 2026-11-11 measurement above refuted this at the
+    ~9k-row flush of that week; the channel has since doubled (11-07) and
+    the answer moved with the flush size. MEASURED 2026-11-19 on two real
+    40-minute slices of the Thu backup slot, rebuilt one INSERT and one
+    checkpoint per 15 s window as production writes them: 49.9 -> 44.4
+    B/row at 14,273 rows a flush (-11%, 11-18 15:00Z) and 51.8 -> 41.1 at
+    33,006 (-21%, 11-19 02:00Z). The table is the archive's most expensive
+    per row (~49 B against ~14 for a book event) and 94.5M rows a day.
+    The ceiling a flush cannot reach is the sort window, not the key: the
+    same rows sorted by market inside 1 / 5 / 20 min buckets store at 26.5
+    / 20.9 / 19.4 B/row (bulk-loaded, 01-03Z 11-19).
+
+    The sort is stable and the key is the market alone, so one market's
+    rows keep their arrival (and `seq`) order. No reader may read physical
+    order (mistakes #178)."""
+    return sorted(rows, key=_ticker_group)
+
+
+def _ticker_group(t: StreamTicker) -> str:
+    return t.market_id
+
+
 @dataclass
 class StreamTrade:
     venue: str
@@ -1516,6 +1544,8 @@ class StreamStore:
                     continue
                 if table == "book_events":
                     rows = _book_order(rows)
+                elif table == "stream_ticker":
+                    rows = _ticker_order(rows)
                 out.append(
                     _stage_frame(
                         table, rows, self.path.parent, to_row=_rower(table), yield_s=yield_s
