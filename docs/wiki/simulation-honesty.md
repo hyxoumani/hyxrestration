@@ -235,7 +235,33 @@ reproduced there: the cost itself -- the scratch close was a flat
 0.044-0.050 s from 10M to 150M rows (82 -> 1,230 row groups), so whether
 production's 1.17 s is per-checkpoint overhead of a 13B-row, ~100k-group,
 seven-table file (deferral then divides it) or follows the bytes written
-(deferral then only moves it) is open. Owed: the
+(deferral then only moves it) is open. **CLOSED 2026-11-19 20:27Z, and
+the deferral is REFUTED before any build** (`~/scratch/prio1119/ckpt_rg.py`,
+`ckpt_rg2.py`, stable venv): the missing dimension was the ROW-GROUP
+COUNT, not the rows -- built at `ROW_GROUP_SIZE 2048` so 110k groups cost
+226M rows, then appended to through a default attach, a 105k-row flush
+holds 0.20 s at 5,000 groups (commit 0.034, close 0.153), 0.32 s at 24k,
+0.40 s at 58k and 0.65 s at 107-110k (commit 0.19-0.20, close 0.44): both
+steps follow the count, as production's 0.30 / 1.02 s do at ~109k groups
+and seven tables. A deferred checkpoint does divide the close (0.012 s),
+but the WAL it leaves makes EVERY open replay it, and the replay loads
+the table's row-group metadata -- the same constant the shadow's poll
+pays: the writer's own next open goes 0.007 -> 0.22-0.40 s (7.8 -> 54 MB
+of WAL), a read-only attach 0.006 -> 0.20-0.41 s, and that reader's
+bounded query 0.53 -> 0.84-0.88 s on top. Counted with the opens, the
+writer's hold per flush is 0.65 s plain, 0.39 s at a checkpoint every 4
+flushes and 0.42 s every 8 (worse: the replay grows with the WAL), while
+every reader attach in three periods of four costs +0.55-0.6 s -- the
+shadow's 0.73 s poll would be ~1.3 s -- and `backupslot.covering_slot`
+would decline three slots in four. The hold `flush_hold` prints starts
+after the open, so it would have shown the whole win and none of the
+cost. What the curve does price is the layout lever: the per-attach and
+per-checkpoint cost is the row-group count of the file being written, so
+a writer on a young file (5k groups: 0.20 s a flush, a third of today's)
+with the history in a file nobody writes is the change that moves both
+`STREAMHOLD` and `SHADOWHOLD`; it is a design item (every reader's
+`book_events` predicate, the backup's slot set, `covering_slot`), not
+started. Owed: the
 00-04Z hours (p99 250-501 ms on both nights before) from the Fri backup
 slot. Probes: `~/scratch/prio1119/convoy.py`, `convoy2.py`, `gil.py`,
 `signed.py`. The before/after instrument already exists and needs no

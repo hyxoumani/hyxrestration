@@ -961,7 +961,13 @@
   by 2x at production's ~105k: size a bench input from the stats line.
   The line also carries `flush_steps=<stage in hold>/<load>/<commit>/
   <close>` (STREAMHOLD `by step`): first reading close 1.17 of 1.55 s a
-  flush -- the hold is the checkpoint at connection close.
+  flush -- the hold is the checkpoint at connection close. Deferring it
+  (`disable_checkpoint_on_shutdown`) is REFUTED, 2026-11-19: the WAL it
+  leaves makes every open replay it and load the row-group metadata --
+  writer 0.65 -> 0.39 s a flush, each reader attach +0.55 s (scratch, 110k
+  groups). Both costs follow the ROW-GROUP COUNT of the written file; a
+  synthetic sized in rows (1,230 groups at 150M) shows neither. And a hold
+  timed from "the connection exists" cannot see a cost moved into the open.
 - Until 2026-11-18 every stream restart locked readers out of the
   stream archive for 1-4.5 min and held every books shard back from
   connecting: each at-boot shard ran `max(recv_ts) FROM book_events WHERE
