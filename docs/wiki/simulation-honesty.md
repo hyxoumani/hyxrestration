@@ -142,12 +142,22 @@ prints, 0.012%). Both sockets' receive lag behind the venue's own
 hour: trades 106 ms (22Z) -> 150 -> 265 -> 434 -> 472 -> 498 ms (03Z),
 books per market 148 -> 497 ms over the same hours, and the per-market
 late share climbs with it (3.8% -> 9.8%). The 10-29 reading's window was
-15-20Z. Hypothesis, not tested: the late share is the stream daemon's
-receive lag by hour of day (US evening), not a drift across weeks, and
-the 10-29 vs 11-19 difference is mostly the window's clock time. The test
-is one run with a 15-20Z window, and pairing on `src_ts` instead of
-`recv_ts` (both tables carry it at ms resolution) would take our receive
-lag out of the probe altogether.
+15-20Z. **Tested the same pass on all Kalshi trades, 48 hourly bins
+11-16 03Z -> 11-18 03Z (one `recv_ts`-bounded query on the slot): it is
+the hour.** Median receive lag 39-55 ms in every hour; p99 81-279 ms in
+each of the 38 hours 05Z-23Z, and 250-501 ms in 00Z-04Z on BOTH nights
+(11-17: 273 / 478 / 501 / 405 / 282; 11-18: 250 / 407 / 465 / 499), the
+hours the tape runs 1.0-1.2M prints against 0.4-0.9M; the share past
+500 ms is 0.5-1.0% there and under 0.1% in 33 of the other 38 hours. So
+the late share is load at the US-evening peak, not a drift across weeks,
+and the 10-29 (15-20Z) vs 11-19 (22:30-03:30Z) difference is the
+window's clock time. NOT separated: whether the lag is the venue's
+publish delay or this daemon's event loop under 1M prints/h -- the
+stream's stats line carries no receive-lag figure. Consequences: a
+priority-check reading names its window's hours; pairing on `src_ts`
+(both tables carry it at ms resolution) would take receive lag out of
+the probe; and in 00-04Z about 1 print in 100 reaches the archive, and
+so the shadow, half a second or more after the venue stamped it.
 
 ## Runtime accounting invariants
 
