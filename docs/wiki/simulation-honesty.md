@@ -184,7 +184,10 @@ before the open, the ~1.1 s leaves the writer's hold (1.8 s/flush, 11%
 duty on STREAMHOLD) and a yield in it costs the archive nothing -- that
 is the change to make, with the ENOSPC and restore-the-buffers paths
 (`tests/test_stream_enospc.py`, #62, #119) re-proved around the new
-order. Probes: `~/scratch/prio1119/convoy.py`, `convoy2.py`, `gil.py`,
+order. One trap in that order: a flush refused at the open (a reader
+holds the file, ~59 a day) would stage before learning it and re-stage
+the whole growing buffer every tick of a long hold, so staged files have
+to survive a refusal and be extended rather than rebuilt. Probes: `~/scratch/prio1119/convoy.py`, `convoy2.py`, `gil.py`,
 `signed.py`. The before/after instrument already exists and needs no
 daemon change: `recv_ts - src_ts` per hour over `stream_trades` on a
 backup slot (p99 and the share past 300/500 ms), and the 17-18 s burst
