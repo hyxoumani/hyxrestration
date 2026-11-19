@@ -395,40 +395,172 @@ def _dec_generic(cls, table: str, r: list):
     return cls(*[_from_iso(v) if i in ts else v for i, v in enumerate(r)])
 
 
-def _insert_frame(
-    conn: duckdb.DuckDBPyConnection, table: str, rows: list[tuple], tmpdir: str | Path
-) -> None:
-    """Insert `rows` (tuples in `_COLS[table]` order, timestamps already naive
-    UTC) through a staged CSV file and one `read_csv` scan. A no-op for an
-    empty batch.
+@dataclass(frozen=True)
+class _Staged:
+    """One table's rows of one flush, already written to a CSV file (`path`
+    is None for an empty batch: nothing was created, nothing is loaded).
+    `len()` is the row count, so a staged batch reads like the list it
+    replaces to anything that only counts rows."""
 
-    Why a file: the stable deployment's venv carries duckdb and nothing that
-    DuckDB can scan in memory (no pandas, numpy, pyarrow or fsspec --
-    `scripts/requirements-stable.txt`), and `executemany` runs one prepared
-    INSERT per row. The CSV is lossless for every type here: QUOTE_NOTNULL
+    table: str
+    path: str | None
+    n: int
+
+    def __len__(self) -> int:
+        return self.n
+
+
+def _same(row):
+    return row
+
+
+def _book_row(e: BookEvent) -> tuple:
+    return (
+        e.venue,
+        e.market_id,
+        _naive_utc(e.recv_ts),
+        _naive_utc(e.src_ts),
+        e.sid,
+        e.seq,
+        e.kind,
+        e.side,
+        e.price,
+        e.qty,
+    )
+
+
+def _trade_row(t: StreamTrade) -> tuple:
+    return (
+        t.venue,
+        t.market_id,
+        _naive_utc(t.recv_ts),
+        _naive_utc(t.src_ts),
+        t.price,
+        t.qty,
+        t.taker_side,
+        t.seq,
+    )
+
+
+def _generic_rower(table: str) -> Callable[[object], tuple]:
+    ts = _ts_cols(table)
+    return lambda r: tuple(_naive_utc(v) if i in ts else v for i, v in enumerate(_row(r)))
+
+
+#: The seven tables of one flush, in `StreamStore._insert`'s argument order.
+_FLUSH_TABLES = (
+    "book_events",
+    "stream_trades",
+    "stream_gaps",
+    "stream_ticker",
+    "stream_lifecycle",
+    "stream_heartbeats",
+    "stream_subscriptions",
+)
+
+
+def _rower(table: str) -> Callable[[object], tuple]:
+    if table == "book_events":
+        return _book_row
+    if table == "stream_trades":
+        return _trade_row
+    if table == "stream_gaps":
+        return _same
+    return _generic_rower(table)
+
+
+#: Rows `_stage_frame` converts and writes between two yields of the GIL.
+#: One `writerows` call is a single C call: it never reaches the eval loop,
+#: so the interpreter's 5 ms switch interval cannot preempt it, and the
+#: tuple-building around it is pure Python that an I/O thread must wait a
+#: whole switch interval to interrupt after EVERY syscall it returns from.
+#: MEASURED 2026-11-19 (`~/scratch/prio1119/convoy2.py`, 300,000 book
+#: events, a loop doing one socket recv + `json.loads` per iteration):
+#: unchunked the loop runs at 9.8% of its solo rate for the 0.94 s the
+#: staging takes; 500 rows + a 0.2 ms sleep 41.6% for 1.45 s; 100 rows +
+#: sleep(0) 54.2% for 2.75 s; 2,000 rows + 0.5 ms 21.8% for 0.98 s. The
+#: receive loop's lag tail was this convoy: 99.3% of the 02Z hour's 26,711
+#: prints lagged > 300 ms sat in one-second bursts 17-18 s apart (11-19).
+STAGE_CHUNK_ROWS = 500
+STAGE_YIELD_S = 0.0002
+
+
+def _stage_frame(
+    table: str,
+    items,
+    tmpdir: str | Path,
+    *,
+    to_row: Callable[[object], tuple] = _same,
+    yield_s: float | None = None,
+) -> _Staged:
+    """Write `items` (converted by `to_row` to tuples in `_COLS[table]`
+    order, timestamps naive UTC) to a CSV file beside the archive. With
+    `yield_s` the GIL is given up every `STAGE_CHUNK_ROWS` rows -- only
+    worth it OUTSIDE the archive hold, where the extra wall costs no reader
+    anything. A failure removes the partial file before it propagates.
+
+    Why a file: `executemany` runs one prepared INSERT per row, and until
+    2026-11-18 the stable venv carried nothing DuckDB can scan in memory.
+    The CSV is lossless for every type here: QUOTE_NOTNULL
     quotes every non-None value, so an unquoted empty field is NULL and a
     quoted one is the empty string (`allow_quoted_nulls=false`); str() of a
     naive datetime is DuckDB's timestamp text and of a float its repr; quotes
     and newlines inside VARCHARs (the lifecycle `raw` frame) are escaped by
     the csv module. `tests/test_stream_coverage.py` pins the round trip
     against `executemany` as an oracle, NULLs and empty strings included."""
-    if not rows:
-        return
-    cols = _COLS[table]
+    n = len(items)
+    if not n:
+        return _Staged(table, None, 0)
     fd, path = tempfile.mkstemp(prefix=f".{table}-", suffix=".csv", dir=str(tmpdir))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
-            csv.writer(fh, quoting=csv.QUOTE_NOTNULL, lineterminator="\n").writerows(rows)
-        names = ", ".join(n for n, _ in cols)
-        conn.execute(
-            f"INSERT INTO {table} ({names}) SELECT {names} FROM read_csv(?, header=false,"
-            " columns=?, auto_detect=false, quote='\"', escape='\"', nullstr='',"
-            " allow_quoted_nulls=false)",
-            [path, dict(cols)],
-        )
-    finally:
+            w = csv.writer(fh, quoting=csv.QUOTE_NOTNULL, lineterminator="\n")
+            if yield_s is None:
+                w.writerows(items if to_row is _same else [to_row(x) for x in items])
+            else:
+                for i in range(0, n, STAGE_CHUNK_ROWS):
+                    w.writerows([to_row(x) for x in items[i : i + STAGE_CHUNK_ROWS]])
+                    time.sleep(yield_s)
+    except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(path)
+        raise
+    return _Staged(table, path, n)
+
+
+def _load_staged(conn: duckdb.DuckDBPyConnection, staged: _Staged) -> None:
+    """One `read_csv` scan of a staged file into its table; a no-op for an
+    empty batch."""
+    if staged.path is None:
+        return
+    cols = _COLS[staged.table]
+    names = ", ".join(n for n, _ in cols)
+    conn.execute(
+        f"INSERT INTO {staged.table} ({names}) SELECT {names} FROM read_csv(?, header=false,"
+        " columns=?, auto_detect=false, quote='\"', escape='\"', nullstr='',"
+        " allow_quoted_nulls=false)",
+        [staged.path, dict(cols)],
+    )
+
+
+def _unlink_staged(staged) -> None:
+    for st in staged:
+        if st.path is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(st.path)
+
+
+def _insert_frame(
+    conn: duckdb.DuckDBPyConnection, table: str, rows: list[tuple], tmpdir: str | Path
+) -> None:
+    """Insert `rows` (tuples in `_COLS[table]` order, timestamps already naive
+    UTC) through a staged CSV file and one `read_csv` scan (`_stage_frame`,
+    `_load_staged`). A no-op for an empty batch."""
+    staged = _stage_frame(table, rows, tmpdir)
+    try:
+        _load_staged(conn, staged)
+    finally:
+        _unlink_staged([staged])
 
 
 def _enc_ticker(t: StreamTicker) -> str:
@@ -690,6 +822,9 @@ class StreamStore:
         # across its decision and then calls `flush`/`spill_all` under it;
         # see `exclusive` and `streamd.DRAIN_LOCK_WAIT_S`.
         self._flush_lock = threading.RLock()
+        # True from a failed flush until the next one that lands: see the
+        # staging order in `flush_outcome`. Read and written under the lock.
+        self._stage_in_hold = False
         # `last_recv_ts_once`: its own lock, never the flush lock -- a boot
         # read must not queue behind (or hold up) a flush.
         self._last_recv_lock = threading.Lock()
@@ -998,8 +1133,24 @@ class StreamStore:
             # file exactly as long as one that committed.
             t_open: float | None = None
             held_s: float | None = None
+            batch: tuple = (events, trades, gaps, tickers, lifecycles, heartbeats, subevents)
+            staged: tuple[_Staged, ...] = ()
             try:
                 try:
+                    # STAGE BEFORE THE OPEN: the CSV files are ~1.1 s of pure
+                    # Python per 300k events and need nothing from the
+                    # archive, so written first they are outside the hold
+                    # (every reader's wait) and can afford to yield the GIL to
+                    # the receive loop, which a yield inside the hold could
+                    # not (`STAGE_CHUNK_ROWS`). NOT after a flush that failed:
+                    # a refused open learns nothing from the files, and a
+                    # long outside hold would re-stage the whole growing
+                    # buffer on every tick -- so until one flush lands, the
+                    # order is the old one (open, then stage inside the hold),
+                    # and a refusal costs one wasted staging, not one a tick.
+                    if not self._stage_in_hold:
+                        staged = self._stage(batch, yield_s=STAGE_YIELD_S)
+                        batch = staged
                     with duck_connect(str(self.path)) as conn:
                         t_open = time.monotonic()
                         # Parse the sidecar only once the write lock is held:
@@ -1009,15 +1160,15 @@ class StreamStore:
                         # ahead of the buffer -- recv order kept, memory
                         # bounded by a chunk.
                         n += self._drain_spill(conn)
-                        self._insert(
-                            conn, events, trades, gaps, tickers, lifecycles, heartbeats, subevents
-                        )
+                        self._insert(conn, *batch)
                 finally:
+                    _unlink_staged(staged)
                     if t_open is not None:
                         held_s = time.monotonic() - t_open
                         h_n, h_s, h_max = self._holds
                         self._holds = (h_n + 1, h_s + held_s, max(h_max, held_s))
             except BaseException:
+                self._stage_in_hold = True
                 self._events[:0] = events
                 self._trades[:0] = trades
                 self._gaps[:0] = gaps
@@ -1027,6 +1178,7 @@ class StreamStore:
                 self._subevents[:0] = subevents
                 self._spill_overflow()
                 raise
+            self._stage_in_hold = False
             self._spill_done_path.unlink(missing_ok=True)
             self._spill_path.unlink(missing_ok=True)
             self.spilled = 0
@@ -1300,65 +1452,46 @@ class StreamStore:
         15 s flush of a busy minute would have needed most of the 15 s.
         `_insert_frame` loads the same rows in one vectorised `read_csv` --
         measured on a temp database 2026-10-23, see `FLUSH_ROWS_PER_S`."""
-        conn.execute("BEGIN")
-        tmp = self.path.parent
-        events = _book_order(events)
-        _insert_frame(
-            conn,
-            "book_events",
-            [
-                (
-                    e.venue,
-                    e.market_id,
-                    _naive_utc(e.recv_ts),
-                    _naive_utc(e.src_ts),
-                    e.sid,
-                    e.seq,
-                    e.kind,
-                    e.side,
-                    e.price,
-                    e.qty,
+        given = (events, trades, gaps, tickers, lifecycles, heartbeats, subevents)
+        staged = self._stage(given)
+        try:
+            conn.execute("BEGIN")
+            for st in staged:
+                _load_staged(conn, st)
+                # Gone as soon as it is loaded, whoever staged it: a file
+                # kept to the end of the flush sits on the disk through the
+                # COMMIT and the checkpoint at close, and on a full
+                # filesystem that is the room the commit needed
+                # (`tests/test_stream_enospc.py` moved its first failure
+                # from the CSV to the commit when this was left to the end).
+                _unlink_staged([st])
+            conn.execute("COMMIT")
+        finally:
+            # What a failure left unloaded, of the files staged HERE: a batch
+            # that arrived staged is `flush_outcome`'s to remove.
+            _unlink_staged([st for st, g in zip(staged, given, strict=True) if st is not g])
+
+    def _stage(self, tables, *, yield_s: float | None = None) -> tuple[_Staged, ...]:
+        """Each of the seven tables' rows as a staged CSV beside the archive,
+        in `_FLUSH_TABLES` order; an entry that is already `_Staged` passes
+        through. A failure part-way removes the files this call created."""
+        out: list[_Staged] = []
+        try:
+            for table, rows in zip(_FLUSH_TABLES, tables, strict=True):
+                if isinstance(rows, _Staged):
+                    out.append(rows)
+                    continue
+                if table == "book_events":
+                    rows = _book_order(rows)
+                out.append(
+                    _stage_frame(
+                        table, rows, self.path.parent, to_row=_rower(table), yield_s=yield_s
+                    )
                 )
-                for e in events
-            ],
-            tmp,
-        )
-        _insert_frame(
-            conn,
-            "stream_trades",
-            [
-                (
-                    t.venue,
-                    t.market_id,
-                    _naive_utc(t.recv_ts),
-                    _naive_utc(t.src_ts),
-                    t.price,
-                    t.qty,
-                    t.taker_side,
-                    t.seq,
-                )
-                for t in trades
-            ],
-            tmp,
-        )
-        _insert_frame(conn, "stream_gaps", gaps, tmp)
-        for table, rows in (
-            ("stream_ticker", tickers),
-            ("stream_lifecycle", lifecycles),
-            ("stream_heartbeats", heartbeats),
-            ("stream_subscriptions", subevents),
-        ):
-            ts = _ts_cols(table)
-            _insert_frame(
-                conn,
-                table,
-                [
-                    tuple(_naive_utc(v) if i in ts else v for i, v in enumerate(_row(r)))
-                    for r in rows
-                ],
-                tmp,
-            )
-        conn.execute("COMMIT")
+        except BaseException:
+            _unlink_staged([st for st, g in zip(out, tables, strict=False) if st is not g])
+            raise
+        return tuple(out)
 
     def last_recv_ts(self, venue: str, channel: str) -> datetime | None:
         """Last persisted recv_ts for one venue/channel (the trades
