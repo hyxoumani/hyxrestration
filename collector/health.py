@@ -2374,6 +2374,44 @@ def hourly_ceilings(samples: list[tuple[float, int]]) -> list[tuple[float, int]]
     return [ceils[h] for h in sorted(ceils)]
 
 
+def sample_dips(
+    samples: list[tuple[float, int]],
+    reset_frac: float = DISK_RISE_RESET_FRAC,
+    reset_floor_b: int = FS_PACE_RESET_FLOOR_B,
+) -> list[int]:
+    """How far each sample sat under its own clock hour's ceiling, one per
+    sample in order -- EXCEPT under a ceiling that is a deletion. Pure.
+
+    A dip is a level that comes back; a sample taken BEFORE a cleanup in the
+    hour the cleanup landed is under that hour's ceiling by the whole cleanup
+    and nothing came back. Measured 2026-11-19: 34.7 GB at 00:10Z, 139 GB from
+    00:20Z (the user freed 104 GB), and the line printed `first ENOSPC NOW at
+    the window's largest dip (105 GB)` with 103 GB free and a real largest
+    dip of ~10 GB (mistakes #214). So when the hour's ceiling was taken AFTER
+    the sample and stands above everything seen up to the sample (the
+    previous hour's ceiling, this hour's earlier samples) by more than the
+    pace's own reset rule, the sample is measured against that earlier level
+    instead. Same rule, same blind side: a spill of 50 GB+ that sat under a
+    whole clock hour and then lifts reads as a deletion in both clauses."""
+    ceils: dict[int, tuple[float, int]] = {}
+    for ts, free in samples:
+        h = int(ts) // 3600
+        if h not in ceils or free > ceils[h][1]:
+            ceils[h] = (ts, free)
+    out = []
+    seen: tuple[int, int] | None = None  # (hour, max of this hour's samples so far)
+    for ts, free in samples:
+        h = int(ts) // 3600
+        run = free if seen is None or seen[0] != h else max(seen[1], free)
+        seen = (h, run)
+        ceil_ts, ceil = ceils[h]
+        prior = max(run, ceils[h - 1][1]) if h - 1 in ceils else run
+        if ceil_ts > ts and ceil - prior > max(reset_frac * prior, reset_floor_b):
+            ceil = prior
+        out.append(max(0, ceil - free))
+    return out
+
+
 def _read_fs_pace(hours: int = FS_PACE_WINDOW_H) -> FsPace | None:
     series = read_fs_free_series(hours)
     return fs_pace(series) if series is not None else None
@@ -2393,14 +2431,12 @@ def fs_pace(
     fl: dict = {}
     if samples:
         floor_ts, floor_b = min(samples, key=lambda c: c[1])
-        hour_ceil = max(f for t, f in samples if int(t) // 3600 == int(floor_ts) // 3600)
-        by_hour = {int(t) // 3600: f for t, f in ceils}
-        dip_max = max(by_hour[int(t) // 3600] - f for t, f in samples)
+        dips = sample_dips(samples, reset_frac, reset_floor_b)
         fl = {
             "floor_b": floor_b,
             "floor_ts": floor_ts,
-            "floor_dip_b": hour_ceil - floor_b,
-            "dip_max_b": dip_max,
+            "floor_dip_b": dips[samples.index((floor_ts, floor_b))],
+            "dip_max_b": max(dips),
         }
     start = 0
     reset = None

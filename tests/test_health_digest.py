@@ -2254,6 +2254,37 @@ def test_cap_kills_leave_the_global_half_of_the_line_unchanged():
     assert mixed.startswith(head + " (+1 kill(s)")
 
 
+def test_a_sample_taken_before_a_cleanup_is_not_a_dip() -> None:
+    """mistakes #214: `first ENOSPC NOW at the window's largest dip (105 GB)`
+    with 103 GB free. The 105 GB was the user's cleanup, seen from the
+    samples of the same clock hour that preceded it: nothing came back."""
+    # 2026-11-18 23:00Z .. 11-19 01:55Z shaped as the collector sampled it:
+    # ~35 GB burning 1.4 GB/h, +104 GB between the 00:10Z and 00:15Z samples,
+    # then one real 12 GB transient at 01:30Z.
+    t0 = 1795042800
+    assert t0 % 3600 == 0
+    gb = [36.3 - 0.117 * i for i in range(15)] + [139.2 - 0.6 * i for i in range(21)]
+    gb[30] -= 12.0
+    samples = [(t0 + 300 * i, int(g * 1e9)) for i, g in enumerate(gb)]
+    pace = health.fs_pace(samples)
+    assert pace.reset_b is not None and pace.reset_b > 100e9
+    # The largest dip is the transient, not the cleanup ...
+    assert 12.0 <= pace.dip_max_b / 1e9 < 19.0
+    # ... and the floor (the last pre-cleanup sample) sat under the level it
+    # had burned from, not under the post-cleanup ceiling.
+    assert pace.floor_ts == t0 + 300 * 14 and pace.floor_dip_b / 1e9 < 2.0
+    fs = health.HostFs(free_b=103_000_000_000, size_b=1_999_000_000_000)
+    p = dataclasses.replace(pace, burn_b_per_day=74e9)
+    line = health.host_fs_line(fs, None, p)
+    assert "first ENOSPC in 1." in line and "NOW" not in line
+    # Vacuity guard: with the deletion rule out of reach the cleanup IS the dip.
+    old = health.sample_dips(samples, reset_frac=10.0, reset_floor_b=10**15)
+    assert max(old) > 100e9
+    # A real dip of the same size is still a dip: the level was there BEFORE.
+    back = [(t, f - (80_000_000_000 if i in (20, 21) else 0)) for i, (t, f) in enumerate(samples)]
+    assert health.fs_pace(back).dip_max_b >= 80e9
+
+
 # 2026-11-13 07:15-07:40Z as the collector sampled it (GB): a sibling job's
 # DuckDB spill takes the disk through the kubelet's line and hands it back.
 _DIP = [

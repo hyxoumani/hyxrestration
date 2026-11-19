@@ -743,7 +743,10 @@
   the sibling's spill lifting (+13.6 GB) was "a deletion" and the clause
   read `unresolved` 2 d from full -- and `full in N d` is followed by
   `first ENOSPC in M d at the window's largest dip`: quote the second
-  (mistakes #204).
+  (mistakes #204). A sample taken before a cleanup in the
+  cleanup's own clock hour is not a dip (`health.sample_dips`; until
+  2026-11-19 it printed `first ENOSPC NOW ... (105 GB)` at 103 GB free,
+  mistakes #214).
 - A retention window's plateau is the PRUNER's comparison, not its
   constant: `RawFrameWriter.prune` drops `name < today - RETAIN_DAYS`, so
   with 14 it holds 15 day directories (14 closed + the running day) and

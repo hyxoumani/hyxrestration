@@ -5541,6 +5541,33 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+214. **2026-11-19 08:15Z -- the digest printed `first ENOSPC NOW at the
+    window's largest dip (105 GB)` with 103 GB free: the "dip" was the
+    user's own 104 GB cleanup.** `fs_pace` measured every sample against
+    its clock hour's ceiling, and the cleanup landed between the 00:10Z
+    and 00:20Z samples -- so the three samples of that hour taken BEFORE
+    it (34.7 GB) sat 105 GB under a ceiling taken after them. Nothing
+    came back; the level went up and stayed. The pace clause had already
+    called the same step a deletion (`since a +103 GB rise`) eleven words
+    earlier in the same line, and the floor clause called the pre-cleanup
+    level `105 GB under that hour's ceiling`. For the 24 h the samples
+    stay in the window the one number #204 says to quote was an alarm
+    with no content, on the day the true answer (about a day) mattered.
+    Fix: `health.sample_dips` -- a sample under a ceiling taken AFTER it
+    that stands above everything seen up to the sample (previous hour's
+    ceiling, this hour's earlier samples) by more than the pace's own
+    reset rule is measured against that earlier level. Live after the
+    fix: `34 GB at 11-19 00:10Z, 2 GB under that hour's ceiling ... first
+    ENOSPC in 1.1 d at the window's largest dip (21 GB)`. 1 test with a
+    vacuity guard (rule out of reach -> the cleanup is a 100 GB+ dip) and
+    the mirror arm (an 80 GB dip AFTER the cleanup is still a dip); 1
+    mutant red, asserted to land. Rule: **a quantity defined as "below a
+    reference" needs the reference to PRECEDE the sample or the level to
+    return; a maximum over a window is not a reference for the samples
+    taken before it. And two clauses of one line that classify the same
+    step must share the classifier** -- same family as #160 (a deletion
+    netted into a rate).
+
 213. **2026-11-18 20:15Z -- #212's cause: the stable venv has no pandas,
     and every replay ran from the venv that does** (class: a replay that
     shares the code and not the interpreter's site-packages; a fact
