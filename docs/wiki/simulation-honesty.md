@@ -151,13 +151,37 @@ hours the tape runs 1.0-1.2M prints against 0.4-0.9M; the share past
 500 ms is 0.5-1.0% there and under 0.1% in 33 of the other 38 hours. So
 the late share is load at the US-evening peak, not a drift across weeks,
 and the 10-29 (15-20Z) vs 11-19 (22:30-03:30Z) difference is the
-window's clock time. NOT separated: whether the lag is the venue's
-publish delay or this daemon's event loop under 1M prints/h -- the
-stream's stats line carries no receive-lag figure. Consequences: a
+window's clock time. **And it is OURS, not the venue's (02:55Z):** in
+the 11-18 02Z hour, 26,711 of 1,166,031 prints were received more than
+300 ms after `src_ts`, and 99.3% of them sit in 178 bursts about one
+second long whose starts are 17-18 s apart (median 18, quartiles
+17/18/18; the rest are multiples) -- `streamd`'s flush cycle, 15 s of
+sleep plus the flush. The flush runs on an `asyncio.to_thread` worker and
+its first second is pure Python under the GIL: `_book_order`'s sort, the
+tuple comprehension and `csv.writer.writerows` over 200-300k rows. No one
+of those calls freezes another thread (probe: a sleeping main thread's
+worst stall is 16-29 ms through all three, stable interpreter), but a
+thread that does I/O loses the GIL at every syscall and waits a switch
+interval to get it back: a loop doing one `recv` + one `json.loads` per
+iteration runs at **5.5% of its solo rate** (392,821 -> 21,510 it/s) for
+the 1.14 s those steps take on 300,000 events. The daemon's main thread
+averaged 30% of a core at 02:43Z, so a tenth of its capacity for a second
+is a backlog of a few thousand frames, stamped `recv_ts` as it drains.
+Measured levers on the same probe (`sys.setswitchinterval`): 1 ms 5.8%,
+0.2 ms 15.9% with the staging 1.14 -> 1.60 s, 0.05 ms 36.0% with the
+staging at 2.10 s -- the loop's share is bought with the flush's wall,
+which is inside the writer's hold. NOT changed this pass: it is a
+`streamd` change (a stream restart) and the lever that costs nothing is
+structural -- encode each row to its CSV line on the loop at append time
+(~3.7 us a row against ~75 us a frame) so the flush thread only writes
+bytes. Probes: `~/scratch/prio1119/convoy.py`, `gil.py`, `signed.py`.
+Consequences until then: `recv_ts` carries up to ~0.5 s of our own flush
+jitter once every ~18 s, on every channel at once but not equally (the
+priority check's late tail is the trade socket behind a books shard); a
 priority-check reading names its window's hours; pairing on `src_ts`
-(both tables carry it at ms resolution) would take receive lag out of
-the probe; and in 00-04Z about 1 print in 100 reaches the archive, and
-so the shadow, half a second or more after the venue stamped it.
+(both tables carry it at ms resolution) takes this out of the probe; and
+a no-lookahead clock built on `recv_ts` is late, never early, so the
+bias is conservative.
 
 ## Runtime accounting invariants
 
