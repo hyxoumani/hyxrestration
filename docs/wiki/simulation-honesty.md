@@ -187,7 +187,39 @@ is the change to make, with the ENOSPC and restore-the-buffers paths
 order. One trap in that order: a flush refused at the open (a reader
 holds the file, ~59 a day) would stage before learning it and re-stage
 the whole growing buffer every tick of a long hold, so staged files have
-to survive a refusal and be extended rather than rebuilt. Probes: `~/scratch/prio1119/convoy.py`, `convoy2.py`, `gil.py`,
+to survive a refusal and be extended rather than rebuilt -- OR, which is
+what shipped 2026-11-19 (15a7cfc), the order has a memory: a flush that
+failed puts the next ones back on open-first (stage inside the hold, as
+before) until one lands, so an outside hold costs ONE wasted staging and
+the spill/snapshot invariants are untouched (`StreamStore._stage_in_hold`,
+`tests/test_flush_stage_order.py`: the archive is writable from a second
+process while a healthy flush stages, refused while it is in its
+transaction; 4 mutants red). Staging yields 0.2 ms every 500 rows
+(`STAGE_CHUNK_ROWS`, `STAGE_YIELD_S`). Measured on a scratch archive with
+the stable interpreter, six 300k-event flushes each way
+(`~/scratch/prio1119/flushbench.py`): hold 1.41-1.44 s -> 0.30-0.31 s,
+flush wall 1.45 -> 1.78 s, a recv + `json.loads` loop at 41-43% of its
+solo rate across the whole flush against 25%. One thing the real-ENOSPC
+test caught: a staged file kept until the flush's `finally` sits on the
+disk through the COMMIT and the close's checkpoint, and on a full
+filesystem that is the room the commit needed -- each file is unlinked
+as soon as it is loaded. FIRST PRODUCTION READING (stream restarted
+14:38:08Z 11-19, all shards connected in 5 s, 0 GAP lines): Kalshi trade
+`recv_ts - src_ts` over 25-min windows of the live archive (one bounded
+read, held 0.39 s; `~/scratch/prio1119/lagwin.py`) -- p99 87 ms
+(13:37-14:02Z) and 141 ms (14:12-14:37Z) before, 46 ms (14:39-15:04Z)
+after, median 23-24 ms throughout; seconds containing a print lagged
+> 300 ms 9 and 21 -> 3 (those 3 seconds carry 0.11% of prints, so one
+burst that is not the flush is still there). The HOLD moved less than
+the bench: `flush_hold` 1.57 s/flush over the ten stats lines before
+(28.5-30.3 s per 18-19 flushes) -> 1.35 s over the four after (23.7-24.8
+s per 18), worst flush 1.7-2.1 -> 1.5 s, duty 9.8% -> 8.1%. The "about
+half" predicted on 11-19 02:50Z priced the staging at the bench's 300k
+events a flush; production flushes ~105k rows, so the staging was ~0.2 s
+of the hold and the other ~1.35 s is DuckDB's own insert, commit and
+checkpoint-at-close on a 391 GB file -- unmeasured by step. Owed: the
+00-04Z hours (p99 250-501 ms on both nights before) from the Fri backup
+slot. Probes: `~/scratch/prio1119/convoy.py`, `convoy2.py`, `gil.py`,
 `signed.py`. The before/after instrument already exists and needs no
 daemon change: `recv_ts - src_ts` per hour over `stream_trades` on a
 backup slot (p99 and the share past 300/500 ms), and the 17-18 s burst

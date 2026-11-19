@@ -953,7 +953,12 @@
   15 s period, and the digest's `STREAMHOLD` row sums the window (first
   readings 1.1 -> 2.0 s/flush, 7 -> 12% duty; mistakes #211). Read `total
   / 300` as the writer's duty on the file before pricing any reader's
-  retry ladder against it.
+  retry ladder against it. Since 2026-11-19 14:38Z the flush stages its
+  CSV files BEFORE the open (1.57 -> 1.35 s/flush, trade receive-lag p99
+  87-141 -> 46 ms) and goes back to open-first after any failed flush
+  until one lands; what is left of the hold is DuckDB's insert, commit
+  and checkpoint. A prediction priced on a bench's 300k-row flush missed
+  by 2x at production's ~105k: size a bench input from the stats line.
 - Until 2026-11-18 every stream restart locked readers out of the
   stream archive for 1-4.5 min and held every books shard back from
   connecting: each at-boot shard ran `max(recv_ts) FROM book_events WHERE
