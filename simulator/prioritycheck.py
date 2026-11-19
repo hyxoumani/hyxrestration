@@ -65,6 +65,15 @@ from simulator.queuescore import (
 )
 
 STREAM_DB = "data/hyxstream.duckdb"
+_COUNTS = (
+    "exact_match",
+    "absorb_match",
+    "naive_would_match",
+    "naive_only_match",
+    "late_decrement",
+    "no_decrement_at_level",
+    "batched_with_cancels",
+)
 EXACT_WINDOW = 0.005  # s: tight pairing for the exact-match rate / timing stats
 ABSORB_WINDOW = 2.0  # s: the queuebounds model's own pairing horizon
 PRICE_EPS = 1e-9
@@ -143,6 +152,25 @@ def negative_deltas(events: list) -> list[tuple[datetime, str, float, float]]:
     an `iter_market_rows` event group (columns: venue, market_id, recv_ts,
     src_ts, sid, seq, kind, side, price, qty), in the group's order."""
     return [(e[2], e[7], e[8], e[9]) for e in events if e[6] == "delta" and e[9] < 0]
+
+
+def venue_clock_rows(events: list, trades: list) -> tuple[list, list, int, int]:
+    """The same pairing inputs on the VENUE's clock: `src_ts` in place of
+    `recv_ts` for both the prints (`iter_market_rows(trade_src_ts=True)`
+    rows) and the negative deltas, each re-sorted on it.
+
+    Why: `recv_ts` is when `collector.streamd` got to the frame, and that
+    carries the daemon's own flush cycle -- measured 2026-11-19, 99.3% of
+    one peak hour's prints received >300 ms after `src_ts` sit in
+    one-second bursts 17-18 s apart, and the trade socket falls further
+    behind than a books shard. On `recv_ts` 7.9% of 572,586 KXBTC15M prints
+    paired outside +-5 ms; on `src_ts` 13 did. Rows with no `src_ts` cannot
+    be placed on this clock and are COUNTED, not dropped silently: returns
+    `(trades, deltas, trades_missing, deltas_missing)`."""
+    tr = sorted((t[4], t[1], t[2], t[3]) for t in trades if t[4] is not None)
+    neg = [e for e in events if e[6] == "delta" and e[9] < 0]
+    de = sorted((e[3], e[7], e[8], e[9]) for e in neg if e[3] is not None)
+    return tr, de, len(trades) - len(tr), len(neg) - len(de)
 
 
 def check_rows(market_id: str, trades: list, deltas: list) -> dict:
@@ -278,17 +306,30 @@ def main() -> None:
         rss_hold = rss_peak = rss_anon_mb()
     per_market = []
     dt_ms: list[float] = []
+    # the same pairing on the venue's clock (`venue_clock_rows`)
+    src_tot = dict.fromkeys(_COUNTS, 0)
+    src_dt_ms: list[float] = []
+    src_n = src_missing_trades = src_missing_deltas = 0
     score_s = 0.0
     rows_n: dict[str, tuple[int, int]] = {}
     try:
         with scratch_rows(scratch) as sconn:
-            for m, events, trades in iter_market_rows(sconn, markets, since):
+            for m, events, trades in iter_market_rows(sconn, markets, since, trade_src_ts=True):
                 deltas = negative_deltas(events)
                 rows_n[m] = (len(events), len(trades))
+                s_trades, s_deltas, miss_t, miss_d = venue_clock_rows(events, trades)
                 del events
                 t_pair = time.monotonic()
-                r = check_rows(m, trades, deltas)
+                r = check_rows(m, [t[:4] for t in trades], deltas)
+                rs = check_rows(m, s_trades, s_deltas)
                 score_s += time.monotonic() - t_pair
+                del s_trades, s_deltas
+                src_dt_ms.extend(rs.pop("dt_ms"))
+                for k in _COUNTS:
+                    src_tot[k] += rs[k]
+                src_n += rs["trades"]
+                src_missing_trades += miss_t
+                src_missing_deltas += miss_d
                 dt_ms.extend(r.pop("dt_ms"))
                 per_market.append(r)
                 print(
@@ -308,17 +349,17 @@ def main() -> None:
     print(f"[prioritycheck] cost: {cost_line(cost, compute='pairing', inside_hold=False)}")
 
     tot = sum(r["trades"] for r in per_market)
-    agg = {
-        k: sum(r[k] for r in per_market)
-        for k in (
-            "exact_match",
-            "absorb_match",
-            "naive_would_match",
-            "naive_only_match",
-            "late_decrement",
-            "no_decrement_at_level",
-            "batched_with_cancels",
-        )
+    agg = {k: sum(r[k] for r in per_market) for k in _COUNTS}
+    src_dt_ms.sort()
+    venue_clock = {
+        "clock": "src_ts",
+        "trades": src_n,
+        "src_ts_missing_trades": src_missing_trades,
+        "src_ts_missing_deltas": src_missing_deltas,
+        "exact_match_frac": round(src_tot["exact_match"] / src_n, 4) if src_n else None,
+        "absorb_match_frac": round(src_tot["absorb_match"] / src_n, 4) if src_n else None,
+        **src_tot,
+        "timing": _timing(src_dt_ms) if src_dt_ms else {},
     }
     dt_ms.sort()
     timing = {}
@@ -348,6 +389,7 @@ def main() -> None:
             else None
         ),
         "timing": timing,
+        "venue_clock": venue_clock,
         "note": (
             "absorb_match_frac = prints with an exact-size decrement at the"
             " PREDICTED complement level within the model's 2s window."
@@ -364,6 +406,11 @@ def main() -> None:
             " delay wider than the window it sizes; `timing.exact_window`"
             " is the same statistics conditioned on |dt| <= 5ms, which is"
             " what readings before 2026-09-20 published as `timing`."
+            " `venue_clock` is the same pairing on the venue's `src_ts`"
+            " instead of our `recv_ts`: the top-level late share is this"
+            " host's receive lag (the stream daemon's flush cycle), the"
+            " venue_clock one is the venue's. Rows with no src_ts are"
+            " counted there, not paired."
             " Verifies WHICH level a trade consumes, not"
             " front-vs-back order within it (that is the pess/opt bracket)."
         ),

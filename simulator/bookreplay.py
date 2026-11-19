@@ -563,7 +563,7 @@ def stream_exported(dest: str | Path) -> Iterator[BookEvent]:
 
 
 BOOK_COLS = _EVENT_COLS
-TRADE_COLS = "recv_ts, price, qty, taker_side, market_id, venue"
+TRADE_COLS = "recv_ts, price, qty, taker_side, market_id, venue, src_ts"
 
 
 def _lit(value: str) -> str:

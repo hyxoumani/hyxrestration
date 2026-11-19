@@ -192,6 +192,23 @@ to survive a refusal and be extended rather than rebuilt. Probes: `~/scratch/pri
 daemon change: `recv_ts - src_ts` per hour over `stream_trades` on a
 backup slot (p99 and the share past 300/500 ms), and the 17-18 s burst
 spacing.
+**The mapping on the VENUE's clock (same pass, shipped as the report's
+`venue_clock` block; `20261119T024927.json` weather, `...024951.json`
+KXBTC15M):** the same pairing with `src_ts` in place of `recv_ts` for
+both the print and the decrement. KXBTC15M: 572,505 of 572,586 prints
+have their exact-size decrement at the predicted level within +-5 ms
+(0.9999; on our clock 0.9211), 98.5% within 1 ms, **late 13 against
+45,110**, naive fits 17 against 6,249 (the 11 `naive_only` unchanged),
+no_decrement 41 and batched 27 as before. Weather: 11,259 of 11,270
+exact, late 0 against 558, 99.87% within 1 ms, naive 0. No row lacked a
+`src_ts`. So the venue stamps a print and its book decrement in the same
+millisecond, the +-1 ms claim of 07-14 is a bound on the venue's clock
+rather than "typical", and everything the `recv_ts` reading called late
+was this host. `ABSORB_WINDOW = 2s` in `queuebounds` pairs on `recv_ts`
+and is what absorbs our jitter there; it is not generous at the peak
+(the signed tail runs into the -2 s edge), and a `src_ts` pairing in the
+model itself would make the window a few ms -- not changed, the bracket
+is a pre-registered instrument and its next read is ~11-26.
 Consequences until then: `recv_ts` carries up to ~0.5 s of our own flush
 jitter once every ~18 s, on every channel at once but not equally (the
 priority check's late tail is the trade socket behind a books shard); a

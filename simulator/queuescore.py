@@ -849,7 +849,13 @@ def copy_to_scratch(conn, stream_db: str | Path, markets: list[str], since: date
     return scratch
 
 
-def iter_market_rows(conn, markets: list[str], since: datetime, chunk: int = CHUNK_ROWS):
+def iter_market_rows(
+    conn,
+    markets: list[str],
+    since: datetime,
+    chunk: int = CHUNK_ROWS,
+    trade_src_ts: bool = False,
+):
     """Yield `(market_id, events, trades)` per selected market from ONE scan
     per table, holding one market's rows in Python at a time.
 
@@ -873,18 +879,22 @@ def iter_market_rows(conn, markets: list[str], since: datetime, chunk: int = CHU
     two paths score identically, across chunk boundaries). Markets with no
     rows in the window are yielded last, empty, so the caller's loop is
     the selection and never a KeyError.
+
+    `trade_src_ts=True` appends the venue's own `src_ts` to each trade row
+    (`(recv_ts, price, qty, taker_side, src_ts)`) for a caller that pairs
+    in venue time (`simulator.prioritycheck`); event rows carry it always.
     """
     if not markets:
         return
     ph = ",".join("?" * len(markets))
     trades_by: dict[str, list] = {m: [] for m in markets}
     for t in conn.execute(
-        "SELECT recv_ts, price, qty, taker_side, market_id FROM stream_trades"
+        "SELECT recv_ts, price, qty, taker_side, market_id, src_ts FROM stream_trades"
         f" WHERE market_id IN ({ph}) AND venue='kalshi' AND recv_ts > ?"
         " ORDER BY market_id, recv_ts",
         [*markets, since],
     ).fetchall():
-        trades_by[t[4]].append(t[:4])
+        trades_by[t[4]].append((*t[:4], t[5]) if trade_src_ts else t[:4])
     # The scan runs on its OWN cursor. A DuckDB connection carries ONE
     # pending result, and the caller's next `conn.execute` between two
     # yields -- a memory sample, a progress read -- replaces it: the next

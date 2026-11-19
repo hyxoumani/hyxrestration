@@ -454,3 +454,59 @@ def test_series_flag_reaches_the_shared_selector_and_the_report(tmp_path, monkey
     report = json.loads(next(out_dir.glob("*.json")).read_text())
     assert report["series"] == ["KXHIGH", "KXLOW"]
     assert "series=['KXHIGH', 'KXLOW']" in capsys.readouterr().out
+
+
+def test_venue_clock_pairs_what_receive_lag_made_late():
+    """The print reached us 1.2 s after its decrement did (the trade socket
+    behind a books shard through one of streamd's flushes) though the venue
+    stamped both in the same millisecond: late on `recv_ts`, exact on
+    `src_ts`. Measured 2026-11-19 on 572,586 KXBTC15M prints: 45,110 late on
+    our clock, 13 on the venue's."""
+    from datetime import datetime, timedelta
+
+    from simulator.prioritycheck import check_rows, negative_deltas, venue_clock_rows
+
+    t = datetime(2026, 11, 18, 2, 0, 0)
+    src = t - timedelta(milliseconds=40)
+    # event rows: venue, market_id, recv_ts, src_ts, sid, seq, kind, side, price, qty
+    events = [
+        ("kalshi", "M", t, src, 1, 1, "delta", "yes", 0.40, -7.0),
+        ("kalshi", "M", t, src, 1, 2, "delta", "yes", 0.40, 3.0),  # positive: not a decrement
+        ("kalshi", "M", t, None, 1, 3, "delta", "yes", 0.41, -2.0),  # no venue stamp
+    ]
+    # trade rows with src_ts appended: recv_ts, price, qty, taker_side, src_ts
+    trades = [
+        (t + timedelta(seconds=1.2), 0.40, 7.0, "no", src + timedelta(milliseconds=1)),
+        (t + timedelta(seconds=1.3), 0.41, 2.0, "no", None),
+    ]
+    ours = check_rows("M", [x[:4] for x in trades], negative_deltas(events))
+    assert (ours["exact_match"], ours["late_decrement"]) == (0, 2)
+    s_trades, s_deltas, miss_t, miss_d = venue_clock_rows(events, trades)
+    assert (miss_t, miss_d) == (1, 1)  # counted, never paired on a clock they lack
+    theirs = check_rows("M", s_trades, s_deltas)
+    assert (theirs["trades"], theirs["exact_match"], theirs["late_decrement"]) == (1, 1, 0)
+    assert theirs["dt_ms"] == [-1.0]
+
+
+def test_iter_market_rows_appends_the_trade_src_ts_only_when_asked(tmp_path):
+    from datetime import datetime, timedelta
+
+    from hyxlab.store import duck_connect
+    from hyxlab.streamstore import StreamStore
+    from simulator.queuescore import iter_market_rows
+    from tests.test_hyxlab_queuescore import _image
+    from tests.test_hyxlab_queuescore import _trade as strade
+
+    t0 = datetime(2026, 7, 11, 12, 0)
+    db = tmp_path / "s.duckdb"
+    store = StreamStore(db)
+    store.append_events(_image("A", 10, t0))
+    store.append_trades(strade("A", 12, t0 + timedelta(seconds=60), "0.4000", "35.00", "no"))
+    store.flush()
+    since = t0 - timedelta(hours=1)
+    with duck_connect(str(db), read_only=True) as conn:
+        want = conn.execute("SELECT recv_ts, src_ts FROM stream_trades").fetchone()
+        ((_, _, plain),) = list(iter_market_rows(conn, ["A"], since))
+        ((_, _, with_src),) = list(iter_market_rows(conn, ["A"], since, trade_src_ts=True))
+    assert len(plain[0]) == 4 and plain[0][0] == want[0]
+    assert len(with_src[0]) == 5 and with_src[0][:4] == plain[0] and with_src[0][4] == want[1]
