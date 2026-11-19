@@ -131,6 +131,23 @@ receive lag on this host, not the venue); the timing minimum sits at the
 window edge (-1,999.9 ms), so a handful of the latest pairings may be
 coincidental same-size decrements. Cost per run: 3-16 s on the slot,
 rss_anon peak 2.5-2.9 GB.
+**The late share, placed the same pass (02:45Z, same slot, same eight
+KXBTC15M markets):** signed, the 45,111 late pairings are 31,683 with the
+DECREMENT received first and 13,428 with the print first; past 500 ms it
+is 9,411 against 12. So the tail is the trade socket's `recv_ts` running
+behind a books shard's, and the -2 s window edge is where that tail is
+cut (a pairing later than 2 s reads as `no_decrement`/`batched`: 68
+prints, 0.012%). Both sockets' receive lag behind the venue's own
+`src_ts` has a median of 40-46 ms all window, but its p99 climbs with the
+hour: trades 106 ms (22Z) -> 150 -> 265 -> 434 -> 472 -> 498 ms (03Z),
+books per market 148 -> 497 ms over the same hours, and the per-market
+late share climbs with it (3.8% -> 9.8%). The 10-29 reading's window was
+15-20Z. Hypothesis, not tested: the late share is the stream daemon's
+receive lag by hour of day (US evening), not a drift across weeks, and
+the 10-29 vs 11-19 difference is mostly the window's clock time. The test
+is one run with a 15-20Z window, and pairing on `src_ts` instead of
+`recv_ts` (both tables carry it at ms resolution) would take our receive
+lag out of the probe altogether.
 
 ## Runtime accounting invariants
 
