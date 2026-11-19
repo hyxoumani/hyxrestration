@@ -583,3 +583,64 @@ def test_stage_rows_matches_executemany_with_nulls_and_mixed_numeric(tmp_path):
         == 1
     )
     store.close()
+
+
+class _Recorder:
+    """A connection proxy that keeps each statement with how it was run."""
+
+    def __init__(self, conn):
+        self._conn, self.calls = conn, []
+
+    def execute(self, sql, *a, **kw):
+        self.calls.append(("execute", " ".join(sql.split())))
+        return self._conn.execute(sql, *a, **kw)
+
+    def executemany(self, sql, *a, **kw):
+        self.calls.append(("executemany", " ".join(sql.split())))
+        return self._conn.executemany(sql, *a, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_upsert_series_merges_in_one_statement(tmp_path):
+    """mistakes #215: a row-at-a-time `INSERT OR REPLACE` into the keyed table
+    was 8.3 ms a row -- the Kalshi sweep's 88-138 s opening hold on the
+    collector's archive, every day. The keyed table is written by ONE
+    statement whatever the row count, and the semantics are the old ones."""
+    store = Store(tmp_path / "s.duckdb")
+    store.upsert_series([("kalshi", "KXA", "old", "Econ", "quadratic", 0.07, "daily")])
+    store.upsert_series([("poly", "KXA", "other venue", "x", None, None, None)])
+    before = store.conn.execute("SELECT updated_at FROM series WHERE venue='kalshi'").fetchone()[0]
+    rec = _Recorder(store.conn)
+    store.conn = rec
+    store.upsert_series(
+        [
+            ("kalshi", "KXA", "first", "Econ", "quadratic", 0.07, "daily"),
+            ("kalshi", "KXB", "new", "Climate", None, None, None),
+            # A repeated key keeps its LAST row, as executemany did.
+            ("kalshi", "KXA", "last", "Econ", "quadratic", 0.07, "daily"),
+        ]
+    )
+    store.upsert_series([])  # nothing to write is nothing run
+    store.conn = rec._conn
+    keyed = [c for c in rec.calls if "INTO series" in c[1]]
+    assert keyed == [("execute", "INSERT OR REPLACE INTO series SELECT * FROM _serstage")]
+    assert not [c for c in rec.calls if c[0] == "executemany" and "_serstage" not in c[1]]
+    rows = store.conn.execute(
+        "SELECT venue, ticker, title, category FROM series ORDER BY venue, ticker"
+    ).fetchall()
+    assert rows == [
+        ("kalshi", "KXA", "last", "Econ"),
+        ("kalshi", "KXB", "new", "Climate"),
+        ("poly", "KXA", "other venue", "x"),
+    ]
+    after = store.conn.execute(
+        "SELECT updated_at FROM series WHERE venue='kalshi' AND ticker='KXA'"
+    ).fetchone()[0]
+    assert after >= before
+    # The stage does not outlive the call.
+    assert not store.conn.execute(
+        "SELECT 1 FROM duckdb_tables() WHERE table_name = '_serstage'"
+    ).fetchall()
+    store.close()

@@ -1484,12 +1484,29 @@ class Store:
         )
 
     def upsert_series(self, rows: list[tuple]) -> None:
-        """(venue, ticker, title, category, fee_type, fee_multiplier, frequency)."""
+        """(venue, ticker, title, category, fee_type, fee_multiplier, frequency).
+
+        Staged, then merged in ONE statement. The row-at-a-time
+        `executemany("INSERT OR REPLACE ...")` this replaces was the Kalshi
+        sweep's opening hold on the collector's archive: every row its own
+        autocommitted transaction against the primary key, 8.3 ms each --
+        138.7 s for the 16,611 series of the 2026-11-19 slot replayed on the
+        stable interpreter (24.2 s inside one explicit transaction), against
+        1.44 s staged (stage 1.42, merge 0.02). Production printed it as
+        `long write burst: held hyxlab.duckdb 88-138s [by statement: other
+        ...]` at 06:11Z every day, with the 06:10Z collector cycle queued
+        behind it (mistakes #215). A key repeated in `rows` keeps its LAST
+        row, as the row-at-a-time form did: one statement may not replace
+        the same row twice.
+        """
+        if not rows:
+            return
         now = datetime.now(UTC).replace(tzinfo=None)
-        self.conn.executemany(
-            "INSERT OR REPLACE INTO series VALUES (?,?,?,?,?,?,?,?)",
-            [(*r, now) for r in rows],
-        )
+        last = {(r[0], r[1]): (*r, now) for r in rows}
+        self.conn.execute("CREATE OR REPLACE TEMP TABLE _serstage AS SELECT * FROM series LIMIT 0")
+        self.conn.executemany("INSERT INTO _serstage VALUES (?,?,?,?,?,?,?,?)", list(last.values()))
+        self.conn.execute("INSERT OR REPLACE INTO series SELECT * FROM _serstage")
+        self.conn.execute("DROP TABLE _serstage")
 
     def series_meta(self, venue: str = "kalshi") -> dict[str, dict]:
         rows = self.conn.execute(

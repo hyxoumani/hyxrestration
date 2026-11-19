@@ -5541,6 +5541,39 @@ Format: what happened → root cause → error type → prevention tier
     on the busiest hour's rows, say so next to the constant, and name the
     row count at which it must be re-measured.**
 
+215. **2026-11-19 08:40Z -- the Kalshi sweep opened every run by holding
+    the collector's archive 57-138 s to refresh a 16,611-row table, and
+    the line that said so was read past for at least a week as "the
+    sweep's long bursts".** `[burst] long write burst: held hyxlab.duckdb
+    93.7s [by statement: other 93.5, close 0.2; cpu 28.8s main thread,
+    61.8s process]` at 06:11:34Z on 11-19 (56.7 / 101.1 / 94.1 / 138.0 /
+    88.4 / 98.5 s on 11-13..11-18), with the 06:10Z collector cycle
+    landing at 06:11:49Z instead of :24. #212/#213 hunted the 45-80 s
+    bursts that were the pandas bind tax and predicted `long write burst`
+    lines "gone"; this one survived the fix unchanged because it never
+    was that. `Store.upsert_series` ran `executemany("INSERT OR REPLACE
+    INTO series VALUES ...")`: one autocommitted transaction per row
+    against the primary key. Replayed on a reflink copy of the Thu slot
+    with the STABLE interpreter in a 6G unit: 138.7 s (cpu 66.7 s) as
+    shipped, 24.2 s inside one explicit transaction, 1.44 s staged into a
+    temp table and merged by one `INSERT OR REPLACE ... SELECT` (stage
+    1.42, merge 0.02); the fixed code on the same copy, 16,612 rows in
+    1.50 s. `_prior_run` in the same burst is 0.04 s. Fix: the staged
+    merge, a repeated key keeping its last row as before (one statement
+    may not replace a row twice -- mutant red), empty input a no-op.
+    1 test, 2 mutants red, each asserted to land. Promoted with
+    `hyxlab-stream`/`hyxlab-shadow` deferred: `hyxlab/store.py` is in
+    both import graphs and neither calls `upsert_series`. FIRST READING
+    OWED: the 11-20 06:10Z sweep prints no `long write burst` line before
+    its `listings:` line (the tail prints only past the threshold, so the
+    proof is the absence plus `listings:` landing ~06:10:05Z, not
+    06:11:3xZ). Rule: **when a fix predicts a class of line "gone", read
+    the survivors by their `[by statement: ...]` part before the count --
+    a line of the same name at the same clock time every day with a
+    different part is a different defect. And `executemany` of a keyed
+    upsert is a transaction per row: stage, then merge in one statement**
+    (`upsert_markets` already did).
+
 214. **2026-11-19 08:15Z -- the digest printed `first ENOSPC NOW at the
     window's largest dip (105 GB)` with 103 GB free: the "dip" was the
     user's own 104 GB cleanup.** `fs_pace` measured every sample against
