@@ -805,6 +805,13 @@ class StreamStore:
         # and handed out by `take_flush_holds`, which resets them: a
         # lifetime maximum would be the cold boot's forever.
         self._holds: tuple[int, float, float] = (0, 0.0, 0.0)
+        # Where inside those holds the seconds went, same period, same
+        # hand-over (`take_flush_steps`): staging done INSIDE the hold (the
+        # open-first order after a failed flush, and every sidecar chunk),
+        # the `read_csv` loads, the COMMIT, and the close (DuckDB's
+        # checkpoint). 2026-11-19: with the staging moved out, 1.35 s a
+        # flush was left and nothing said which statement carried it.
+        self._steps: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
         # One writer at a time, across THREADS -- not a DuckDB lock, which
         # excludes nothing here because both racers are this same process.
         # `streamd.flusher()` runs `flush()` on an `asyncio.to_thread`
@@ -1132,6 +1139,7 @@ class StreamStore:
             # recorded in `finally`: a flush whose insert raised held the
             # file exactly as long as one that committed.
             t_open: float | None = None
+            t_body: float | None = None
             held_s: float | None = None
             batch: tuple = (events, trades, gaps, tickers, lifecycles, heartbeats, subevents)
             staged: tuple[_Staged, ...] = ()
@@ -1161,10 +1169,14 @@ class StreamStore:
                         # bounded by a chunk.
                         n += self._drain_spill(conn)
                         self._insert(conn, *batch)
+                        t_body = time.monotonic()
                 finally:
                     _unlink_staged(staged)
                     if t_open is not None:
-                        held_s = time.monotonic() - t_open
+                        t_end = time.monotonic()
+                        held_s = t_end - t_open
+                        if t_body is not None:
+                            self._add_steps(0.0, 0.0, 0.0, t_end - t_body)
                         h_n, h_s, h_max = self._holds
                         self._holds = (h_n + 1, h_s + held_s, max(h_max, held_s))
             except BaseException:
@@ -1453,7 +1465,9 @@ class StreamStore:
         `_insert_frame` loads the same rows in one vectorised `read_csv` --
         measured on a temp database 2026-10-23, see `FLUSH_ROWS_PER_S`."""
         given = (events, trades, gaps, tickers, lifecycles, heartbeats, subevents)
+        t0 = time.monotonic()
         staged = self._stage(given)
+        t1 = t2 = t3 = time.monotonic()
         try:
             conn.execute("BEGIN")
             for st in staged:
@@ -1465,11 +1479,30 @@ class StreamStore:
                 # (`tests/test_stream_enospc.py` moved its first failure
                 # from the CSV to the commit when this was left to the end).
                 _unlink_staged([st])
+            t2 = t3 = time.monotonic()
             conn.execute("COMMIT")
+            t3 = time.monotonic()
         finally:
+            # Recorded on a failure too, with what was reached: the hold it
+            # is a share of is counted either way.
+            staged_here = any(not isinstance(g, _Staged) for g in given)
+            self._add_steps(t1 - t0 if staged_here else 0.0, t2 - t1, t3 - t2, 0.0)
             # What a failure left unloaded, of the files staged HERE: a batch
             # that arrived staged is `flush_outcome`'s to remove.
             _unlink_staged([st for st, g in zip(staged, given, strict=True) if st is not g])
+
+    def _add_steps(self, stage: float, load: float, commit: float, close: float) -> None:
+        a, b, c, d = self._steps
+        self._steps = (a + stage, b + load, c + commit, d + close)
+
+    def take_flush_steps(self) -> tuple[float, float, float, float]:
+        """`(staging inside the hold, loads, COMMIT, close)` seconds since the
+        last call, and reset -- the parts of `take_flush_holds`'s total, for
+        the same period. What the four do not add up to is the time between
+        the open and the first insert (the sidecar's parse, when there is
+        one). Lock-free for the same reason as `take_flush_holds`."""
+        out, self._steps = self._steps, (0.0, 0.0, 0.0, 0.0)
+        return out
 
     def _stage(self, tables, *, yield_s: float | None = None) -> tuple[_Staged, ...]:
         """Each of the seven tables' rows as a staged CSV beside the archive,

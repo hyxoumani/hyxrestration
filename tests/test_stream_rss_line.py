@@ -121,7 +121,8 @@ def test_stats_line_carries_the_flush_holds_and_omits_an_unmeasured_period(monke
     # Both publishers hand the store's counters to the one renderer.
     src = inspect.getsource(streamd)
     assert src.count("holds = self.store.take_flush_holds()") == 2
-    assert src.count("sock, holds))") == 1 and src.count("None, None, holds))") == 1
+    assert src.count("sock, holds, steps))") == 1
+    assert src.count("None, None, holds, steps))") == 1
 
 
 def test_a_flush_that_holds_a_whole_period_gets_its_own_line():
@@ -179,12 +180,17 @@ def test_a_flush_times_its_hold_from_the_open_through_the_close(tmp_path, monkey
     store.append_gap("kalshi", "books", now, now, "reconnect")
     out = store.flush_outcome()
     assert out.touched is True and out.rows == 1
-    # One reading right after the open, the next right after the close.
-    assert order[-4:] == ["open", "t", "close", "t"]
-    assert out.held_s == 1.0
+    # The first reading after the open comes right after it, and the last
+    # one right after the close -- ONE reading there, shared by the hold and
+    # the step split. The readings in between are the steps' own
+    # (`take_flush_steps`), so the hold is their count less one.
+    opened = len(order) - 1 - order[::-1].index("open")
+    assert order[opened + 1] == "t" and order[-2:] == ["close", "t"]
+    hold = float(order[opened:].count("t") - 1)
+    assert out.held_s == hold and hold >= 1.0
     store.append_gap("kalshi", "books", now, now, "reconnect")
-    assert store.flush_outcome().held_s == 1.0
-    assert store.take_flush_holds() == (2, 2.0, 1.0)
+    assert store.flush_outcome().held_s == hold
+    assert store.take_flush_holds() == (2, 2 * hold, hold)
     # Taken is reset: the next period starts from nothing.
     assert store.take_flush_holds() == (0, 0.0, 0.0)
 
@@ -220,3 +226,49 @@ def test_a_flush_that_fails_after_the_open_still_counts_its_hold(tmp_path, monke
     with pytest.raises(OSError):
         store.flush_outcome()
     assert store.take_flush_holds() == (0, 0.0, 0.0)
+
+
+# -- the hold by step (2026-11-19) -------------------------------------------
+
+
+def test_stats_line_splits_the_hold_by_step_only_beside_the_hold(monkeypatch):
+    monkeypatch.setattr(streamd, "rss_anon_mb", lambda: 1.0)
+    monkeypatch.setattr(streamd, "glibc_arena_heaps", lambda: None)
+    steps = (0.36, 9.04, 1.8, 10.84)
+    line = streamd.stats_line("", {"a": 1}, 5, None, (18, 24.6, 1.6), steps)
+    assert line.endswith(" flush_hold=18/24.6/1.6 flush_steps=0.36/9.04/1.80/10.84")
+    for i in range(4):  # each part reaches the line (#95)
+        moved = tuple(s + (1.0 if j == i else 0.0) for j, s in enumerate(steps))
+        assert streamd.stats_line("", {"a": 1}, 5, None, (18, 24.6, 1.6), moved) != line
+    assert "flush_steps" not in streamd.stats_line("", {"a": 1}, 5, None, None, steps)
+    src = inspect.getsource(streamd)
+    assert src.count("steps = self.store.take_flush_steps()") == 2
+    assert src.count("holds, steps))") == 2
+
+
+def test_the_store_times_the_steps_of_a_flush_and_hands_them_over_once(tmp_path):
+    from datetime import UTC, datetime
+
+    from hyxlab.streamstore import BookEvent, StreamStore
+
+    store = StreamStore(tmp_path / "s.duckdb")
+    t = datetime(2026, 11, 19, tzinfo=UTC)
+
+    def fill():
+        store.append_events(
+            [BookEvent("kalshi", "M", t, t, 1, i, "delta", "yes", 0.4, 1.0) for i in range(2000)]
+        )
+
+    fill()
+    held = store.flush_outcome().held_s
+    stage, load, commit, close = store.take_flush_steps()
+    assert stage == 0.0  # a healthy flush stages before the open
+    assert load > 0.0 and commit > 0.0 and close > 0.0
+    assert load + commit + close <= held
+    assert store.take_flush_steps() == (0.0, 0.0, 0.0, 0.0)  # handed over, not kept
+
+    store._stage_in_hold = True  # the order after a failed flush
+    fill()
+    held = store.flush_outcome().held_s
+    stage, load, commit, close = store.take_flush_steps()
+    assert stage > 0.0 and stage + load + commit + close <= held

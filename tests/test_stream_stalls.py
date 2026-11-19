@@ -190,10 +190,12 @@ class _Store:
     # The real hand-over of the flush-hold counters, read by both stats
     # publishers (mistakes #211).
     take_flush_holds = streamd.StreamStore.take_flush_holds
+    take_flush_steps = streamd.StreamStore.take_flush_steps
 
     def __init__(self) -> None:
         self._flush_lock = threading.RLock()
         self._holds = (0, 0.0, 0.0)
+        self._steps = (0.0, 0.0, 0.0, 0.0)
         self.wedged = True
         self.sidecar_rows = 0
         self.pending = 1234

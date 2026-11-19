@@ -906,7 +906,12 @@ def _mins(s: float) -> str:
 # worst single flush and where to look for it. `shutdown;` lines are left
 # out of the duty: they close a partial period.
 
-_STREAMHOLD_RE = re.compile(r" flush_hold=(\d+)/([0-9.]+)/([0-9.]+)\s*$")
+_STREAMHOLD_RE = re.compile(
+    r" flush_hold=(\d+)/([0-9.]+)/([0-9.]+)"
+    r"(?: flush_steps=([0-9.]+)/([0-9.]+)/([0-9.]+)/([0-9.]+))?\s*$"
+)
+#: The `flush_steps=` parts, in the daemon's order (`streamd.flush_steps_clause`).
+STREAMHOLD_STEPS = ("staging in the hold", "load", "commit", "close")
 _LONG_FLUSH_RE = re.compile(r" long flush: held ([0-9.]+)s for (\d+) rows")
 
 
@@ -925,6 +930,13 @@ class StreamHold:
     long_n: int
     long_worst_s: float
     long_worst_at: datetime | None
+    #: Since 2026-11-19 the daemon splits its held seconds by step. Summed
+    #: over the lines that carry the split, with THEIR flushes and held
+    #: seconds as its base -- a window that straddles the change must not
+    #: divide the new lines' parts by the old lines' flushes.
+    steps_s: tuple[float, float, float, float] | None = None
+    steps_flushes: int = 0
+    steps_held_s: float = 0.0
 
 
 def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
@@ -935,6 +947,8 @@ def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
     n_lines = carrying = flushes = long_n = 0
     held = worst = long_worst = 0.0
     worst_at = long_worst_at = None
+    steps: list[float] | None = None
+    steps_flushes, steps_held = 0, 0.0
     for line in lines:
         ts = _short_iso_ts(line)
         if ts is None:
@@ -956,10 +970,26 @@ def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
         held += float(m.group(2))
         if float(m.group(3)) > worst:
             worst, worst_at = float(m.group(3)), ts
+        if m.group(4) is not None:
+            parts = [float(m.group(i)) for i in (4, 5, 6, 7)]
+            steps = parts if steps is None else [a + b for a, b in zip(steps, parts, strict=True)]
+            steps_flushes += int(m.group(1))
+            steps_held += float(m.group(2))
     if n_lines == 0:
         return None
     return StreamHold(
-        n_lines, carrying, flushes, held, worst, worst_at, long_n, long_worst, long_worst_at
+        n_lines,
+        carrying,
+        flushes,
+        held,
+        worst,
+        worst_at,
+        long_n,
+        long_worst,
+        long_worst_at,
+        None if steps is None else (steps[0], steps[1], steps[2], steps[3]),
+        steps_flushes,
+        steps_held,
     )
 
 
@@ -1020,7 +1050,21 @@ def stream_hold_line(hold: StreamHold | None | str, hours: int = STREAMFLOW_WIND
         )
     else:
         longs = f"no flush held a whole {STREAMHOLD_LONG_S:.0f} s period"
-    return f"{head} | {worst} | {longs}"
+    return f"{head} | {worst} | {longs}{_stream_hold_steps(hold)}"
+
+
+def _stream_hold_steps(hold: StreamHold) -> str:
+    """` | by step ...`: seconds per flush for each part of the hold, over
+    the lines that carry the split, and what the parts leave unexplained.
+    Empty when no line carries it or none of those flushes opened the file."""
+    if hold.steps_s is None or hold.steps_flushes == 0:
+        return ""
+    n = hold.steps_flushes
+    parts = ", ".join(
+        f"{name} {s / n:.2f}" for name, s in zip(STREAMHOLD_STEPS, hold.steps_s, strict=True)
+    )
+    rest = (hold.steps_held_s - sum(hold.steps_s)) / n
+    return f" | by step, s/flush over {n:,} flushes: {parts}, other {rest:.2f}"
 
 
 def _k(n: int) -> str:

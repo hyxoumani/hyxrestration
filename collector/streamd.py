@@ -311,6 +311,13 @@ def flush_holds_clause(holds: tuple[int, float, float]) -> str:
     return f"flush_hold={n}/{total:.1f}/{worst:.1f}"
 
 
+def flush_steps_clause(steps: tuple[float, float, float, float]) -> str:
+    """`flush_steps=<stage in hold>/<load>/<commit>/<close>`: the period's
+    `flush_hold` seconds by what the flush was doing (2 decimals: a step is
+    tenths of a second a flush). The remainder is the sidecar's parse."""
+    return "flush_steps=" + "/".join(f"{s:.2f}" for s in steps)
+
+
 def long_flush_line(held_s: float | None, rows: int) -> str | None:
     """The journal line for ONE flush that held the archive a whole flush
     period or more, else None. A flush that never opened the file
@@ -326,6 +333,7 @@ def stats_line(
     flushed: int | None,
     sock: str | None,
     holds: tuple[int, float, float] | None = None,
+    steps: tuple[float, float, float, float] | None = None,
 ) -> str:
     """The daemon's periodic / shutdown stats line, rendered in ONE place.
 
@@ -350,8 +358,12 @@ def stats_line(
     flushed_s = "" if flushed is None else f" (last flush {flushed} rows)"
     sock_s = "" if sock is None else f" {sock}"
     holds_s = "" if holds is None else f" {flush_holds_clause(holds)}"
+    # Only beside the total it splits: steps without holds would be a
+    # reading with nothing to be a share of.
+    steps_s = "" if holds is None or steps is None else f" {flush_steps_clause(steps)}"
     return (
-        f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}{holds_s}"
+        f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}"
+        f"{holds_s}{steps_s}"
     )
 
 
@@ -1660,7 +1672,8 @@ class Daemon:
             if now - last_stats >= STATS_SECS:
                 sock, throttled = self.sock_throttle.note()
                 holds = self.store.take_flush_holds()
-                _log(stats_line("", self.report_stats(), out.rows, sock, holds))
+                steps = self.store.take_flush_steps()
+                _log(stats_line("", self.report_stats(), out.rows, sock, holds, steps))
                 if throttled:
                     # Its own line, so a grep for the word finds the PERIOD
                     # it landed in, not every stats line ever printed.
@@ -1940,7 +1953,8 @@ class Daemon:
             self.hb.roll_partial()
             self._final_drain()
             holds = self.store.take_flush_holds()
-            _log(stats_line("shutdown; ", self.report_stats(), None, None, holds))
+            steps = self.store.take_flush_steps()
+            _log(stats_line("shutdown; ", self.report_stats(), None, None, holds, steps))
 
 
 def main() -> None:

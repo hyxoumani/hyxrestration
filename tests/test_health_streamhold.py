@@ -90,3 +90,41 @@ def test_the_reader_tells_a_failed_journal_from_an_empty_one(monkeypatch):
     monkeypatch.setattr(health, "_journal_hourly", fake)
     assert health.read_stream_hold() is None
     assert "long flush: held" in seen["grep"] and "last flush" in seen["grep"]
+
+
+# -- the hold by step (2026-11-19) -------------------------------------------
+
+
+def _stats_steps(clock: str, holds, steps, monkeypatch) -> str:
+    monkeypatch.setattr(streamd, "rss_anon_mb", lambda: 271.1)
+    monkeypatch.setattr(streamd, "glibc_arena_heaps", lambda: (55, 55.0))
+    line = streamd.stats_line(
+        "", {"kalshi_trades": 2}, 117564, "sock_throttled=0 (+0)", holds, steps
+    )
+    return _stamp(clock, line)
+
+
+def test_the_row_splits_the_hold_by_step_over_the_lines_that_carry_the_split(monkeypatch):
+    old = _stats("08:44:30", (20, 36.0, 2.5), monkeypatch)  # before the split existed
+    new = [
+        _stats_steps("08:49:36", (18, 24.0, 1.5), (0.0, 9.0, 1.8, 10.8), monkeypatch),
+        _stats_steps("08:54:41", (18, 24.6, 1.6), (0.36, 9.0, 1.8, 10.8), monkeypatch),
+    ]
+    hold = health.parse_stream_hold([old, *new])
+    # The total still reads every line: the split did not hide the old one.
+    assert (hold.carrying, hold.flushes, round(hold.held_s, 1)) == (3, 56, 84.6)
+    line = health.stream_hold_line(hold)
+    # 36 flushes and 48.6 s are the two NEW lines alone; the parts sum to
+    # 43.56 s, so 0.14 s a flush is left as `other`.
+    assert line.endswith(
+        " | by step, s/flush over 36 flushes: staging in the hold 0.01, load 0.50,"
+        " commit 0.10, close 0.60, other 0.14"
+    )
+    # Perturbation: every part of the daemon's clause moves the row.
+    for i in range(4):
+        steps = [0.0, 9.0, 1.8, 10.8]
+        steps[i] += 3.6
+        moved = [old, _stats_steps("08:49:36", (18, 24.0, 1.5), tuple(steps), monkeypatch), new[1]]
+        assert health.stream_hold_line(health.parse_stream_hold(moved)) != line
+    # No line carries it: no clause, and never a zero per step.
+    assert "by step" not in health.stream_hold_line(health.parse_stream_hold([old]))
