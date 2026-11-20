@@ -5705,7 +5705,7 @@ Format: what happened → root cause → error type → prevention tier
     counts roams by the radio roamed ONTO (`14 wifi roam(s), 5 followed by
     an offline episode (5 of 7 onto ..f5:98, 0 of 7 onto ..f5:9c)`). 4
     tests on the journal's own lines, 3 mutants red, each asserted to
-    land. Second half, 21:10Z: `STREAMFLOW` now cross-reads those spans
+    land. Second half, 21:09Z: `STREAMFLOW` now cross-reads those spans
     (`health.net_dead_spans`) -- a DEAD-AIR episode or LOW round says
     `uplink had no path for N min of it (HOSTNET)`, and the dead ticks end
     `(3 within 15 s of a HOSTNET no-path span)`; until then the 16:56:31Z
