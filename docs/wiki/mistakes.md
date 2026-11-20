@@ -5606,6 +5606,30 @@ Format: what happened → root cause → error type → prevention tier
     planted `connect_retry` call turns it red).
 
 
+217. **2026-11-20 08:20Z -- with the disk 58 GB from full, the two claims
+    the user item rests on ("`~/scratch/backupcap`/`polycap` free nothing",
+    #175; "the backup slots are 4.4 GB exclusive") were both readings of
+    `btrfs filesystem du -s`'s `Exclusive` column, which cannot make
+    them.** An extent mapped by two files INSIDE the directory and by
+    nothing outside it is `Set shared`, not `Exclusive`, and a delete of
+    the directory frees it: `backupcap` prints `Exclusive 0.03 GB, Set
+    shared 59.1 GB` (it holds three reflinks of one 25 GB file and two of
+    one 34 GB file), which reads as zero OR 59 GB freed -- #175 took the
+    first column and called it the price. `Exclusive` is a LOWER bound.
+    Measured the other side by FIEMAP (`scripts/extprice.py`: each file's
+    physical extents minus every extent a named other path maps, an UPPER
+    bound since an unnamed sharer still pins): backupcap 0.05 GB (+0.24 GB
+    logical compressed), polycap 0.03 GB, the 21 slot files 5.86 GB against
+    btrfs's 4.71 -- the 1.15 GB between is extents two slots share with
+    each other and the live file has already rewritten. So both claims
+    HOLD, now bracketed from both sides, and nothing this lab owns moves
+    the date. No cost this time; the cost would have been the mirror of
+    #175 on the day a set of old slots held tens of GB only among
+    themselves and the page said 4. Rule: **a directory's deletion price
+    has two bounds -- btrfs `Exclusive` from below, extents no named
+    sharer maps from above -- and a candidate is priced when they agree.
+    `Set shared` is not a price.**
+
 214. **2026-11-19 08:15Z -- the digest printed `first ENOSPC NOW at the
     window's largest dip (105 GB)` with 103 GB free: the "dip" was the
     user's own 104 GB cleanup.** `fs_pace` measured every sample against

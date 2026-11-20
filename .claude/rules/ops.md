@@ -716,7 +716,10 @@
   the resource's last unit. What to delete on the
   shared disk is the USER's call; enumerate first (`du -sxl -BG`, then
   `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
-  price our own reflinked slots with `btrfs filesystem du`, never `du`.
+  price our own reflinked slots with `btrfs filesystem du`, never `du`
+  -- and its `Exclusive` is a LOWER bound (extents shared only INSIDE the
+  directory print as `Set shared`); `scripts/extprice.py DIR --vs OTHERS`
+  gives the upper one, and a candidate is priced when they agree (#217).
   The `HOSTFS` line's `pace:` clause is the TIME to that threshold, from the
   collector's 5-min `fs_free_b=` field read as HOURLY CEILINGS: a temporary
   file can only LOWER a free-space reading, so the hour's MAXIMUM is the
