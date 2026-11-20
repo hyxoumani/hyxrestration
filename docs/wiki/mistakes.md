@@ -5574,6 +5574,38 @@ Format: what happened → root cause → error type → prevention tier
     upsert is a transaction per row: stage, then merge in one statement**
     (`upsert_markets` already did).
 
+216. **2026-11-20 02:15Z -- the box was off the internet for 11.7 minutes
+    and came back on a different path, and the digest printed the effects
+    with no cause.** `r8169 ... enp7s0: Link is Down` at 01:59:35Z;
+    NetworkManager `CONNECTED_LOCAL` 01:59:41Z -> `CONNECTED_GLOBAL`
+    02:11:23Z, when the user joined a WiFi network by hand (`nmtui`). Every
+    stream shard sat in `gaierror` backoff (stats lines 02:02Z and 02:07Z:
+    0 rows), the 02:00Z and 02:05Z collector cycles were all-error, two
+    breadth runs exited 75. The 02:15Z digest read `DEAD-AIR ... 02:07Z,
+    GAP lines 49` and `RECENT hyxlab-breadth 2x CLEARED` -- two symptoms
+    in two unit rows, and no line for the uplink, the same shape as #152
+    (RAM) and #156 (disk): a shared resource with no unit has no row. And
+    nothing said the default route had moved from the wired NIC to
+    `wlp6s0`, a standing change under every receive-lag reading taken
+    after it (status item (b) compares 00-04Z lag across exactly this
+    night). Replayed over the journal's 54 days before shipping (#161):
+    12 not-online spans, 6 of them reboots (one the 10-05 381-minute
+    power-off) -- so a span holding a boot boundary is tagged, not counted
+    as an uplink loss -- and one outage nobody had recorded: 11-09
+    10:17-10:29Z, 8.1 + 2.4 min, 242 `gaierror`/ping-timeout lines in the
+    stream journal. Fix: the digest's `HOSTNET` line -- NetworkManager's
+    not-`CONNECTED_GLOBAL` spans in 24h (a window that opens or closes
+    inside one prints a bound), the kernel's link-downs per interface with
+    where the last event left it, and the default route's interface and
+    kind from `/proc/net/route` + `/sys/class/net/<if>/wireless`.
+    `tests/test_health_hostnet.py` (+13, fixtures are the journal's own
+    lines; 5 mutants red, each asserted to land). Second lesson, small:
+    `test_the_digest_opens_no_database` scanned the SOURCE for the
+    substring `connect` and went red on NetworkManager's state name in a
+    string; it now walks the AST for a connect-named call or import (a
+    planted `connect_retry` call turns it red).
+
+
 214. **2026-11-19 08:15Z -- the digest printed `first ENOSPC NOW at the
     window's largest dip (105 GB)` with 103 GB free: the "dip" was the
     user's own 104 GB cleanup.** `fs_pace` measured every sample against

@@ -2025,6 +2025,247 @@ def host_memory_line(
     return f"{kills} | {standing} | {psi}"
 
 
+# --- HOSTNET: the host's uplink, which every capture unit shares ----------
+# Measured 2026-11-20: `r8169 ... enp7s0: Link is Down` at 01:59:35Z took the
+# box off the internet until the user joined a WiFi network by hand at
+# 02:11:22Z -- 11.7 min with every stream shard in `gaierror` backoff, two
+# collector cycles all-error and two breadth runs exit 75. The digest printed
+# the result (`DEAD-AIR ... 02:07Z`, two CLEARED breadth failures) and no
+# cause, and nothing said the box had come back on a DIFFERENT path: the
+# default route moved from the wired NIC to WiFi, which is a standing change
+# to every receive-lag reading taken after it. Same ops rule as HOSTMEM and
+# HOSTFS -- a per-unit line is one tenant's view, and the uplink has no unit.
+# The episode instrument is NetworkManager's own connectivity state, which it
+# logs on every transition; anything short of CONNECTED_GLOBAL is a span the
+# capture units could not have used.
+HOSTNET_WINDOW_H = 24
+NM_UNIT = "NetworkManager"
+NM_ONLINE = "CONNECTED_GLOBAL"
+_NM_STATE_RE = re.compile(r"^(\S+) .*NetworkManager state is now (\S+)\s*$")
+_LINK_RE = re.compile(r"^(\S+) \S+ kernel: .*?(\S+): Link is (Up|Down)\b")
+
+
+@dataclass(frozen=True)
+class NetEpisode:
+    """A span NetworkManager did not call CONNECTED_GLOBAL. `start` is `None`
+    when the window opened inside it (a lower bound on its length is all the
+    window proves), `end` is `None` while it is still open. `state` is the
+    first non-online state NM named in it. `reboot` says a boot boundary sits
+    inside the span: the host was DOWN for part of it, which is a different
+    finding from an uplink lost under running daemons (replayed over the
+    whole journal, 6 of 12 spans were reboots, one of them the 10-05
+    381-minute power-off)."""
+
+    start: float | None
+    end: float | None
+    state: str
+    reboot: bool = False
+
+
+@dataclass(frozen=True)
+class LinkEvent:
+    ts: float
+    iface: str
+    up: bool
+
+
+def _iso_ts(stamp: str) -> float | None:
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except ValueError:
+        return None
+
+
+def parse_nm_states(stdout: str) -> list[tuple[float, str, bool]]:
+    """`(epoch, state, first_of_boot)` per NetworkManager state transition in
+    a `-o short-iso` journal read. `first_of_boot` marks the first transition
+    after one of journalctl's `-- Boot <id> --` separators. Any other line
+    that is not a transition -- including `-- No entries --` -- is skipped.
+    Pure."""
+    out: list[tuple[float, str, bool]] = []
+    booted = False
+    for line in stdout.splitlines():
+        if line.startswith("-- Boot "):
+            booted = True
+            continue
+        m = _NM_STATE_RE.match(line)
+        if not m:
+            continue
+        ts = _iso_ts(m.group(1))
+        if ts is not None:
+            out.append((ts, m.group(2), booted))
+            booted = False
+    return out
+
+
+def net_episodes(states: list[tuple[float, str, bool]]) -> list[NetEpisode]:
+    """Offline spans from the transitions. Pure.
+
+    The window's first transition says what came before it: a first line that
+    is CONNECTED_GLOBAL with nothing before it is the END of an episode whose
+    start the window does not hold -- NM logs a transition only on a change,
+    so the state before a `-> GLOBAL` line was not GLOBAL."""
+    out: list[NetEpisode] = []
+    start: float | None = None
+    state: str | None = None
+    reboot = False
+    for i, (ts, s, booted) in enumerate(states):
+        # A boot's first transition closes nothing by itself, but it puts the
+        # boundary inside whatever span is open -- or opens one that began
+        # with the host down.
+        reboot = reboot or booted
+        if s == NM_ONLINE:
+            if state is not None:
+                out.append(NetEpisode(start, ts, state, reboot))
+            elif i == 0:
+                out.append(NetEpisode(None, ts, "state before the window unread", reboot))
+            start = state = None
+            reboot = False
+        elif state is None:
+            start, state = ts, s
+    if state is not None:
+        out.append(NetEpisode(start, None, state, reboot))
+    return out
+
+
+def parse_link_events(stdout: str) -> list[LinkEvent]:
+    """The kernel's `<iface>: Link is Up|Down` lines. Pure."""
+    out: list[LinkEvent] = []
+    for line in stdout.splitlines():
+        m = _LINK_RE.match(line)
+        if not m:
+            continue
+        ts = _iso_ts(m.group(1))
+        if ts is not None:
+            out.append(LinkEvent(ts, m.group(2), m.group(3) == "Up"))
+    return out
+
+
+def parse_default_route(route_text: str) -> str | None:
+    """The interface of the lowest-metric default route in `/proc/net/route`
+    (destination and mask both zero). `None` when there is none. Pure."""
+    best: tuple[int, str] | None = None
+    for line in route_text.splitlines()[1:]:
+        f = line.split()
+        if len(f) < 8 or f[1] != "00000000" or f[7] != "00000000":
+            continue
+        try:
+            metric = int(f[6])
+        except ValueError:
+            continue
+        if best is None or metric < best[0]:
+            best = (metric, f[0])
+    return best[1] if best else None
+
+
+@dataclass(frozen=True)
+class HostNet:
+    """One reading of the uplink; `None` is unread, never "none"."""
+
+    states: list[tuple[float, str, bool]] | None
+    links: list[LinkEvent] | None
+    route_iface: str | None
+    route_read: bool
+    route_wifi: bool | None
+
+
+def _journal_window(args: list[str], hours: int) -> str | None:
+    try:
+        proc = subprocess.run(
+            ["journalctl", *args, "-o", "short-iso", "--no-pager", "--since", f"-{hours}h"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def read_hostnet(hours: int = HOSTNET_WINDOW_H, sys_net: str = "/sys/class/net") -> HostNet:
+    """Never raises; an unread term is `None`."""
+    nm = _journal_window(["-u", NM_UNIT], hours)
+    kern = _journal_window(["-k"], hours)
+    route = _read_text("/proc/net/route")
+    iface = parse_default_route(route) if route is not None else None
+    wifi = None
+    if iface is not None:
+        base = Path(sys_net) / iface
+        wifi = (base / "wireless").exists() if base.exists() else None
+    return HostNet(
+        states=parse_nm_states(nm) if nm is not None else None,
+        links=parse_link_events(kern) if kern is not None else None,
+        route_iface=iface,
+        route_read=route is not None,
+        route_wifi=wifi,
+    )
+
+
+def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> str:
+    """What the uplink did in the window and what path the box is on. Pure.
+
+    Episode half: NetworkManager's not-online spans, each with its length (a
+    lower bound, said so, when the window opened or closed inside it) and the
+    total. Link half: per interface, the downs in the window and where its
+    last event left it -- a Down with no Up after it is the wired path still
+    gone. Standing half: the default route's interface and whether it is
+    WiFi, because a capture box that failed over reads different lag."""
+
+    def z(ts: float) -> str:
+        return datetime.fromtimestamp(ts, UTC).strftime("%m-%d %H:%M:%SZ")
+
+    if hn.states is None:
+        eps = f"{window_h}h: NetworkManager journal UNREAD (no claim about the uplink)"
+    else:
+        episodes = net_episodes(hn.states)
+        if not episodes:
+            eps = f"{window_h}h: 0 offline episode(s)"
+        else:
+            lo = now - window_h * 3600
+            parts = []
+            total = 0.0
+            for e in episodes:
+                a = e.start if e.start is not None else lo
+                b = e.end if e.end is not None else now
+                total += max(0.0, b - a)
+                span = f"{(b - a) / 60:.1f} min"
+                if e.reboot:
+                    span += ", across a REBOOT"
+                if e.start is None:
+                    parts.append(f"..{z(b)} (>= {span}, began before the window)")
+                elif e.end is None:
+                    parts.append(f"{z(a)}.. STILL OFFLINE ({span} so far, {e.state})")
+                else:
+                    parts.append(f"{z(a)}..{z(b)} ({span}, {e.state})")
+            eps = (
+                f"{window_h}h: {len(episodes)} offline episode(s), {total / 60:.1f} min: "
+                + "; ".join(parts)
+            )
+    if hn.links is None:
+        links = "kernel journal UNREAD"
+    elif not hn.links:
+        links = "no link event"
+    else:
+        by: dict[str, list[LinkEvent]] = {}
+        for ev in sorted(hn.links, key=lambda ev: ev.ts):
+            by.setdefault(ev.iface, []).append(ev)
+        bits = []
+        for iface, evs in sorted(by.items()):
+            downs = sum(1 for ev in evs if not ev.up)
+            last = evs[-1]
+            tail = f"up since {z(last.ts)}" if last.up else f"DOWN since {z(last.ts)}"
+            bits.append(f"{iface} {downs} link-down(s), {tail}")
+        links = "; ".join(bits)
+    if not hn.route_read:
+        route = "default route unread"
+    elif hn.route_iface is None:
+        route = "NO default route"
+    else:
+        kind = {True: "WIFI", False: "wired", None: "kind unread"}[hn.route_wifi]
+        route = f"default route via {hn.route_iface} ({kind})"
+    return f"{eps} | link: {links} | {route}"
+
+
 # --- HOSTFS: the shared filesystem, read against the HOST's threshold -----
 # `/` is one btrfs for everything on this box: the archive, the backups, the
 # siblings' lakes, Steam, AND the kubelet's image store. The kubelet evicts
@@ -4710,6 +4951,10 @@ def main() -> None:
     print(
         f"{'HOSTMEM':<10} {'(host)':<{width}}  "
         f"{host_memory_line(read_kernel_oom_window(), units, read_hostmem())}",
+        flush=True,
+    )
+    print(
+        f"{'HOSTNET':<10} {'(host)':<{width}}  {host_net_line(read_hostnet(), now.timestamp())}",
         flush=True,
     )
     print(

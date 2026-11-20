@@ -536,6 +536,16 @@ the only fatal Kalshi 500 in the journal's 55 days (retention floor
 09-22); the next slot ran clean. `_GATEWAY_STATUSES` still excludes 500:
 one lost 5-minute slot in ~15,800 does not move it.
 
+**`HOSTNET`: the uplink (since 2026-11-20, mistakes #216).** One digest
+line from three reads, none a DB: `journalctl -u NetworkManager` (spans
+between a not-`CONNECTED_GLOBAL` transition and the next `CONNECTED_GLOBAL`;
+a `-- Boot --` separator inside one tags it `across a REBOOT`), `journalctl
+-k` (`<iface>: Link is Up|Down`), and `/proc/net/route` (lowest-metric
+default route; WiFi if `/sys/class/net/<if>/wireless` exists). First
+reading: `1 offline episode(s), 11.7 min: 11-20 01:59:41Z..02:11:23Z
+(11.7 min, CONNECTED_LOCAL) | link: enp7s0 1 link-down(s), DOWN since 11-20
+01:59:35Z | default route via wlp6s0 (WIFI)`.
+
 **`HOSTFS` ends with btrfs's own allocation (since 2026-11-15).** Every
 other number on the line is `statvfs`, which on btrfs is an estimate: a
 write fails ENOSPC when metadata cannot grow, while `df` still reads free

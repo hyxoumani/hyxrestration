@@ -684,6 +684,16 @@
   `basetemp`, DuckDB `temp_directory`, probe copies): use a directory on
   `/home` (`TMPDIR`), or it comes out of the daemons' page cache first and
   their sockets second.
+- The uplink is a shared resource with no unit: read the digest's `HOSTNET`
+  line before chasing a `DEAD-AIR` row, a burst of `gaierror`, or a
+  receive-lag step. It prints NetworkManager's not-online spans in 24h
+  (`across a REBOOT` when a boot boundary sits inside one), the kernel's
+  link-downs per interface, and the default route's interface and kind.
+  Measured 2026-11-20: `enp7s0` lost link 01:59:35Z, 11.7 min offline, and
+  the box has run on `wlp6s0 (WIFI)` since 02:11Z (mistakes #216). A lag or
+  throughput comparison across a route change is a comparison of two
+  paths; say which path each side was on. Rejoining the wired link is the
+  USER's (a cable, a switch port), not a pass's.
 - A shared DISK has a tightest tenant too, and on this box it is the
   kubelet: `/` is one btrfs for the archive, the siblings' lakes, Steam and
   the kubelet's image store, and the kubelet evicts pods on

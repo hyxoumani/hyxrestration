@@ -445,7 +445,18 @@ def test_the_digest_opens_no_database() -> None:
         n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module
     } | {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     assert "duckdb" not in names
-    assert "connect" not in (REPO / "collector/health.py").read_text().replace("connect_retry", "")
+    # No CALL to anything named like a connect, and no such name imported. Until
+    # 2026-11-20 this was a substring scan of the whole source, which the
+    # HOSTNET line's `CONNECTED_GLOBAL` (NetworkManager's own state name, in a
+    # string) failed without opening anything.
+    called = {
+        f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+        for f in (n.func for n in ast.walk(tree) if isinstance(n, ast.Call))
+    }
+    imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert not [
+        x for x in called | imported if "connect" in x.lower() or x in ("Store", "open_retry")
+    ]
 
 
 def _code_only(path: Path) -> str:
