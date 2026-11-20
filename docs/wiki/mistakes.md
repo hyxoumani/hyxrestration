@@ -5656,6 +5656,28 @@ Format: what happened → root cause → error type → prevention tier
     ignored), `find <repo> -newer <suite start> -not -path './.pytest-tmp/*'`
     is.**
 
+219. **2026-11-20 14:20Z -- the disk item carried `hylshi-worktree-backups
+    84.6 GB` as one line of a candidate list for a week, and the line hid
+    a retention whose premise had failed.** Opened by file class with the
+    disk 50 GB from full: 14 `db-*` and 14 `plain-*` day directories
+    (rotating on the sibling's `--keep 14`, ~1 GB a day) and 93
+    `source-YYYY-MM-DD.tar.gz` files, 08-20..11-20, 109.4 GB -- 106.8 GB
+    of it in the 79 older than the newest 14. Plain files, `st_nlink` 1,
+    `btrfs filesystem du` Exclusive == Total on each, so both of #217's
+    bounds agree by construction. The sibling's `tools/backup_snapshot.py`
+    keeps them on `--keep-source`, default 120, a horizon its own
+    docstring sizes at "~20MB/day"; the archives ran 1.35-8.61 GB a day
+    from 10-08 to ~11-06 and are 0.14 GB again now, so the bulge sits
+    until February. Every pass since 11-13 re-priced the directory as a
+    lump (84.6 -> 121.7 GB exclusive) and wrote "the user's call what
+    goes" -- true, and it left the user to find that the lump is one
+    setting. Not ours to delete or to edit; sent to the sibling's own
+    session and written at the top of the user item. Rule: **a deletion
+    candidate that is somebody's ROTATION is priced per file class
+    against the retention its owner wrote down, not as a directory: the
+    useful finding is the class whose count exceeds its stated keep, or
+    whose per-day size left the figure the keep was sized on.**
+
 214. **2026-11-19 08:15Z -- the digest printed `first ENOSPC NOW at the
     window's largest dip (105 GB)` with 103 GB free: the "dip" was the
     user's own 104 GB cleanup.** `fs_pace` measured every sample against
