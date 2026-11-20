@@ -5630,6 +5630,32 @@ Format: what happened → root cause → error type → prevention tier
     sharer maps from above -- and a candidate is priced when they agree.
     `Set shared` is not a price.**
 
+218. **2026-11-20 08:27Z -- every full suite run stamped the dev tree's real
+    QA record: `reports/qa/sections.json` read `collect-skips.last_ok` at
+    the suite's own wall clock, found only because the file's mtime sat
+    next to a report listing.** `collector.qa.STATE` is cwd-relative on
+    purpose (each checkout keeps its own record), so it is not a `data/`
+    sidecar and conftest's `_redirect_sidecars` -- whose coverage test
+    derives its set from sidecar constants -- never reached it; the eleven
+    `qa_collect_skips` tests in `tests/test_hyxlab_writer_lock.py` call the
+    check without patching it, and the one arm that is a real pass writes.
+    Production is untouched (the stable worktree has its own record), but a
+    by-hand `python -m collector.qa` from the dev tree would have printed
+    "last verified" from a test, and the same shape forged telemetry twice
+    before (the 429 sink, the 09-10 spool leak). Fixed as the class:
+    conftest's autouse `_redirect_qa_state` points `qa.STATE` into
+    `tmp_path` for every test, `QA_STATE_SHIPPED` keeps the shipped value
+    for the tests whose subject is the constant, and
+    `tests/test_qa_state_isolation.py` drives the writing arm with a
+    vacuity guard (red with the redirect removed, mutant watched landing).
+    The dev record's `collect-skips.last_ok` is a test's stamp of unknown
+    age and was left as found. Rule: **a guard derived from one naming
+    convention ("sidecar constants under `data/`") covers that convention;
+    state that is cwd-relative for a different reason needs its own line --
+    after a full suite, `git status` is not the check (the file is
+    ignored), `find <repo> -newer <suite start> -not -path './.pytest-tmp/*'`
+    is.**
+
 214. **2026-11-19 08:15Z -- the digest printed `first ENOSPC NOW at the
     window's largest dip (105 GB)` with 103 GB free: the "dip" was the
     user's own 104 GB cleanup.** `fs_pace` measured every sample against

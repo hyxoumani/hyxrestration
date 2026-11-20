@@ -88,6 +88,33 @@ def _redirect_sidecars(tmp_path, monkeypatch):
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+#: `collector.qa.STATE` as SHIPPED, captured before any test patches it -- for
+#: the tests whose subject is the constant itself (it must stay relative).
+import collector.qa as _qa  # noqa: E402
+
+QA_STATE_SHIPPED = _qa.STATE
+
+
+@pytest.fixture(autouse=True)
+def _redirect_qa_state(tmp_path, monkeypatch):
+    """`collector.qa.STATE` is cwd-relative ON PURPOSE (each checkout keeps
+    its own section-completion record, tests/test_shared_reports.py), so it
+    is not a sidecar constant and the fixture above never covered it -- and
+    every `qa.check`/`_skip` reached with the repo as cwd stamped the DEV
+    tree's real record. Measured 2026-11-20: a full suite run left
+    `collect-skips.last_ok` at the suite's own wall clock in
+    `reports/qa/sections.json`, written by the eleven `qa_collect_skips`
+    tests in tests/test_hyxlab_writer_lock.py that never patched it; a
+    by-hand `python -m collector.qa` from this tree would then have printed
+    "last verified" from a test. A test that sets its own STATE still wins
+    (its setattr runs after this one); tests/test_qa_state_isolation.py
+    is the guard.
+    """
+    from collector import qa
+
+    monkeypatch.setattr(qa, "STATE", tmp_path / "reports" / "qa" / "sections.json")
+
+
 @pytest.fixture(autouse=True)
 def _kalshi_pacer_off():
     """`collect.main()` switches the Kalshi request pacer on for ITS process

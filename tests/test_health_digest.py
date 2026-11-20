@@ -298,7 +298,9 @@ def test_a_unit_without_a_working_directory_falls_back_to_this_repo() -> None:
 
 def test_the_record_path_tracks_qas_own_constant() -> None:
     """Spelled once. If qa moves its record, the digest follows it."""
-    from collector.qa import STATE
+    # The shipped constant: conftest's `_redirect_qa_state` patches `qa.STATE`
+    # into tmp_path for every test, and an absolute path swallows the `/x`.
+    from tests.conftest import QA_STATE_SHIPPED as STATE
 
     assert str(health.qa_record_path(svc(WorkingDirectory="/x"))) == str(Path("/x") / STATE)
 
