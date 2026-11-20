@@ -5713,7 +5713,7 @@ Format: what happened → root cause → error type → prevention tier
     and "read HOSTNET before chasing a DEAD-AIR row" was a sentence in the
     ops rules. An unread NetworkManager journal cross-reads nothing. 4
     more tests, 4 mutants red (one survived its first test and got an
-    assertion). Third reading, 21:45Z, and it amends #220's
+    assertion). Third reading, 21:42Z, and it amends #220's
     counting rule: the roam drops and the 08-15Z drops are different
     STRINGS. A silent path ends `keepalive ping timeout; no close frame
     received` (130 of 130 in 16-21Z); the #220 window's end `no close
