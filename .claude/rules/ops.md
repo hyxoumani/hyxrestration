@@ -1008,4 +1008,7 @@
   land in 08-15Z on every connection of both venues alike (mistakes #220):
   read `loop_lag` across a burst of drops before blaming the path, a venue
   or the sweeps -- and count drops by the exact error string, never by
-  `retry in`, which flush failures and 429s print too.
+  `retry in`, which flush failures and 429s print too. The exact string is
+  `no close frame received or sent` (closed under us); `keepalive ping
+  timeout; no close frame received` is a silent PATH -- 26 per WiFi roam
+  episode on 11-20, every connection once (mistakes #221).

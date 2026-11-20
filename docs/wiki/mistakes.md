@@ -5713,7 +5713,12 @@ Format: what happened → root cause → error type → prevention tier
     and "read HOSTNET before chasing a DEAD-AIR row" was a sentence in the
     ops rules. An unread NetworkManager journal cross-reads nothing. 4
     more tests, 4 mutants red (one survived its first test and got an
-    assertion). NOT fixed, and not a pass's to fix: the roaming itself. The
+    assertion). Third reading, 21:45Z, and it amends #220's
+    counting rule: the roam drops and the 08-15Z drops are different
+    STRINGS. A silent path ends `keepalive ping timeout; no close frame
+    received` (130 of 130 in 16-21Z); the #220 window's end `no close
+    frame received or sent` (76 of 79 in 08-13Z today). Count #220 by the
+    second string, exactly. NOT fixed, and not a pass's to fix: the roaming itself. The
     levers are the user's -- the cable (#216), or pinning the connection
     to the radio that always leases (`nmcli con mod ATTtvBtItw
     802-11-wireless.bssid A8:40:F8:6F:F5:9C`, which re-activates the link
