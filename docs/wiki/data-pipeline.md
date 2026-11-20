@@ -545,6 +545,13 @@ default route; WiFi if `/sys/class/net/<if>/wireless` exists). First
 reading: `1 offline episode(s), 11.7 min: 11-20 01:59:41Z..02:11:23Z
 (11.7 min, CONNECTED_LOCAL) | link: enp7s0 1 link-down(s), DOWN since 11-20
 01:59:35Z | default route via wlp6s0 (WIFI)`.
+Since 2026-11-20 20:20Z (mistakes #221) the `-k` read also parses WiFi
+roams (`<iface>: disconnect from AP X for new auth to Y`): an episode that
+starts within 90 s of one is charged from the roam (`no path from a roam
+45 s earlier = 1.0 min`; NM's own line moves only when its 45 s DHCP timer
+gives up), and the link half counts roams by the radio roamed onto and how
+many were followed by an episode (first reading `14 wifi roam(s), 5 followed
+by an offline episode (5 of 7 onto ..f5:98, 0 of 7 onto ..f5:9c)`).
 
 **`HOSTFS` ends with btrfs's own allocation (since 2026-11-15).** Every
 other number on the line is `statvfs`, which on btrfs is an estimate: a

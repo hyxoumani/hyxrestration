@@ -693,7 +693,12 @@
   the box has run on `wlp6s0 (WIFI)` since 02:11Z (mistakes #216). A lag or
   throughput comparison across a route change is a comparison of two
   paths; say which path each side was on. Rejoining the wired link is the
-  USER's (a cable, a switch port), not a pass's.
+  USER's (a cable, a switch port), not a pass's. On WiFi, an episode NM
+  prints as `0.2 min` is ~1 min of dead path: NM's line moves when its 45 s
+  DHCP timer gives up after a roam, so read the `no path from a roam N s
+  earlier` clause and the roam count by radio (11-20: 5 of 7 roams onto
+  `..f5:98` lost the lease, 0 of 7 onto `..f5:9c`; each cost all 26 stream
+  connections ~40 s; mistakes #221). Pinning the BSSID is the USER's too.
 - A shared DISK has a tightest tenant too, and on this box it is the
   kubelet: `/` is one btrfs for the archive, the siblings' lakes, Steam and
   the kubelet's image store, and the kubelet evicts pods on

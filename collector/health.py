@@ -2043,6 +2043,16 @@ NM_UNIT = "NetworkManager"
 NM_ONLINE = "CONNECTED_GLOBAL"
 _NM_STATE_RE = re.compile(r"^(\S+) .*NetworkManager state is now (\S+)\s*$")
 _LINK_RE = re.compile(r"^(\S+) \S+ kernel: .*?(\S+): Link is (Up|Down)\b")
+# A WiFi roam, as mac80211 logs it. On 2026-11-20 the box roamed 14 times
+# between the two radios of one access point (`..f5:98` <-> `..f5:9c`); 5 of
+# the 7 roams ONTO `..f5:98` got no DHCP lease, and NetworkManager tore the
+# connection down when its 45 s DHCP timer ran out. NM's state line -- all
+# this reader had -- moves only at that teardown, so each episode printed as
+# `0.2-0.3 min` while the stream's sockets were erroring 20 s BEFORE it: the
+# path was dead from the roam, ~60 s, not 15 (mistakes #221). An episode that
+# starts within ROAM_LEAD_S of a roam is charged from the roam.
+_ROAM_RE = re.compile(r"^(\S+) \S+ kernel: (\S+): disconnect from AP (\S+) for new auth to (\S+)")
+ROAM_LEAD_S = 90.0
 
 
 @dataclass(frozen=True)
@@ -2069,11 +2079,41 @@ class LinkEvent:
     up: bool
 
 
+@dataclass(frozen=True)
+class RoamEvent:
+    ts: float
+    iface: str
+    src: str
+    dst: str
+
+
 def _iso_ts(stamp: str) -> float | None:
     try:
         return datetime.fromisoformat(stamp).timestamp()
     except ValueError:
         return None
+
+
+def parse_roam_events(stdout: str) -> list[RoamEvent]:
+    """The kernel's `<iface>: disconnect from AP X for new auth to Y`. Pure."""
+    out: list[RoamEvent] = []
+    for line in stdout.splitlines():
+        m = _ROAM_RE.match(line)
+        if not m:
+            continue
+        ts = _iso_ts(m.group(1))
+        if ts is not None:
+            out.append(RoamEvent(ts, m.group(2), m.group(3), m.group(4)))
+    return out
+
+
+def roam_before(roams: list[RoamEvent], start: float) -> RoamEvent | None:
+    """The newest roam inside ROAM_LEAD_S before an episode's start. Pure."""
+    best = None
+    for r in roams:
+        if start - ROAM_LEAD_S <= r.ts <= start and (best is None or r.ts > best.ts):
+            best = r
+    return best
 
 
 def parse_nm_states(stdout: str) -> list[tuple[float, str, bool]]:
@@ -2167,6 +2207,7 @@ class HostNet:
     route_iface: str | None
     route_read: bool
     route_wifi: bool | None
+    roams: list[RoamEvent] | None = None
 
 
 def _journal_window(args: list[str], hours: int) -> str | None:
@@ -2195,6 +2236,7 @@ def read_hostnet(hours: int = HOSTNET_WINDOW_H, sys_net: str = "/sys/class/net")
     return HostNet(
         states=parse_nm_states(nm) if nm is not None else None,
         links=parse_link_events(kern) if kern is not None else None,
+        roams=parse_roam_events(kern) if kern is not None else None,
         route_iface=iface,
         route_read=route is not None,
         route_wifi=wifi,
@@ -2224,6 +2266,7 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
             lo = now - window_h * 3600
             parts = []
             total = 0.0
+            led = 0.0
             for e in episodes:
                 a = e.start if e.start is not None else lo
                 b = e.end if e.end is not None else now
@@ -2231,16 +2274,23 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
                 span = f"{(b - a) / 60:.1f} min"
                 if e.reboot:
                     span += ", across a REBOOT"
+                roam = roam_before(hn.roams or [], e.start) if e.start is not None else None
+                if roam is not None:
+                    led += a - roam.ts
+                    span += (
+                        f"; no path from a roam {a - roam.ts:.0f} s earlier"
+                        f" = {(b - roam.ts) / 60:.1f} min"
+                    )
                 if e.start is None:
                     parts.append(f"..{z(b)} (>= {span}, began before the window)")
                 elif e.end is None:
                     parts.append(f"{z(a)}.. STILL OFFLINE ({span} so far, {e.state})")
                 else:
                     parts.append(f"{z(a)}..{z(b)} ({span}, {e.state})")
-            eps = (
-                f"{window_h}h: {len(episodes)} offline episode(s), {total / 60:.1f} min: "
-                + "; ".join(parts)
-            )
+            tot = f"{total / 60:.1f} min"
+            if led:
+                tot += f" by NetworkManager's state, {(total + led) / 60:.1f} min from the roams"
+            eps = f"{window_h}h: {len(episodes)} offline episode(s), {tot}: " + "; ".join(parts)
     if hn.links is None:
         links = "kernel journal UNREAD"
     elif not hn.links:
@@ -2263,7 +2313,25 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
     else:
         kind = {True: "WIFI", False: "wired", None: "kind unread"}[hn.route_wifi]
         route = f"default route via {hn.route_iface} ({kind})"
-    return f"{eps} | link: {links} | {route}"
+    return f"{eps} | link: {links}{roam_clause(hn)} | {route}"
+
+
+def roam_clause(hn: HostNet) -> str:
+    """WiFi roams in the window and how many cost the path, by the BSSID
+    roamed ONTO -- the loss on 11-20 was one direction only. Empty when the
+    kernel journal held none (unread is already said by the link half). Pure."""
+    if not hn.roams:
+        return ""
+    starts = [e.start for e in net_episodes(hn.states or []) if e.start is not None]
+    by: dict[str, list[int]] = {}
+    for r in hn.roams:
+        lost = any(r is roam_before(hn.roams, s) for s in starts)
+        n = by.setdefault(r.dst, [0, 0])
+        n[0] += 1
+        n[1] += lost
+    lost_n = sum(n[1] for n in by.values())
+    per = ", ".join(f"{n[1]} of {n[0]} onto {dst}" for dst, n in sorted(by.items()))
+    return f"; {len(hn.roams)} wifi roam(s), {lost_n} followed by an offline episode ({per})"
 
 
 # --- HOSTFS: the shared filesystem, read against the HOST's threshold -----

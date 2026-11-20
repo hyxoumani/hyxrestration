@@ -5678,6 +5678,42 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+221. **2026-11-20 20:20Z -- the uplink line timed an outage from the
+    manager's verdict, and the path had been dead 45 s before it** (class:
+    an instrument that learns of a loss from the component that DECIDES it
+    is lost; #93's resolution rule on a third detector). On WiFi since
+    02:11Z, `HOSTNET` printed five new offline episodes 16:26Z-20:16Z of
+    `0.2-0.3 min` each. The system journal says what they are: the box
+    roams between two 5 GHz radios of one access point (`a8:40:f8:6f:f5:98`
+    ch 48, signal 66; `..f5:9c` ch 132, signal 60) -- 14 roams since
+    02:11Z. All 7 roams onto `..9c` re-leased within the second. Of the 7
+    onto `..98`, 5 got `dhcp4 (wlp6s0): state changed no lease`, and
+    NetworkManager deauthenticated (`Reason: 3=DEAUTH_LEAVING`,
+    `locally_generated=1`) exactly 45 s later -- its DHCP timeout -- and
+    re-activated in 14-16 s. NM's state line moves only at that teardown,
+    so the digest timed 15 s of a ~60 s hole: the stream's sockets were
+    already erroring 20 s BEFORE each "start" (16:26:02Z vs 16:26:22Z),
+    and all 26 connections reconnected each time (22 `kalshi/books GAP
+    (reconnect)` + 22 `seq_reset` per episode; first error to last
+    `connected` 35-45 s over the first four). Five whole-universe capture
+    holes in four hours, against 0-1 NM transitions a day on the wire
+    (11-06..11-19). Fix: the kernel's `disconnect from AP X for new auth
+    to Y` lines (already in the `-k` read) are parsed; an episode starting
+    within 90 s of a roam is charged from the roam (`0.2 min; no path from
+    a roam 45 s earlier = 1.0 min`), the total says both (`13.0 min by
+    NetworkManager's state, 16.8 min from the roams`), and the link half
+    counts roams by the radio roamed ONTO (`14 wifi roam(s), 5 followed by
+    an offline episode (5 of 7 onto ..f5:98, 0 of 7 onto ..f5:9c)`). 4
+    tests on the journal's own lines, 3 mutants red, each asserted to
+    land. NOT fixed, and not a pass's to fix: the roaming itself. The
+    levers are the user's -- the cable (#216), or pinning the connection
+    to the radio that always leases (`nmcli con mod ATTtvBtItw
+    802-11-wireless.bssid A8:40:F8:6F:F5:9C`, which re-activates the link
+    once). Rule: **a supervisor's state change is the time it GAVE UP, not
+    the time the thing failed; when the supervisor has a timeout, the
+    episode is at least that much longer than its log says. Time a loss
+    from the lowest layer that logged the cause.**
+
 220. **2026-11-20 14:45Z -- the stream daemon has dropped connections in a
     daily window for four weeks and no reading here could say whether its
     own event loop was running.** Found from the side: 78 `GAP (reconnect)`

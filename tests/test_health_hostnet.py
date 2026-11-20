@@ -176,3 +176,66 @@ def test_the_live_reader_never_raises_and_the_digest_prints_the_line(capsys, mon
     health.main()
     out = capsys.readouterr().out
     assert "HOSTNET    (host)" in out and "default route via wlp6s0 (WIFI)" in out
+
+
+# --- roams (mistakes #221): the journal's own lines from 11-20 16:25-16:33Z.
+ROAM_KERNEL = """\
+2026-11-20T16:25:37+00:00 hyz kernel: wlp6s0: disconnect from AP a8:40:f8:6f:f5:9c for new auth to a8:40:f8:6f:f5:98
+2026-11-20T16:25:37+00:00 hyz kernel: wlp6s0: authenticate with a8:40:f8:6f:f5:98 (local address=dc:56:7b:84:35:87)
+2026-11-20T16:26:22+00:00 hyz kernel: wlp6s0: deauthenticating from a8:40:f8:6f:f5:98 by local choice (Reason: 3=DEAUTH_LEAVING)
+2026-11-20T16:31:42+00:00 hyz kernel: wlp6s0: disconnect from AP a8:40:f8:6f:f5:98 for new auth to a8:40:f8:6f:f5:9c
+2026-11-20T16:32:26+00:00 hyz kernel: wlp6s0: disconnect from AP a8:40:f8:6f:f5:9c for new auth to a8:40:f8:6f:f5:98
+"""
+ROAM_NM = """\
+2026-11-20T16:26:22+00:00 hyz NetworkManager[699]: <info>  [1795191982.1] manager: NetworkManager state is now CONNECTED_LOCAL
+2026-11-20T16:26:37+00:00 hyz NetworkManager[699]: <info>  [1795191997.0] manager: NetworkManager state is now CONNECTED_GLOBAL
+"""
+ROAM_NOW = _ts("2026-11-20T16:40:00")
+
+
+def _roam_hn(**kw) -> health.HostNet:
+    base = dict(
+        states=health.parse_nm_states(ROAM_NM),
+        links=[],
+        roams=health.parse_roam_events(ROAM_KERNEL),
+    )
+    base.update(kw)
+    return _hn(**base)
+
+
+def test_roam_lines_are_parsed_and_the_local_deauth_is_not_one() -> None:
+    roams = health.parse_roam_events(ROAM_KERNEL)
+    assert [(r.iface, r.dst[-2:]) for r in roams] == [
+        ("wlp6s0", "98"),
+        ("wlp6s0", "9c"),
+        ("wlp6s0", "98"),
+    ]
+    assert roams[0].ts == _ts("2026-11-20T16:25:37")
+    assert health.parse_roam_events("-- No entries --\n") == []
+
+
+def test_an_episode_is_charged_from_the_roam_that_led_it() -> None:
+    line = health.host_net_line(_roam_hn(), ROAM_NOW)
+    # NM saw 15 s; the path had no lease from the roam 45 s before that.
+    assert "no path from a roam 45 s earlier = 1.0 min" in line
+    assert "0.2 min by NetworkManager's state, 1.0 min from the roams" in line
+    assert (
+        "3 wifi roam(s), 1 followed by an offline episode "
+        "(1 of 2 onto a8:40:f8:6f:f5:98, 0 of 1 onto a8:40:f8:6f:f5:9c)"
+    ) in line
+
+
+def test_a_roam_outside_the_lead_or_after_the_start_charges_nothing() -> None:
+    start = _ts("2026-11-20T16:26:22")
+    mk = lambda dt: [health.RoamEvent(start + dt, "wlp6s0", "a", "b")]  # noqa: E731
+    assert health.roam_before(mk(-health.ROAM_LEAD_S - 1), start) is None
+    assert health.roam_before(mk(1), start) is None
+    assert health.roam_before(mk(-health.ROAM_LEAD_S), start) is not None
+    quiet = health.host_net_line(_roam_hn(roams=mk(-600)), ROAM_NOW)
+    assert "no path from a roam" not in quiet and "from the roams" not in quiet
+    assert "1 wifi roam(s), 0 followed by an offline episode (0 of 1 onto b)" in quiet
+
+
+def test_no_roam_leaves_the_line_as_it_was() -> None:
+    assert "roam" not in health.host_net_line(_hn(), NOW)
+    assert "roam" not in health.host_net_line(_hn(roams=[]), NOW)
