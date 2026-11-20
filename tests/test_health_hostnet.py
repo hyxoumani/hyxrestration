@@ -239,3 +239,17 @@ def test_a_roam_outside_the_lead_or_after_the_start_charges_nothing() -> None:
 def test_no_roam_leaves_the_line_as_it_was() -> None:
     assert "roam" not in health.host_net_line(_hn(), NOW)
     assert "roam" not in health.host_net_line(_hn(roams=[]), NOW)
+
+
+def test_the_no_path_spans_open_at_the_roam_and_close_at_the_new_lease() -> None:
+    spans = health.net_dead_spans(_roam_hn(), ROAM_NOW)
+    assert spans == [(_ts("2026-11-20T16:25:37"), _ts("2026-11-20T16:26:37"))]
+    # Without the roam the span is NetworkManager's own.
+    assert health.net_dead_spans(_roam_hn(roams=[]), ROAM_NOW) == [
+        (_ts("2026-11-20T16:26:22"), _ts("2026-11-20T16:26:37"))
+    ]
+
+
+def test_an_unread_manager_journal_is_no_cross_reading() -> None:
+    assert health._flow_net(_hn(states=None), NOW) is None
+    assert health._flow_net(_hn(), NOW) == health.net_dead_spans(_hn(), NOW)

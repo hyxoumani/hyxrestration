@@ -552,6 +552,11 @@ starts within 90 s of one is charged from the roam (`no path from a roam
 gives up), and the link half counts roams by the radio roamed onto and how
 many were followed by an episode (first reading `14 wifi roam(s), 5 followed
 by an offline episode (5 of 7 onto ..f5:98, 0 of 7 onto ..f5:9c)`).
+`STREAMFLOW` cross-reads the same spans (`health.net_dead_spans`, roam to
+new lease): a dead episode or LOW round overlapping one ends `uplink had no
+path for N min of it (HOSTNET)`, and the dead-tick clause counts the
+instants within 15 s (one flush) of a span. No annotation = no overlap;
+with NetworkManager's journal unread nothing is cross-read.
 
 **`HOSTFS` ends with btrfs's own allocation (since 2026-11-15).** Every
 other number on the line is `statvfs`, which on btrfs is an estimate: a

@@ -5705,7 +5705,15 @@ Format: what happened → root cause → error type → prevention tier
     counts roams by the radio roamed ONTO (`14 wifi roam(s), 5 followed by
     an offline episode (5 of 7 onto ..f5:98, 0 of 7 onto ..f5:9c)`). 4
     tests on the journal's own lines, 3 mutants red, each asserted to
-    land. NOT fixed, and not a pass's to fix: the roaming itself. The
+    land. Second half, 21:10Z: `STREAMFLOW` now cross-reads those spans
+    (`health.net_dead_spans`) -- a DEAD-AIR episode or LOW round says
+    `uplink had no path for N min of it (HOSTNET)`, and the dead ticks end
+    `(3 within 15 s of a HOSTNET no-path span)`; until then the 16:56:31Z
+    dead tick printed with no cause one line under the roam that made it,
+    and "read HOSTNET before chasing a DEAD-AIR row" was a sentence in the
+    ops rules. An unread NetworkManager journal cross-reads nothing. 4
+    more tests, 4 mutants red (one survived its first test and got an
+    assertion). NOT fixed, and not a pass's to fix: the roaming itself. The
     levers are the user's -- the cable (#216), or pinning the connection
     to the radio that always leases (`nmcli con mod ATTtvBtItw
     802-11-wireless.bssid A8:40:F8:6F:F5:9C`, which re-activates the link

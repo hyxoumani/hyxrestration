@@ -698,6 +698,9 @@ STREAMFLOW_LOCAL_ROUNDS = 6
 #: applied to the last-tick row count marks a dead INSTANT.
 STREAMFLOW_DEAD_FRAC = 0.10
 STREAMFLOW_WINDOW_H = 24
+# A dead last tick is the 15 s flush before the stats line; a no-path span
+# within one flush period of the instant is its cause.
+STREAMFLOW_TICK_PAD_S = 15.0
 STREAMFLOW_UNIT = "hyxlab-stream.service"
 #: streamd's `LONG_FLUSH_HOLD_S` (= its `FLUSH_SECS`), pinned here like the
 #: period (no daemon import); `tests/test_health_streamhold.py` ties the two.
@@ -1111,8 +1114,27 @@ def closure_note(start: datetime, end: datetime) -> tuple[str, bool]:
     return "", False
 
 
-def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WINDOW_H) -> str:
-    """Render the reading. Shapes: the window's rounds and medians, then the
+def _ts_utc(t: datetime) -> float:
+    return (t if t.tzinfo is not None else t.replace(tzinfo=UTC)).timestamp()
+
+
+def _offline_s(net: list[tuple[float, float]] | None, start: datetime, end: datetime) -> float:
+    """Seconds of [start, end] the uplink had no path, per HOSTNET's spans."""
+    a, b = _ts_utc(start), _ts_utc(end)
+    return sum(max(0.0, min(b, y) - max(a, x)) for x, y in net or [])
+
+
+def stream_flow_line(
+    flow: StreamFlow | None | str,
+    hours: int = STREAMFLOW_WINDOW_H,
+    net: list[tuple[float, float]] | None = None,
+) -> str:
+    """Render the reading. `net` is HOSTNET's no-path spans (`net_dead_spans`):
+    a dead episode, LOW round or dead tick that overlaps one says so, because
+    the ops rule "read HOSTNET before chasing a DEAD-AIR row" was a sentence
+    until 2026-11-20 and the 16:56:31Z dead tick printed with no cause one
+    line under the roam that made it (mistakes #221). `None` = not cross-read,
+    and nothing is claimed either way. Shapes: the window's rounds and medians, then the
     dead episodes (span bounds, GAP lines), the LOW rounds (share of the
     median with the channel split), and the dead last-tick INSTANTS; `no
     round under ...` / `no dead tick` when clean; `no stats lines` when the
@@ -1144,6 +1166,9 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
             # The first dead round BEGAN one period before the line closing it.
             note, inside = closure_note(ep.first - timedelta(seconds=ep.period_s), ep.last)
             excused.append(inside)
+            off = _offline_s(net, ep.first - timedelta(seconds=ep.period_s), ep.last)
+            if off > 0:
+                note += f" -- uplink had no path for {_mins(off)} of it (HOSTNET)"
             eps.append(
                 f"{ep.first:%m-%d %H:%M}Z..{ep.last:%H:%M}Z {len(ep.rounds)} round(s) ({shares}): "
                 f"dead air {_mins(ep.dead_lower_s)}..{_mins(ep.dead_upper_s)}, GAP lines {ep.gaps}"
@@ -1158,11 +1183,18 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
         )
     else:
         parts.append(f"no round under {dead_pct}")
+    period = timedelta(seconds=STREAMFLOW_PERIOD_S)
+    tick = timedelta(seconds=STREAMFLOW_TICK_PAD_S)
     if flow.low:
         lows = "; ".join(
             f"{r.at:%m-%d %H:%M}Z {r.received / max(r.local, 1):.0%} of its neighbours "
             f"({r.received / max(flow.median_received, 1):.0%} of the day; {_split(r)}; "
-            f"GAP lines {r.gaps_in_period} in round, {r.gaps_after} next)"
+            f"GAP lines {r.gaps_in_period} in round, {r.gaps_after} next"
+            + (
+                f"; uplink had no path for {_mins(off)} of the round (HOSTNET))"
+                if (off := _offline_s(net, r.at - period, r.at)) > 0
+                else ")"
+            )
             for r in flow.low
         )
         parts.append(f"LOW {len(flow.low)} round(s) under {low_pct} of their neighbours: {lows}")
@@ -1175,6 +1207,15 @@ def stream_flow_line(flow: StreamFlow | None | str, hours: int = STREAMFLOW_WIND
             f"last tick dead (under {dead_pct} of the tick median) at "
             f"{len(flow.dead_ticks)} instant(s): {ticks}"
             + (f" ({closed} inside Kalshi's Thursday closure window)" if closed else "")
+            + (
+                f" ({offn} within {STREAMFLOW_TICK_PAD_S:.0f} s of a HOSTNET no-path span)"
+                if (
+                    offn := sum(
+                        1 for r in flow.dead_ticks if _offline_s(net, r.at - tick, r.at + tick) > 0
+                    )
+                )
+                else ""
+            )
         )
     else:
         parts.append("no dead last tick")
@@ -2314,6 +2355,26 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
         kind = {True: "WIFI", False: "wired", None: "kind unread"}[hn.route_wifi]
         route = f"default route via {hn.route_iface} ({kind})"
     return f"{eps} | link: {links}{roam_clause(hn)} | {route}"
+
+
+def net_dead_spans(
+    hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H
+) -> list[tuple[float, float]]:
+    """The spans the uplink had no path, as (start, end) epoch seconds: each
+    offline episode, opened at the roam that led it when there is one, at the
+    window's edge when it began before it, closed at `now` while open. The
+    same arithmetic `host_net_line` prints; STREAMFLOW cross-reads it. Pure."""
+    out = []
+    for e in net_episodes(hn.states or []):
+        a = e.start if e.start is not None else now - window_h * 3600
+        roam = roam_before(hn.roams or [], e.start) if e.start is not None else None
+        out.append((roam.ts if roam is not None else a, e.end if e.end is not None else now))
+    return out
+
+
+def _flow_net(hn: HostNet, now: float) -> list[tuple[float, float]] | None:
+    """`None` when NetworkManager's journal was unread: no cross-reading."""
+    return None if hn.states is None else net_dead_spans(hn, now)
 
 
 def roam_clause(hn: HostNet) -> str:
@@ -5021,8 +5082,9 @@ def main() -> None:
         f"{host_memory_line(read_kernel_oom_window(), units, read_hostmem())}",
         flush=True,
     )
+    hostnet = read_hostnet()
     print(
-        f"{'HOSTNET':<10} {'(host)':<{width}}  {host_net_line(read_hostnet(), now.timestamp())}",
+        f"{'HOSTNET':<10} {'(host)':<{width}}  {host_net_line(hostnet, now.timestamp())}",
         flush=True,
     )
     print(
@@ -5036,7 +5098,7 @@ def main() -> None:
         flush=True,
     )
     print(
-        f"{'STREAMFLOW':<10} {STREAMFLOW_UNIT:<{width}}  {stream_flow_line(read_stream_flow())}",
+        f"{'STREAMFLOW':<10} {STREAMFLOW_UNIT:<{width}}  {stream_flow_line(read_stream_flow(), net=_flow_net(hostnet, now.timestamp()))}",
         flush=True,
     )
     print(

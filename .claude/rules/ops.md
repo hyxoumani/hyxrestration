@@ -698,7 +698,10 @@
   DHCP timer gives up after a roam, so read the `no path from a roam N s
   earlier` clause and the roam count by radio (11-20: 5 of 7 roams onto
   `..f5:98` lost the lease, 0 of 7 onto `..f5:9c`; each cost all 26 stream
-  connections ~40 s; mistakes #221). Pinning the BSSID is the USER's too.
+  connections ~40 s; mistakes #221). Pinning the BSSID is the USER's too. A
+  STREAMFLOW row the uplink explains now says so (`uplink had no path for N
+  min of it (HOSTNET)`, dead ticks `N within 15 s of a HOSTNET no-path
+  span`); chase the rows that carry no such clause.
 - A shared DISK has a tightest tenant too, and on this box it is the
   kubelet: `/` is one btrfs for the archive, the siblings' lakes, Steam and
   the kubelet's image store, and the kubelet evicts pods on

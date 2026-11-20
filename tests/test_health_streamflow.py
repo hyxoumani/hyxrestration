@@ -271,3 +271,31 @@ def test_a_quiet_diurnal_hour_is_not_low_but_a_dip_against_its_neighbours_is() -
     assert [f"{r.at:%H:%M}" for r in flow.low] == ["01:30"]
     assert flow.low[0].local == 1_000_000
     assert flow.dead == ()  # 400k is 13% of a 3M day median: a dip, not dead air
+
+
+def _epoch(s: str) -> float:
+    return datetime.fromisoformat(s).replace(tzinfo=UTC).timestamp()
+
+
+def test_a_low_round_and_a_dead_tick_inside_a_no_path_span_say_so() -> None:
+    """Mistakes #221: the cause sat one digest line above, uncited."""
+    flow = health.parse_stream_flow(OUTAGE)
+    assert flow is not None and len(flow.dead_ticks) == 2
+    # No path 10:27:15Z..10:29:05Z: 110 s of the 10:24:15..10:29:15Z round,
+    # ending 10 s before the second dead tick and 5 min after the first.
+    net = [(_epoch("2026-11-09T10:27:15"), _epoch("2026-11-09T10:29:05"))]
+    line = health.stream_flow_line(flow, net=net)
+    assert "20 next; uplink had no path for 1.8 min of the round (HOSTNET))" in line
+    assert line.endswith("(1 within 15 s of a HOSTNET no-path span)")
+    # A span that ended a minute before the tick is not that tick's cause.
+    early = [(_epoch("2026-11-09T10:27:15"), _epoch("2026-11-09T10:28:15"))]
+    assert "within 15 s" not in health.stream_flow_line(flow, net=early)
+
+
+def test_no_span_or_no_cross_reading_claims_nothing() -> None:
+    flow = health.parse_stream_flow(OUTAGE)
+    ref = health.stream_flow_line(flow)
+    assert "HOSTNET" not in ref
+    assert health.stream_flow_line(flow, net=[]) == ref
+    far = [(_epoch("2026-11-09T09:00:00"), _epoch("2026-11-09T09:01:00"))]
+    assert health.stream_flow_line(flow, net=far) == ref
