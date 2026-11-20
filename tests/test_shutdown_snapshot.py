@@ -307,6 +307,7 @@ def test_boot_adopts_before_the_first_flush(tmp_path, monkeypatch):
     d = streamd.Daemon.__new__(streamd.Daemon)
     d.store, d.stats, d._spill_corrupt_seen = store2, {}, 0
     d.stalls = streamd.FlushStalls(str(tmp_path / "stalls.jsonl"))
+    d.loop_lag = streamd.LoopLagWatch()
 
     async def noop():
         return None

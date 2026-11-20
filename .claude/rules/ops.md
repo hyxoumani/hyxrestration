@@ -992,3 +992,12 @@
   bound. Any query the daemon runs at boot gets the #158 rule first --
   bound it on `recv_ts`. The shadow prints `poll FAILED x1 (refused by
   <unit> pid N; ...)` / `NOT a lock refusal` once it runs post-#211 code.
+- The stream daemon's receive path is ONE thread, and since 2026-11-20 its
+  stats line says how late that thread ran: `loop_lag=<worst s>/<wakes >=
+  1 s late>` per 300 s, plus `loop stall: the event loop ran N.Ns late` at
+  its own clock time for a wake 2 s late (a lower bound, at most 0.25 s
+  short). Since 10-24 ~95% of its `no close frame` drops (27-113 a day)
+  land in 08-15Z on every connection of both venues alike (mistakes #220):
+  read `loop_lag` across a burst of drops before blaming the path, a venue
+  or the sweeps -- and count drops by the exact error string, never by
+  `retry in`, which flush failures and 429s print too.

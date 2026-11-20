@@ -5678,6 +5678,51 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+220. **2026-11-20 14:45Z -- the stream daemon has dropped connections in a
+    daily window for four weeks and no reading here could say whether its
+    own event loop was running.** Found from the side: 78 `GAP (reconnect)`
+    lines 08:12-12:48Z on the first WiFi day read as the path, and the
+    baseline said otherwise. `ConnectionClosedError: no close frame
+    received or sent` by day and UTC hour, journal 10-10..11-20: 4-17 a
+    day scattered over all hours through 10-23, then 27-113 a day with
+    ~95% inside 08-15Z from 10-24 on (first drop 08:36-08:58Z on 11 of 15
+    days) -- the day after the coverage expansion. By connection, in/out
+    of the window over 11-06..11-20: `poly-books` 34/0, `kalshi-lifecycle`
+    26/2, `kalshi-trades` 18/2, the 22 book shards 12-38 each: EVERY
+    connection of BOTH venues alike, so the common factor is this process
+    or this box. Refuted from the journal: the path (REST `transport retry`
+    lines across all our units are flat, 1-7 per hour of day over ten
+    days; wired days show the window as strongly as the WiFi one); the
+    daemon's own 429 retries (they run on worker threads, and the 13Z
+    hour had 8 with 0 drops); the Kalshi sweep's rate pressure (429s are
+    highest 06-08Z, before the window opens); slow flushes (11Z and 12Z
+    held 1.4-1.6 s a flush with 12-14 drops an hour). Not refutable: a
+    stalled or saturated event loop, the thread that reads every socket
+    and answers every ping -- every stall instrument in this daemon
+    measures the FLUSH thread. Two near-misses on the way, both mine: the
+    first baseline counted every `retry in` line (flush failures and 429s
+    included) and so called the window ordinary for the wrong reason, and
+    the first hour table was read off `GAP (reconnect)` for one day only.
+    Fix: `streamd.LoopLagWatch` -- a 0.25 s timer on the loop, its
+    lateness published as `loop_lag=<worst s>/<wakes >= 1 s late>` on the
+    stats line (ahead of `flush_hold=`, which the digest's pattern anchors
+    at the line's end) and a `loop stall: the event loop ran N.Ns late`
+    line for any wake 2 s late, with a clock time to pair against the
+    drops. A lower bound, at most one tick short (#92). PRE-REGISTERED
+    READING for the 11-21 window: drops preceded within ~60 s by a `loop
+    stall` line, or `loop_lag` worst >= 2 s in the periods that carry
+    them = the loop, and the next step is finding what blocks it;
+    `loop_lag` under 1 s through a burst of drops = the loop is cleared
+    and what is left is the flows themselves (the box's network stack,
+    the router's state table, or a venue-side timer shared by
+    coincidence), to be read with a packet-level probe. Rule: **when a
+    loss hits every connection of two unrelated venues alike, the
+    suspect list is this process and this box, in that order -- and a
+    daemon whose receive path is one thread must publish that thread's
+    lateness, or every such chase ends at "not refutable". Build a
+    baseline from the exact error string, never from a retry marker that
+    several unrelated paths print.**
+
 214. **2026-11-19 08:15Z -- the digest printed `first ENOSPC NOW at the
     window's largest dip (105 GB)` with 103 GB free: the "dip" was the
     user's own 104 GB cleanup.** `fs_pace` measured every sample against

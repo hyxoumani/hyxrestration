@@ -327,6 +327,83 @@ def long_flush_line(held_s: float | None, rows: int) -> str | None:
     return f"long flush: held {held_s:.1f}s for {rows} rows"
 
 
+#: How often `Daemon.loop_watch` asks the event loop for a turn. The tick is
+#: the instrument's RESOLUTION (#92): a stall of S seconds delays the wake it
+#: overlaps by between `S - LOOP_TICK_S` and S, so a reading is a LOWER bound
+#: on the stall and at most one tick short of it; a stall shorter than a tick
+#: can fall wholly between two wakes and read 0.
+LOOP_TICK_S = 0.25
+#: A wake this late is counted on the stats line (`loop_lag=<max>/<n>`).
+LOOP_LATE_S = 1.0
+#: A wake this late gets its own journal line, with the clock time a reader
+#: needs to pair it with the connection drops that follow it. Under the
+#: websocket keepalive (20 s ping, 20 s timeout) by an order of magnitude:
+#: what this is for is the question "was the loop reading its sockets when
+#: the venues hung up", and a stall far short of the timeout still answers it.
+LOOP_STALL_LOG_S = 2.0
+
+
+class LoopLagWatch:
+    """How late the event loop ran a timer it was asked to run, per stats
+    period: the one reading that says whether this daemon was READING its
+    sockets.
+
+    Why it exists (mistakes #220): since the 2026-10-23 coverage expansion
+    ~95% of this daemon's `ConnectionClosedError: no close frame received or
+    sent` drops land in 08-15Z (26-113 a day against 0-12 outside it), on
+    EVERY connection of BOTH venues alike -- so the common factor is this
+    process or this box, not a venue. The journal could refute a lossy path
+    (the REST units saw one network error in the same hours) and the
+    daemon's own 429 retries (they run on worker threads and do not line up),
+    and could say nothing about the remaining suspect, because every stall
+    instrument here measures the FLUSH thread. Every receive loop, every
+    keepalive pong and every socket read runs on the event loop; a loop that
+    stops for seconds is a slow consumer to 26 servers at once.
+
+    Takes no lock: `note` and `take` both run on the loop thread.
+    """
+
+    def __init__(self) -> None:
+        self._ticks = 0
+        self._max = 0.0
+        self._late = 0
+
+    def note(self, lag_s: float) -> None:
+        self._ticks += 1
+        self._max = max(self._max, lag_s)
+        if lag_s >= LOOP_LATE_S:
+            self._late += 1
+
+    def take(self) -> tuple[float, int] | None:
+        """`(worst lag, wakes late by LOOP_LATE_S or more)` since the last
+        call, and reset. None when no tick ran -- an unwatched period is
+        unmeasured, never a clean 0.0 (#91)."""
+        if not self._ticks:
+            return None
+        out = (self._max, self._late)
+        self._ticks, self._max, self._late = 0, 0.0, 0
+        return out
+
+
+def loop_lag_clause(lag: tuple[float, int]) -> str:
+    """`loop_lag=<worst s>/<wakes >= LOOP_LATE_S late>` for the period: a
+    lower bound on the longest time the event loop went without running,
+    at most `LOOP_TICK_S` short of it."""
+    worst, late = lag
+    return f"loop_lag={worst:.2f}/{late}"
+
+
+def loop_stall_line(lag_s: float) -> str | None:
+    """The journal line for ONE wake that came `LOOP_STALL_LOG_S` or more
+    late, else None."""
+    if lag_s < LOOP_STALL_LOG_S:
+        return None
+    return (
+        f"loop stall: the event loop ran {lag_s:.1f}s late"
+        " (no socket was read and no pong sent for at least that long)"
+    )
+
+
 def stats_line(
     prefix: str,
     stats: dict,
@@ -334,6 +411,7 @@ def stats_line(
     sock: str | None,
     holds: tuple[int, float, float] | None = None,
     steps: tuple[float, float, float, float] | None = None,
+    loop: tuple[float, int] | None = None,
 ) -> str:
     """The daemon's periodic / shutdown stats line, rendered in ONE place.
 
@@ -357,13 +435,18 @@ def stats_line(
     # received totals are the counters in `stats`, differenced by the reader.
     flushed_s = "" if flushed is None else f" (last flush {flushed} rows)"
     sock_s = "" if sock is None else f" {sock}"
+    # BEFORE the hold clauses: the digest's STREAMHOLD pattern anchors
+    # `flush_hold=`/`flush_steps=` at the END of the line (`health.py`), so a
+    # field appended after them would blind the digest of every tree that
+    # reads this journal with the older pattern.
+    loop_s = "" if loop is None else f" {loop_lag_clause(loop)}"
     holds_s = "" if holds is None else f" {flush_holds_clause(holds)}"
     # Only beside the total it splits: steps without holds would be a
     # reading with nothing to be a share of.
     steps_s = "" if holds is None or steps is None else f" {flush_steps_clause(steps)}"
     return (
         f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}"
-        f"{holds_s}{steps_s}"
+        f"{loop_s}{holds_s}{steps_s}"
     )
 
 
@@ -903,6 +986,7 @@ class Daemon:
         self.pem = Path(pem_path).read_bytes() if pem_path and Path(pem_path).exists() else b""
         self.stats: dict[str, int] = {}
         self.sock_throttle = SockThrottleWatch()
+        self.loop_lag = LoopLagWatch()
         self._spill_corrupt_seen = 0
         self.stalls = FlushStalls()
         # Per-connection minute heartbeats + subscription log (EXP-2007).
@@ -1673,7 +1757,8 @@ class Daemon:
                 sock, throttled = self.sock_throttle.note()
                 holds = self.store.take_flush_holds()
                 steps = self.store.take_flush_steps()
-                _log(stats_line("", self.report_stats(), out.rows, sock, holds, steps))
+                lag = self.loop_lag.take()
+                _log(stats_line("", self.report_stats(), out.rows, sock, holds, steps, lag))
                 if throttled:
                     # Its own line, so a grep for the word finds the PERIOD
                     # it landed in, not every stats line ever printed.
@@ -1683,6 +1768,19 @@ class Daemon:
                         " a cost -- check the next GAP lines and the stall ledger)"
                     )
                 last_stats = now
+
+    async def loop_watch(self) -> None:
+        """Ask the loop for a wake every `LOOP_TICK_S` and record how late it
+        came (`LoopLagWatch`). Only counts and prints: it must never be the
+        reason the daemon stops."""
+        loop = asyncio.get_running_loop()
+        while True:
+            asked = loop.time()
+            await asyncio.sleep(LOOP_TICK_S)
+            lag = max(0.0, loop.time() - asked - LOOP_TICK_S)
+            self.loop_lag.note(lag)
+            if (line := loop_stall_line(lag)) is not None:
+                _log(line)
 
     async def heartbeat(self) -> None:
         """Close each UTC minute for every connection (collector.heartbeat).
@@ -1918,6 +2016,7 @@ class Daemon:
             asyncio.create_task(self.poly_books(), name="poly-books"),
             asyncio.create_task(self.flusher(), name="flusher"),
             asyncio.create_task(self.heartbeat(), name="heartbeat"),
+            asyncio.create_task(self.loop_watch(), name="loop-watch"),
         ]
         stop = self._install_stop()
         running = asyncio.gather(*tasks)
@@ -1954,7 +2053,8 @@ class Daemon:
             self._final_drain()
             holds = self.store.take_flush_holds()
             steps = self.store.take_flush_steps()
-            _log(stats_line("shutdown; ", self.report_stats(), None, None, holds, steps))
+            lag = self.loop_lag.take()
+            _log(stats_line("shutdown; ", self.report_stats(), None, None, holds, steps, lag))
 
 
 def main() -> None:

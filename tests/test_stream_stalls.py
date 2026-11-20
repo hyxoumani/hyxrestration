@@ -400,6 +400,7 @@ def test_sigterm_reaches_the_drain_instead_of_killing_the_process():
     d.stats = {}
     d._spill_corrupt_seen = 0
     d.stalls = streamd.FlushStalls(None)
+    d.loop_lag = streamd.LoopLagWatch()
     d.watchlist = {}
     d.key_id, d.pem = "", b""
 
