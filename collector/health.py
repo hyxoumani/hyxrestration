@@ -1064,6 +1064,142 @@ def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
     )
 
 
+# --- STREAMRX: whole-path silences, from the stats line's `rx_gap` ------------
+# The stream daemon publishes `rx_gap=<longest s>/<silences >= 2 s>` per 300 s
+# period since 2026-11-21 (mistakes #226): the longest time NO connection
+# delivered a frame. A stall of the whole path under the 40 s keepalive drops
+# no socket and loses no row, so nothing else in this digest sees it -- the
+# first 35 min of the instrument carried the box's own WiFi scan in 7 periods
+# of 7 at 4.3-7.0 s, and a clean period reads ~0.25. This row counts the
+# periods whose longest silence reached `STREAMRX_STALL_S`, with the late
+# event-loop wakes in those same periods beside them: a stalled LOOP reads as
+# a silence too, and `loop_lag` is what tells the two apart.
+
+#: A period's longest silence at or over this is a whole-path stall. The
+#: scan's silences split in two when a few frames get through (4.3 and 4.5 s
+#: on 11-21 15:32Z and 15:48Z, under the daemon's own 5 s line threshold),
+#: so the bar is 4 s; ordinary periods sit at 0.25-2.0.
+STREAMRX_STALL_S = 4.0
+_STREAMRX_RE = re.compile(r" loop_lag=([0-9.]+)/(\d+) rx_gap=([0-9.]+)/(\d+) ")
+
+
+@dataclass(frozen=True)
+class StreamRx:
+    #: Periodic stats lines in the window, and how many carry `rx_gap`.
+    lines: int
+    carrying: int
+    #: Periods whose longest silence reached STREAMRX_STALL_S, and when the
+    #: first and last of them closed.
+    stalled: int
+    first_at: datetime | None
+    last_at: datetime | None
+    worst_s: float
+    worst_at: datetime | None
+    #: Wakes >= 1 s late the daemon counted in the STALLED periods only.
+    late_wakes_in_stalled: int
+    #: Stalled periods per clock hour (UTC), busiest first is the caller's job.
+    by_hour: tuple[tuple[datetime, int], ...]
+
+
+def parse_stream_rx(lines: list[str] | str, stall_s: float = STREAMRX_STALL_S) -> StreamRx | None:
+    """Pure: the unit's `-o short-iso` lines -> the window's reading, or None
+    when it holds no periodic stats line."""
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    n_lines = carrying = stalled = late = 0
+    worst, worst_at, first_at, last_at = 0.0, None, None, None
+    hours: dict[datetime, int] = {}
+    for line in lines:
+        ts = _short_iso_ts(line)
+        if ts is None or not _STREAMFLOW_LINE_RE.search(line):
+            continue
+        n_lines += 1
+        m = _STREAMRX_RE.search(line)
+        if not m:
+            continue
+        carrying += 1
+        gap = float(m.group(3))
+        if gap > worst:
+            worst, worst_at = gap, ts
+        if gap >= stall_s:
+            stalled += 1
+            late += int(m.group(2))
+            first_at = first_at or ts
+            last_at = ts
+            hour = ts.replace(minute=0, second=0, microsecond=0)
+            hours[hour] = hours.get(hour, 0) + 1
+    if n_lines == 0:
+        return None
+    return StreamRx(
+        n_lines,
+        carrying,
+        stalled,
+        first_at,
+        last_at,
+        worst,
+        worst_at,
+        late,
+        tuple(sorted(hours.items())),
+    )
+
+
+def read_stream_rx(
+    unit: str = STREAMFLOW_UNIT, hours: int = STREAMFLOW_WINDOW_H
+) -> StreamRx | None | str:
+    text = _journal_hourly(
+        [
+            "-u",
+            unit,
+            "--utc",
+            r"--grep=\((last flush [0-9]+ rows|flushed [0-9]+ this round)\)",
+            "-o",
+            "short-iso",
+        ],
+        hours,
+    )
+    if text is None:
+        return "unreadable"
+    return parse_stream_rx(text)
+
+
+def stream_rx_line(rx: StreamRx | None | str, hours: int = STREAMFLOW_WINDOW_H) -> str:
+    """Render the reading. Lines from before the daemon carried the clause
+    hold no reading and are never counted as clean periods."""
+    if rx == "unreadable":
+        return f"{hours}h: journal unreadable"
+    if rx is None:
+        return f"{hours}h: no stats lines (unit down the whole window, or the journal rotated)"
+    assert isinstance(rx, StreamRx)
+    if rx.carrying == 0:
+        return (
+            f"{hours}h: whole-path silences UNMEASURED -- none of {rx.lines} stats line(s) "
+            "carries rx_gap (daemon on pre-#226 code)"
+        )
+    cover = "" if rx.carrying == rx.lines else f" of {rx.lines} stats lines"
+    bar = f"{STREAMRX_STALL_S:.0f} s"
+    wat = "?" if rx.worst_at is None else f"{rx.worst_at:%m-%d %H:%MZ}"
+    worst = f"longest {rx.worst_s:.1f} s (in the period ending {wat})"
+    if rx.stalled == 0:
+        return (
+            f"{hours}h: no frame-less stretch of {bar} or more on all connections in "
+            f"{rx.carrying} period(s){cover} | {worst}"
+        )
+    assert rx.first_at is not None and rx.last_at is not None
+    busiest = max(rx.by_hour, key=lambda h: h[1])
+    cause = (
+        "0 late loop wakes in those periods (the path, not the loop)"
+        if rx.late_wakes_in_stalled == 0
+        else f"{rx.late_wakes_in_stalled} late loop wake(s) in those periods -- read loop_lag "
+        "there before blaming the path"
+    )
+    return (
+        f"{hours}h: STALLS: {rx.stalled} of {rx.carrying} period(s){cover} held a frame-less "
+        f"stretch of {bar} or more on all connections ({rx.stalled / rx.carrying:.0%}), "
+        f"{rx.first_at:%m-%d %H:%MZ}..{rx.last_at:%m-%d %H:%MZ}, busiest hour "
+        f"{busiest[0]:%m-%d %H}Z with {busiest[1]} | {worst} | {cause}"
+    )
+
+
 def read_stream_hold(
     unit: str = STREAMFLOW_UNIT, hours: int = STREAMFLOW_WINDOW_H
 ) -> StreamHold | None | str:
@@ -5391,6 +5527,10 @@ def main() -> None:
     )
     print(
         f"{'STREAMHOLD':<10} {STREAMFLOW_UNIT:<{width}}  {stream_hold_line(read_stream_hold())}",
+        flush=True,
+    )
+    print(
+        f"{'STREAMRX':<10} {STREAMFLOW_UNIT:<{width}}  {stream_rx_line(read_stream_rx())}",
         flush=True,
     )
     print(

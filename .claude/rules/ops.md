@@ -1057,3 +1057,11 @@
   minute, a starved path is one or two in nearly every minute -- and check
   the sockets' receive queues (`ss -tnH -p`, near zero = the path, not the
   loop) before touching the daemon.
+- The digest's `STREAMRX` row (since 2026-11-21) counts the 300 s periods
+  whose longest frame-less stretch on ALL connections reached 4 s, with the
+  late loop wakes in those same periods as the path-or-loop alibi. First
+  reading: `37 of 70 period(s) ... (53%), 15:29Z..19:46Z, busiest hour 17Z
+  with 12 | longest 9.0 s | 0 late loop wakes` -- the WiFi scan every ~308 s
+  on `..f5:98`. Under a congested path the stalls stop reaching 4 s (none
+  after 19:46Z on 11-21 while the ticker starved): a clean STREAMRX is not a
+  clean path -- read STREAMFLOW's starved clause beside it.
