@@ -5871,6 +5871,17 @@ Format: what happened → root cause → error type → prevention tier
     lateness, or every such chase ends at "not refutable". Build a
     baseline from the exact error string, never from a retry marker that
     several unrelated paths print.**
+    FIRST READING, 2026-11-21 10:14Z (08:00-10:13Z of the window, WiFi):
+    15 `no close frame received or sent` -- 12 at 09:18:28-09:30:49Z on
+    10 connections of both venues, 3 at 10:06-10:12Z -- none inside a
+    roam span; `loop_lag` 0.15-0.24 s in the periods that carry them,
+    0.54 s worst in the window, 0 wakes a second late, 0 `loop stall`.
+    By the pre-registration the loop is CLEARED; the next step is the
+    packet-level probe. The same morning QA failed `trade latency
+    dispersion sane` for the first time (p99-p50 5.1 s): from 16Z 11-20
+    1-2% of trades on both venues arrive 5-15 s late in every hour, with
+    or without a roam -- a path that stalls for seconds without closing,
+    which is what the probe has to catch.
 
 214. **2026-11-19 08:15Z -- the digest printed `first ENOSPC NOW at the
     window's largest dip (105 GB)` with 103 GB free: the "dip" was the
