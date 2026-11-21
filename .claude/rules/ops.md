@@ -1039,3 +1039,12 @@
   `no close frame received or sent` (closed under us); `keepalive ping
   timeout; no close frame received` is a silent PATH -- 26 per WiFi roam
   episode on 11-20, every connection once (mistakes #221).
+- Under 6 GB free the raw-frame copy YIELDS the disk to the parsed archive
+  (`rawframes.DISK_YIELD_BYTES`, since 2026-11-21; mistakes #227): files
+  closed, frames discarded and counted as `raw_yielded` on the stream stats
+  line, one `raw frames: YIELDING the disk to the archive` line going in
+  and one `writing again` coming out (1 GB above the floor). A `RAWFRAMES`
+  day or hour that reads short across such a span is the yield, not the
+  wire -- grep the journal for `YIELDING` before calling it a traffic drop;
+  and a parser repair cannot reach inside the span. Two writers where one
+  is a copy of the other need that priority on EVERY resource they share.

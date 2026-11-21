@@ -116,6 +116,20 @@ def _redirect_qa_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _raw_frames_see_a_roomy_disk(monkeypatch):
+    """`RawFrameWriter` discards frames while the REAL disk under its root is
+    below `DISK_YIELD_BYTES` (mistakes #227), and every test's root is a
+    tmp_path on the box's own filesystem -- which was 16 GB from full the
+    day the floor shipped. Without this the raw-frame tests turn red on a
+    full disk for a reason none of them is about. A test of the floor
+    injects `free_bytes` and is untouched; tests/test_rawframes_disk_yield.py
+    reads the real probe through a path of its own."""
+    from collector import rawframes
+
+    monkeypatch.setattr(rawframes, "fs_free_bytes", lambda root: 1 << 50)
+
+
+@pytest.fixture(autouse=True)
 def _kalshi_pacer_off():
     """`collect.main()` switches the Kalshi request pacer on for ITS process
     (`kalshi.set_pace`), and that is module state: a test that drives the

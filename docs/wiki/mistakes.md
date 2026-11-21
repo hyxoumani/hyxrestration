@@ -5678,6 +5678,37 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+227. **2026-11-21 20:20Z -- on a disk hours from full, the raw-frame copy
+    was written to the last byte beside the record it duplicates** (class:
+    a secondary writer with no priority against the primary on a shared
+    resource). `collector/rawframes.py` says in its own module doc that
+    "the parsed rows are still the primary record", and its queue drops
+    frames rather than back-pressure the socket for that reason -- but
+    that priority was written for MEMORY and the event loop only. On the
+    DISK the two were equals: at 16 GB free (20:15Z), raw frames were
+    14.4 GB/day of a 28 GB/day net burn, so on the last gigabytes the
+    copy takes every second byte the archive's flush needs and both
+    fail together; five passes of the disk item (11-17..11-21) hardened
+    what each writer does AT ENOSPC (#218, #219, #222, #223) and none
+    asked which writer should reach it first. Fix:
+    `rawframes.DISK_YIELD_BYTES` (6 GB, above journald's 4 GB
+    `SystemKeepFree`): the writer thread samples `statvfs` before each
+    5 s flush, and under the floor it closes its files, discards what it
+    is handed, counts it (`raw_yielded` on the stats line) and prints one
+    `raw frames: YIELDING the disk to the archive` line per transition;
+    it resumes 1 GB above the floor. Stated cost: a parser defect inside
+    a yielded span cannot be repaired from the wire. Stated limit: it
+    buys the archive hours, not days (~0.55 GB/h of our own burn left,
+    plus the sibling's), and frees nothing -- the disk is still the
+    USER's item. 9 tests, 8 mutants red, each asserted to land; conftest
+    gives every other test a roomy disk, because every test root is a
+    tmp_path on the filling disk itself. Rule: **when two writers share a
+    resource and one is declared a copy of the other, the declaration has
+    to exist as a threshold on EVERY resource they share -- a priority
+    implemented for the queue and not for the disk is a priority only
+    while the disk is not the constraint. Ask "who should fail first"
+    before the day both do.**
+
 226. **2026-11-21 15:05Z -- 221 ten-second losses of the whole path in
     22 h moved no counter the stream daemon keeps** (class: an instrument
     that learns of an absence only from the events an absence prevents --

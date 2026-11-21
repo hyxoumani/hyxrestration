@@ -33,10 +33,12 @@ from __future__ import annotations
 
 import collections
 import gzip
+import os
 import re
 import shutil
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -75,6 +77,36 @@ FLUSH_SECS = 5.0
 RETAIN_DAYS = 14
 #: How often the writer thread prunes day directories past RETAIN_DAYS.
 PRUNE_SECS = 3600.0
+#: Free bytes on the root's filesystem under which this writer stops
+#: writing and discards what it is handed (counted, `raw_yielded`). The
+#: parsed archive is the primary record and shares the disk: MEASURED
+#: 2026-11-21, raw frames were 14.4 GB/day of a 28 GB/day net burn with
+#: 16 GB free, so on the last gigabytes this copy takes every second byte
+#: the archive's flush needs and both fail together. Yielding at 6 GB
+#: roughly doubles how long the archive (~0.55 GB/h) keeps landing, and it
+#: is above journald's 4 GB `SystemKeepFree`, so the journal that witnesses
+#: the full disk keeps growing a while longer too (mistakes #222, #227).
+#: A parser defect inside a yielded span cannot be repaired from the wire;
+#: that is the trade, taken only when the alternative is losing both.
+DISK_YIELD_BYTES = 6 * 1024**3
+#: Writing resumes only this far ABOVE the floor, so a level sitting on it
+#: does not open and close a file every sample.
+DISK_RESUME_MARGIN_BYTES = 1 * 1024**3
+
+
+def fs_free_bytes(root: Path) -> int | None:
+    """Bytes an unprivileged write can still take on `root`'s filesystem,
+    from the nearest directory that exists; None when it cannot be read
+    (an unreadable disk is not a full one -- the writer keeps writing)."""
+    for d in (root, *root.parents):
+        try:
+            st = os.statvfs(d)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        return st.f_bavail * st.f_frsize
+    return None
 
 
 def held_day_dirs(retain_days: int | None) -> int | None:
@@ -131,6 +163,9 @@ class RawFrameWriter:
         flush_secs: float = FLUSH_SECS,
         codec: tuple[str, Any] | None = None,
         retain_days: int | None = RETAIN_DAYS,
+        yield_below: int | None = DISK_YIELD_BYTES,
+        resume_margin: int = DISK_RESUME_MARGIN_BYTES,
+        free_bytes: Callable[[Path], int | None] | None = None,
     ) -> None:
         self.root = Path(root)
         self.ext, self._open = codec or _codec()
@@ -138,6 +173,11 @@ class RawFrameWriter:
         self.flush_secs = flush_secs
         self.retain_days = retain_days  # None keeps everything
         self.pruned = 0  # day directories removed
+        self.yield_below = yield_below  # None never yields
+        self.resume_margin = resume_margin
+        self._free_bytes = free_bytes  # None: the module's `fs_free_bytes`, read per sample
+        self.yielding = False
+        self.yielded = 0  # frames discarded because the disk was under the floor
         self._q: collections.deque[tuple[str, str, datetime, str]] = collections.deque()
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -174,7 +214,38 @@ class RawFrameWriter:
             "raw_errors": self.errors,
             "raw_queued_bytes": self._queued,
             "raw_pruned_days": self.pruned,
+            "raw_yielded": self.yielded,
         }
+
+    # -- disk floor ----------------------------------------------------------
+
+    def check_disk(self) -> bool:
+        """Sample free space and enter or leave the yield; True while
+        yielding. Writer thread only. Entering closes every open file, so
+        nothing of ours is left to write a buffered block into the last
+        gigabytes; a file reopened after the yield appends a new frame."""
+        if self.yield_below is None:
+            return False
+        free = (self._free_bytes or fs_free_bytes)(self.root)
+        if free is None:
+            return self.yielding
+        if not self.yielding and free < self.yield_below:
+            self.yielding = True
+            self._close_all()
+            print(
+                f"[streamd] raw frames: YIELDING the disk to the archive -- {free / 1e9:.1f} GB "
+                f"free is under the {self.yield_below / 1e9:.1f} GB floor; frames are discarded "
+                "and counted (raw_yielded) until it clears",
+                flush=True,
+            )
+        elif self.yielding and free >= self.yield_below + self.resume_margin:
+            self.yielding = False
+            print(
+                f"[streamd] raw frames: writing again -- {free / 1e9:.1f} GB free; "
+                f"{self.yielded} frame(s) were discarded in all",
+                flush=True,
+            )
+        return self.yielding
 
     # -- retention -----------------------------------------------------------
 
@@ -228,12 +299,16 @@ class RawFrameWriter:
         last_flush = time.monotonic()
         self.prune()
         last_prune = last_flush
+        self.check_disk()
         while True:
             self._wake.wait(self.flush_secs)
             self._wake.clear()
             self._drain()
             now = time.monotonic()
             if now - last_flush >= self.flush_secs:
+                # Sampled BEFORE the flush: the flush is what turns up to
+                # `flush_secs` of buffered frames into disk blocks.
+                self.check_disk()
                 self._flush_all()
                 last_flush = now
             if now - last_prune >= PRUNE_SECS:
@@ -255,6 +330,9 @@ class RawFrameWriter:
 
     def _drain(self) -> None:
         while batch := self._take():
+            if self.yielding:
+                self.yielded += len(batch)
+                continue
             lines: dict[tuple[str, str, str], list[bytes]] = {}
             for channel, conn, recv_ts, raw in batch:
                 day, hour = recv_ts.strftime("%Y-%m-%d"), recv_ts.strftime("%H")
