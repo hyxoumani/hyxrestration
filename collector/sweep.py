@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -171,6 +172,62 @@ ABORT_CONSEC_ERRORS = 25
 # seconds-long overlap the budget exists to absorb. Reusing the venue's 25
 # would burn two hours before saying so.
 ABORT_CONSEC_LOCK_SKIPS = 5
+# A FULL DISK raises the same `duckdb.Error` and none of that premise holds
+# for it: the commit is refused in milliseconds, nothing has waited, so five
+# unbroken skips are one minute, not twenty-five -- and the shared disk's
+# full moments are DIPS (a neighbour's spill, 4-17 GB gone and back inside
+# 5-15 min, daily around 10:30Z; mistakes #223). Counted on the lock fuse, a
+# ten-minute dip aborts a 12 h run under "the DB is held". So a full-disk
+# skip does its own waiting: poll the archive's filesystem until this much
+# is free again, for at most the 25 minutes the lock fuse stands for, then
+# go on; only a disk that stays full (or one that reads free and still
+# refuses -- btrfs metadata) aborts, and says which.
+DISK_FULL_WAIT_S = 1500.0
+DISK_FULL_POLL_S = 15.0
+DISK_FULL_RESUME_B = 2 * 1024**3
+ABORT_CONSEC_DISK_FULL = 5
+
+
+def is_disk_full(exc: BaseException) -> bool:
+    """DuckDB reports ENOSPC as text inside whichever exception class the
+    failing statement owns (`TransactionException: Failed to commit: Could
+    not write file "...wal": No space left on device`, measured #174)."""
+    text = str(exc)
+    return "No space left on device" in text or "Errno 28" in text
+
+
+def _fs_free_b(db: str) -> int:
+    st = os.statvfs(os.path.dirname(os.path.abspath(db)))
+    return st.f_bavail * st.f_frsize
+
+
+def wait_for_space(
+    db: str,
+    *,
+    budget_s: float = DISK_FULL_WAIT_S,
+    poll_s: float = DISK_FULL_POLL_S,
+    resume_b: int = DISK_FULL_RESUME_B,
+    free=None,
+    sleep=time.sleep,
+    clock=time.monotonic,
+) -> tuple[bool, float, int]:
+    """Block until the archive's filesystem has `resume_b` free, or the
+    budget is spent. Returns (space is back, seconds waited, last free
+    bytes read). An unreadable filesystem counts as still full."""
+    free = free or _fs_free_b
+    t0 = clock()
+    while True:
+        try:
+            got = int(free(db))
+        except OSError:
+            got = -1
+        waited = clock() - t0
+        if got >= resume_b:
+            return True, waited, got
+        if waited >= budget_s:
+            return False, waited, got
+        sleep(poll_s)
+
 
 # Mid-series flush threshold, in buffered rows (candles + trades).
 # "All writes for the series land in a single writer_burst" assumed the
@@ -930,6 +987,11 @@ def run_sweep(
         "candles": 0,
         "errors": 0,
         "lock_skips": 0,
+        # Skips whose write a FULL DISK refused, and the seconds spent
+        # waiting for space after them: not lock contention, not on the
+        # lock fuse, and absent from `lock_wait` (nothing queued).
+        "disk_full_skips": 0,
+        "disk_full_wait_s": 0.0,
         # Tickers behind `lock_skips`, popped by main and written to
         # sweep_log in the CLOSING burst. A skip cannot log itself -- the
         # burst it needs is the one that just failed -- but by the end of
@@ -947,6 +1009,7 @@ def run_sweep(
     pause = OutagePause([urlparse(kalshi.BASE).hostname or ""], tag="sweep")
     consec_errors = 0
     consec_lock_skips = 0
+    consec_disk_full = 0
     # ticker -> (wall seconds, markets). The run's budget (`qa.BATCH_RUN_BUDGET_H`,
     # 12.5h) is spent per SERIES and nothing recorded which: the journal has one
     # line per 100 series and `sweep_log` a timestamp per series, so a breach
@@ -991,6 +1054,7 @@ def run_sweep(
             totals["truncated"] += int(truncated)
             consec_errors = 0
             consec_lock_skips = 0
+            consec_disk_full = 0
             if truncated:
                 print(
                     f"[sweep] {ticker} TRUNCATED at {n_m} markets"
@@ -1010,6 +1074,42 @@ def run_sweep(
             # the identical condition and treats it as a SKIP; this is the
             # same rule for the other writer. Deliberately no sweep_log row:
             # writing one needs the burst that just failed.
+            if is_disk_full(e):
+                # Not the lock fuse's failure: see DISK_FULL_WAIT_S.
+                totals["disk_full_skips"] += 1
+                totals["lock_skipped"].append((ticker, str(e)[:200]))
+                consec_disk_full += 1
+                print(
+                    f"[sweep] {ticker} SKIPPED: archive disk FULL"
+                    f" ({type(e).__name__}: {str(e)[:120]}) —"
+                    f" watermark unmoved, next run resumes; waiting for space",
+                    flush=True,
+                )
+                back, waited, free_b = wait_for_space(db)
+                totals["disk_full_wait_s"] = round(totals["disk_full_wait_s"] + waited, 1)
+                s0 += waited  # the wait is the disk's, not this series' wall
+                if back and consec_disk_full < ABORT_CONSEC_DISK_FULL:
+                    print(
+                        f"[sweep] disk has {free_b / 1e9:.1f} GB free again after"
+                        f" {waited:.0f}s; continuing",
+                        flush=True,
+                    )
+                    series_wall[ticker] = (time.monotonic() - s0, n_m)
+                    continue
+                totals["aborted"] = True
+                why = (
+                    f"{consec_disk_full} consecutive writes refused with"
+                    f" {free_b / 1e9:.1f} GB reading free (metadata, or another"
+                    f" tenant taking it back)"
+                    if back
+                    else f"no space back after {waited:.0f}s ({free_b / 1e9:.1f} GB free)"
+                )
+                print(
+                    f"[sweep] ABORT at {ticker}: the archive's disk is FULL — {why};"
+                    f" watermarks intact, next run resumes",
+                    flush=True,
+                )
+                break
             totals["lock_skips"] += 1
             totals["lock_skipped"].append((ticker, str(e)[:200]))
             consec_lock_skips += 1

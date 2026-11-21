@@ -955,6 +955,14 @@
   or the host. It overlaps the poly sweep 06:10Z -> ~10:45Z, so the poly
   sweep's `held ... in total` is this sweep's queue (mistakes #208:
   poly holds 3,487 -> 5,647 s, small class +2,700 s, wall 12.46 h of 12.5).
+- A full disk does not ride the Kalshi sweep's lock fuse (mistakes #223):
+  `[sweep] ... SKIPPED: archive disk FULL` waits up to 25 min for 2 GB
+  (`disk_full_skips`/`disk_full_wait_s` on the done line) and only then
+  aborts. The sibling's `lake-nightly`/`partition-nightly` refuse under
+  60 GB free (`tools/free_space.FLOOR_GB`, exit 73) -- below it their
+  spill dip is OFF and it returns the day free space passes 60 GB; its
+  `loop-propose` (10:20Z) has no such floor and its start gate WAITS on
+  `hyxlab-autoloop.service`, so it starts when our run ends.
 - The poly sweep's hold on `hyxlab.duckdb` is a SUM of statements: read
   the done line's `flush_steps_min` (`trades` = the dedup that decodes
   every poly `trade_id`, ~6-7 s a flush on a quiet slot; `close` = the

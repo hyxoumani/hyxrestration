@@ -1796,6 +1796,17 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   it (`tests/test_hyxlab_sweep_breaker.py`). An outage run is a
   DELAYED sweep, never a lost one; the recovery signal is the next
   run's larger-than-usual market count, not any repair action.
+- **A full disk has its own branch in that loop** (2026-11-21, mistakes
+  #223): a `duckdb.Error` carrying `No space left on device` is counted
+  in `disk_full_skips` (never `lock_skips`), the run waits in
+  `wait_for_space` -- statvfs every 15 s until 2 GB is free, at most
+  1,500 s -- and goes on; it aborts (exit 75, `the archive's disk is
+  FULL`) only when space does not return in that budget or five writes
+  in a row are refused with space reading free. The done line carries
+  `disk_full_skips` and `disk_full_wait_s`; the skipped series are
+  logged `busy` with the ENOSPC text as the reason. The lock fuse
+  (`ABORT_CONSEC_LOCK_SKIPS`, 5 x a 300 s open ladder) is for a held
+  file only (`tests/test_hyxlab_sweep_busy.py`).
 - **A recovery-scale series can turn the per-series writer burst into a
   multi-minute lock hold** (measured 2026-08-07): KXBTC's post-outage
   backlog buffered ~3.85M trade rows and the single end-of-series

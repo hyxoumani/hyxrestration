@@ -5678,6 +5678,59 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+224. **2026-11-21 08:19Z -- `pkill -f 'dipwatc[h].py'` killed the shell
+    that ran it: the bracket class protects the pattern's own text, and
+    the SAME command went on to write the file with a heredoc
+    (`cat > .../dipwatch.py`), so the command line carried the plain name
+    too** (#4/#11 a third time, by a new route). Exit 144, nothing lost;
+    the sampler it was meant to stop did stop. Rule: **a `pkill -f` goes
+    in a command of its own -- the bracket trick covers one occurrence of
+    the name, and a compound command has as many as its other clauses
+    put there.**
+
+223. **2026-11-21 08:20Z -- the Kalshi sweep's abort fuse was sized on a
+    wait that a full disk never makes: five full-disk skips are a minute,
+    and the fuse reads them as 25 minutes of a held file** (class: a
+    threshold whose unit is a COUNT standing for a DURATION, reused by a
+    failure with a different duration per count; LATENT, 0 occurrences).
+    Found reading both sweeps' flush paths against the disk's next full
+    moment (27 GB free, falling 1.3 GB/h, with a 4-17 GB dip around
+    10:25-10:35Z on five of the last six days: 195.2, 123.2, 51.4, 88.8,
+    40.2 GB at the bottom, each back inside 5-15 min).
+    `ABORT_CONSEC_LOCK_SKIPS = 5` is commented "every lock skip has
+    ALREADY burned the full 300 s budget waiting, so 5 unbroken skips is
+    25 minutes of solid contention", and its `except duckdb.Error` cannot
+    tell a refused open from a refused COMMIT. DuckDB reports ENOSPC in
+    milliseconds (rehearsed again today in a 24 MB private tmpfs, DuckDB
+    1.5.2: `FatalException ... Failed to create checkpoint: IO Error:
+    Could not write file ...: No space left on device`), a small-class
+    series is ~12 s, so a ten-minute dip would have aborted a 12 h run
+    about a minute in, printing `the DB is held, not contended` and
+    filing every skip as `busy`. Nothing lost by that (watermarks move
+    only in the closing burst) -- a day's sweep delayed for a dip that
+    had already ended, under the wrong name. Fix (`collector/sweep.py`):
+    `is_disk_full` classifies by DuckDB's text; a full-disk skip counts
+    in `disk_full_skips`, never `lock_skips`, and WAITS in
+    `wait_for_space` -- statvfs every 15 s until 2 GB is free, at most
+    `DISK_FULL_WAIT_S = 1500` (the same 25 minutes, pinned to the lock
+    fuse by a test) -- then goes on; the wait is taken out of the
+    series' own wall and summed in `disk_full_wait_s` on the done line.
+    It aborts, naming the disk, when space does not come back in the
+    budget, or when `ABORT_CONSEC_DISK_FULL = 5` writes in a row are
+    refused with statvfs reading free (btrfs metadata, or another tenant
+    taking the space back). 7 tests, 5 mutants red and each checked to
+    have changed the file (one red by hanging: the wait with no budget).
+    Takes effect at the 11-22 06:10Z run; the run in flight today has the
+    old fuse. Read alongside and left alone: the poly sweep already holds
+    its batch across a failed flush and retries at the next 100 markets
+    (`[poly] flush failed, batch held`); only its LAST flush is outside
+    that `try`, so a disk still full at the end of the run loses the held
+    batch to tomorrow's re-fetch. Rule: **a fuse counted in events is a
+    claim about how long each event took; before a new failure reaches
+    the same `except`, ask what one of ITS events costs in the fuse's
+    real unit -- and give the fast failure its own wait rather than the
+    slow one's count.**
+
 222. **2026-11-21 02:20Z -- "0 `Errno 28` lines" was the disk item's
     reading on ten passes, and the journal it was grepped from lives on
     the disk that is filling** (class: a witness stored ON the resource

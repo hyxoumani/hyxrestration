@@ -286,3 +286,132 @@ def test_the_ticker_list_never_reaches_the_journal_line(monkeypatch, capsys):
     assert len(done) == 1
     assert "lock_skips" in done[0]  # the COUNT stays
     assert "S001" not in done[0]  # the LIST does not
+
+
+# --- a full disk is not a held file (mistakes #223) -------------------------
+#
+# The lock fuse above is sized on "each skip has already waited 300 s". A
+# commit refused by a FULL DISK raises the same `duckdb.Error` in
+# milliseconds, so five of them are a minute -- and the shared disk's full
+# moments are a neighbour's spill, gone and back inside 5-15 min. On the lock
+# fuse that dip aborts a 12 h run under "the DB is held, not contended".
+
+
+def _full():
+    # DuckDB 1.5.2's own text, measured on a real full filesystem (#174).
+    return duckdb.TransactionException(
+        'TransactionContext Error: Failed to commit: Could not write file "data/hyxlab.duckdb.wal":'
+        " No space left on device"
+    )
+
+
+def test_a_lock_refusal_is_not_read_as_a_full_disk():
+    # Vacuity guard for everything below: the two errors must classify apart.
+    assert sweep_mod.is_disk_full(_full()) is True
+    assert sweep_mod.is_disk_full(_busy()) is False
+
+
+def test_a_disk_dip_longer_than_the_lock_fuse_does_not_abort_the_sweep(monkeypatch):
+    # Twelve series in a row meet the full disk -- more than twice the lock
+    # fuse -- but space comes back after each wait, as a dip does.
+    waits = []
+
+    def full_for_a_while(db, ticker, days, sess, max_markets):
+        if 10 <= int(ticker[1:]) < 22 and ticker not in seen:
+            seen.add(ticker)
+            raise _full()
+        return 1, 1, False
+
+    seen: set[str] = set()
+    # Space is back after every wait, and a good series lands between the
+    # refusals only from S022 on: S010..S021 are an UNBROKEN run of twelve.
+
+    def back(db, **kw):
+        waits.append(db)
+        return True, 60.0, 9 * 1024**3
+
+    monkeypatch.setattr(sweep_mod, "wait_for_space", back)
+    monkeypatch.setattr(sweep_mod, "ABORT_CONSEC_DISK_FULL", 99)
+    _wire(monkeypatch, full_for_a_while)
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+
+    assert totals["aborted"] is False
+    assert totals["disk_full_skips"] == 12
+    assert totals["disk_full_skips"] > sweep_mod.ABORT_CONSEC_LOCK_SKIPS
+    assert totals["lock_skips"] == 0
+    assert totals["disk_full_wait_s"] == 720.0
+    assert len(waits) == 12
+    assert totals["markets"] == 88
+    assert [t for t, _ in totals["lock_skipped"]] == [f"S{i:03d}" for i in range(10, 22)]
+
+
+def test_a_disk_that_stays_full_aborts_after_one_wait_and_says_so(monkeypatch, capsys):
+    attempted = []
+
+    def always_full(db, ticker, days, sess, max_markets):
+        attempted.append(ticker)
+        raise _full()
+
+    monkeypatch.setattr(sweep_mod, "wait_for_space", lambda db, **kw: (False, 1500.0, 0))
+    _wire(monkeypatch, always_full)
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+
+    assert totals["aborted"] is True
+    assert attempted == ["S000"]
+    assert totals["lock_skips"] == 0
+    out = capsys.readouterr().out
+    assert "disk is FULL" in out and "no space back after 1500s" in out
+    assert "the DB is held" not in out
+
+
+def test_a_disk_that_reads_free_and_still_refuses_is_fused(monkeypatch, capsys):
+    # btrfs metadata exhaustion: statvfs says there is room, every commit is
+    # refused. The wait returns at once, so this arm needs its own count.
+    attempted = []
+
+    def always_full(db, ticker, days, sess, max_markets):
+        attempted.append(ticker)
+        raise _full()
+
+    monkeypatch.setattr(sweep_mod, "wait_for_space", lambda db, **kw: (True, 0.0, 30 * 1024**3))
+    _wire(monkeypatch, always_full)
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+
+    assert totals["aborted"] is True
+    assert len(attempted) == sweep_mod.ABORT_CONSEC_DISK_FULL
+    assert "reading free" in capsys.readouterr().out
+
+
+def test_wait_for_space_returns_when_the_floor_is_back_and_not_before():
+    now = {"t": 0.0}
+    readings = iter([0, 500 * 1024**2, 3 * 1024**3])
+
+    def sleep(s):
+        now["t"] += s
+
+    back, waited, free_b = sweep_mod.wait_for_space(
+        "x.duckdb", free=lambda db: next(readings), sleep=sleep, clock=lambda: now["t"]
+    )
+    assert (back, waited, free_b) == (True, 2 * sweep_mod.DISK_FULL_POLL_S, 3 * 1024**3)
+
+
+def test_wait_for_space_gives_up_at_its_budget():
+    now = {"t": 0.0}
+
+    def sleep(s):
+        now["t"] += s
+
+    back, waited, _ = sweep_mod.wait_for_space(
+        "x.duckdb", free=lambda db: 0, sleep=sleep, clock=lambda: now["t"]
+    )
+    assert back is False
+    assert (
+        sweep_mod.DISK_FULL_WAIT_S
+        <= waited
+        < sweep_mod.DISK_FULL_WAIT_S + 2 * sweep_mod.DISK_FULL_POLL_S
+    )
+
+
+def test_the_full_disk_wait_stands_for_the_same_minutes_as_the_lock_fuse():
+    budget_s = sweep_mod.BURST_OPEN_RETRIES * sweep_mod.BURST_OPEN_DELAY_S
+    assert sweep_mod.ABORT_CONSEC_LOCK_SKIPS * budget_s == sweep_mod.DISK_FULL_WAIT_S
