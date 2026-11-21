@@ -122,7 +122,7 @@ def test_stats_line_carries_the_flush_holds_and_omits_an_unmeasured_period(monke
     src = inspect.getsource(streamd)
     assert src.count("holds = self.store.take_flush_holds()") == 2
     assert src.count("sock, holds, steps, lag, rx))") == 1
-    assert src.count("None, None, holds, steps, lag))") == 1
+    assert src.count("None, None, holds, steps, lag, rx))") == 1
 
 
 def test_a_flush_that_holds_a_whole_period_gets_its_own_line():
