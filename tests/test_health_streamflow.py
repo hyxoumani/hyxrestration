@@ -68,7 +68,7 @@ def test_a_dead_last_tick_is_an_instant_not_a_span() -> None:
     assert [r.last_tick for r in flow.dead_ticks] == [20, 20]
     assert health.stream_flow_line(flow).endswith(
         "| last tick dead (under 10% of the tick median) at 2 instant(s): "
-        "10:24:05Z 20 rows, 10:29:15Z 20 rows"
+        "10:24:05Z 20 rows, 10:29:15Z 20 rows | no channel under 25% of its own median for 8 round(s) while the total held"
     )
 
 
@@ -130,7 +130,9 @@ def test_dead_air_inside_the_venues_thursday_closure_is_named_not_alarmed() -> N
     assert (
         "-- inside Kalshi's Thursday closure 08:00-10:00Z (venue shut, QA excuses 07-11Z)" in line
     )
-    assert line.endswith("(2 inside Kalshi's Thursday closure window)")
+    assert line.endswith(
+        "(2 inside Kalshi's Thursday closure window) | no channel under 25% of its own median for 8 round(s) while the total held"
+    )
 
 
 def test_dead_air_that_starts_before_the_closure_keeps_the_alarm() -> None:
@@ -286,7 +288,9 @@ def test_a_low_round_and_a_dead_tick_inside_a_no_path_span_say_so() -> None:
     net = [(_epoch("2026-11-09T10:27:15"), _epoch("2026-11-09T10:29:05"))]
     line = health.stream_flow_line(flow, net=net)
     assert "20 next; uplink had no path for 1.8 min of the round (HOSTNET))" in line
-    assert line.endswith("(1 within 15 s of a HOSTNET no-path span)")
+    assert line.endswith(
+        "(1 within 15 s of a HOSTNET no-path span) | no channel under 25% of its own median for 8 round(s) while the total held"
+    )
     # A span that ended a minute before the tick is not that tick's cause.
     early = [(_epoch("2026-11-09T10:27:15"), _epoch("2026-11-09T10:28:15"))]
     assert "within 15 s" not in health.stream_flow_line(flow, net=early)
@@ -299,3 +303,84 @@ def test_no_span_or_no_cross_reading_claims_nothing() -> None:
     assert health.stream_flow_line(flow, net=[]) == ref
     far = [(_epoch("2026-11-09T09:00:00"), _epoch("2026-11-09T09:01:00"))]
     assert health.stream_flow_line(flow, net=far) == ref
+
+
+# --- one channel starved while the total held (mistakes #228) -----------------
+
+
+def _chan_lines(per_round: list[dict[str, int]], start: str = "2026-11-21T15:00:00+00:00"):
+    """Stats lines 300 s apart whose per-key DELTAS are `per_round` (missing
+    keys repeat the first round's value)."""
+    from datetime import timedelta
+
+    t = datetime.fromisoformat(start)
+    base = {k: 0 for k in KEYS}
+    out = []
+    for i, r in enumerate([per_round[0], *per_round]):
+        if i:
+            for k in KEYS:
+                base[k] += r.get(k, per_round[0][k])
+        ts = (t + timedelta(seconds=300 * i)).isoformat()
+        out.append(f"{ts} {P}{ts[11:19]} stats {dict(base)} (last flush 100000 rows)")
+    return out
+
+
+NORMAL = {
+    "kalshi_lifecycle": 1_200,
+    "kalshi_trades": 70_000,
+    "kalshi_ticker": 750_000,
+    "kalshi_books_events": 1_500_000,
+    "poly_events": 70_000,
+    "poly_trades": 260,
+}
+# 17:05Z 11-21: books x2.7, ticker to 6-12% -- the total goes UP.
+STARVED = {"kalshi_ticker": 60_000, "kalshi_books_events": 4_000_000}
+
+
+def test_a_channel_starved_under_a_rising_total_is_named_with_its_span() -> None:
+    deeper = {**STARVED, "kalshi_ticker": 30_000}
+    flow = health.parse_stream_flow(
+        _chan_lines([NORMAL] * 14 + [STARVED] * 4 + [deeper] + [STARVED] * 5)
+    )
+    assert flow is not None and flow.low == () and flow.dead == ()  # the sum saw nothing
+    (st,) = flow.starved
+    assert st.key == "kalshi_ticker" and st.median == 750_000 and len(st.rounds) == 10
+    line = health.stream_flow_line(flow)
+    assert line.endswith(
+        "| CHANNEL STARVED under 25% of its own median while the total held: kalshi_ticker in "
+        "10 round(s) 11-21 16:15Z..17:00Z (median 750,000/round, worst 30,000 at 16:35Z), "
+        "STILL at 8% in the newest round (17:00Z) -- count that connection's "
+        "`keepalive ping timeout` lines by the minute"
+    )
+
+
+def test_a_starvation_that_ended_says_so_and_a_clean_window_says_what_was_looked_for() -> None:
+    flow = health.parse_stream_flow(_chan_lines([NORMAL] * 14 + [STARVED] * 8 + [NORMAL] * 2))
+    assert flow is not None
+    assert "back to 100% in the newest round (17:00Z)" in health.stream_flow_line(flow)
+    clean = health.parse_stream_flow(_chan_lines([NORMAL] * 12))
+    assert clean is not None and clean.starved == ()
+    assert health.stream_flow_line(clean).endswith(
+        "| no channel under 25% of its own median for 8 round(s) while the total held"
+    )
+
+
+def test_fewer_starved_rounds_than_the_floor_and_a_share_at_the_bar_are_not_named() -> None:
+    assert health.STREAMFLOW_STARVED_MIN_ROUNDS == 8 and health.STREAMFLOW_STARVED_FRAC == 0.25
+    seven = health.parse_stream_flow(_chan_lines([NORMAL] * 14 + [STARVED] * 7))
+    assert seven is not None and seven.starved == ()
+    at_bar = {"kalshi_ticker": 187_500, "kalshi_books_events": 4_000_000}  # exactly 25%
+    flow = health.parse_stream_flow(_chan_lines([NORMAL] * 14 + [at_bar] * 10))
+    assert flow is not None and flow.starved == ()
+
+
+def test_a_thin_channel_is_never_named_and_an_outage_round_is_not_a_starved_channel() -> None:
+    assert health.STREAMFLOW_STARVED_MIN_MEDIAN == 5_000
+    thin = {"kalshi_lifecycle": 0, "poly_trades": 0}  # medians 1,200 and 260
+    flow = health.parse_stream_flow(_chan_lines([NORMAL] * 14 + [thin] * 10))
+    assert flow is not None and flow.starved == ()
+    # Every channel at 20%: a partial outage, not one channel losing to another.
+    out = {k: v // 5 for k, v in NORMAL.items()}
+    flow = health.parse_stream_flow(_chan_lines([NORMAL] * 14 + [out] * 10 + [NORMAL] * 14))
+    assert flow is not None and flow.starved == ()
+    assert flow.low == ()  # ten low rounds are each other's neighbours: no tier names them

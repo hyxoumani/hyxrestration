@@ -1048,3 +1048,12 @@
   wire -- grep the journal for `YIELDING` before calling it a traffic drop;
   and a parser repair cannot reach inside the span. Two writers where one
   is a copy of the other need that priority on EVERY resource they share.
+- STREAMFLOW's total is a sum: read its last clause. `CHANNEL STARVED under
+  25% of its own median while the total held` names one channel losing to
+  another on a shared bottleneck (11-21 17:05Z: books x2.7 on the WiFi path,
+  `kalshi-ticker` timing out once a minute, ticker at ~10% for 3.5 h+ while
+  the total ROSE; mistakes #228). Then count that connection's `keepalive
+  ping timeout` lines by distinct MINUTE per hour -- a roam is 26 in one
+  minute, a starved path is one or two in nearly every minute -- and check
+  the sockets' receive queues (`ss -tnH -p`, near zero = the path, not the
+  loop) before touching the daemon.

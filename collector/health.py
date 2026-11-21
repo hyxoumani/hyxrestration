@@ -698,6 +698,30 @@ STREAMFLOW_LOCAL_ROUNDS = 6
 #: applied to the last-tick row count marks a dead INSTANT.
 STREAMFLOW_DEAD_FRAC = 0.10
 STREAMFLOW_WINDOW_H = 24
+#: A CHANNEL is starved in a round when it received under this fraction of
+#: its own window median while the round's TOTAL was not low. The total is a
+#: sum, and a sum hides one term falling when another rises: measured
+#: 2026-11-21 17:05Z -> 20:37Z, `kalshi_books_events` went 4.9k -> 13k/s (a
+#: Saturday slate) on a WiFi path that could not carry it, the single ticker
+#: connection hit `keepalive ping timeout` once a minute (92/119/76 an hour,
+#: in 57-59 distinct minutes of each) and `kalshi_ticker` fell 2,500/s ->
+#: 100-300/s -- for 3.5 h this row read `no round under 50% of its
+#: neighbours` (mistakes #228). 25% sits well under the diurnal trough the
+#: LOW tier's comment measured (48-50% of the day).
+STREAMFLOW_STARVED_FRAC = 0.25
+#: A channel whose median round is under this many events is too thin and
+#: bursty for a share of its median to mean anything (`poly_trades` ~260 a
+#: round, `kalshi_lifecycle` ~1,200 in bursts).
+STREAMFLOW_STARVED_MIN_MEDIAN = 5_000
+#: Rounds a channel must be starved in before it is named. REPLAYED
+#: 2026-11-21 over 14 d of journal at 12 h checkpoints (27 windows): without
+#: this floor 12 windows named a channel for 1-5 scattered rounds (trades in
+#: the 08-10Z trough and Thursday closures, one poly round), none an event;
+#: the 11-21 starvation is 30 rounds. With it, 25 windows are clean, one names
+#: the ticker (11-21) and one names `poly_events` for 14 rounds on 11-19
+#: 15:38-20:14Z -- not chased; the poly universe moves its own median 3x in
+#: a week. 8 rounds is 40 min at the nominal period.
+STREAMFLOW_STARVED_MIN_ROUNDS = 8
 # A dead last tick is the 15 s flush before the stats line; a no-path span
 # within one flush period of the instant is its cause.
 STREAMFLOW_TICK_PAD_S = 15.0
@@ -771,6 +795,17 @@ class DeadEpisode:
 
 
 @dataclass(frozen=True)
+class ChannelStarve:
+    key: str
+    #: The channel's median received per round over the window.
+    median: int
+    #: Rounds it sat under `STREAMFLOW_STARVED_FRAC` of that while the total held.
+    rounds: tuple[FlowRound, ...]
+    #: The newest round in the window, starved or not: is it still going on?
+    newest: FlowRound
+
+
+@dataclass(frozen=True)
 class StreamFlow:
     rounds: int
     median_received: int
@@ -781,6 +816,7 @@ class StreamFlow:
     dead: tuple[DeadEpisode, ...]
     low: tuple[FlowRound, ...]
     dead_ticks: tuple[FlowRound, ...]
+    starved: tuple[ChannelStarve, ...] = ()
 
 
 def _parse_stats_dict(text: str) -> dict | None:
@@ -798,6 +834,9 @@ def parse_stream_flow(
     dead_frac: float = STREAMFLOW_DEAD_FRAC,
     low_frac: float = STREAMFLOW_LOW_FRAC,
     local_rounds: int = STREAMFLOW_LOCAL_ROUNDS,
+    starved_frac: float = STREAMFLOW_STARVED_FRAC,
+    starved_min_median: int = STREAMFLOW_STARVED_MIN_MEDIAN,
+    starved_min_rounds: int = STREAMFLOW_STARVED_MIN_ROUNDS,
 ) -> StreamFlow | None:
     """Pure: the unit's `-o short-iso` lines -> its flow reading, or None when
     the window holds fewer than two stats lines (one line has no delta).
@@ -859,6 +898,23 @@ def parse_stream_flow(
     rounds = with_local
     low = tuple(r for r in rounds if med_r * dead_frac <= r.received < r.local * low_frac)
     dead_ticks = tuple(r for r in rounds if r.last_tick < med_t * dead_frac)
+    starved: list[ChannelStarve] = []
+    for key in STREAMFLOW_RECV_KEYS:
+        per = sorted(r.by_key[key] for r in rounds)
+        med_k = per[len(per) // 2]
+        if med_k < starved_min_median:
+            continue
+        # Only rounds whose TOTAL held, against the window's median and not
+        # the neighbours': a partial outage ten rounds long has low
+        # neighbours on both sides, is not LOW, and has every channel down.
+        hit = tuple(
+            r
+            for r in rounds
+            if r.by_key[key] < med_k * starved_frac
+            and r.received >= med_r * low_frac
+        )
+        if len(hit) >= starved_min_rounds:
+            starved.append(ChannelStarve(key, med_k, hit, rounds[-1]))
     return StreamFlow(
         len(rounds),
         med_r,
@@ -867,6 +923,7 @@ def parse_stream_flow(
         tuple(episodes),
         low,
         dead_ticks,
+        tuple(starved),
     )
 
 
@@ -1219,7 +1276,39 @@ def stream_flow_line(
         )
     else:
         parts.append("no dead last tick")
+    parts.append(_starved_clause(flow))
     return f"{head} | " + " | ".join(parts)
+
+
+def _starved_clause(flow: StreamFlow) -> str:
+    """One channel under a quarter of its own median while the total held --
+    the reading a sum cannot give (mistakes #228). Names the span, the worst
+    round and whether the newest round is still under."""
+    pct = f"{STREAMFLOW_STARVED_FRAC:.0%}"
+    if not flow.starved:
+        return (
+            f"no channel under {pct} of its own median for {STREAMFLOW_STARVED_MIN_ROUNDS} "
+            "round(s) while the total held"
+        )
+    out = []
+    for st in flow.starved:
+        worst = min(st.rounds, key=lambda r: r.by_key[st.key])
+        now_share = st.newest.by_key[st.key] / max(st.median, 1)
+        still = (
+            f"STILL at {now_share:.0%} in the newest round ({st.newest.at:%H:%M}Z)"
+            if now_share < STREAMFLOW_STARVED_FRAC
+            else f"back to {now_share:.0%} in the newest round ({st.newest.at:%H:%M}Z)"
+        )
+        out.append(
+            f"{st.key} in {len(st.rounds)} round(s) {st.rounds[0].at:%m-%d %H:%M}Z.."
+            f"{st.rounds[-1].at:%H:%M}Z (median {st.median:,}/round, worst "
+            f"{worst.by_key[st.key]:,} at {worst.at:%H:%M}Z), {still}"
+        )
+    return (
+        f"CHANNEL STARVED under {pct} of its own median while the total held: "
+        + "; ".join(out)
+        + " -- count that connection's `keepalive ping timeout` lines by the minute"
+    )
 
 
 # --- SHADOWHOLD: the shadow's hold on the stream archive, and its climb ------

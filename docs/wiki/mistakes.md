@@ -5678,6 +5678,42 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+228. **2026-11-21 20:45Z -- the ticker channel ran at ~10% for 3.5 h and
+    the flow row read `no round under 50% of its neighbours`** (class: a
+    detector on a SUM, blind to one term falling while another rises).
+    Found by accident, reading the WiFi sampler for item (g2). From
+    ~17:05Z `kalshi_books_events` went 4.9k -> 10-14k/s (a Saturday
+    slate) on the WiFi path the box has been on since 11-20; the single
+    `kalshi-ticker` connection began dying of `keepalive ping timeout`
+    about once a minute (16/92/119/76/72 timeouts in 16Z..20Z, in
+    8/57/59/58/36 distinct minutes; a roam episode is 26 in ONE minute,
+    at most 5 minutes an hour in the 72 h before) and `kalshi_ticker`
+    fell from 2,500-3,400/s to 100-300/s; `poly_events` 242 -> 65/s.
+    The sampler's gateway ping (1 s timeout) went from 2-8 all-lost
+    samples per half hour to ~200, and by hand the gateway round trip
+    is 0.5-2.1 s average. Which side: the stream's 24 sockets held 0-75
+    bytes of receive queue in three samples, `loop_lag` 0.2-0.8 s with
+    0-2 late wakes, the daemon at 20-80% of one core -- the loop is not
+    the bottleneck, the path is. NOT explained: the radio reads healthy
+    (signal 60-63 all day, rx rate 288 Mbit/s, channel busy 2 of 50,
+    interface 0.7-1.3 MB/s in), so the delay is past our card. STREAMFLOW
+    sums six counters and books tripling carried the total UP. Fix:
+    `CHANNEL STARVED` on the row -- a channel under 25% of its own window
+    median in 8 or more rounds whose total held (>= 50% of the window
+    median), with the span, the worst round and whether the newest round
+    is still under. Replayed over 14 d at 12 h checkpoints BEFORE
+    shipping: the first cut (no round floor) named a channel in 12 of 27
+    windows for 1-5 scattered rounds; with the floor 25 are clean, one is
+    today, one is `poly_events` for 14 rounds on 11-19 15:38-20:14Z (not
+    chased). 4 tests, 8 mutants red, each asserted to land. Stated
+    limits: the bar is the window's own median, so a starvation longer
+    than ~12 h lowers it; a thin channel (median under 5,000 a round:
+    lifecycle, poly trades) is never named. Not ours to fix: the wired
+    link, or the WiFi profile, is the USER's. Rule: **a floor on a total
+    is a floor on its largest term. When the parts can move in opposite
+    directions -- and a shared bottleneck makes them do exactly that --
+    read each part against its own history.**
+
 227. **2026-11-21 20:20Z -- on a disk hours from full, the raw-frame copy
     was written to the last byte beside the record it duplicates** (class:
     a secondary writer with no priority against the primary on a shared
