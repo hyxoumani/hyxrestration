@@ -706,7 +706,11 @@
   (1.29% of trades late on `..98` over 1,283 min, 0 of 8.1M on `..9c` over
   804 min). QA's `trade latency dispersion sane` is this until the radio
   or the route changes; read NM's `LastScan` beside a lag burst
-  (`~/scratch/tmp/netwatch2.sh`) before blaming a venue. A
+  (`~/scratch/tmp/netwatch2.sh`) before blaming a venue. The stream's
+  stats line carries the stalls itself since 2026-11-21: `rx_gap=<longest
+  s>/<silences >= 2 s>` per 300 s and `rx silence: no frame on any
+  connection for N.Ns` when one of 5 s or more ends (mistakes #226) -- a
+  line every ~308 s is the scan; `rx_gap` near 0.25 is a clean period. A
   STREAMFLOW row the uplink explains now says so (`uplink had no path for N
   min of it (HOSTNET)`, dead ticks `N within 15 s of a HOSTNET no-path
   span`); chase the rows that carry no such clause.

@@ -404,6 +404,98 @@ def loop_stall_line(lag_s: float) -> str | None:
     )
 
 
+#: A whole-universe silence this long is counted on the stats line
+#: (`rx_gap=<max>/<n>`). The daemon receives ~7,000 frames a second across 26
+#: connections of two venues, so two seconds with none on ANY of them is not
+#: a quiet market.
+RX_SILENT_S = 2.0
+#: A silence this long gets its own journal line when it ENDS, at the clock
+#: time a reader needs to pair it with whatever stopped the path.
+RX_SILENCE_LOG_S = 5.0
+
+
+class RxSilenceWatch:
+    """The longest time NO connection delivered a frame, per stats period:
+    the reading that says the PATH stopped, as `LoopLagWatch` says the
+    process did.
+
+    Why it exists: from 2026-11-20 16:34Z, 1.3% of trades were archived 5-15 s
+    late on both venues, QA's latency check went red, and two passes read it
+    as a degraded link. It was a ~10 s total loss of the path every ~308 s --
+    the box's own WiFi background scan, 300 s after the last one completed
+    (9 scans of 9 against a gateway ping, 2026-11-21 14:20-15:02Z; 0 of 8.1M
+    trades late on the other radio). No socket drops in 10 s (the keepalive
+    is 20 s + 20 s) and TCP delivers the backlog, so nothing here counted
+    it: no GAP row, no reconnect, `loop_lag` flat, the received totals whole.
+    221 such holes in 22 h were visible only as `recv_ts - src_ts`, which
+    takes an archive attach to read and needs the venue's clock.
+
+    `frames` is bumped by the receive loops; `note` runs on `loop_watch`'s
+    tick and sees whether it moved. The reading is the time between the tick
+    that last saw a frame and the tick that next saw one: an UPPER bound on
+    the silence, at most two ticks over it, and one tick (`LOOP_TICK_S`)
+    when frames never stopped. A stalled LOOP stops the ticks and the reads
+    alike and so reads as a silence too -- read `loop_lag` beside it.
+
+    Takes no lock: every caller runs on the loop thread.
+    """
+
+    def __init__(self) -> None:
+        self.frames = 0
+        self._seen = 0
+        self._last_rx: float | None = None
+        self._ticks = 0
+        self._max = 0.0
+        self._n = 0
+
+    def note(self, now: float) -> float | None:
+        """One tick at loop time `now`. Returns the silence that just ENDED
+        (None when no frame arrived since the last tick, or on the first
+        frame ever -- there is no earlier frame to measure from)."""
+        self._ticks += 1
+        if self.frames == self._seen:
+            return None
+        self._seen = self.frames
+        ended = None
+        if self._last_rx is not None:
+            ended = now - self._last_rx
+            self._max = max(self._max, ended)
+            if ended >= RX_SILENT_S:
+                self._n += 1
+        self._last_rx = now
+        return ended
+
+    def take(self, now: float) -> tuple[float, int] | None:
+        """`(longest silence, silences of RX_SILENT_S or more that ended)`
+        since the last call, and reset. A silence still OPEN at `now` is in
+        the maximum (a dead path must not print as its last good period) and
+        is counted in the period it ends in. None when no tick ran or no
+        frame was ever received -- unmeasured, never a clean 0.0 (#91)."""
+        if not self._ticks or self._last_rx is None:
+            self._ticks = 0
+            return None
+        out = (max(self._max, now - self._last_rx), self._n)
+        self._ticks, self._max, self._n = 0, 0.0, 0
+        return out
+
+
+def rx_gap_clause(gap: tuple[float, int]) -> str:
+    """`rx_gap=<longest s>/<silences >= RX_SILENT_S>` for the period."""
+    worst, n = gap
+    return f"rx_gap={worst:.2f}/{n}"
+
+
+def rx_silence_line(silence_s: float | None) -> str | None:
+    """The journal line for ONE whole-universe silence of `RX_SILENCE_LOG_S`
+    or more, printed when the first frame after it arrives; else None."""
+    if silence_s is None or silence_s < RX_SILENCE_LOG_S:
+        return None
+    return (
+        f"rx silence: no frame on any connection for {silence_s:.1f}s"
+        " (the path or the loop, not a venue -- read loop_lag and HOSTNET)"
+    )
+
+
 def stats_line(
     prefix: str,
     stats: dict,
@@ -412,6 +504,7 @@ def stats_line(
     holds: tuple[int, float, float] | None = None,
     steps: tuple[float, float, float, float] | None = None,
     loop: tuple[float, int] | None = None,
+    rx: tuple[float, int] | None = None,
 ) -> str:
     """The daemon's periodic / shutdown stats line, rendered in ONE place.
 
@@ -440,13 +533,14 @@ def stats_line(
     # field appended after them would blind the digest of every tree that
     # reads this journal with the older pattern.
     loop_s = "" if loop is None else f" {loop_lag_clause(loop)}"
+    rx_s = "" if rx is None else f" {rx_gap_clause(rx)}"
     holds_s = "" if holds is None else f" {flush_holds_clause(holds)}"
     # Only beside the total it splits: steps without holds would be a
     # reading with nothing to be a share of.
     steps_s = "" if holds is None or steps is None else f" {flush_steps_clause(steps)}"
     return (
         f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}"
-        f"{loop_s}{holds_s}{steps_s}"
+        f"{loop_s}{rx_s}{holds_s}{steps_s}"
     )
 
 
@@ -1009,6 +1103,15 @@ class Daemon:
         return merged
 
     @property
+    def rx_gap(self) -> RxSilenceWatch:
+        """Built on first use, like `hb`: the receive loops bump it on every
+        frame, and tests drive those loops on `__new__`-assembled Daemons."""
+        rx = self.__dict__.get("_rx_gap")
+        if rx is None:
+            rx = self._rx_gap = RxSilenceWatch()
+        return rx
+
+    @property
     def hb(self) -> HeartbeatBook:
         """Built on first use when `__init__` did not run (tests assemble a
         Daemon with `__new__` and only the attributes they exercise)."""
@@ -1475,6 +1578,7 @@ class Daemon:
                         if probe_due is not None:
                             beat.probe_ok(_time.time())  # any frame answers the probe
                         last_frame, probe_due = mono(), None
+                        self.rx_gap.frames += 1
                         recv_ts = datetime.now(UTC)
                         if self.raw is not None:
                             self.raw.put(channel, label, recv_ts, raw)
@@ -1609,6 +1713,7 @@ class Daemon:
                                     assets = new
                                     break  # reconnect re-seeds via fresh books
                             continue
+                        self.rx_gap.frames += 1
                         recv_ts = datetime.now(UTC)
                         if isinstance(raw, str) and raw.strip() == polymarket_ws.PROBE_HELD_REPLY:
                             # The subscription probe's "intact" answer. Not
@@ -1758,7 +1863,8 @@ class Daemon:
                 holds = self.store.take_flush_holds()
                 steps = self.store.take_flush_steps()
                 lag = self.loop_lag.take()
-                _log(stats_line("", self.report_stats(), out.rows, sock, holds, steps, lag))
+                rx = self.rx_gap.take(now)
+                _log(stats_line("", self.report_stats(), out.rows, sock, holds, steps, lag, rx))
                 if throttled:
                     # Its own line, so a grep for the word finds the PERIOD
                     # it landed in, not every stats line ever printed.
@@ -1780,6 +1886,8 @@ class Daemon:
             lag = max(0.0, loop.time() - asked - LOOP_TICK_S)
             self.loop_lag.note(lag)
             if (line := loop_stall_line(lag)) is not None:
+                _log(line)
+            if (line := rx_silence_line(self.rx_gap.note(loop.time()))) is not None:
                 _log(line)
 
     async def heartbeat(self) -> None:
@@ -2054,7 +2162,8 @@ class Daemon:
             holds = self.store.take_flush_holds()
             steps = self.store.take_flush_steps()
             lag = self.loop_lag.take()
-            _log(stats_line("shutdown; ", self.report_stats(), None, None, holds, steps, lag))
+            rx = self.rx_gap.take(asyncio.get_running_loop().time())
+            _log(stats_line("shutdown; ", self.report_stats(), None, None, holds, steps, lag, rx))
 
 
 def main() -> None:

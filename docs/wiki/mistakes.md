@@ -5678,6 +5678,37 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+226. **2026-11-21 15:05Z -- 221 ten-second losses of the whole path in
+    22 h moved no counter the stream daemon keeps** (class: an instrument
+    that learns of an absence only from the events an absence prevents --
+    #98's shape on the receive side). From 16:34Z 11-20 the box's own
+    WiFi background scan, started 300 s after the last one completed,
+    took the radio off `..f5:98`'s channel for ~10 s: gateway ping 5 of 5
+    lost on 9 scans of 9 (14:20-15:02Z, NetworkManager `LastScan` age
+    300-307 s at each), every trade more than 5 s late in a watched 15
+    min inside three such stalls, 1.29% of trades late over 1,283 min on
+    that radio and 0 of 8.1M over 804 min on `..f5:9c`. Ten seconds is
+    under the websocket keepalive (20 s + 20 s), so no socket dropped; TCP
+    delivered the backlog, so no row was lost: no GAP, no reconnect,
+    `loop_lag` flat, STREAMFLOW's rounds whole. The only trace was
+    `recv_ts - src_ts` inside the archive -- which QA reads once a day as
+    one p99, and which two passes then read as 'the link degraded' and
+    'the path itself now stalls' for want of a clock time to pair with
+    anything. Fix: `streamd.RxSilenceWatch` -- the receive loops bump one
+    counter, `loop_watch`'s 0.25 s tick sees whether it moved, the stats
+    line carries `rx_gap=<longest s>/<silences >= 2 s>` between `loop_lag`
+    and the hold clauses, and a silence of 5 s or more prints `rx silence:
+    no frame on any connection for N.Ns` at the instant it ends. An upper
+    bound, at most two ticks over the silence; a silence still open at a
+    stats line is in that line's maximum; a stalled loop reads as a
+    silence too, so it is read beside `loop_lag`. 8 tests, 6 mutants red
+    (each watched to land). Rule: **a daemon that receives for a living
+    measures the time it received NOTHING, on every connection at once --
+    drops, gaps and totals are all readings of what arrived or what broke,
+    and a path that pauses under the keepalive and resumes does neither.**
+    Not fixed by us: the scan itself (wired link, or the profile locked to
+    `..f5:9c`: the USER's).
+
 225. **2026-11-21 14:20Z -- an ad-hoc read of a CLOSED 36 h window went to
     the live stream archive and held it 18.5 s** (class: a rule already
     written, #158 and the backup-slot rule, not applied to a query that
