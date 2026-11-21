@@ -910,8 +910,7 @@ def parse_stream_flow(
         hit = tuple(
             r
             for r in rounds
-            if r.by_key[key] < med_k * starved_frac
-            and r.received >= med_r * low_frac
+            if r.by_key[key] < med_k * starved_frac and r.received >= med_r * low_frac
         )
         if len(hit) >= starved_min_rounds:
             starved.append(ChannelStarve(key, med_k, hit, rounds[-1]))
