@@ -5678,6 +5678,23 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+225. **2026-11-21 14:20Z -- an ad-hoc read of a CLOSED 36 h window went to
+    the live stream archive and held it 18.5 s** (class: a rule already
+    written, #158 and the backup-slot rule, not applied to a query that
+    looked small). `latbss.py` asked `stream_trades` for per-minute
+    lateness from 11-20 02:12Z in one statement; the 24 h read of the
+    same table on the pass before had held 0.9 s, and that number was
+    carried as the price. Cost: two `flush FAILED` lines naming the pid
+    (14:20:23Z, 14:20:25Z), rows buffered and landed on the next flush,
+    none lost -- and the script then died on a timezone compare with the
+    rows unsaved, so the hold bought nothing. Redone the way the rule
+    says: the part before the 03:30Z slot from `hyxstream.Sat.duckdb`
+    (0 s live), the rest live in 2 h chunks that each held 0.14-0.15 s,
+    pickled chunk by chunk. Rule: **a hold measured on one window prices
+    that window, not the table: split a live read at the newest backup
+    slot before running it, chunk what is left under one flush period,
+    and write the rows to disk before the first line of analysis.**
+
 224. **2026-11-21 08:19Z -- `pkill -f 'dipwatc[h].py'` killed the shell
     that ran it: the bracket class protects the pattern's own text, and
     the SAME command went on to write the file with a heredoc
