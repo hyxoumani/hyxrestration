@@ -718,10 +718,20 @@ STREAMFLOW_STARVED_MIN_MEDIAN = 5_000
 #: this floor 12 windows named a channel for 1-5 scattered rounds (trades in
 #: the 08-10Z trough and Thursday closures, one poly round), none an event;
 #: the 11-21 starvation is 30 rounds. With it, 25 windows are clean, one names
-#: the ticker (11-21) and one names `poly_events` for 14 rounds on 11-19
-#: 15:38-20:14Z -- not chased; the poly universe moves its own median 3x in
-#: a week. 8 rounds is 40 min at the nominal period.
+#: the ticker (11-21) and one named `poly_events` for 14 rounds on 11-19
+#: 15:38-20:14Z -- chased the same day and excluded, see
+#: STREAMFLOW_STARVED_SKIP. 8 rounds is 40 min at the nominal period.
 STREAMFLOW_STARVED_MIN_ROUNDS = 8
+#: Counters the starved clause does not read. `poly_events` counts ROWS and
+#: two tokens of one market decide its level: measured 2026-11-21 on the Sat
+#: backup slot across the 11-20 07:56Z low -> high switch (no connection
+#: event near it), 20 min each side: 88,296 rows -> 261,998 over the same
+#: 100 tokens, and one market's pair went 152 -> 91,022 rows each, 98% of
+#: them `snap` (the venue re-sends that book whole). The level is that
+#: market's trading, bimodal at ~18k and ~66k a round, and the 14 rounds the
+#: replay named on 11-19 were its quiet mode. A share of such a median says
+#: nothing about the path (mistakes #229).
+STREAMFLOW_STARVED_SKIP = ("poly_events",)
 # A dead last tick is the 15 s flush before the stats line; a no-path span
 # within one flush period of the instant is its cause.
 STREAMFLOW_TICK_PAD_S = 15.0
@@ -900,6 +910,8 @@ def parse_stream_flow(
     dead_ticks = tuple(r for r in rounds if r.last_tick < med_t * dead_frac)
     starved: list[ChannelStarve] = []
     for key in STREAMFLOW_RECV_KEYS:
+        if key in STREAMFLOW_STARVED_SKIP:
+            continue
         per = sorted(r.by_key[key] for r in rounds)
         med_k = per[len(per) // 2]
         if med_k < starved_min_median:

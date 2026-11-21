@@ -384,3 +384,16 @@ def test_a_thin_channel_is_never_named_and_an_outage_round_is_not_a_starved_chan
     flow = health.parse_stream_flow(_chan_lines([NORMAL] * 14 + [out] * 10 + [NORMAL] * 14))
     assert flow is not None and flow.starved == ()
     assert flow.low == ()  # ten low rounds are each other's neighbours: no tier names them
+
+
+def test_poly_events_is_one_markets_snapshots_and_is_never_named() -> None:
+    """Mistakes #229: its level is two tokens re-sent whole (152 -> 91,022
+    rows each across one switch), bimodal with no path event. The other
+    Kalshi channels are still read in the same window (vacuity guard)."""
+    assert health.STREAMFLOW_STARVED_SKIP == ("poly_events",)
+    quiet = {"poly_events": 15_000}  # 21% of its 70,000 median
+    flow = health.parse_stream_flow(_chan_lines([NORMAL] * 14 + [quiet] * 10))
+    assert flow is not None and flow.starved == ()
+    both = {**quiet, "kalshi_trades": 10_000}
+    flow = health.parse_stream_flow(_chan_lines([NORMAL] * 14 + [both] * 10))
+    assert flow is not None and [st.key for st in flow.starved] == ["kalshi_trades"]

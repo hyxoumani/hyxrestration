@@ -5678,6 +5678,35 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+229. **2026-11-21 21:30Z -- the starved-channel clause shipped reading a
+    counter whose level is one market's snapshots** (class: a share-of-
+    median detector on a quantity with two modes of its own). #228's
+    replay named `poly_events` for 14 rounds on 11-19 and the entry said
+    "not chased" -- an hour after shipping. Chased: the counter sits at
+    ~66k or ~18k a round and switches with no connection event (11-20
+    07:56Z, last reconnect 06:20Z). On the Sat backup slot (held 1.2 s,
+    no live hold), 20 min each side of that switch: 88,296 rows ->
+    261,998 over the same 100 tokens, and ONE market's two tokens went
+    152 -> 91,022 rows each, 98% `snap` -- the venue re-sends that book
+    whole while it trades; the top 5 tokens are 84-96% of all rows. So
+    the 11-19 span was that market's quiet mode, and today's poly dip
+    (242 -> 65/s, written into #228 as part of the starvation) is NOT
+    evidence about the path. Fix: `STREAMFLOW_STARVED_SKIP =
+    ("poly_events",)`; replay now 26 of 27 windows clean and today. 1
+    test, 1 mutant red. Rule: **before a share-of-its-own-median
+    detector reads a counter, look at what the counter is a sum OF -- a
+    count of rows that one member can multiply by a thousand has no
+    typical level to be a share of. And a replay hit left "not chased"
+    is the replay telling you the detector is not finished.** Found on
+    the way and NOT fixed: `streamd.poly_books` runs its hourly
+    token-set refresh only inside the 10 s receive TIMEOUT branch, which
+    a connection carrying 60-240 events/s never enters -- 0 `token set
+    A -> B` lines in 14 d of journal, and the only two refresh attempts
+    logged (11-20 01:59Z, 16:26Z) are from link outages. The top-50
+    universe is in practice chosen at boot. Left as a decision: making
+    it reachable means a reconnect (GAP + reseed) whenever the top 50
+    moves, and QA's poly replay is sized on a fixed 100-token universe.
+
 228. **2026-11-21 20:45Z -- the ticker channel ran at ~10% for 3.5 h and
     the flow row read `no round under 50% of its neighbours`** (class: a
     detector on a SUM, blind to one term falling while another rises).
