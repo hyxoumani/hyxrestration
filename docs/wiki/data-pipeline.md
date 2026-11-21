@@ -558,6 +558,20 @@ path for N min of it (HOSTNET)`, and the dead-tick clause counts the
 instants within 15 s (one flush) of a span. No annotation = no overlap;
 with NetworkManager's journal unread nothing is cross-read.
 
+**`ENOSPC`: failed writes, and whether the journal was there (since
+2026-11-21, mistakes #222).** One digest row under `HOSTFS`, two clauses.
+The count: journal lines of this repo's units carrying `Errno 28` or `No
+space left on device`, by unit, grouped into episodes (lines <= 300 s
+apart), the span printed as a span of failed attempts. The witness: the
+journal is on the same filesystem and journald stops growing under 4 GB
+free (`SystemKeepFree` default), so the stream unit's journal is checked
+for holes longer than 600 s (its stats line is owed every 300 s; widest
+318 s in 21 d, zero holes). `0 ... failure lines` is a clean window only
+beside `journal continuous`; `JOURNAL SILENT` means the daemon was down
+or the journal was refusing, and failures inside it are uncounted.
+`hyxlab-autoloop.service` is excluded (its journal is prose about the
+string).
+
 **`HOSTFS` ends with btrfs's own allocation (since 2026-11-15).** Every
 other number on the line is `statvfs`, which on btrfs is an estimate: a
 write fails ENOSPC when metadata cannot grow, while `df` still reads free

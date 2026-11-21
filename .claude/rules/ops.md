@@ -890,6 +890,13 @@
   of 12.0 GiB (6.0 GiB of room past the reserve)`); `METADATA TIGHT` there
   means the days-to-full figure is already wrong. `btrfs filesystem usage
   -b data` runs unprivileged.
+- The journal is on the disk it reports on: journald stops growing under
+  4 GB free (`SystemKeepFree` default), so on a full disk a grep for
+  `Errno 28` returns 0 because the lines were dropped. Read the digest's
+  `ENOSPC` row: the count is clean only beside `journal continuous`;
+  `JOURNAL SILENT` spans (the stream's 300 s stats line missing > 600 s)
+  are uncounted failure time, and the `HOSTFS` floor has no sample inside
+  them either (mistakes #222).
 - A last-eviction time hours old is not relief. When the control plane is
   down the kubelet has no node object and its eviction manager logs
   `failed to get summary stats` every 10 s instead of an attempt (11-13

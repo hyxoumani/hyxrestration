@@ -5678,6 +5678,53 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+222. **2026-11-21 02:20Z -- "0 `Errno 28` lines" was the disk item's
+    reading on ten passes, and the journal it was grepped from lives on
+    the disk that is filling** (class: a witness stored ON the resource
+    whose exhaustion it reports; #207's "the alarm is the first thing the
+    condition gets to kill", applied to the log instead of the ledger).
+    34 GB free at 02:15Z, net burn 46 GB/day, the sibling's 7-43 GB spill
+    due 05:20Z/07:00Z. `/var/log/journal` is the same btrfs, journald runs
+    its defaults (`systemd-analyze cat-config systemd/journald.conf` prints
+    no override; boot line `System Journal ... is 3.9G, max 4G`), and
+    journald.conf(5) `SystemKeepFree` -- 15% of the filesystem capped at
+    4 GB -- stops it growing a file once less than that is free. Files
+    grow in 8 MB steps, so under 4 GB free the stream's `flush FAILED
+    (OSError: [Errno 28] ...)` lines are dropped within one step: BEFORE
+    any writer of ours fails, and for as long as the disk stays there. A
+    grep that returns 0 is then what a full disk writes. The collector's
+    `fs_free_b=` field (the `HOSTFS` floor and pace) rides the same
+    journal, so the floor's lowest samples are the ones that go missing.
+    NOT MEASURED: the disk has not been under 4 GB in the journal's
+    retention. The manual's words are "journald will stop using more
+    space" (journald.conf(5), systemd 260); whether it keeps writing by
+    recycling its own 3.9 G of archives is not something the manual
+    settles, which is why the row carries a witness instead of an
+    assumption -- the first morning under 4 GB reads it. SHIPPED (health only, digest runs from
+    the dev tree): an `ENOSPC` row under `HOSTFS`. Count half: lines
+    carrying `Errno 28` or `No space left on device` (DuckDB's own text,
+    #174) by unit in episodes (lines <= 300 s apart), the span printed as
+    a span of failed attempts; `hyxlab-autoloop.service` is left out by
+    name -- the only 2 matches in 30 d of journal were a pass's own
+    sentence about the string (11-16 21:31Z). Witness half: holes in
+    `hyxlab-stream.service`'s journal longer than two stats periods
+    (600 s), the open tail to the read included, printed `JOURNAL SILENT
+    ... failures inside a silence are uncounted`; plus `NOW N GB free,
+    under journald's 4 GB keep-free: the journal is not recording` from
+    the live `statvfs`. Replayed before shipping over the 21 d the journal
+    holds (20,017 stream lines, three reboots, the 11-14 crash): widest
+    spacing 318.96 s, 0 silences -- no false positive. First live reading
+    02:19Z: `24h: 0 full-disk write failure lines in any unit's journal |
+    witness: hyxlab-stream.service journal continuous (widest silence 318
+    s against a 300 s stats line)`. `tests/test_health_enospc.py`, 8
+    tests, six mutants red, each asserted to have changed the source.
+    Stated limit: a silence cannot tell a dead daemon from a refusing
+    journal -- the unit rows and `CUT` say the first. Rule: **before
+    reading an absence out of a log, ask where the log is stored and what
+    stops it being written; when the answer is the condition under watch,
+    a zero needs a second witness that costs no write -- here the gap in
+    a line that is owed on a cadence.**
+
 221. **2026-11-20 20:20Z -- the uplink line timed an outage from the
     manager's verdict, and the path had been dead 45 s before it** (class:
     an instrument that learns of a loss from the component that DECIDES it

@@ -4168,6 +4168,188 @@ def cut_by_reset(
     )
 
 
+# ---- full-disk write failures (mistakes #222) --------------------------------
+#
+# The disk item's first question on the morning after is "did a write fail,
+# and for how long", and for ten passes it was answered by hand with
+# `grep -c 'Errno 28'`. Two things that grep cannot say:
+#
+# * WHO and WHEN. The stream prints `flush FAILED (OSError: [Errno 28] ...)`,
+#   DuckDB's own writers print `No space left on device` inside a
+#   TransactionException or IOException (mistakes #174), and the #207 ledgers
+#   print `WARNING ... unwritable`: two strings, by unit, in episodes.
+# * WHETHER THE WITNESS WAS THERE. The journal lives on the same filesystem
+#   (`/var/log/journal`), and journald stops growing its files once the
+#   filesystem has less than `SystemKeepFree` free -- 4 GB at the defaults this
+#   box runs (journald.conf(5); `systemd-analyze cat-config` prints no
+#   override). A file grows in 8 MB steps, so under 4 GB free the lines that
+#   would record the failures are dropped within one step: zero matching lines
+#   is what a full disk writes. The disk-free witness is SILENCE: the stream
+#   daemon prints a stats line every 300 s (widest spacing 318 s over 24 h,
+#   2026-11-21), so a longer hole in its journal with no boot boundary is the
+#   daemon dead or the journal refusing -- and the line says which the window
+#   cannot tell apart, rather than printing a clean zero over it.
+#
+# `hyxlab-autoloop.service` is left out by name: its journal is a pass's
+# PROSE, and the only two matches in 30 d of journal (11-16 21:31Z) were a
+# sentence about this string.
+
+ENOSPC_WINDOW_H = 24
+ENOSPC_GREP = "Errno 28|No space left on device"
+ENOSPC_PROSE_UNITS = frozenset({"hyxlab-autoloop.service"})
+ENOSPC_EPISODE_GAP_S = 300.0  # failing lines further apart are two episodes
+ENOSPC_WITNESS_UNIT = STREAMFLOW_UNIT
+ENOSPC_WITNESS_PERIOD_S = 300.0  # the stats line's nominal cadence
+ENOSPC_SILENCE_S = 2 * ENOSPC_WITNESS_PERIOD_S  # one missed line is the timer
+JOURNALD_KEEP_FREE_B = 4 * 1024**3  # journald's default SystemKeepFree cap
+
+
+@dataclass(frozen=True)
+class EnospcWindow:
+    """Full-disk failure lines in the window and the journal's own continuity.
+
+    `fails` is (epoch, unit) per matching line, None when the journal could not
+    be read; `witness` is the witness unit's line times, None when unread.
+    """
+
+    fails: tuple[tuple[float, str], ...] | None
+    witness: tuple[float, ...] | None
+    ends_at: float  # when the window was read: silence runs up to here
+
+
+def parse_enospc(stdout: str, units: set[str] | None = None) -> tuple[tuple[float, str], ...]:
+    """(epoch, unit) per line of a non-prose unit that names the errno or its
+    text. `units` restricts to this repo's units when given."""
+    out = []
+    for ts, rec in _journal_json(stdout):
+        msg, unit = rec.get("MESSAGE"), rec.get("_SYSTEMD_USER_UNIT")
+        if not isinstance(msg, str) or not isinstance(unit, str):
+            continue
+        if unit in ENOSPC_PROSE_UNITS or (units is not None and unit not in units):
+            continue
+        if "Errno 28" in msg or "No space left on device" in msg:
+            out.append((ts, unit))
+    return tuple(sorted(out))
+
+
+def parse_witness_times(stdout: str) -> tuple[float, ...]:
+    return tuple(sorted(ts for ts, _ in _journal_json(stdout)))
+
+
+def read_enospc(
+    units: set[str] | None = None, hours: int = ENOSPC_WINDOW_H, now: float | None = None
+) -> EnospcWindow:
+    """Two journal reads; never raises, an unread half is `None`."""
+    fails = _journal_hourly(
+        [
+            f"--grep={ENOSPC_GREP}",
+            "-o",
+            "json",
+            "--output-fields=MESSAGE,_SYSTEMD_USER_UNIT,__REALTIME_TIMESTAMP",
+        ],
+        hours,
+    )
+    witness = _journal_hourly(
+        ["-u", ENOSPC_WITNESS_UNIT, "-o", "json", "--output-fields=__REALTIME_TIMESTAMP"], hours
+    )
+    return EnospcWindow(
+        fails=parse_enospc(fails, units) if fails is not None else None,
+        witness=parse_witness_times(witness) if witness is not None else None,
+        ends_at=_time.time() if now is None else now,
+    )
+
+
+def enospc_episodes(
+    fails: tuple[tuple[float, str], ...], gap_s: float = ENOSPC_EPISODE_GAP_S
+) -> list[tuple[float, float, int]]:
+    """(first, last, lines) per run of failing lines no further apart than `gap_s`."""
+    eps: list[tuple[float, float, int]] = []
+    for ts, _ in fails:
+        if eps and ts - eps[-1][1] <= gap_s:
+            eps[-1] = (eps[-1][0], ts, eps[-1][2] + 1)
+        else:
+            eps.append((ts, ts, 1))
+    return eps
+
+
+def witness_silences(
+    times: tuple[float, ...], ends_at: float, floor_s: float = ENOSPC_SILENCE_S
+) -> list[tuple[float, float]]:
+    """(from, to) for every hole in the witness's lines longer than `floor_s`,
+    the open one up to `ends_at` included: a journal that stopped and never
+    resumed is the case this exists for."""
+    out = []
+    for a, b in zip(times, (*times[1:], ends_at), strict=True):
+        if b - a > floor_s:
+            out.append((a, b))
+    return out
+
+
+def _z(ts: float) -> str:
+    return f"{datetime.fromtimestamp(ts, UTC):%m-%d %H:%M:%S}Z"
+
+
+def enospc_line(win: EnospcWindow, free_b: int | None = None, hours: int = ENOSPC_WINDOW_H) -> str:
+    """Render the window. Pure.
+
+    The count and the witness are two readings and print as two clauses: a
+    zero count is a clean window only beside a continuous witness.
+    """
+    if win.fails is None:
+        head = f"{hours}h: journal unreadable"
+    elif not win.fails:
+        head = f"{hours}h: 0 full-disk write failure lines in any unit's journal"
+    else:
+        by: dict[str, int] = {}
+        for _, unit in win.fails:
+            by[unit] = by.get(unit, 0) + 1
+        units_txt = ", ".join(f"{u} {n}" for u, n in sorted(by.items(), key=lambda kv: -kv[1]))
+        eps = enospc_episodes(win.fails)
+        span_min = sum(b - a for a, b, _ in eps) / 60
+        worst = max(eps, key=lambda e: e[1] - e[0])
+        head = (
+            f"{hours}h: FULL-DISK WRITE FAILURES {len(win.fails)} line(s) ({units_txt}) in "
+            f"{len(eps)} episode(s), {_z(eps[0][0])} -> {_z(eps[-1][1])}, "
+            f"{span_min:.1f} min between first and last line of each (a span of failed "
+            f"attempts, not a measured outage), longest {_z(worst[0])} -> {_z(worst[1])} "
+            f"({(worst[1] - worst[0]) / 60:.1f} min, {worst[2]} line(s))"
+        )
+    if win.witness is None:
+        tail = f"witness ({ENOSPC_WITNESS_UNIT} journal) unreadable"
+    elif not win.witness:
+        tail = (
+            f"witness: NO {ENOSPC_WITNESS_UNIT} line in the window -- the count above "
+            "proves nothing"
+        )
+    else:
+        holes = witness_silences(win.witness, win.ends_at)
+        if not holes:
+            widest = max(
+                (b - a for a, b in zip(win.witness, (*win.witness[1:], win.ends_at), strict=True)),
+                default=0.0,
+            )
+            tail = (
+                f"witness: {ENOSPC_WITNESS_UNIT} journal continuous (widest silence "
+                f"{widest:.0f} s against a {ENOSPC_WITNESS_PERIOD_S:.0f} s stats line)"
+            )
+        else:
+            a, b = max(holes, key=lambda h: h[1] - h[0])
+            total = sum(y - x for x, y in holes) / 60
+            tail = (
+                f"witness: {ENOSPC_WITNESS_UNIT} JOURNAL SILENT {len(holes)} time(s), "
+                f"{total:.1f} min, longest {_z(a)} -> {_z(b)} ({(b - a) / 60:.1f} min): the "
+                "daemon down, or journald refusing to grow (it stops under "
+                f"{_gb_b(JOURNALD_KEEP_FREE_B)} free, before any writer fails) -- failures "
+                "inside a silence are uncounted"
+            )
+    if free_b is not None and free_b < JOURNALD_KEEP_FREE_B:
+        tail += (
+            f" | NOW {_gb_b(free_b)} free, under journald's {_gb_b(JOURNALD_KEEP_FREE_B)} "
+            "keep-free: the journal is not recording"
+        )
+    return f"{head} | {tail}"
+
+
 # ---- Kalshi 429s, host-wide (mistakes #145) ----------------------------------
 #
 # The Kalshi public-API budget is ONE bucket per host, and two projects draw
@@ -5087,10 +5269,16 @@ def main() -> None:
         f"{'HOSTNET':<10} {'(host)':<{width}}  {host_net_line(hostnet, now.timestamp())}",
         flush=True,
     )
+    hostfs = read_hostfs()
     print(
         f"{'HOSTFS':<10} {'(host)':<{width}}  "
-        f"{host_fs_line(read_hostfs(), read_kubelet_window(), _read_fs_pace())}"
+        f"{host_fs_line(hostfs, read_kubelet_window(), _read_fs_pace())}"
         f" | {btrfs_text(read_btrfs_usage())}",
+        flush=True,
+    )
+    print(
+        f"{'ENOSPC':<10} {'(host)':<{width}}  "
+        f"{enospc_line(read_enospc(units, now=now.timestamp()), hostfs.free_b)}",
         flush=True,
     )
     print(
