@@ -5717,7 +5717,7 @@ Format: what happened → root cause → error type → prevention tier
     it unread.**
     Replayed the same pass over the 21 daily windows with shard-scoped
     rows (11-02..11-22): the one-shard part is 0.0-8.4 min/day (median
-    4.4) before today and 45.4 today; the two-or-more part 0.0-16.0 before
+    4.3) before today and 45.4 today; the two-or-more part 0.0-16.0 before
     and 16.6 today. A verdict moved to "two or more" would have passed the
     starved night, so it stays where it is -- the split is for reading a
     FAIL, not for excusing one.
