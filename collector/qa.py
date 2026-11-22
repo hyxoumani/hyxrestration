@@ -982,6 +982,86 @@ def _capture_gap_minutes(
     return out
 
 
+def _books_shard_split(
+    conn, now: datetime, hours: float
+) -> tuple[float, float, int, float, int] | None:
+    """The books figure of `_capture_gap_minutes`, split by how much of the
+    channel was out: `(minutes with ONE shard out alone, minutes with two or
+    more shards or the whole channel out, worst shard, its own minutes,
+    shards that logged a gap)`, all outside venue maintenance; None when no
+    shard-scoped row is in the window.
+
+    The budgeted figure is a UNION over every books connection (a gap row
+    from any shard says channel='books'), so it grows with the shard count
+    at the same per-connection health, and it cannot tell one connection
+    resnapshotting all night from the channel being dark. Measured on the
+    2026-11-22 10:00Z window, the first FAIL of this check on the starved
+    WiFi path: `books 62.1 min` was 45.4 min with exactly one of 22 shards
+    out, 16.6 min with two or more (7.5 of them every shard at once), and
+    the worst shard, 5, carried 26.4 min of its own -- 244.9 shard-minutes,
+    11 min of the channel by coverage. The two parts sum to the budgeted
+    figure by construction.
+
+    No mean per shard is published: the shards that logged NO gap write no
+    row, so a denominator taken from this table would be the events that
+    happened (mistakes #98). The count is named as what it is.
+
+    A books row with no shard (written before 2026-10-20, or by a path that
+    names none) and a coverage-wide row are the whole channel."""
+    lo = now - timedelta(hours=hours)
+    rows = conn.execute(
+        "SELECT venue, shard, started_at, ended_at FROM stream_gaps"
+        " WHERE ((venue = 'kalshi' AND channel = 'books') OR venue = '*')"
+        " AND ended_at > ? AND started_at < ?",
+        [lo, now],
+    ).fetchall()
+    per: dict[int, list[list[datetime]]] = {}
+    whole: list[list[datetime]] = []
+    for venue, shard, g0, g1 in rows:
+        a, b = max(g0, lo), min(g1, now)
+        if b <= a:
+            continue
+        if venue == "*" or shard is None:
+            whole.append([a, b])
+        else:
+            per.setdefault(shard, []).append([a, b])
+    if not per:
+        return None
+    merged = {k: _merge(v) for k, v in per.items()}
+    # Depth sweep: a whole-channel span counts as two, so it can never read
+    # as "one shard alone" however few shards overlap it.
+    edges: list[tuple[datetime, int]] = []
+    for spans in merged.values():
+        for a, b in spans:
+            edges += [(a, 1), (b, -1)]
+    for a, b in _merge(whole):
+        edges += [(a, 2), (b, -2)]
+    edges.sort()
+    alone: list[list[datetime]] = []
+    depth, last = 0, edges[0][0]
+    for t, d in edges:
+        if depth == 1 and t > last:
+            alone.append([last, t])
+        depth += d
+        last = t
+    alone_min = _outside_maint_min(_merge(alone))
+    union_min = _outside_maint_min(_merge([s for v in merged.values() for s in v] + whole))
+    own = {k: _outside_maint_min(v) for k, v in merged.items()}
+    worst = max(own, key=lambda k: (own[k], -k))
+    return alone_min, max(0.0, union_min - alone_min), worst, own[worst], len(own)
+
+
+def books_shard_clause(split: tuple[float, float, int, float, int] | None) -> str:
+    if split is None:
+        return ""
+    alone, together, worst, worst_min, n = split
+    return (
+        f" [by shard: {alone:.1f} min with one shard out alone, {together:.1f} min with"
+        f" two or more or the whole channel; worst kalshi-books-{worst} {worst_min:.1f} min"
+        f" of its own; {n} shard(s) logged a gap]"
+    )
+
+
 #: `qa_stream` reads a reflink SNAPSHOT of the stream archive, not the live
 #: file. The section's cost is the seq walk over the window's `book_events`,
 #: and that cost is bounded by the WINDOW'S INPUT, not by anything in this
@@ -1572,6 +1652,7 @@ def _stream_checks(conn, hours: float, now: datetime) -> None:
         not over,
         "; ".join(
             f"{c} {m:.1f} min budgeted (+{mt:.1f} maintenance, {dn:.1f} daemon downtime)"
+            + (books_shard_clause(_books_shard_split(conn, now, hours)) if c == "books" else "")
             for c, (m, mt, dn) in sorted(load.items())
         )
         + f"; budget {CAPTURE_GAP_BUDGET_MIN:.0f} min/{hours:.0f}h"

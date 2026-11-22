@@ -5678,6 +5678,43 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+233. **2026-11-22 14:40Z -- QA's books capture-gap figure is a union over
+    every books connection, and nothing on the line said how much of the
+    channel a minute was** (class: an aggregate over N members whose level
+    scales with N, budgeted on a calibration taken at N = 1). The check
+    failed for the first time on the starved WiFi path -- `books 62.1 min
+    budgeted ... OVER books` -- and the status page carried the question
+    forward as "which shards carry the 62 min, and is it all books-5".
+    Answered from `stream_gaps` (2,201 rows in the 26 h window, one bounded
+    read): **45.4 min had exactly ONE shard out, 16.6 min two or more, 7.5
+    of those every shard at once** (2.7 daemon downtime); shard 5 was the
+    worst with 26.4 min of its own, shards 12, 4 and 11 next at 16.5 /
+    15.7 / 14.2, the other eighteen 5.0-11.6 each -- 244.9 shard-minutes
+    across 22 shard ids. So it was NOT all books-5: books-5 is 11% of the
+    shard-minutes, and what the union mostly counts is one connection of
+    many resnapshotting. The same arithmetic re-reads the check's history
+    from its own journal lines: books 1.2-2.2 min a day on 10-18..10-23
+    with one connection, 0.9-20.8 (median 7.4) on the 29 days since the
+    10-23 shard expansion, trades at 0.0-1.5 on most days -- the 30-min
+    budget was calibrated on 0.0-5.6 at one connection and had been half
+    spent by the shard count before the path degraded. Fix: the books
+    clause now ends `[by shard: A min with one shard out alone, B min with
+    two or more or the whole channel; worst kalshi-books-K M min of its
+    own; N shard(s) logged a gap]` (`qa._books_shard_split`,
+    `books_shard_clause`); A + B is the budgeted figure by construction, a
+    coverage-wide or unsharded row is the whole channel (weighted two in
+    the depth sweep, so it can never read as one shard alone), and no mean
+    per shard is printed because a shard with no gap writes no row (#98).
+    THE VERDICT IS UNCHANGED, on the union: it is the conservative side,
+    and today's 62 is a real loss either way. 5 tests, 6 mutants red (each
+    watched to land). Rule: **when a budgeted quantity is a union or a sum
+    over members, print the split that says how many members a unit of it
+    covers, and re-read the budget's calibration the day the member count
+    changes -- the 10-20 expansion note in `streamstore` said "an outage
+    on one shard marks the whole channel blind" as a property of the
+    EXCUSE readers, and the one reader that budgets the excuses inherited
+    it unread.**
+
 232. **2026-11-22 09:10Z -- the lag reading of #231 lived in a terminal,
     and the first suite run of its ledger wrote production's file** (class:
     an instrument run by hand that no report can cite; and a path constant

@@ -299,6 +299,13 @@ instead of louder. Outside the maintenance window the per-channel load is
 71 historical 10:00Z slots (fails 3, all genuine capture loss, and none of
 the 11 storms). Minutes INSIDE the maintenance window are printed every run
 but never budgeted, so the storm's own drift stays readable.
+Since 2026-11-22 the books clause carries a by-shard split (`[by shard: A
+min with one shard out alone, B min with two or more or the whole channel;
+worst kalshi-books-K ...]`, mistakes #233): the budgeted figure is a UNION
+over every books connection, so since the 10-23 shard expansion it reads
+0.9-20.8 min/day (median 7.4) where one connection read
+1.2-2.2 the week before. The verdict stays on the union; read the split before
+calling a FAIL "the channel was dark".
 
 ## Key decisions
 

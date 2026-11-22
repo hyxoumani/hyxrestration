@@ -2342,6 +2342,119 @@ def test_the_downtime_term_reaches_the_rendered_detail_line(tmp_path, capsys):
     assert f"{expected:.1f} daemon downtime" in line, line
 
 
+# -- the books figure by shard (2026-11-22) ---------------------------------
+# `books 62.1 min ... OVER books` was 45.4 min of ONE shard out of 22 and
+# 7.5 min of the channel; the union could not say which.
+
+WED = THU - timedelta(days=1)  # no venue maintenance: every minute is budgeted
+
+
+def _shard_db(path, gaps):
+    store = _fresh_stream(path)
+    for venue, channel, a, b, shard in gaps:
+        store.append_gap(venue, channel, a, b, "reconnect", shard)
+    store.flush()
+    return qa._connect_ro(str(path))
+
+
+def _at(h, m=0):
+    return WED + timedelta(hours=h, minutes=m)
+
+
+def test_books_shard_split_separates_one_shard_from_the_channel(tmp_path):
+    conn = _shard_db(
+        tmp_path / "s.duckdb",
+        [
+            ("kalshi", "books", _at(10), _at(10, 10), 5),  # 10 min of its own
+            ("kalshi", "books", _at(10, 5), _at(10, 8), 3),  # 3 of them shared
+            ("kalshi", "books", _at(12), _at(12, 4), 5),  # 4 more, alone
+            ("*", "*", _at(14), _at(14, 2), None),  # the daemon was down
+        ],
+    )
+    now = WED + timedelta(hours=20)
+    split = qa._books_shard_split(conn, now, 26.0)
+    budgeted = qa._capture_gap_minutes(conn, now, 26.0)["books"][0]
+    conn.close()
+    alone, together, worst, worst_min, n = split
+    assert alone == pytest.approx(11.0)  # 10 - 3 shared + 4
+    assert together == pytest.approx(5.0)  # 3 shared + 2 of downtime
+    assert (worst, n) == (5, 2)
+    assert worst_min == pytest.approx(14.0)
+    # The two parts are the budgeted figure, not a second opinion on it.
+    assert alone + together == pytest.approx(budgeted)
+
+
+def test_a_whole_channel_row_over_one_shard_is_not_that_shard_alone(tmp_path):
+    # THE MUTANT THIS KILLS: weighting a whole-channel span as one shard. A
+    # daemon-down row and an unsharded books row each overlap a single
+    # shard's gap here; with weight 1 the first reads as "alone" wherever
+    # the shard is not also out.
+    conn = _shard_db(
+        tmp_path / "s.duckdb",
+        [
+            ("kalshi", "books", _at(10), _at(10, 6), 7),
+            ("*", "*", _at(10, 4), _at(10, 9), None),
+            ("kalshi", "books", _at(11), _at(11, 3), None),  # pre-shard row
+        ],
+    )
+    alone, together, worst, worst_min, n = qa._books_shard_split(
+        conn, WED + timedelta(hours=20), 26.0
+    )
+    conn.close()
+    assert alone == pytest.approx(4.0)  # 10:00-10:04 only
+    assert together == pytest.approx(8.0)  # 10:04-10:09 and 11:00-11:03
+    assert (worst, n) == (7, 1)
+    assert worst_min == pytest.approx(6.0)
+
+
+def test_books_shard_split_excuses_maintenance_and_ignores_other_channels(tmp_path):
+    conn = _shard_db(
+        tmp_path / "s.duckdb",
+        [
+            # Thursday 06:30-07:30Z: the last 30 min is Kalshi's closure.
+            ("kalshi", "books", THU + timedelta(hours=6.5), THU + timedelta(hours=7.5), 2),
+            ("kalshi", "trades", THU + timedelta(hours=3), THU + timedelta(hours=4), None),
+            ("kalshi", "ticker", THU + timedelta(hours=3), THU + timedelta(hours=4), None),
+        ],
+    )
+    now = THU + timedelta(hours=10)
+    split = qa._books_shard_split(conn, now, 26.0)
+    budgeted = qa._capture_gap_minutes(conn, now, 26.0)["books"][0]
+    conn.close()
+    assert split[0] == pytest.approx(budgeted)
+    assert split[0] < 60.0  # some of the hour was excused
+    assert split[1] == 0.0  # the trades hour is not books' "whole channel"
+
+
+def test_no_shard_scoped_row_prints_no_shard_clause(tmp_path):
+    conn = _shard_db(tmp_path / "s.duckdb", [("*", "*", _at(10), _at(11), None)])
+    assert qa._books_shard_split(conn, WED + timedelta(hours=20), 26.0) is None
+    conn.close()
+    assert qa.books_shard_clause(None) == ""
+
+
+def test_the_shard_split_reaches_the_rendered_detail_line(tmp_path, capsys):
+    # #95: assert the STRING the check prints, and perturb it -- every field
+    # of the split must move the line.
+    store = _fresh_stream(tmp_path / "s.duckdb")
+    naive = NOW.replace(tzinfo=None)
+    store.append_gap("kalshi", "books", NOW - timedelta(minutes=50), NOW, "reconnect", 5)
+    store.flush()
+    _run(None, tmp_path, stream=tmp_path / "s.duckdb")
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if qa.CAPTURE_GAP_CHECK in ln)
+    alone = 50.0 - qa.maintenance_overlap_s(naive - timedelta(minutes=50), naive) / 60
+    want = qa.books_shard_clause((alone, 0.0, 5, alone, 1))
+    assert want and want in line, line
+    assert line.index("books ") < line.index(want) < line.index("trades ")
+    base = (1.0, 2.0, 3, 4.0, 5)
+    seen = {qa.books_shard_clause(base)}
+    for i in range(len(base)):
+        bumped = tuple(v + 1 if j == i else v for j, v in enumerate(base))
+        seen.add(qa.books_shard_clause(bumped))
+    assert len(seen) == len(base) + 1
+
+
 def test_capture_gap_budget_trips_through_qa_stream(tmp_path):
     # Six hours ending now. The maintenance window is four hours wide, so
     # this exceeds the 30-minute budget on EVERY day of the week and at every
