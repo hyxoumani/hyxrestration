@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from hyxlab import lagledger
 from hyxlab.memcap import rss_anon_mb
 from hyxlab.scratch import duck_scratch_dir
 from hyxlab.store import (
@@ -1114,6 +1115,10 @@ def main() -> None:
         f"[queuescore] rss_anon {rss_hold} MB at the end of the hold,"
         f" {rss_anon_mb()} MB after the release"
     )
+    # How late the box RECEIVED the window's rows (mistakes #232): queue
+    # position is read off `recv_ts`, so a late path moves every number below.
+    recv_lag = lagledger.span_lag(since, since + timedelta(hours=int(args.hours)), lagledger.load())
+    print(f"[queuescore] receive lag: {lagledger.span_text(recv_lag)}")
     all_orders: list[VirtualOrder] = []
     score_s = 0.0
     rows_n: dict[str, tuple[int, int]] = {}
@@ -1232,6 +1237,7 @@ def main() -> None:
         ),
         "orders_detail": [o.summary() for o in all_orders],
         "attach_wait": wait,
+        "recv_lag": lagledger.span_block(recv_lag),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     # computed against the archived priors, so it must run before this report is

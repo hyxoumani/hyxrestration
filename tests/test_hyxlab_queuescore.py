@@ -1105,9 +1105,31 @@ def test_main_publishes_the_hold_it_takes_on_the_stream_archive(tmp_path, monkey
     out = tmp_path / "maker_bracket"
     argv = ["queuescore", "--hours", "1", "--stream-db", str(db), "--out", str(out)]
     monkeypatch.setattr(sys, "argv", argv)
+    # One late hour in the receive-lag ledger: the window's LAST clock hour.
+    from hyxlab import lagledger
+
+    since = T0 + timedelta(seconds=59)
+    lag = tmp_path / "lag.jsonl"
+    lag.write_text(
+        json.dumps(
+            {
+                "day": f"{since:%Y-%m-%d}",
+                "hh": f"{since:%H}",
+                "ch": "trades",
+                "sampled": 9,
+                "p50": 1.5,
+                "p99": 9.0,
+            }
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(lagledger, "LEDGER", str(lag))
     queuescore.main()
 
     (report,) = [json.loads(p.read_text()) for p in out.glob("*.json")]
+    # the report says itself how late its window's rows were received (#232)
+    assert report["recv_lag"]["hours_late"] == 1 and report["recv_lag"]["worst_p50_s"] == 1.5
+    assert report["recv_lag"]["hours_owed"] >= report["recv_lag"]["hours_measured"] == 1
     # the copied-out rows lived under the run's private scratch and are gone
     assert not list(tmp_path.rglob("queuescore-rows"))
     wait = report["attach_wait"]

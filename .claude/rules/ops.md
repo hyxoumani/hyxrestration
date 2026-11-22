@@ -1082,3 +1082,15 @@
   11-22 02Z books p50 0.6-1.9 s / p99 7-26 s, ticker p99 32 s. Run it over
   the hours a latency, queue-position or shadow-fill report covers before
   quoting the report, and before blaming a venue for a late trade.
+- Since 2026-11-22 the collector ledgers that reading for every closed
+  trades and ticker hour (`data/rawlag_hours.jsonl`, `hyxlab.lagledger`;
+  mistakes #232): the digest's `STREAMLAG` row counts the last 24 hours
+  LATE (median frame >= 0.5 s behind the venue's send time; measured
+  bands 0.01-0.03 s wired, 0.07-0.29 s WiFi, 0.77-2.28 s saturated),
+  the stalled tail apart (p99 >= 2 s: the radio's scan), and says `LATE
+  NOW` or `on time` for the newest hour; `simulator.divergence` and
+  `simulator.queuescore` print `receive lag:` over their own window and
+  write a `recv_lag` block. `UNMEASURED` hours are not clean hours (no
+  raw file under the 6 GB yield, or the backlog not read yet). Books
+  shards are still by hand: `python -m collector.rawlag DAY/HH`. A new
+  report that reads `recv_ts` cites the ledger the same way.
