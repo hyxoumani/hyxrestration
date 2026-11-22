@@ -64,6 +64,9 @@ SYSTEMD_UNIT_PATH=$PWD/scripts/systemd:/etc/systemd/user:/usr/lib/systemd/user \
 # Both Kalshi 429 ledgers (this repo's journal by unit + the sibling governor's
 # trace) binned by the HOUR, with which sweeps were logging (mistakes #146).
 .venv/bin/python -m collector.health --kalshi429-hourly 30
+# Receive lag per connection (receive time minus the venue's sending_ts_ms) from
+# one raw-frame hour file; default the newest closed books hour (mistakes #231).
+.venv/bin/python -m collector.rawlag
 # Each of this repo's 429s with the seconds to the nearest sibling 429: the same
 # second is one host bucket closing, not one tenant pushing the other over.
 .venv/bin/python -m collector.health --kalshi429-pairs 4

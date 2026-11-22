@@ -5678,6 +5678,38 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+231. **2026-11-22 03:15Z -- every books connection ran seconds late for
+    ten hours and nothing this repo reads could say so** (class: a field
+    the venue sends on every frame, archived and never read). Each Kalshi
+    frame carries `sending_ts_ms`, the venue's clock when it SENT the
+    frame; the raw-frame writer stamps the receive time beside it. The
+    difference is the transport lag of that connection with the market's
+    own activity taken out -- and the only lag reading in the repo was
+    QA's daily p99 of `recv_ts - ts` on trades, one number a day, which
+    #225/#226 spent two passes pairing with a clock time by hand. On the
+    saturated WiFi path the rows were COMPLETE wherever a connection
+    stayed up (no GAP, no drop, STREAMFLOW's total up), so every row of
+    the digest that counts rows read clean while `recv_ts` was wrong by
+    seconds on all of them. Measured with the new `python -m
+    collector.rawlag` (one hour file, 20 s, nothing attached): 11-22 02Z,
+    44.6M book frames on 20 connections, p50 0.61-1.91 s, p99 6.8-25.6 s
+    (books-5 worst, books-4 17.8 s), the ticker p50 4.27 / p99 32.35 s
+    on 3.56M frames, trades p50 1.73 / p99 9.18 s; the same reader on
+    11-20 00Z, the wired link: books p50 0.02 / p99 0.06 s on every
+    connection, ticker p50 0.03 / p99 0.10 s on 11.46M frames (so the
+    ticker tonight is also at 31% of its frame count). 6 tests, 8 mutants
+    red, each asserted to land. Stated limits: on demand, not on the
+    digest (a books hour is ~0.7 GB to decompress); one line in 20 is
+    sampled for the quantiles (the frame count is exact); the box's clock
+    offset is inside every number, so the minimum is printed beside the
+    median. Consequence for readers: any latency, queue-position or
+    shadow-fill reading over 11-21 17Z onward is a reading of this path
+    -- run the reader over the hours a report covers before quoting it.
+    Rule: **when the wire carries the sender's clock, the lag is a
+    subtraction away and belongs to the instrument set from the first
+    day; "rows landed" and "rows landed on time" are different claims,
+    and a detector that counts rows makes only the first.**
+
 230. **2026-11-22 02:20Z -- nine hours into the ticker's starvation the
     clause built to name it printed `back to 105% in the newest round`**
     (class: a detector whose bar is the window's own median, read past

@@ -1074,3 +1074,11 @@
   15 or more of the last 60 min. Quote that row, not the clause's share,
   for whether a starvation is over; a books shard named there is losing
   its markets' books to a resnapshot every reconnect.
+- "Rows landed" is not "rows landed on time": every Kalshi frame carries
+  `sending_ts_ms` and `python -m collector.rawlag [YYYY-MM-DD/HH] [--channel
+  books|ticker|trades]` reads receive-minus-send per connection from one
+  raw-frame hour file (20 s, nothing attached; mistakes #231). Wired
+  baseline p50 0.02-0.03 s / p99 0.06-0.10 s; on the saturated WiFi path
+  11-22 02Z books p50 0.6-1.9 s / p99 7-26 s, ticker p99 32 s. Run it over
+  the hours a latency, queue-position or shadow-fill report covers before
+  quoting the report, and before blaming a venue for a late trade.
