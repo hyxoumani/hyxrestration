@@ -1454,8 +1454,147 @@ def _starved_clause(flow: StreamFlow) -> str:
     return (
         f"CHANNEL STARVED under {pct} of its own median while the total held: "
         + "; ".join(out)
-        + " -- count that connection's `keepalive ping timeout` lines by the minute"
+        + " -- the bar is this window's own median, which a long starvation lowers: "
+        "the connection's timeouts are the STREAMPING row"
     )
+
+
+# --- STREAMPING: which connection is dying of `keepalive ping timeout` --------
+# STREAMFLOW's starved clause reads a channel against the window's OWN median,
+# and a starvation that outlasts half the window becomes the median: measured
+# 2026-11-22 02:15Z, nine hours into the ticker's, the clause printed `back to
+# 105% in the newest round` (median 229,435 -> 175,977 a round) while that
+# connection timed out in 24-29 distinct minutes of every half hour and a
+# fresh probe connection lagged 24 s behind the venue inside 32 s (mistakes
+# #230). The timeouts are the direct reading and five passes counted them by
+# hand. This row counts them per connection by DISTINCT MINUTE: a roam or an
+# outage is every connection once in one minute (26 lines, mistakes #221), a
+# starved connection is one line in nearly every minute -- so minutes in which
+# `STREAMPING_WHOLE_PATH_CONNS` or more connections timed out together are
+# counted apart and charged to no connection.
+
+#: Distinct connections timing out in one clock minute at or over this is the
+#: whole path, not a connection (a roam drops all ~26; on 11-21 the starved
+#: path took at most the ticker and one or two books shards in a minute).
+STREAMPING_WHOLE_PATH_CONNS = 10
+#: The newest stretch a connection is judged on, and the distinct minutes of
+#: it a connection must time out in to be named starved NOW (11-21: 42-58 of
+#: 60 for the ticker, 0-6 for every books shard but one).
+STREAMPING_RECENT_MIN = 60
+STREAMPING_STARVED_MIN = 15
+_STREAMPING_RE = re.compile(r"\] \d\d:\d\d:\d\d ([\w-]+): \w+: .*keepalive ping timeout")
+
+
+@dataclass(frozen=True)
+class ConnPing:
+    label: str
+    #: Its timeout lines in the window, whole-path minutes included.
+    lines: int
+    #: Distinct minutes it timed out in, whole-path minutes left out, with the
+    #: first and last of them.
+    own_minutes: int
+    first_at: datetime | None
+    last_at: datetime | None
+    #: Of those, the ones inside the newest `STREAMPING_RECENT_MIN` minutes.
+    recent_minutes: int
+
+
+@dataclass(frozen=True)
+class StreamPing:
+    lines: int
+    whole_path_minutes: int
+    #: Every connection with a timeout line, most own minutes first.
+    conns: tuple[ConnPing, ...]
+
+
+def parse_stream_ping(
+    lines: list[str] | str,
+    now: datetime,
+    whole_path_conns: int = STREAMPING_WHOLE_PATH_CONNS,
+    recent_min: int = STREAMPING_RECENT_MIN,
+) -> StreamPing:
+    """Pure: the unit's `-o short-iso` lines -> timeouts per connection by
+    distinct minute. An empty window is a reading (zero), not an absence."""
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    by_label: dict[str, list[datetime]] = {}
+    for line in lines:
+        ts = _short_iso_ts(line)
+        m = _STREAMPING_RE.search(line)
+        if ts is None or not m:
+            continue
+        by_label.setdefault(m.group(1), []).append(ts.replace(second=0, microsecond=0))
+    in_minute: dict[datetime, set[str]] = {}
+    for label, mins in by_label.items():
+        for minute in mins:
+            in_minute.setdefault(minute, set()).add(label)
+    whole = {minute for minute, labels in in_minute.items() if len(labels) >= whole_path_conns}
+    recent_from = now - timedelta(minutes=recent_min)
+    conns = []
+    for label, mins in by_label.items():
+        own = sorted(set(mins) - whole)
+        conns.append(
+            ConnPing(
+                label,
+                len(mins),
+                len(own),
+                own[0] if own else None,
+                own[-1] if own else None,
+                sum(1 for minute in own if minute >= recent_from),
+            )
+        )
+    conns.sort(key=lambda c: (-c.own_minutes, c.label))
+    return StreamPing(sum(len(v) for v in by_label.values()), len(whole), tuple(conns))
+
+
+def read_stream_ping(
+    now: datetime, unit: str = STREAMFLOW_UNIT, hours: int = STREAMFLOW_WINDOW_H
+) -> StreamPing | str:
+    text = _journal_hourly(
+        ["-u", unit, "--utc", "--grep=keepalive ping timeout", "-o", "short-iso"], hours
+    )
+    if text is None:
+        return "unreadable"
+    return parse_stream_ping(text, now)
+
+
+def stream_ping_line(ping: StreamPing | str, hours: int = STREAMFLOW_WINDOW_H) -> str:
+    """Render the reading: the whole-path minutes, every connection starved
+    now, and the worst of the rest so a starvation that ended stays legible."""
+    if ping == "unreadable":
+        return f"{hours}h: journal unreadable"
+    assert isinstance(ping, StreamPing)
+    if ping.lines == 0:
+        return f"{hours}h: no keepalive ping timeout on any connection"
+    head = f"{hours}h: {ping.lines:,} keepalive ping timeout(s) on {len(ping.conns)} connection(s)"
+    whole = (
+        f"{ping.whole_path_minutes} minute(s) with {STREAMPING_WHOLE_PATH_CONNS} or more "
+        "connections at once (the whole path: a roam or an outage), charged to no connection"
+    )
+
+    def one(c: ConnPing) -> str:
+        if c.first_at is None or c.last_at is None:
+            return f"{c.label} only inside whole-path minutes"
+        return (
+            f"{c.label} in {c.own_minutes:,} distinct minute(s) of its own "
+            f"{c.first_at:%m-%d %H:%MZ}..{c.last_at:%m-%d %H:%MZ}, {c.recent_minutes} of the "
+            f"last {STREAMPING_RECENT_MIN} min"
+        )
+
+    now_starved = [c for c in ping.conns if c.recent_minutes >= STREAMPING_STARVED_MIN]
+    rest = [c for c in ping.conns if c not in now_starved]
+    parts = [head, whole]
+    if now_starved:
+        parts.append("CONNECTION STARVED NOW: " + "; ".join(one(c) for c in now_starved))
+    else:
+        parts.append(
+            f"no connection timing out in {STREAMPING_STARVED_MIN} or more of the last "
+            f"{STREAMPING_RECENT_MIN} min"
+        )
+    if rest:
+        lead = f"most of the other {len(rest)}" if now_starved else "most"
+        parts.append(f"{lead}: {one(rest[0])}")
+    return " | ".join(parts)
 
 
 # --- SHADOWHOLD: the shadow's hold on the stream archive, and its climb ------
@@ -5531,6 +5670,10 @@ def main() -> None:
     )
     print(
         f"{'STREAMRX':<10} {STREAMFLOW_UNIT:<{width}}  {stream_rx_line(read_stream_rx())}",
+        flush=True,
+    )
+    print(
+        f"{'STREAMPING':<10} {STREAMFLOW_UNIT:<{width}}  {stream_ping_line(read_stream_ping(now))}",
         flush=True,
     )
     print(

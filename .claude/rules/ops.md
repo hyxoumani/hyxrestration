@@ -1065,3 +1065,12 @@
   on `..f5:98`. Under a congested path the stalls stop reaching 4 s (none
   after 19:46Z on 11-21 while the ticker starved): a clean STREAMRX is not a
   clean path -- read STREAMFLOW's starved clause beside it.
+- STREAMFLOW's starved clause measures a channel against the window's OWN
+  median, so a starvation past ~9 h lowers its bar and prints `back to N%`
+  while the connection is still dying (mistakes #230). The direct reading
+  is the digest's `STREAMPING` row (since 2026-11-22): `keepalive ping
+  timeout` per connection by distinct minute, whole-path minutes (10+
+  connections at once: a roam) counted apart, `CONNECTION STARVED NOW` at
+  15 or more of the last 60 min. Quote that row, not the clause's share,
+  for whether a starvation is over; a books shard named there is losing
+  its markets' books to a resnapshot every reconnect.

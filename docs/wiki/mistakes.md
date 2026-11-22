@@ -5678,6 +5678,43 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+230. **2026-11-22 02:20Z -- nine hours into the ticker's starvation the
+    clause built to name it printed `back to 105% in the newest round`**
+    (class: a detector whose bar is the window's own median, read past
+    the point the event became the median -- #228's stated limit, "a
+    starvation longer than ~12 h lowers it", arriving on its first
+    night). The 24 h median had fallen 229,435 -> 175,977 a round, so a
+    round at 616 kept ticker rows a second read as recovered. It was not:
+    `kalshi-ticker` timed out in 24-29 distinct minutes of every half
+    hour from 20:30Z to 02:00Z, a round's level only says how much of
+    the 300 s the connection happened to be up (55-2,255/s round to
+    round), and a FRESH probe connection from an idle process
+    (`~/scratch/tmp/wsext.py`, same key, unfiltered ticker) received
+    2,316 frames/s for one 30 s run and on the next lagged 8 s -> 24 s
+    behind the venue's own `ts` inside 32 s, never got a pong and died
+    of the same timeout -- so it is the path and not the daemon's loop
+    (permessage-deflate IS negotiated; gateway round trip 376-789 ms at
+    0.74 MB/s inbound on a link that negotiates 1,170 Mbit/s; driver
+    `ath12k`, no `iw`, no root). The direct reading -- that connection's
+    timeouts by distinct minute -- was named in the clause's last words
+    as something to count by hand, and five passes did. Fix: the
+    digest's `STREAMPING` row (`health.parse_stream_ping`): timeouts per
+    connection by distinct minute, minutes in which 10 or more
+    connections timed out together counted apart as the whole path (a
+    roam is every connection once, #221) and charged to nobody, a
+    connection named `STARVED NOW` at 15 or more of the last 60 minutes,
+    and the worst of the rest kept so an ended starvation stays legible.
+    First reading: `kalshi-ticker in 508 distinct minute(s) of its own
+    11-21 13:38Z..11-22 02:22Z, 43 of the last 60 min; kalshi-books-5 in
+    47 ..., 29 of the last 60 min` -- the second name is NEW: one books
+    shard has been dying about every other minute since ~01Z and no row
+    said so. The starved clause now ends by pointing at the row. 6 tests,
+    9 mutants red, each asserted to land. Rule: **a share-of-own-median
+    bar has a lifetime of half its window; when the event it watches can
+    outlast that, the detector needs a reading that does not pass
+    through the baseline -- and "count X by hand" at the end of a clause
+    is that reading, unbuilt.**
+
 229. **2026-11-21 21:30Z -- the starved-channel clause shipped reading a
     counter whose level is one market's snapshots** (class: a share-of-
     median detector on a quantity with two modes of its own). #228's

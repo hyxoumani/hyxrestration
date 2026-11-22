@@ -349,8 +349,8 @@ def test_a_channel_starved_under_a_rising_total_is_named_with_its_span() -> None
     assert line.endswith(
         "| CHANNEL STARVED under 25% of its own median while the total held: kalshi_ticker in "
         "10 round(s) 11-21 16:15Z..17:00Z (median 750,000/round, worst 30,000 at 16:35Z), "
-        "STILL at 8% in the newest round (17:00Z) -- count that connection's "
-        "`keepalive ping timeout` lines by the minute"
+        "STILL at 8% in the newest round (17:00Z) -- the bar is this window's own "
+        "median, which a long starvation lowers: the connection's timeouts are the STREAMPING row"
     )
 
 
