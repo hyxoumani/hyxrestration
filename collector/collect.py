@@ -33,7 +33,7 @@ from pathlib import Path
 import duckdb
 import requests
 
-from collector import rawsizes, spool
+from collector import rawlag, rawsizes, spool
 from collector.venues import kalshi, nws, polymarket
 from hyxlab.lockid import note_holder, read_holder
 from hyxlab.models import Forecast, MarketInfo, Snapshot, SourceResult
@@ -511,6 +511,18 @@ def main() -> None:
             rawsizes.record_closed()
         except Exception as e:  # noqa: BLE001 -- an instrument, not the capture
             print(f"[collect] raw frame size ledger skipped: {type(e).__name__}: {e}")
+        # The same hour files' receive lag (mistakes #232), bounded to a few
+        # files and seconds a cycle; the line appears only when it read one.
+        try:
+            t_lag = time.monotonic()
+            n_lag = rawlag.record_closed()
+            if n_lag:
+                print(
+                    f"[collect] receive-lag ledger: {n_lag} hour file(s) read in"
+                    f" {time.monotonic() - t_lag:.1f}s"
+                )
+        except Exception as e:  # noqa: BLE001 -- an instrument, not the capture
+            print(f"[collect] receive-lag ledger skipped: {type(e).__name__}: {e}")
         if args.once:
             break
         time.sleep(args.interval)

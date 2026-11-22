@@ -5678,6 +5678,54 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+232. **2026-11-22 09:10Z -- the lag reading of #231 lived in a terminal,
+    and the first suite run of its ledger wrote production's file** (class:
+    an instrument run by hand that no report can cite; and a path constant
+    imported BY VALUE, which a test redirect of the original never
+    reaches). #231 ended on "run the reader over the hours a report covers
+    before quoting it" -- an instruction to whoever remembers, with the
+    11-day shadow run started 11-18 carrying eleven late hours inside it
+    and the divergence report on it unable to say so (the replay and the
+    shadow share `recv_ts`, so a match rate cannot see a late path). And
+    the raw frames the reading needs are pruned at 15 days and yield the
+    disk under 6 GB free. Shipped: the 5-minute collector ledgers each
+    closed trades and ticker hour (`collector.rawlag.record_closed` ->
+    `data/rawlag_hours.jsonl`; newest first, at most 4 files and 10 s a
+    cycle -- measured 4.4-6.2 s for 4 files; the 15-day backlog drains in
+    ~15 h), `hyxlab.lagledger` is the one reader and renderer, the digest
+    prints `STREAMLAG` and `simulator.divergence` prints `receive lag:`
+    and writes a `recv_lag` block. The bar is measured, trades connection
+    p50 by hour over 11-19..11-22: 0.01-0.03 s wired, 0.07-0.10 s idle
+    WiFi, 0.13-0.29 s as the saturated path drained, 0.77-2.28 s
+    saturated; `LATE_P50_S = 0.5` sits in the empty band. The p99 says a
+    different thing (the radio's 300 s scan: 5-8 s at p99 in hours whose
+    median stayed 0.02 s) and is counted apart as a stalled tail. First
+    reading, scratch ledger, 08:50Z: trades `11 of 24 measured hour(s)
+    LATE, 11-21 17Z..11-22 03Z, worst 11-21 19Z p50 2.28 / p99 8.96 s`,
+    ticker `12 of 24 ... 11-21 17Z..11-22 04Z, worst 11-21 19Z p50 14.15
+    / p99 36.72 s`, both `on time` at 07Z. An hour with no ledger line
+    prints UNMEASURED, never clean. 11 tests, 15 mutants red, each
+    asserted to land. THE SELF-INFLICTED HALF: `collector.rawlag` held
+    `from collector.rawsizes import RAW_FRAMES_DIR`, so conftest's
+    redirect of `rawsizes.RAW_FRAMES_DIR` did not reach it, and the new
+    ledger constant was in no redirect list: the first full suite run
+    drove `collect.main` and read 48 of production's hour files into
+    production's `data/rawlag_hours.jsonl`. `test_sidecar_redirect_
+    coverage` caught the ledger constant on that same run (it derives the
+    set from source); it cannot see an imported copy of a constant it
+    already covers. The rows were true readings and the file was removed
+    before any reader existed; both paths are now read at call time, with
+    a test that redirects both. Stated limits: trades and ticker only (a
+    books hour is 20-60 s of decompression -- still by hand); the trades
+    connection is a proxy for the path, not for each books shard (books-5
+    ran p99 25.6 s where trades ran 9.2 s); an unreadable file is ledgered
+    once as an `err` row and never re-read. Rule: **a reading that
+    qualifies other reports has to be a file those reports can open, in a
+    module they may import -- an instruction to "check first" is a note,
+    not an instrument. And a module-level path imported by value is a
+    second constant: read shared paths through their module at call
+    time.**
+
 231. **2026-11-22 03:15Z -- every books connection ran seconds late for
     ten hours and nothing this repo reads could say so** (class: a field
     the venue sends on every frame, archived and never read). Each Kalshi

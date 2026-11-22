@@ -120,6 +120,7 @@ from collector.qa import (
 )
 from collector.qa import QA_RUN_CHECK as QA_UNREAD_CHECK
 from collector.qa import STATE as QA_STATE
+from hyxlab import lagledger
 
 REPO = Path(__file__).resolve().parent.parent
 UNIT_DIR = REPO / "scripts/systemd"
@@ -1595,6 +1596,40 @@ def stream_ping_line(ping: StreamPing | str, hours: int = STREAMFLOW_WINDOW_H) -
         lead = f"most of the other {len(rest)}" if now_starved else "most"
         parts.append(f"{lead}: {one(rest[0])}")
     return " | ".join(parts)
+
+
+# --- STREAMLAG: how late the stream's rows were RECEIVED, hour by hour --------
+# Every row above counts frames, timeouts or silences; none says the frames
+# that did land were on time. On 2026-11-21 17Z..11-22 03Z they were a median
+# 0.8-2.3 s late for eleven hours with every count row readable as a busy
+# evening (mistakes #231), and the reading existed only as a by-hand
+# `collector.rawlag` run. The 5-minute collector now ledgers each closed
+# trades and ticker hour (`rawlag.record_closed`); this row reads the last
+# `STREAMLAG_HOURS` closed hours of that ledger through the one renderer in
+# `hyxlab.lagledger`, and adds the newest measured hour so "is it late NOW"
+# is not read off a 24 h count. An hour with no ledger line prints as
+# unmeasured -- the raw copy yields the disk under 6 GB free (#227).
+STREAMLAG_HOURS = 24
+STREAMLAG_CHANNELS = ("trades", "ticker")
+
+
+def stream_lag_line(rows: dict, now: datetime) -> str:
+    """The one renderer for the STREAMLAG line: pure over the ledger's rows."""
+    end = now.astimezone(UTC).replace(tzinfo=None, minute=0, second=0, microsecond=0)
+    start = end - timedelta(hours=STREAMLAG_HOURS)
+    parts = []
+    for ch in STREAMLAG_CHANNELS:
+        span = lagledger.span_lag(start, end, rows, channel=ch)
+        text = lagledger.span_text(span)
+        if span.measured:
+            new = span.measured[-1]
+            state = "LATE NOW" if new.p50_s >= span.late_p50_s else "on time"
+            text += (
+                f"; newest measured {new.hour:%m-%d %H}Z p50 {new.p50_s:.2f} / p99"
+                f" {new.p99_s:.2f} s ({state})"
+            )
+        parts.append(text)
+    return f"{STREAMLAG_HOURS}h: " + " | ".join(parts)
 
 
 # --- SHADOWHOLD: the shadow's hold on the stream archive, and its climb ------
@@ -5674,6 +5709,10 @@ def main() -> None:
     )
     print(
         f"{'STREAMPING':<10} {STREAMFLOW_UNIT:<{width}}  {stream_ping_line(read_stream_ping(now))}",
+        flush=True,
+    )
+    print(
+        f"{'STREAMLAG':<10} {STREAMFLOW_UNIT:<{width}}  {stream_lag_line(lagledger.load(), now)}",
         flush=True,
     )
     print(

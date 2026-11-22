@@ -33,6 +33,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
 
+from hyxlab import lagledger
 from hyxlab.atomicio import write_text_atomic
 from hyxlab.backupslot import BACKUP_DIR_ENV, SLOT_MARGIN, covering_slot
 from hyxlab.importclosure import closure_sha
@@ -1038,6 +1039,10 @@ def main() -> None:
     )
     stream_db, stream_source = stream_source_for(args.stream_db, end)
     print(stream_source_line(stream_source))
+    # How late the box RECEIVED the window's rows (mistakes #232): the replay
+    # and the shadow share `recv_ts`, so a match rate cannot see a late path.
+    recv_lag = lagledger.span_lag(anchor, end or anchor, lagledger.load())
+    print(f"[divergence] receive lag: {lagledger.span_text(recv_lag)}")
     universe = shadow_universe()
     replay_fills, gaps = replay_run(
         run_id,
@@ -1059,6 +1064,7 @@ def main() -> None:
         # Which FILE the replay read (a backup slot holds nothing live; a
         # slot can lack a row that landed late -- `hyxlab.backupslot`).
         "stream_source": stream_source,
+        "recv_lag": lagledger.span_block(recv_lag),
         "latency_s": latency,
         "strategies": strategies,
         "generated_at": str(datetime.now(UTC).replace(tzinfo=None)),
