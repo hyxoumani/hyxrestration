@@ -121,8 +121,8 @@ def test_stats_line_carries_the_flush_holds_and_omits_an_unmeasured_period(monke
     # Both publishers hand the store's counters to the one renderer.
     src = inspect.getsource(streamd)
     assert src.count("holds = self.store.take_flush_holds()") == 2
-    assert src.count("sock, holds, steps, lag, rx))") == 1
-    assert src.count("None, None, holds, steps, lag, rx))") == 1
+    assert src.count("tail = (sock, holds, steps, lag, rx, self.recv_lag.take())") == 1
+    assert src.count("tail = (holds, steps, lag, rx, self.recv_lag.take())") == 1
 
 
 def test_a_flush_that_holds_a_whole_period_gets_its_own_line():
@@ -243,7 +243,7 @@ def test_stats_line_splits_the_hold_by_step_only_beside_the_hold(monkeypatch):
     assert "flush_steps" not in streamd.stats_line("", {"a": 1}, 5, None, None, steps)
     src = inspect.getsource(streamd)
     assert src.count("steps = self.store.take_flush_steps()") == 2
-    assert src.count("holds, steps, lag, rx))") == 2
+    assert src.count("holds, steps, lag, rx, self.recv_lag.take())") == 2
 
 
 def test_the_store_times_the_steps_of_a_flush_and_hands_them_over_once(tmp_path):

@@ -100,7 +100,7 @@ def test_stats_line_carries_the_silence_between_loop_lag_and_the_holds(monkeypat
 def test_both_publishers_and_both_receive_loops_reach_the_watch():
     src = inspect.getsource(streamd)
     assert src.count("rx = self.rx_gap.take(") == 2
-    assert src.count("steps, lag, rx))") == 2
+    assert src.count("steps, lag, rx, self.recv_lag.take())") == 2
     # One bump per receive loop (Kalshi's shared loop, Polymarket's).
     assert src.count("self.rx_gap.frames += 1") == 2
     assert src.count("rx_silence_line(self.rx_gap.note(loop.time()))") == 1

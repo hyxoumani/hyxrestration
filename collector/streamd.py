@@ -48,6 +48,7 @@ import json
 import os
 import signal
 import time as _time
+from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -496,6 +497,65 @@ def rx_silence_line(silence_s: float | None) -> str | None:
     )
 
 
+#: Connections whose every frame is timed against the venue's send clock on
+#: the stats line. The same two the lag ledger reads (`collector.rawlag`):
+#: one connection each, a few to ~1,100 frames a second -- the books shards
+#: are the hot path and trades reads within ~0.2 s of them (2026-11-22).
+RECV_LAG_CHANNELS = ("trades", "ticker")
+
+
+class RecvLagWatch:
+    """Receive time minus the venue's `sending_ts_ms`, per watched channel
+    and stats period: `rx_lag=trades:<p50>/<p99>/<frames>,ticker:...`.
+
+    Why it exists: the hourly lag ledger (mistakes #232) reads the RAW FRAME
+    files, and under 6 GB free the raw copy yields the disk (#227) -- from
+    2026-11-22 09:50Z every hour was `UNMEASURED` exactly while the path was
+    worst and the Sunday slate was coming. The daemon holds both clocks for
+    every frame it parses, whether or not a copy is kept.
+
+    The lag includes this box's clock error against the venue's (NTP is not
+    verified here): read a STEP, or a p99 seconds over its p50, never the
+    last 10 ms. Quantiles are `rawlag._q`'s, so the two readings compare.
+
+    Takes no lock: every caller runs on the loop thread.
+    """
+
+    def __init__(self) -> None:
+        self._lags: dict[str, array] = {}
+
+    def note(self, channel: str, recv_ts: datetime, sending_ts_ms: object) -> None:
+        """One parsed frame. A channel not watched, or a frame with no usable
+        send time (a control ack, a truncated frame), is not a sample."""
+        if channel not in RECV_LAG_CHANNELS:
+            return
+        if isinstance(sending_ts_ms, bool) or not isinstance(sending_ts_ms, (int, float)):
+            return
+        lags = self._lags.get(channel)
+        if lags is None:
+            lags = self._lags[channel] = array("d")
+        lags.append(recv_ts.timestamp() - sending_ts_ms / 1000.0)
+
+    def take(self) -> dict[str, tuple[float, float, int]] | None:
+        """`{channel: (p50 s, p99 s, frames)}` since the last call, and
+        reset. None when no watched frame carried a send time -- unmeasured,
+        never a clean 0.0 (#91); a channel with no sample is absent."""
+        taken, self._lags = self._lags, {}
+        out: dict[str, tuple[float, float, int]] = {}
+        for channel, lags in taken.items():
+            vals = sorted(lags)
+            n = len(vals)
+            out[channel] = (vals[min(n - 1, int(0.5 * n))], vals[min(n - 1, int(0.99 * n))], n)
+        return out or None
+
+
+def recv_lag_clause(lags: dict[str, tuple[float, float, int]]) -> str:
+    """`rx_lag=<channel>:<p50 s>/<p99 s>/<frames>,...` in a fixed order."""
+    return "rx_lag=" + ",".join(
+        f"{c}:{lags[c][0]:.2f}/{lags[c][1]:.2f}/{lags[c][2]}" for c in sorted(lags)
+    )
+
+
 def stats_line(
     prefix: str,
     stats: dict,
@@ -505,6 +565,7 @@ def stats_line(
     steps: tuple[float, float, float, float] | None = None,
     loop: tuple[float, int] | None = None,
     rx: tuple[float, int] | None = None,
+    rxlag: dict[str, tuple[float, float, int]] | None = None,
 ) -> str:
     """The daemon's periodic / shutdown stats line, rendered in ONE place.
 
@@ -534,13 +595,14 @@ def stats_line(
     # reads this journal with the older pattern.
     loop_s = "" if loop is None else f" {loop_lag_clause(loop)}"
     rx_s = "" if rx is None else f" {rx_gap_clause(rx)}"
+    rxlag_s = "" if rxlag is None else f" {recv_lag_clause(rxlag)}"
     holds_s = "" if holds is None else f" {flush_holds_clause(holds)}"
     # Only beside the total it splits: steps without holds would be a
     # reading with nothing to be a share of.
     steps_s = "" if holds is None or steps is None else f" {flush_steps_clause(steps)}"
     return (
         f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}"
-        f"{loop_s}{rx_s}{holds_s}{steps_s}"
+        f"{loop_s}{rx_s}{rxlag_s}{holds_s}{steps_s}"
     )
 
 
@@ -1103,6 +1165,14 @@ class Daemon:
         return merged
 
     @property
+    def recv_lag(self) -> RecvLagWatch:
+        """Built on first use, like `rx_gap`, for the same `__new__` tests."""
+        w = self.__dict__.get("_recv_lag")
+        if w is None:
+            w = self._recv_lag = RecvLagWatch()
+        return w
+
+    @property
     def rx_gap(self) -> RxSilenceWatch:
         """Built on first use, like `hb`: the receive loops bump it on every
         frame, and tests drive those loops on `__new__`-assembled Daemons."""
@@ -1600,6 +1670,7 @@ class Daemon:
                                 _log(f"kalshi/{label} GAP (seq_reset)")
                         self._clock_check("kalshi", channel, recv_ts, last_recv, sidx)
                         frame = json.loads(raw)
+                        self.recv_lag.note(channel, recv_ts, frame.get("sending_ts_ms"))
                         typ = frame.get("type")
                         if typ in kalshi_ws.CONTROL_TYPES:
                             beat.control()
@@ -1864,7 +1935,8 @@ class Daemon:
                 steps = self.store.take_flush_steps()
                 lag = self.loop_lag.take()
                 rx = self.rx_gap.take(now)
-                _log(stats_line("", self.report_stats(), out.rows, sock, holds, steps, lag, rx))
+                tail = (sock, holds, steps, lag, rx, self.recv_lag.take())
+                _log(stats_line("", self.report_stats(), out.rows, *tail))
                 if throttled:
                     # Its own line, so a grep for the word finds the PERIOD
                     # it landed in, not every stats line ever printed.
@@ -2163,7 +2235,8 @@ class Daemon:
             steps = self.store.take_flush_steps()
             lag = self.loop_lag.take()
             rx = self.rx_gap.take(asyncio.get_running_loop().time())
-            _log(stats_line("shutdown; ", self.report_stats(), None, None, holds, steps, lag, rx))
+            tail = (holds, steps, lag, rx, self.recv_lag.take())
+            _log(stats_line("shutdown; ", self.report_stats(), None, None, *tail))
 
 
 def main() -> None:

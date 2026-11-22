@@ -1091,6 +1091,14 @@
   11-22 02Z books p50 0.6-1.9 s / p99 7-26 s, ticker p99 32 s. Run it over
   the hours a latency, queue-position or shadow-fill report covers before
   quoting the report, and before blaming a venue for a late trade.
+- The lag ledger reads raw-frame FILES, so it is `UNMEASURED` exactly
+  while the raw copy yields the disk (#227). The stream stats line carries
+  the same reading from the daemon's own two clocks: `rx_lag=ticker:<p50>/
+  <p99>/<frames>,trades:...` per 300 s (`streamd.RecvLagWatch`; replayed on
+  the 11-22 09Z hour it prints the ledger's 0.14 / 5.86 and 0.16 / 4.85 s
+  exactly). Shipped DEFERRED 2026-11-22: it appears from the stream's next
+  restart -- grep the stats line for `rx_lag=` before assuming it is there.
+  It includes this box's clock error; read a step, not the last 10 ms.
 - Since 2026-11-22 the collector ledgers that reading for every closed
   trades and ticker hour (`data/rawlag_hours.jsonl`, `hyxlab.lagledger`;
   mistakes #232): the digest's `STREAMLAG` row counts the last 24 hours
