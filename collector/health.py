@@ -1775,6 +1775,95 @@ def read_archive_sizes(
     return points
 
 
+# --- ARCHBURN: how much of the disk's burn is our own archives (2026-11-22) --
+# HOSTFS reads the filesystem's NET fall, which is every tenant's writes minus
+# every tenant's frees, and so cannot say whose. On 2026-11-22 10:12Z a pass
+# read free space going flat forty minutes after the raw-frame copy yielded
+# and wrote "the raw copy WAS the burn"; it was the sibling's recompress job
+# handing back 1,374 MB over the same hours against a stream archive still
+# growing 0.4 GB/h, and when that job ended at 12:00Z the fall resumed at
+# 0.55 GB/h with 4.5 GB left (mistakes #234). The two DuckDB files are the
+# one term measurable without a sampler: a backup slot is the live file as it
+# was at the slot's mtime, so `stat` of both is bytes grown over a known span.
+# A LOWER bound on the burn (other tenants and the raw-frame copy come on
+# top), hence an UPPER bound on the time to full.
+
+ARCHBURN_DBS = ("data/hyxstream.duckdb", "data/hyxlab.duckdb")
+ARCHBURN_MIN_SPAN_H = 1.0  # a slot younger than this is a rate from noise
+
+
+@dataclass(frozen=True)
+class ArchiveBurn:
+    """One live archive against its newest backup slot. `grew_b` is None when
+    the live file or every slot is unread, or the newest slot is too young."""
+
+    name: str
+    hours: float | None = None
+    grew_b: int | None = None
+
+
+def archive_burn(
+    name: str,
+    points: list[tuple[datetime, int]],
+    now: datetime,
+    min_span_h: float = ARCHBURN_MIN_SPAN_H,
+) -> ArchiveBurn:
+    """Pure: `read_archive_sizes`' points -> growth since the NEWEST slot."""
+    live = [size for at, size in points if at == now]
+    slots = [(at, size) for at, size in points if at < now]
+    if not live or not slots:
+        return ArchiveBurn(name)
+    at, size = max(slots)
+    hours = (now - at).total_seconds() / 3600
+    if hours < min_span_h:
+        return ArchiveBurn(name, hours)
+    return ArchiveBurn(name, hours, live[0] - size)
+
+
+def read_archive_burns(
+    now: datetime, dbs: tuple[str, ...] = ARCHBURN_DBS, backup_dir: str | Path | None = None
+) -> list[ArchiveBurn]:
+    return [archive_burn(Path(db).name, read_archive_sizes(now, db, backup_dir), now) for db in dbs]
+
+
+def archive_burn_line(burns: list[ArchiveBurn], free_b: int | None) -> str:
+    """Each archive's growth since its newest slot, their summed rate, and how
+    long that rate ALONE takes to fill what is free. An unread archive is
+    named and left out of the sum, and the sum then says it is partial."""
+    parts: list[str] = []
+    rate_b_h = 0.0
+    unread = 0
+    for b in burns:
+        if b.grew_b is None or b.hours is None:
+            unread += 1
+            why = (
+                "no backup slot or live file readable"
+                if b.hours is None
+                else f"newest slot only {b.hours * 60:.0f} min old"
+            )
+            parts.append(f"{b.name} unresolved ({why})")
+            continue
+        per_h = b.grew_b / b.hours
+        rate_b_h += per_h
+        parts.append(
+            f"{b.name} {b.grew_b / 1e9:+.2f} GB in {b.hours:.1f} h ({per_h / 1e9:+.2f} GB/h)"
+        )
+    head = "since each archive's newest backup slot: " + ", ".join(parts)
+    if unread == len(burns):
+        return head
+    partial = f" ({unread} archive(s) left out)" if unread else ""
+    tail = f"ours {rate_b_h / 1e9:.2f} GB/h = {rate_b_h * 24 / 1e9:.1f} GB/day{partial}"
+    if rate_b_h <= 0:
+        return f"{head} | {tail}; not growing"
+    if free_b is None:
+        return f"{head} | {tail}; free space unread"
+    return (
+        f"{head} | {tail}; alone it fills the {free_b / 1e9:.1f} GB free in "
+        f"{free_b / rate_b_h:.1f} h (a lower bound on the burn: the raw-frame copy and "
+        "every other tenant come on top)"
+    )
+
+
 @dataclass(frozen=True)
 class HoldReading:
     """Hold per poll and duty cycle over one span of a single shadow run."""
@@ -5689,6 +5778,11 @@ def main() -> None:
     print(
         f"{'ENOSPC':<10} {'(host)':<{width}}  "
         f"{enospc_line(read_enospc(units, now=now.timestamp()), hostfs.free_b)}",
+        flush=True,
+    )
+    print(
+        f"{'ARCHBURN':<10} {'(host)':<{width}}  "
+        f"{archive_burn_line(read_archive_burns(now), hostfs.free_b)}",
         flush=True,
     )
     print(

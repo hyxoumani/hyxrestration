@@ -895,6 +895,15 @@
   the pressure's DURATION in ~10 s passes; its cost is the clause after it
   (`= N pod(s) evicted (...), M pass(es) with no evictable pod left, ...`,
   mistakes #190) -- quote the pods, never the attempts.
+- HOSTFS is the disk's NET fall and cannot say whose it is: the digest's
+  `ARCHBURN` row (since 2026-11-22) is our own DuckDB archives' growth
+  since each one's newest backup slot (`stat` only), the summed rate and
+  how long it ALONE takes to fill what is free -- a lower bound on the
+  burn. First reading: `hyxstream.duckdb +0.39 GB/h, hyxlab.duckdb +0.03
+  GB/h | ours 0.42 GB/h = 10.0 GB/day`. A free-space series that goes flat
+  after a change of ours is the change only if no tenant freed in the
+  span: the 10:12Z "the raw copy WAS the burn" was the sibling's recompress
+  handing back 1,374 MB (mistakes #234).
 - `statvfs` free on btrfs is an estimate: a write fails ENOSPC when METADATA
   cannot grow (chunks full, no unallocated space for another), whatever
   `df` reads. The `HOSTFS` line ends with the split since 2026-11-15

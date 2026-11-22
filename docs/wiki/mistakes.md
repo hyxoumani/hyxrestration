@@ -5678,6 +5678,40 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+234. **2026-11-22 10:12Z, read 14:20Z -- "the raw copy WAS the burn" was a
+    net reading taken while another tenant was freeing** (class: a rate
+    inferred from a NET series on a shared resource, attributed to the one
+    change the reader had just made). The raw-frame copy began yielding
+    the disk at 09:50Z (#227) and the 5-min free-space series went flat:
+    6.42 -> 6.66 GB by 10:12Z against ~1.0 GB/h all night. The closing
+    read wrote that the raw copy was the burn and that the 6 GB would
+    outlast the 21 GB/day pace. Four hours later free was 4.5 GB and
+    falling 0.55 GB/h with the copy still off. What had held the series
+    flat was the sibling's `hylshi-raw-frames-recompress-d1`, which
+    rewrote 29 hour files and handed back 1,374 MB over 08:35-12:00Z (its
+    own done line) -- ~0.4 GB/h of credit against a stream archive growing
+    ~0.4 GB/h the whole time; the job ended 12:00:42Z and no sample has
+    risen since. A 204 s sample (14:17-14:21Z) put 87% of the fall in one
+    file, `hyxstream.duckdb` +22.3 MB of -25.6 MB free. The burn's own
+    term had been measurable without any sampler: a backup slot is the
+    live file as it was at the slot's mtime, so two `stat` calls give
+    bytes grown over a known span. Fix: the digest prints **`ARCHBURN`**
+    under `ENOSPC` -- each DuckDB archive's growth since its newest slot,
+    the summed rate, and how long that rate ALONE takes to fill what is
+    free (`collector.health.archive_burn`, `archive_burn_line`). First
+    reading 14:45Z: `hyxstream.duckdb +4.32 GB in 11.2 h (+0.39 GB/h),
+    hyxlab.duckdb +0.33 GB in 11.2 h (+0.03 GB/h) | ours 0.42 GB/h = 10.0
+    GB/day; alone it fills the 4.3 GB free in 10.4 h` -- stated on the
+    line as a lower bound on the burn. A slot under an hour old or an
+    unread file prints `unresolved`, never 0. 7 tests, 8 mutants red.
+    Rule: **a net series going flat after your change proves your change
+    only if nothing else moved; on a shared disk name the frees in the
+    span (the #166 pace clause prints in-span rises for exactly this)
+    before crediting the fall's end to yourself, and measure your own
+    term directly when a `stat` can.** (The ops rule "a measured fact
+    with an unmeasured cause", arriving through a quantity that looked
+    measured.)
+
 233. **2026-11-22 14:40Z -- QA's books capture-gap figure is a union over
     every books connection, and nothing on the line said how much of the
     channel a minute was** (class: an aggregate over N members whose level
