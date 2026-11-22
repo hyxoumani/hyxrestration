@@ -5696,8 +5696,9 @@ Format: what happened → root cause → error type → prevention tier
     from its own journal lines: books 1.2-2.2 min a day on 10-18..10-23
     with one connection, 0.9-20.8 (median 7.4) on the 29 days since the
     10-23 shard expansion, trades at 0.0-1.5 on most days -- the 30-min
-    budget was calibrated on 0.0-5.6 at one connection and had been half
-    spent by the shard count before the path degraded. Fix: the books
+    budget was calibrated on 0.0-5.6 at one connection and was a quarter
+    spent by the shard count on the median day (two thirds on the worst)
+    before the path degraded. Fix: the books
     clause now ends `[by shard: A min with one shard out alone, B min with
     two or more or the whole channel; worst kalshi-books-K M min of its
     own; N shard(s) logged a gap]` (`qa._books_shard_split`,
