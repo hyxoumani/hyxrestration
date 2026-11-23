@@ -130,7 +130,7 @@ def test_failures_print_units_episodes_and_the_span_as_a_span() -> None:
 def test_unread_halves_and_a_journal_under_keep_free_say_so() -> None:
     line = health.enospc_line(health.EnospcWindow(None, None, T0), free_b=3 * 10**9)
     assert line.startswith("24h: journal unreadable | witness (hyxlab-stream.service journal)")
-    assert "NOW 3 GB free, under journald's 4 GB keep-free: the journal is not recording" in line
+    assert "NOW 3 GB free, under journald's 4 GB keep-free: and no witness line says" in line
     empty = health.enospc_line(health.EnospcWindow((), (), T0))
     assert "NO hyxlab-stream.service line in the window" in empty and "proves nothing" in empty
     assert "keep-free" not in empty
@@ -161,3 +161,58 @@ def test_the_digest_prints_the_enospc_line_with_the_live_free_figure(
     assert "FULL-DISK WRITE FAILURES 1 line(s) (hyxlab-stream.service 1)" in line
     assert "NOW 2 GB free" in line
     assert seen["units"] == {STREAM}
+
+
+def test_under_keep_free_the_witness_decides_whether_the_journal_records() -> None:
+    """Measured 2026-11-23: journald recorded for hours at 1.7-4 GB free by
+    recycling its archives, while this clause said "not recording" from the
+    free figure alone. The verdict is the witness's last line, not the level."""
+    ticks = _ticks(T0, 20)
+    fresh = health.enospc_line(
+        health.EnospcWindow(fails=(), witness=ticks, ends_at=ticks[-1] + 120), free_b=3 * 10**9
+    )
+    assert "STILL RECORDING (last witness line 120 s before this read)" in fresh
+    assert "recycling its oldest files" in fresh and "NOT RECORDING" not in fresh
+    stale = health.enospc_line(
+        health.EnospcWindow(fails=(), witness=ticks, ends_at=ticks[-1] + 1500), free_b=3 * 10**9
+    )
+    assert "witness's last line is 25.0 min old -- NOT RECORDING, or the daemon is down" in stale
+    assert "STILL RECORDING" not in stale
+    edge = health.enospc_line(
+        health.EnospcWindow(fails=(), witness=ticks, ends_at=ticks[-1] + health.ENOSPC_SILENCE_S),
+        free_b=3 * 10**9,
+    )
+    assert "STILL RECORDING" in edge
+    roomy = health.enospc_line(
+        health.EnospcWindow(fails=(), witness=ticks, ends_at=ticks[-1] + 120), free_b=5 * 10**9
+    )
+    assert "keep-free" not in roomy
+
+
+def test_a_silence_from_the_windows_start_to_the_first_line_is_a_silence() -> None:
+    """2026-11-23: the box was dead for 21 of the row's 24 hours (crash 11-22
+    15:16Z, boot 11-23 17:40Z) and the row read `journal continuous (widest
+    silence 315 s)` -- the span before the witness's first line was never
+    examined, so the longer the outage ran into the window the cleaner it read."""
+    start = T0 - 21 * 3600
+    ticks = _ticks(T0, 36)
+    end = ticks[-1] + 100
+    assert health.witness_silences(ticks, end) == []
+    assert health.witness_silences(ticks, end, starts_at=start) == [(start, T0)]
+    assert health.witness_silences(ticks, end, starts_at=T0 - 600) == []
+    assert health.witness_silences(ticks, end, starts_at=T0 - 601) == [(T0 - 601, T0)]
+    line = health.enospc_line(health.EnospcWindow((), ticks, end, starts_at=start))
+    assert "JOURNAL SILENT 1 time(s), 1260.0 min, longest the window's start" in line
+    assert "or earlier ->" in line and "(1260.0 min)" in line
+    assert "continuous" not in line
+    inner = (*_ticks(T0, 3), *_ticks(T0 + 5000, 3))
+    mid = health.enospc_line(health.EnospcWindow((), inner, inner[-1] + 10, starts_at=T0 - 60))
+    assert "JOURNAL SILENT 1 time(s)" in mid and "or earlier" not in mid
+
+
+def test_the_reader_opens_the_window_where_the_journal_read_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(health, "_journal_hourly", lambda args, hours: "")
+    win = health.read_enospc(hours=24, now=T0)
+    assert win.ends_at == T0 and win.starts_at == T0 - 24 * 3600

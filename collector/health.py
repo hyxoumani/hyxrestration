@@ -4714,6 +4714,10 @@ class EnospcWindow:
     fails: tuple[tuple[float, str], ...] | None
     witness: tuple[float, ...] | None
     ends_at: float  # when the window was read: silence runs up to here
+    # Where the window opens. Without it the span before the witness's FIRST
+    # line is never examined: on 2026-11-23 the box had been dead for 21 of the
+    # row's 24 hours and it read "journal continuous (widest silence 315 s)".
+    starts_at: float | None = None
 
 
 def parse_enospc(stdout: str, units: set[str] | None = None) -> tuple[tuple[float, str], ...]:
@@ -4754,7 +4758,8 @@ def read_enospc(
     return EnospcWindow(
         fails=parse_enospc(fails, units) if fails is not None else None,
         witness=parse_witness_times(witness) if witness is not None else None,
-        ends_at=_time.time() if now is None else now,
+        ends_at=(end := _time.time() if now is None else now),
+        starts_at=end - hours * 3600.0,
     )
 
 
@@ -4772,12 +4777,19 @@ def enospc_episodes(
 
 
 def witness_silences(
-    times: tuple[float, ...], ends_at: float, floor_s: float = ENOSPC_SILENCE_S
+    times: tuple[float, ...],
+    ends_at: float,
+    floor_s: float = ENOSPC_SILENCE_S,
+    starts_at: float | None = None,
 ) -> list[tuple[float, float]]:
     """(from, to) for every hole in the witness's lines longer than `floor_s`,
     the open one up to `ends_at` included: a journal that stopped and never
-    resumed is the case this exists for."""
+    resumed is the case this exists for. With `starts_at`, so is the one from
+    the window's opening to the first line -- a silence that began before the
+    window is still a silence inside it (and its `from` is then a lower bound)."""
     out = []
+    if starts_at is not None and times and times[0] - starts_at > floor_s:
+        out.append((starts_at, times[0]))
     for a, b in zip(times, (*times[1:], ends_at), strict=True):
         if b - a > floor_s:
             out.append((a, b))
@@ -4786,6 +4798,11 @@ def witness_silences(
 
 def _z(ts: float) -> str:
     return f"{datetime.fromtimestamp(ts, UTC):%m-%d %H:%M:%S}Z"
+
+
+def _since(ts: float, starts_at: float | None) -> str:
+    """A hole's opening; one that opens ON the window's edge began before it."""
+    return f"the window's start {_z(ts)} or earlier" if ts == starts_at else _z(ts)
 
 
 def enospc_line(win: EnospcWindow, free_b: int | None = None, hours: int = ENOSPC_WINDOW_H) -> str:
@@ -4821,7 +4838,7 @@ def enospc_line(win: EnospcWindow, free_b: int | None = None, hours: int = ENOSP
             "proves nothing"
         )
     else:
-        holes = witness_silences(win.witness, win.ends_at)
+        holes = witness_silences(win.witness, win.ends_at, starts_at=win.starts_at)
         if not holes:
             widest = max(
                 (b - a for a, b in zip(win.witness, (*win.witness[1:], win.ends_at), strict=True)),
@@ -4836,17 +4853,45 @@ def enospc_line(win: EnospcWindow, free_b: int | None = None, hours: int = ENOSP
             total = sum(y - x for x, y in holes) / 60
             tail = (
                 f"witness: {ENOSPC_WITNESS_UNIT} JOURNAL SILENT {len(holes)} time(s), "
-                f"{total:.1f} min, longest {_z(a)} -> {_z(b)} ({(b - a) / 60:.1f} min): the "
-                "daemon down, or journald refusing to grow (it stops under "
-                f"{_gb_b(JOURNALD_KEEP_FREE_B)} free, before any writer fails) -- failures "
+                f"{total:.1f} min, longest {_since(a, win.starts_at)} -> {_z(b)} "
+                f"({(b - a) / 60:.1f} min): the "
+                "daemon down, or journald unable to write (under "
+                f"{_gb_b(JOURNALD_KEEP_FREE_B)} free it stops growing and recycles its own "
+                "files; with nothing to recycle into, lines drop) -- failures "
                 "inside a silence are uncounted"
             )
     if free_b is not None and free_b < JOURNALD_KEEP_FREE_B:
         tail += (
             f" | NOW {_gb_b(free_b)} free, under journald's {_gb_b(JOURNALD_KEEP_FREE_B)} "
-            "keep-free: the journal is not recording"
+            f"keep-free: {journal_under_keep_free(win)}"
         )
     return f"{head} | {tail}"
+
+
+def journal_under_keep_free(win: EnospcWindow) -> str:
+    """What the journal is doing below `SystemKeepFree`, read off the witness.
+
+    Until 2026-11-23 this clause said "the journal is not recording" from the
+    free figure alone -- journald.conf(5)'s "will stop using more space" taken
+    as "stops writing", which #222 itself filed as NOT MEASURED. Measured on the
+    first day under it: journald stops GROWING and keeps recording by recycling
+    its oldest archive (11 of 37 collector samples since the 17:40Z boot were
+    taken under 4 GiB, lowest 1.66 GB, all in the journal; the 11-22 10:37Z
+    `Errno 28` line was written at ~2.4 GB). So the free figure cannot say
+    whether lines are landing -- only a line that is owed on a cadence can.
+    """
+    if win.witness:
+        age = win.ends_at - win.witness[-1]
+        if age <= ENOSPC_SILENCE_S:
+            return (
+                "it has stopped growing and records by recycling its oldest files -- "
+                f"STILL RECORDING (last witness line {age:.0f} s before this read)"
+            )
+        return (
+            f"and the witness's last line is {age / 60:.1f} min old -- NOT RECORDING, "
+            "or the daemon is down (the unit rows say which)"
+        )
+    return "and no witness line says whether it is recording"
 
 
 # ---- Kalshi 429s, host-wide (mistakes #145) ----------------------------------

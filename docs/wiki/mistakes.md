@@ -5678,6 +5678,45 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+235. **2026-11-23 20:45Z -- the `ENOSPC` row said "the journal is not
+    recording" while reading the journal, and "journal continuous" over a
+    window the box was dead for 21 hours of** (class: two in one row --
+    an unmeasured manual sentence promoted to a verdict, #222's own "NOT
+    MEASURED" shipped as an assertion; and #98's detector whose expected
+    population is inferred from the events that happened). The host died
+    at 11-22 15:16:48Z (no shutdown sequence, last collector sample 3.99
+    GB free) and booted 11-23 17:40:36Z. First digest after: `0 full-disk
+    write failure lines | witness: ... journal continuous (widest silence
+    315 s ...) | NOW 4 GB free, under journald's 4 GB keep-free: the
+    journal is not recording`. (a) The last clause was decided from
+    `statvfs` alone. Measured on the first day under the level: journald
+    stops GROWING and keeps writing by recycling its own archives (boot
+    line `System Journal ... is 3.9G, max 4G, 80.5M free`) -- 11 of the 37
+    collector `fs_free_b=` samples since boot were taken under 4 GiB, the
+    lowest 1.66 GB at 18:42Z, all present; the stream's 300 s line never
+    missed; the 11-22 10:37:18Z `Errno 28` line was itself written at
+    ~2.4 GB; the stream unit's oldest line is still 10-05. So the free
+    figure cannot say whether lines land. (b) `witness_silences` walked
+    consecutive witness lines plus the open tail and never the span from
+    the window's opening to the FIRST line, so an outage that ran into
+    the window from before it cancelled out: 1,255.8 of 1,440 minutes
+    with no journal at all read as the cleanest possible row. FIXED
+    (health only): the keep-free clause is `journal_under_keep_free`,
+    read off the witness's last line (`STILL RECORDING (last witness line
+    N s before this read)` / `NOT RECORDING, or the daemon is down` past
+    600 s / `no witness line says`); `EnospcWindow.starts_at` (set by
+    `read_enospc` to the read's own opening) makes the leading hole a
+    hole, printed `longest the window's start <t> or earlier -> ...`
+    because its true start is before the read. Live 20:44Z: `JOURNAL
+    SILENT 1 time(s), 1255.8 min, longest the window's start 11-22
+    20:44:50Z or earlier -> 11-23 17:40:41Z ... | NOW 4 GB free ... STILL
+    RECORDING (last witness line 126 s before this read)`. 3 tests, eight
+    mutants red, each asserted to have changed the source. Rule: **a
+    clause that states what a component IS DOING is read from that
+    component's output, never from the level its manual says changes its
+    behaviour; and a silence detector is handed the window's own start,
+    or the longest outage it can meet is the one it reports as clean.**
+
 234. **2026-11-22 10:12Z, read 14:20Z -- "the raw copy WAS the burn" was a
     net reading taken while another tenant was freeing** (class: a rate
     inferred from a NET series on a shared resource, attributed to the one
