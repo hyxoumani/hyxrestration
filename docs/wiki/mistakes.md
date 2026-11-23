@@ -5678,6 +5678,37 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+236. **2026-11-23 21:10Z -- the atlas buckets a SETTLED market by its
+    series' CURRENT category, and the venue relabels series** (class: an
+    attribute read at report time treated as a property of the archived
+    row; an unverified design assumption, ladder item 2). The weekly
+    atlas's bucket count went 471 -> 476 -> 456 and `settled_by_category`
+    read `Companies` 28 -> 45 -> 14: a settled corpus that shrank. Traced
+    on the seven daily backup slots (no live hold): 33 series changed
+    `Companies` -> `Financials` in six days -- KXJOINJENSENHUANG on the
+    11-17 sweep, 32 on 11-21's -- because `collector` overwrites
+    `series.category` and `_OBSERVATIONS_CTE` joins it. One of them
+    (KXSBUXA) carried 31 settled markets; 20 `Companies` buckets vanished,
+    all n <= 12 and `silent`, so NO tier or verdict moved this week. The
+    exposure is the size of the next relabel, not of this one: every
+    `tier_stability` churn figure counts a relabelled series' history as
+    data churn. SHIPPED (simulator only): `category_stability` in the
+    report (`status` no_prior / stable / relabelled, `shrunk` per
+    category, `settled_markets_left`, `buckets_vanished`) and a `[atlas]
+    VENUE RELABEL since ...` line. Settled markets only accumulate, so a
+    category whose count FELL against the prior distinct reading is the
+    whole proof; it is one-sided (a relabel into a category, or out of
+    one that grew by more, is invisible) and the field's rule says so.
+    Replayed over the archive: 27 distinct data steps, 1 shrink (this
+    one), no false positive. 5 tests, 5 mutants red (one survived the
+    first cut -- `<` vs `<=`, no equal-count category in the fixture --
+    and the fixture was fixed). NOT DONE, sized for a decision: pinning a
+    market's category at settlement needs a first-seen category column
+    the sweep does not keep. Rule: **a grouping key joined from a table
+    the collector overwrites is the venue's opinion TODAY; before
+    reading churn across readings, check the one invariant the corpus
+    has (here: counts never fall) and print when it breaks.**
+
 235. **2026-11-23 20:45Z -- the `ENOSPC` row said "the journal is not
     recording" while reading the journal, and "journal continuous" over a
     window the box was dead for 21 hours of** (class: two in one row --

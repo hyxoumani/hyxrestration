@@ -537,6 +537,61 @@ def _distinct_readings(out_dir: Path, exclude_fp: str | None = None) -> tuple[li
     return list(by_fp.values()), n_files
 
 
+# Every value `category_stability.status` can take.
+CATEGORY_STATUSES = ("no_prior", "stable", "relabelled")
+
+
+def category_stability(out_dir: Path, current: dict) -> dict:
+    """Did the VENUE move settled markets between categories since the last reading?
+
+    A bucket's category is the series' CURRENT one (`_OBSERVATIONS_CTE` joins
+    `series`, which the sweep overwrites), so it is not an attribute of a
+    settled market: when Kalshi relabels a series its whole settled history
+    changes bucket, and every stability reading downstream counts that as
+    churn in the data. Measured 2026-11-23 on the daily backup slots: 33
+    series went `Companies` -> `Financials` in six days (32 in one sweep,
+    11-21), one of them with 31 settled markets, and the report that week
+    lost 20 `Companies` buckets with nothing in it saying why.
+
+    The detector needs no history table: settled markets only accumulate, so
+    a category whose settled count FELL against the prior distinct reading
+    was relabelled (or deleted) -- there is no other way down. It is one-
+    sided by construction: a relabel INTO a category, or out of one that grew
+    by more than it lost, is invisible here, so `stable` means "no category
+    shrank", never "no series moved". Never a verdict.
+    """
+    rule = (
+        "settled markets only accumulate, so a category whose settled count fell "
+        "against the prior distinct reading lost series to a venue relabel; "
+        "`stable` = no category shrank, not `no series moved`"
+    )
+    now = (current.get("data_fingerprint") or {}).get("settled_by_category") or {}
+    priors, _ = _distinct_readings(
+        out_dir, json.dumps(current.get("data_fingerprint"), sort_keys=True)
+    )
+    priors = [p for p in priors if (p.get("data_fingerprint") or {}).get("settled_by_category")]
+    if not priors:
+        return {"rule": rule, "status": "no_prior", "prior_generated_at": None}
+    prior = max(priors, key=lambda p: str(p.get("generated_at")))
+    was = prior["data_fingerprint"]["settled_by_category"]
+    shrunk = {
+        cat: {"prior": n, "now": now.get(cat, 0), "delta": now.get(cat, 0) - n}
+        for cat, n in sorted(was.items())
+        if now.get(cat, 0) < n
+    }
+    have = {_key(b) for b in current.get("buckets", [])}
+    vanished = sorted(k for k in (_key(b) for b in prior.get("buckets", [])) if k not in have)
+    return {
+        "rule": rule,
+        "status": "relabelled" if shrunk else "stable",
+        "prior_generated_at": prior.get("generated_at"),
+        "shrunk": shrunk,
+        "settled_markets_left": -sum(v["delta"] for v in shrunk.values()),
+        "buckets_vanished_n": len(vanished),
+        "buckets_vanished": [list(k) for k in vanished],
+    }
+
+
 def tier_stability(out_dir: Path, current: dict) -> dict:
     """Is a tier's survivor count a finding, or is it churn?
 
@@ -1421,6 +1476,15 @@ def main() -> None:
     # not one of its priors.
     atlas["tier_stability"] = tier_stability(out_dir, atlas)
     atlas["verdict_stability"] = verdict_stability(out_dir, atlas)
+    atlas["category_stability"] = cs = category_stability(out_dir, atlas)
+    if cs["status"] == "relabelled":
+        moved = ", ".join(f"{c} {v['prior']} -> {v['now']}" for c, v in cs["shrunk"].items())
+        print(
+            f"[atlas] VENUE RELABEL since {cs['prior_generated_at']}: settled count fell in"
+            f" {moved} ({cs['settled_markets_left']} market(s) left at least;"
+            f" {cs['buckets_vanished_n']} bucket(s) of the prior reading are gone) --"
+            " category is the series' CURRENT one, read tier churn against this"
+        )
     annotate_quoted_looks(out_dir, atlas)
     out = out_dir / f"{datetime.now(UTC):%Y%m%dT%H%M%S}.json"
     out.write_text(json.dumps(atlas, indent=1) + "\n")
