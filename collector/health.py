@@ -3238,6 +3238,11 @@ class FsPace:
     #: top of the level. A LOWER bound -- a spill present all hour lowers the
     #: ceiling too, and the kubelet-grade truth is sampled every 10 s, not 300.
     dip_max_b: int = 0
+    #: First post-reset ceiling minus the newest, and the hours between them:
+    #: a FALL, carried so the unresolved state after a cleanup can say how much
+    #: of the cleanup is already gone. Never a rate (see `FS_PACE_MIN_H`).
+    fall_b: int | None = None
+    fall_h: float = 0.0
 
     @property
     def gross_b_per_day(self) -> float | None:
@@ -3366,6 +3371,8 @@ def fs_pace(
     freed_b = sum(r for r in rises if r >= FS_PACE_RISE_FLOOR_B)
     if len(ceils) < 2:
         return FsPace(len(samples), len(ceils), 0.0, None, reset, rise_b, freed_b, **fl)
+    fl["fall_b"] = ceils[0][1] - ceils[-1][1]
+    fl["fall_h"] = (ceils[-1][0] - ceils[0][0]) / 3600.0
     if len(ceils) < 2 * end_k:
         span_h = (ceils[-1][0] - ceils[0][0]) / 3600.0
         return FsPace(len(samples), len(ceils), span_h, None, reset, rise_b, freed_b, **fl)
@@ -3400,9 +3407,20 @@ def fs_pace_text(pace: FsPace | None, fs: HostFs, over_b: int | None, window_h: 
         else ""
     )
     if pace.burn_b_per_day is None:
+        # Too short for a rate -- but after a cleanup the question the reader
+        # has is whether it HELD, and that is a fall, not a rate: on 2026-11-23
+        # 29 GB of a +96 GB cleanup was gone in 5 h behind a bare `unresolved`
+        # while the status page carried "one to two weeks" (mistakes #237).
+        fall = ""
+        if pace.reset_b and pace.fall_b is not None and pace.fall_b >= FS_PACE_RISE_FLOOR_B:
+            fall = (
+                f"; {_gb_b(pace.fall_b)} of that rise is already gone"
+                f" ({100 * pace.fall_b / pace.reset_b:.0f}% in {pace.fall_h:.1f}h,"
+                f" first ceiling after it to the newest -- a fall, not a rate)"
+            )
         return (
             f"pace: unresolved ({pace.hours} hourly ceiling(s) over {pace.span_h:.1f}h{reset},"
-            f" under {FS_PACE_MIN_H:g}h)"
+            f" under {FS_PACE_MIN_H:g}h){fall}"
         )
     span = f"over {pace.span_h:.1f}h of hourly ceilings{reset}"
     gross = pace.gross_b_per_day

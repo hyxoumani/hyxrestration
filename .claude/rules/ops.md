@@ -735,7 +735,9 @@
   shared resource is bounded by its tightest tenant's limit, never by
   the resource's last unit. What to delete on the
   shared disk is the USER's call; enumerate first (`du -sxl -BG`, then
-  `find -xdev -newermt ... -printf '%s'` per tenant for the burn), and
+  `find -xdev -newermt ... -printf '%s'` per tenant for the burn -- `find` here
+  is `bfs`: write the bound as `2026-11-23T21:05:00Z`, a ` UTC` suffix is
+  `Invalid timestamp` and under `2>/dev/null` every tenant reads 0; #237), and
   price our own reflinked slots with `btrfs filesystem du`, never `du`
   -- and its `Exclusive` is a LOWER bound (extents shared only INSIDE the
   directory print as `Set shared`); `scripts/extprice.py DIR --vs OTHERS`
@@ -762,7 +764,9 @@
   rather than resetting it; the clause names the largest in-span rise,
   because a sub-10% deletion inside the span reads as a small or negative
   net for ~12h (11-05 19Z, +30 GB). Under 6h of span the clause is
-  `unresolved`, never a number. A cleanup that lands in STEPS each under
+  `unresolved`, never a rate; after a reset it carries the FALL since
+  (`29 GB of that rise is already gone (31% in 4.9h ...)`, since
+  2026-11-24, mistakes #237) -- quote that, never a hand horizon. A cleanup that lands in STEPS each under
   the 10% reset nets in unseen (11-08 00:20-01:30Z: a sibling's worktrees,
   +19.9/+21.3/+7.4 GB, horizon 2.3 d -> 8.4 d; mistakes #166), so the
   clause also sums the in-span rises and prices the GROSS burn with its

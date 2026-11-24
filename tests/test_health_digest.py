@@ -2126,6 +2126,36 @@ def test_a_short_span_is_unresolved_not_a_number() -> None:
     assert freeing.burn_b_per_day is not None and freeing.burn_b_per_day < 0
 
 
+def test_an_unresolved_pace_after_a_cleanup_says_how_much_of_it_is_gone() -> None:
+    """2026-11-23: the user freed 96 GB at 21:05Z and 29 GB of it was gone by
+    02:15Z behind `pace: unresolved (... since a +95 GB rise, under 6h)`
+    (mistakes #237). Too short for a rate; not too short for a fall."""
+    before = _series(3, 10.0, start_gb=6.0)
+    # +96 GB, then 5 h at 144 GB/day (6 GB an hour).
+    after = [(t + 3 * 3600 + 300, f) for t, f in _series(5, 144.0, start_gb=100.0)]
+    pace = health.fs_pace(before + after)
+    assert pace.burn_b_per_day is None and pace.reset_b is not None
+    assert pace.fall_b is not None and abs(pace.fall_b / 1e9 - 30.0) < 0.6
+    assert abs(pace.fall_h - 4.9) < 0.1
+    kube = health.parse_kubelet(KUBELET_LINES)
+    line = health.host_fs_line(_FS, kube, pace)
+    assert "under 6h); 30 GB of that rise is already gone (" in line, line
+    assert line.endswith(
+        "(31% in 4.9h, first ceiling after it to the newest -- a fall, not a rate)"
+    )
+    # Each field moves the line (watch the perturbation land in the text).
+    assert "40 GB of that rise" in health.host_fs_line(
+        _FS, kube, dataclasses.replace(pace, fall_b=40_000_000_000)
+    )
+    assert "in 2.5h" in health.host_fs_line(_FS, kube, dataclasses.replace(pace, fall_h=2.5))
+    # No cleanup, no clause: a short span with no reset stays a bare unresolved,
+    # and a level that held (or rose) since the cleanup is not "gone".
+    assert "gone" not in health.host_fs_line(_FS, kube, health.fs_pace(_series(3, 60.0)))
+    assert "gone" not in health.host_fs_line(_FS, kube, dataclasses.replace(pace, fall_b=10**8))
+    # Once the span resolves the rate takes over and the fall is not repeated.
+    assert "gone" not in health.host_fs_line(_FS, kube, _PACE)
+
+
 def test_the_pace_clause_names_every_state() -> None:
     kube = health.parse_kubelet(KUBELET_LINES)
     roomy = health.HostFs(free_b=400_000_000_000, size_b=1_900_000_000_000)

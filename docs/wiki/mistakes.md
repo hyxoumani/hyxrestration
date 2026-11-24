@@ -5678,6 +5678,42 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+237. **2026-11-24 02:25Z -- the pace clause was blind for the six hours
+    after a cleanup, and a hand estimate filled the hole** (class: an
+    instrument that declines to answer leaves the question to whoever
+    is writing the status page). The user freed 96 GB at 21:05Z on
+    11-23. `HOSTFS` read `pace: unresolved (... since a +95 GB rise,
+    under 6h)` -- correctly, by the #162 rule that a short post-reset
+    span is not a rate -- and the 21:20Z status entry wrote "one to two
+    weeks, not a fix" from ARCHBURN's ~11-30 GB/day. By 02:15Z the
+    hourly ceilings had gone 99.7 -> 70.5 GB: 29 GB, 31% of the
+    cleanup, in 4.9 h. Attributed by `find -newermt` over every tenant
+    (files written since 21:05Z, hard links counted once): the
+    sibling's lake `canonical/` 18.5 GB (the partition backlog for
+    11-19..11-21 that its 60 GB floor had refused while the disk was
+    full -- a one-off, last write 23:42Z), its research/loop/workspace
+    DBs ~3 GB, and OURS ~8 GB: raw frames 4.5 GB (1.4 GB in the 01Z
+    hour alone -- the US evening is the day's peak, +7% on the same
+    hours a week back), `hyxstream.duckdb` +0.51 GB/h, `hyxlab.duckdb`
+    +0.05 GB/h. After the backlog ended the level fell 77.5 -> 70.1 GB
+    in 2.4 h = 3.1 GB/h, of which ours ~2.1. So the cleanup's horizon
+    is DAYS: ~70 GB at the ~27 GB/day of our own steady burn (archives
+    13.4 + raw ~14 before the sibling's recompress halves it) plus the
+    sibling's, and its lake jobs refuse again under 60 GB. Fix: the
+    unresolved state after a reset prints the FALL -- `; 29 GB of that
+    rise is already gone (31% in 4.9h, first ceiling after it to the
+    newest -- a fall, not a rate)` -- first post-reset ceiling to the
+    newest, silent under 1 GB and with no reset. Still no rate and no
+    horizon under 6 h: the 18.5 GB one-off is exactly the term a rate
+    would have extrapolated. Rule: **when an instrument must say
+    "unresolved", make it print the raw quantity it does hold; and a
+    horizon written by hand beside an unresolved instrument is a guess
+    -- label it one, with the arithmetic** (the memory note
+    "prediction thresholds need a model", again). Also measured: `find`
+    on this box is `bfs`, which REJECTS `-newermt "2026-11-23 21:05
+    UTC"` (`Invalid timestamp`) -- with `2>/dev/null` every tenant
+    reads 0.00 GB. Use `-newermt 2026-11-23T21:05:00Z`, and `%T`
+    prints local time.
 236. **2026-11-23 21:10Z -- the atlas buckets a SETTLED market by its
     series' CURRENT category, and the venue relabels series** (class: an
     attribute read at report time treated as a property of the archived
