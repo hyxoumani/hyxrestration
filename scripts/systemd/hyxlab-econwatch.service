@@ -1,0 +1,22 @@
+[Unit]
+Description=hyxlab econ-claims pre-registration sample watch (scorable and lost events per pair; count gate only -- no replay, no PnL)
+[Service]
+Type=oneshot
+# 220: batch dies before the capture daemons, see hyxlab-divergence.service.
+OOMScoreAdjust=220
+WorkingDirectory=/home/devs/workspace/hyxrestration-stable
+# The subject is the archive as of the 03:30Z backup: the newest slot is read
+# in place of the live file (hyxlab.backupslot), so this unit holds nothing
+# the 5-min collector or a sweep writes. No slot from the last 36 h -> the
+# live file, through the same measured hold.
+Environment=HYXLAB_BACKUP_DIR=/home/devs/hyx-backups
+# Exit 1 while an event lost its ten-minute decision window in the last 8
+# days (unrecoverable; the registered read slips a week): the digest's RECENT
+# line then quotes the LOST line. Exit 0 prints the count and the date.
+ExecStart=/home/devs/workspace/hyxrestration-stable/.venv/bin/python -u -m simulator.run_econ_claims --watch
+# MEASURED 2026-11-24 on hyxlab.Tue.duckdb: both pairs 5.6 s wall, slot held
+# 3.8 s, peak RSS 1.8 GiB (416,665 ICSA snapshots as objects, one pair at a
+# time). Bounds are that with room for the sample to triple by the read.
+TimeoutStartSec=10min
+MemoryMax=6G
+ExecStopPost=/home/devs/workspace/hyxrestration-stable/scripts/cgmem.sh

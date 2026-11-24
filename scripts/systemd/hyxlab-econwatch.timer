@@ -1,0 +1,8 @@
+[Unit]
+Description=hyxlab econ-claims sample watch daily 03:52 UTC (22 min after the 03:30Z backup whose slot it reads; before the 04:15Z poly sweep; 120s past the collector's 03:50 tick)
+[Timer]
+OnCalendar=*-*-* 03:52:00 UTC
+AccuracySec=1s
+Persistent=true
+[Install]
+WantedBy=timers.target

@@ -258,3 +258,111 @@ def test_score_judges_at_the_event_level():
     assert block["verdict"].startswith("SURVIVE")
     under = score(rows[:10], n_scorable=26)
     assert under["verdict"].startswith("UNDERPOWERED")
+
+
+# --- --watch: the standing read of the SAMPLE (2026-11-24) -----------------
+
+
+def _ev(**kw):
+    return {"scorable": False, **kw} if "why" in kw else {"scorable": True, **kw}
+
+
+def test_watch_summary_separates_pending_from_lost_and_dates_the_read():
+    from simulator.run_econ_claims import watch_summary
+
+    today = date(2026, 11, 24)
+    events = {
+        date(2026, 7, 30): _ev(why="no snapshot in decision window"),
+        date(2026, 11, 12): _ev(strikes=11),
+        date(2026, 11, 19): _ev(strikes=11),
+        date(2026, 11, 25): _ev(why="not settled"),
+    }
+    w = watch_summary(events, today, need=5)
+    assert w["scorable"] == 2
+    assert w["lost"] == [(date(2026, 7, 30), "no snapshot in decision window")]
+    assert w["recent_lost"] == []
+    assert w["pending"] == [date(2026, 11, 25)]
+    # 3 more needed, one of them the pending event: two weeks past it.
+    assert w["opens"] == date(2026, 12, 9)
+
+
+def test_watch_summary_a_window_missed_last_week_is_a_recent_loss():
+    from simulator.run_econ_claims import RECENT_LOSS_DAYS, watch_summary
+
+    today = date(2026, 11, 24)
+    events = {
+        date(2026, 11, 12): _ev(strikes=11),
+        date(2026, 11, 19): _ev(why="no snapshot in decision window"),
+    }
+    w = watch_summary(events, today)
+    assert w["recent_lost"] == [(date(2026, 11, 19), "no snapshot in decision window")]
+    # ... and stops failing the unit once the next event has had its chance.
+    later = date(2026, 11, 19) + timedelta(days=RECENT_LOSS_DAYS + 1)
+    assert watch_summary(events, later)["recent_lost"] == []
+    assert watch_summary(events, later)["lost"] == w["lost"]
+
+
+def test_watch_summary_an_overdue_settlement_is_lost_not_pending():
+    from simulator.run_econ_claims import SETTLE_GRACE_DAYS, watch_summary
+
+    ev = date(2026, 11, 19)
+    events = {ev: _ev(why="not settled")}
+    inside = watch_summary(events, ev + timedelta(days=SETTLE_GRACE_DAYS))
+    assert inside["pending"] == [ev] and inside["lost"] == []
+    past = watch_summary(events, ev + timedelta(days=SETTLE_GRACE_DAYS + 1))
+    assert past["pending"] == [] and past["recent_lost"] == [(ev, "not settled")]
+
+
+def test_watch_line_carries_every_field_of_the_summary():
+    """By perturbation (#95): bump each field, the line must change."""
+    from simulator.run_econ_claims import watch_line
+
+    base = {
+        "scorable": 16,
+        "need": 26,
+        "lost": [(date(2026, 7, 30), "no snapshot in decision window")],
+        "recent_lost": [],
+        "pending": [date(2026, 11, 25)],
+        "opens": date(2027, 1, 27),
+    }
+    line = watch_line("ICSA", base)
+    assert "16 of 26 scorable" in line and "2027-01-27" in line and "2026-11-25" in line
+    bumps = {
+        "scorable": 17,
+        "need": 40,
+        "lost": [(date(2026, 8, 6), "history 0 < 53")],
+        "pending": [],
+        "opens": date(2027, 2, 3),
+    }
+    for k, v in bumps.items():
+        assert watch_line("ICSA", {**base, k: v}) != line, k
+    # `recent_lost` is rendered by watch() as its own LOST line, not here.
+    assert "OPEN" in watch_line("ICSA", {**base, "scorable": 26, "opens": None})
+
+
+def test_watch_exits_1_on_a_recent_loss_and_never_replays(monkeypatch, capsys):
+    import simulator.run_econ_claims as rec
+
+    def boom(*a, **k):
+        raise AssertionError("--watch must not replay")
+
+    monkeypatch.setattr(rec, "Simulator", boom)
+    monkeypatch.setattr(rec, "score", boom)
+    monkeypatch.delenv("HYXLAB_BACKUP_DIR", raising=False)
+    monkeypatch.setattr(rec, "_load", lambda db, pair: ([], {}, [], None))
+    table = {
+        "ICSA": {
+            date(2026, 11, 12): _ev(strikes=11),
+            date(2026, 11, 19): _ev(why="no snapshot in decision window"),
+        },
+        "CCSA": {date(2026, 11, 19): _ev(strikes=11)},
+    }
+    monkeypatch.setattr(rec, "scorable_events", lambda m, s, fv, pair, strat: table[pair.series_id])
+    assert rec.watch("nope.duckdb", today=date(2026, 11, 24)) == 1
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out[-1].startswith("[econ-claims] LOST ICSA 2026-11-19: no snapshot")
+    assert any(line.startswith("[econ-claims] watch CCSA: 1 of 26") for line in out)
+    assert "live nope.duckdb" in out[0]
+    # The same sample a fortnight on: the loss stands in the count, the unit is green.
+    assert rec.watch("nope.duckdb", today=date(2026, 12, 8)) == 0
+    assert "1 lost for good" in capsys.readouterr().out

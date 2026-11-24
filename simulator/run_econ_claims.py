@@ -11,6 +11,19 @@ decision window, prior-week print present as-of decision time. No price
 is compared with any outcome to count them. Under the count this prints
 the count and exits 0; it does not replay and prints no PnL. The single
 pre-declared second read (`--second-look`) opens at 40.
+
+    python -m simulator.run_econ_claims --watch
+
+The standing read of the SAMPLE, not of the strategy (2026-11-24): both
+pairs' scorable count, the events lost for good and when the registered
+read can open -- from `scorable_events` alone, so it replays nothing and
+prints no PnL at any count. An event with no snapshot in its ten-minute
+decision window is unrecoverable (the registration does not widen the
+window), and three consecutive ones went that way in July before anybody
+counted. Exit 1 while a loss is younger than `RECENT_LOSS_DAYS`, so the
+digest carries it the week it happens. Reads the newest backup slot of
+the archive when `HYXLAB_BACKUP_DIR` has one from the last
+`SLOT_MAX_AGE` (no hold on the collector's file), the live file otherwise.
 """
 
 from __future__ import annotations
@@ -18,11 +31,12 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from math import comb
 from pathlib import Path
 from statistics import median_low
 
+from hyxlab.backupslot import covering_slot
 from hyxlab.models import MarketInfo, Snapshot
 from hyxlab.store import attach_wait_block, attach_wait_line, held_open, reset_attach_waits
 from simulator.capabilities import live_feed_caps
@@ -38,6 +52,16 @@ MIN_TRADED = 20  # under this the read is UNDERPOWERED
 MIN_ROI = 0.01
 ALPHA = 0.05
 N_TRIALS = 2  # two pairs registered
+
+# --watch. An unsettled event this young is PENDING, not lost: the 11-19
+# close read settled in the archive by the next day's sweep.
+SETTLE_GRACE_DAYS = 3
+# How long a loss fails the watch unit: one weekly event plus a day, so the
+# unit is red from the loss until the next event has had its chance.
+RECENT_LOSS_DAYS = 8
+# A slot older than this is declined for the live file: the backup is daily,
+# so the newest slot is under 24 h old unless the backup itself is failing.
+SLOT_MAX_AGE = timedelta(hours=36)
 
 
 def sign_test_k(n: int, alpha: float = ALPHA) -> int:
@@ -162,20 +186,12 @@ def gate(n_scorable: int, second_look: bool) -> str | None:
     return None
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Tier-1 claims-ladder kill-test (count-gated)")
-    ap.add_argument("--db", default="data/hyxlab.duckdb")
-    ap.add_argument("--pair", choices=sorted(PAIRS), default="ICSA")
-    ap.add_argument("--second-look", action="store_true")
-    args = ap.parse_args()
-    pair = PAIRS[args.pair]
-    strat = EconClaimsRW(pair=pair)
-
-    reset_attach_waits()
+def _load(db: str, pair: ClaimsPair) -> tuple[list, dict, list[Snapshot], FeatureView]:
+    """One pair's markets, snapshots and the vintage view, inside one hold."""
     # `held_open`: this is the 5-minute collector's file, and the hold is
     # the whole load (markets + snapshots + the vintage table), not a
     # query -- measured and printed after the release (#91, #96).
-    with held_open(args.db, read_only=True) as store:
+    with held_open(db, read_only=True) as store:
         # Bounded load (test_markets_load_discipline): the series' ids only.
         ids = [
             r[0]
@@ -195,6 +211,119 @@ def main() -> None:
         ).fetchall()
         snapshots = [Snapshot(*r) for r in rows]
         fv = FeatureView.from_store(store)
+    return ids, markets, snapshots, fv
+
+
+def watch_summary(events: dict[date, dict], today: date, need: int = MIN_EVENTS) -> dict:
+    """What the sample has, what it lost and when the read can open.
+
+    `events` is `scorable_events`' output and nothing else is read: a count
+    and three lists of dates. `lost` is every unscorable event that will
+    never become scorable -- the reason is in the data (no snapshot in the
+    window, no vintage history) or the settlement is overdue past
+    `SETTLE_GRACE_DAYS`. `opens` assumes one event a week from the newest
+    listed one and no further loss; each new loss moves it a week.
+    """
+    n = sum(1 for e in events.values() if e["scorable"])
+    lost: list[tuple[date, str]] = []
+    pending: list[date] = []
+    grace = today - timedelta(days=SETTLE_GRACE_DAYS)
+    for ev, e in sorted(events.items()):
+        if e["scorable"]:
+            continue
+        if e["why"] == "not settled" and ev >= grace:
+            pending.append(ev)
+        else:
+            lost.append((ev, e["why"]))
+    recent = [x for x in lost if x[0] >= today - timedelta(days=RECENT_LOSS_DAYS)]
+    remaining = max(0, need - n)
+    opens = None
+    if remaining and events:
+        opens = max(events) + timedelta(days=7 * max(0, remaining - len(pending)))
+    return {
+        "scorable": n,
+        "need": need,
+        "lost": lost,
+        "recent_lost": recent,
+        "pending": pending,
+        "opens": opens,
+    }
+
+
+def watch_line(name: str, w: dict) -> str:
+    """The one line per pair; every field of `watch_summary` reaches it."""
+    parts = [f"{w['scorable']} of {w['need']} scorable"]
+    if w["lost"]:
+        ev, why = w["lost"][-1]
+        parts.append(f"{len(w['lost'])} lost for good (newest {ev}: {why})")
+    else:
+        parts.append("0 lost")
+    if w["pending"]:
+        parts.append(f"{len(w['pending'])} pending ({', '.join(map(str, w['pending']))})")
+    else:
+        parts.append("0 pending")
+    if w["scorable"] >= w["need"]:
+        tail = "the registered read is OPEN -- run it once, without --watch"
+    elif w["opens"] is None:
+        tail = "no event listed, so no date for the read"
+    else:
+        tail = (
+            f"the registered read opens no earlier than ~{w['opens']} "
+            "(one event a week, no further loss)"
+        )
+    return f"[econ-claims] watch {name}: {'; '.join(parts)}; {tail}"
+
+
+def watch(db: str, today: date | None = None) -> int:
+    """Both pairs' sample; 1 while a loss is younger than RECENT_LOSS_DAYS."""
+    now = datetime.now(UTC).replace(tzinfo=None)
+    today = today or now.date()
+    slot = covering_slot(db, now - SLOT_MAX_AGE, margin=timedelta(0))
+    src = str(slot.path) if slot else db
+    if slot:
+        print(
+            f"[econ-claims] watch source: backup slot {slot.path.name} taken {slot.taken:%m-%d %H:%MZ}"
+        )
+    else:
+        print(f"[econ-claims] watch source: live {db} (no backup slot from the last 36 h)")
+    reset_attach_waits()
+    lines, lost_lines = [], []
+    for name in sorted(PAIRS):
+        pair = PAIRS[name]
+        _ids, markets, snapshots, fv = _load(src, pair)
+        events = scorable_events(markets, snapshots, fv, pair, EconClaimsRW(pair=pair))
+        del markets, snapshots, fv
+        w = watch_summary(events, today)
+        lines.append(watch_line(name, w))
+        for ev, why in w["recent_lost"]:
+            lost_lines.append(
+                f"[econ-claims] LOST {name} {ev}: {why} -- unrecoverable, the registered read "
+                "slips a week; find what kept the 5-min collector out of [close-60min, close-50min]"
+            )
+    print(attach_wait_line(attach_wait_block(db=Path(src).name), prefix="[econ-claims]"))
+    for line in lines + lost_lines:  # a loss is the unit's LAST line: the digest quotes it
+        print(line)
+    return 1 if lost_lines else 0
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Tier-1 claims-ladder kill-test (count-gated)")
+    ap.add_argument("--db", default="data/hyxlab.duckdb")
+    ap.add_argument("--pair", choices=sorted(PAIRS), default="ICSA")
+    ap.add_argument("--second-look", action="store_true")
+    ap.add_argument(
+        "--watch",
+        action="store_true",
+        help="both pairs' scorable count and lost events; no replay, no PnL",
+    )
+    args = ap.parse_args()
+    if args.watch:
+        raise SystemExit(watch(args.db))
+    pair = PAIRS[args.pair]
+    strat = EconClaimsRW(pair=pair)
+
+    reset_attach_waits()
+    ids, markets, snapshots, fv = _load(args.db, pair)
     # After the release: `held_s` is charged by the close.
     print(attach_wait_line(attach_wait_block(db=Path(args.db).name), prefix="[econ-claims]"))
 
