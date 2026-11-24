@@ -2063,7 +2063,8 @@ def _raw_frames_growth(
     archive -- so the 11-07 first prune drops 6 GB of links and 0 B of disk,
     while the model printed `0.00 raw_frames (15 of 15 day dirs held,
     plateau)` against a ~17 GB/day writer (mistakes #164). Until the window
-    is full the rate is the newest COMPLETE day's bytes, or the running
+    is full the rate is the largest of the newest `RAW_RATE_DAYS` COMPLETE
+    days as written (a short day is an outage, mistakes #239), or the running
     day's as a floor when no day has closed yet -- a partial day
     understates, and the label says so through the held count."""
     if not raw_dir.is_dir():
@@ -2075,15 +2076,27 @@ def _raw_frames_growth(
     linked = _raw_frames_linked(days[0])
     if held >= (raw_held_day_dirs(retain_days) or 0) and not linked:
         return 0.0, held, 0
-    today = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
-    complete = [p for p in days if p.name < today]
-    day = complete[-1] if complete else days[-1]
-    # The rate is the day AS THE WRITER LEFT IT: the sibling's recompressor
-    # rewrites closed files in place at about half the bytes (mistakes #188),
-    # and a newest day caught mid-rewrite would otherwise read anywhere
-    # between the two. As written is the conservative side; what a day costs
-    # at rest is `_raw_frames_at_rest`, printed beside it.
-    sizes = rawsizes.load()
+    rated = _raw_rate_days(raw_dir, now)
+    return float(max(size for _, size in rated)), held, linked
+
+
+#: The raw-frame term of the burn model is the LARGEST of this many newest
+#: complete days, not the newest one. A day's bytes can only be LOWERED by
+#: the writer being down or yielding the disk (`rawframes.DISK_YIELD_BYTES`),
+#: and both happen exactly when the disk is tight: the 2026-11-24 run rated
+#: raw frames at 1.54 GB/day off 11-23 (21 h of host outage and yield) against
+#: a ~14 GB/day writer and printed `4 d to full` 1.3 d from it (mistakes
+#: #239). The price is a real step DOWN in traffic read this many days late,
+#: which is the conservative side of a headroom check.
+RAW_RATE_DAYS = 3
+
+
+def _raw_day_written(day: Path, sizes: dict) -> int:
+    """Bytes of `day` AS THE WRITER LEFT IT: the sibling's recompressor
+    rewrites closed files in place at about half the bytes (mistakes #188),
+    and a day caught mid-rewrite would otherwise read anywhere between the
+    two. As written is the conservative side; what a day costs at rest is
+    `_raw_frames_at_rest`, printed beside it."""
     size = 0
     for f in day.iterdir():
         try:
@@ -2096,7 +2109,40 @@ def _raw_frames_growth(
                     size += f.stat().st_size
         except OSError:
             continue
-    return float(size), held, linked
+    return size
+
+
+def _raw_rate_days(raw_dir: Path, now: datetime | None = None) -> list[tuple[str, int]]:
+    """`(day, bytes as written)` for the newest `RAW_RATE_DAYS` complete day
+    directories, NEWEST FIRST -- or the running day alone, as a floor, when
+    no day has closed yet. Empty when there is no day directory."""
+    if not raw_dir.is_dir():
+        return []
+    days = sorted(p for p in raw_dir.iterdir() if p.is_dir())
+    if not days:
+        return []
+    today = (now or datetime.now(UTC)).strftime("%Y-%m-%d")
+    complete = [p for p in days if p.name < today]
+    picked = complete[-RAW_RATE_DAYS:] if complete else days[-1:]
+    sizes = rawsizes.load()
+    return [(p.name, _raw_day_written(p, sizes)) for p in reversed(picked)]
+
+
+def _raw_short_day_note(rated: list[tuple[str, int]]) -> str:
+    """Says so when the rate is NOT the newest complete day's: which day was
+    short, by how much, and which day's bytes stand in for it. Empty when the
+    newest day is the largest -- the ordinary line stays the ordinary line."""
+    if len(rated) < 2:
+        return ""
+    newest_day, newest = rated[0]
+    used_day, used = max(rated, key=lambda r: r[1])
+    if used_day == newest_day:
+        return ""
+    return (
+        f"; the newest complete day {newest_day[5:]} wrote {newest / 1e9:.2f} GB, the rate is"
+        f" {used_day[5:]}'s -- the largest of the newest {len(rated)}, since a short day is"
+        " the writer down or yielding the disk, not the wire"
+    )
 
 
 def _raw_frames_at_rest(raw_dir: Path) -> tuple[float, int] | None:
@@ -2369,6 +2415,10 @@ def qa_disk_headroom(
             raw_state += (
                 f"; as written -- {rest[1]} file(s) rewritten in place by the sibling"
                 f" hold x{rest[0]:.2f} of that at rest"
+            )
+        if raw_rate > 0:
+            raw_state += _raw_short_day_note(
+                _raw_rate_days(Path(RAW_FRAMES_DIR if raw_dir is None else raw_dir))
             )
         raw_how = (
             f"{raw_rate / 1e9:.2f} raw_frames"

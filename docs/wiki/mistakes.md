@@ -5678,6 +5678,54 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+240. **2026-11-24 14:20Z -- "the 06:10Z elapse lands on a running oneshot
+    and is a no-op" was a prediction, and systemd QUEUED it** (class: a
+    rule measured in one unit state carried to another). The 11-23 22:08Z
+    status entry decided (c4) in advance from the `stop-post` rule (#152
+    family): the boot catch-up Kalshi sweep would still be running at
+    06:10Z, so 11-24 would have no sweep of its own. Measured: the
+    catch-up printed `Finished` at 09:11:21Z and the SAME second the
+    journal reads `Starting hyxlab daily incremental sweep...`, with the
+    timer's `LastTriggerUSec` = 09:11:21Z. A calendar elapse against a
+    oneshot still in `activating` is held by the timer (it sits in
+    `running`) and fires the moment the service goes inactive; the
+    `stop-post` no-op of 11-01 is a different state and does not
+    generalise. Cost here: none -- the second sweep is an increment
+    (3,600 of 4,518 series by 13:21Z, ~6 h wall, done ~15:15Z, clear of
+    the 23:00Z fade window) -- but a plan that counted on the slot being
+    skipped (e.g. to keep the archive lock free for a by-hand job) would
+    have met a 6-12 h writer. **Rule:** a oneshot that overruns its next
+    slot runs AGAIN, back to back; budget for both walls.
+
+239. **2026-11-24 14:20Z -- QA's disk horizon read `4 d to full` 1.3 d
+    from it, because the raw-frame term was rated off an outage day**
+    (class: a rate taken from the newest sample, when the failure being
+    forecast is what shortens the newest sample). `_raw_frames_growth`
+    rated the writer at the newest COMPLETE day's bytes. 11-23 held 1.54
+    GB -- the host was down until 17:40Z and the raw copy yielded the
+    disk until 21:05Z (#227) -- against 16.98 GB on 11-21, the last whole
+    day. With the free-space series reset by the cleanup (so the model
+    WAS the burn), the 10:00Z run printed `burn 12.43 GB/day = 10.00 live
+    + 0.89 backups + 1.54 raw_frames`, `4 d to full`, at 52 GB free;
+    measured since, 54.9 -> 44.6 GB over 08:15-14:16Z = 1.7 GB/h, i.e.
+    full in ~1.1 d. The 10:30Z closing read caught it by hand and filed it as
+    "corrects itself on 11-25's run" -- true, and the wrong response: a
+    full disk and a short raw-frame day are the SAME event, so the term
+    reads low exactly on the mornings the horizon matters, and it had
+    done so on 11-23's run as well (rated off 11-22, 6.54 GB, yield from
+    09:50Z). **Fix:** the rate is the largest of the newest
+    `RAW_RATE_DAYS` = 3 complete days as written -- an outage or a yield
+    can only LOWER a day's bytes, the hourly-ceiling argument of #162 --
+    and the line names the substitution (`the newest complete day 11-23
+    wrote 1.54 GB, the rate is 11-21's`). On today's directory the model
+    reads 10.00 + 0.89 + 16.98 = 27.9 GB/day, the hand model's 27. The
+    price: a real step DOWN in traffic is read three days late, the
+    conservative side. Red: `test_a_short_newest_day_does_not_set_the_
+    raw_frame_rate` fails against the newest-day rate by construction.
+    **Rule:** when a handoff says an instrument "corrects itself
+    tomorrow", ask whether the condition that broke it recurs with the
+    thing it measures; if it does, that is a fix, not a wait.
+
 238. **2026-11-24 08:40Z -- a shadow seed that RAISED left the run trading
     with no seed, and the digest described a dead run for 14.6 h** (class:
     a "first time" flag set before the first-time work it guards; and an

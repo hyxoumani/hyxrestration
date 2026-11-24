@@ -682,3 +682,36 @@ def test_a_rewritten_newest_day_is_priced_as_written_with_the_at_rest_ratio(tmp_
         " rewritten in place by the sibling hold x0.50 of that at rest)"
     ) in detail, detail
     assert "burn 12.00 GB/day" in detail, detail
+
+
+def test_a_short_newest_day_does_not_set_the_raw_frame_rate(tmp_path):
+    """Measured 2026-11-24 10:00Z: the newest complete day (11-23) held 1.5 GB
+    -- the host was down until 17:40Z and the writer yielded the disk until
+    21:05Z -- and the model rated a ~14 GB/day writer at 1.54, printing `4 d
+    to full` about 1.3 d from it. A day's bytes are only ever LOWERED by an
+    outage or a yield, so the rate is the largest of the newest
+    `RAW_RATE_DAYS` complete days and the line names the substitution
+    (mistakes #239)."""
+    raw = tmp_path / "raw_frames"
+    now = qa.datetime(2026, 11, 24, 10, 0, tzinfo=qa.UTC)
+    _raw_day(raw, "2026-11-20", 30 * GB)  # outside the newest three: no vote
+    _raw_day(raw, "2026-11-21", 14 * GB)
+    _raw_day(raw, "2026-11-22", 6 * GB)
+    _raw_day(raw, "2026-11-23", 2 * GB)
+    _raw_day(raw, "2026-11-24", 9 * GB)  # the running day never votes
+    assert qa._raw_frames_growth(raw, 14, now)[0] == 14 * GB
+    rated = qa._raw_rate_days(raw, now)
+    assert [d for d, _ in rated] == ["2026-11-23", "2026-11-22", "2026-11-21"]
+    note = qa._raw_short_day_note(rated)
+    assert "newest complete day 11-23 wrote 2.00 GB" in note
+    assert "the rate is 11-21's" in note
+
+
+def test_an_ordinary_newest_day_adds_no_note(tmp_path):
+    raw = tmp_path / "raw_frames"
+    now = qa.datetime(2026, 11, 24, 10, 0, tzinfo=qa.UTC)
+    _raw_day(raw, "2026-11-22", 13 * GB)
+    _raw_day(raw, "2026-11-23", 14 * GB)
+    assert qa._raw_short_day_note(qa._raw_rate_days(raw, now)) == ""
+    assert qa._raw_short_day_note([("2026-11-24", 5 * GB)]) == ""
+    assert qa._raw_short_day_note([]) == ""

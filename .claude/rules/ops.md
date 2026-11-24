@@ -1123,3 +1123,13 @@
   raw file under the 6 GB yield, or the backlog not read yet). Books
   shards are still by hand: `python -m collector.rawlag DAY/HH`. A new
   report that reads `recv_ts` cites the ledger the same way.
+- A oneshot that overruns its next calendar slot runs AGAIN the second it
+  finishes: the timer holds the elapse while the service is `activating`
+  (11-24: catch-up sweep `Finished` 09:11:21Z, `Starting` 09:11:21Z; mistakes
+  #240). The `stop-post` no-op above is a different state. Budget both walls.
+- QA's `raw_frames` burn term is the LARGEST of the newest 3 complete days
+  as written (`qa.RAW_RATE_DAYS`), because an outage or a disk yield shortens
+  the newest day on exactly the mornings the horizon matters (11-24: `4 d to
+  full` rated off a 1.54 GB day, ~1.1 d true; mistakes #239). The line says
+  `the rate is <day>'s` when it substituted; "corrects itself tomorrow" on an
+  instrument whose fault recurs with its subject is a fix, not a wait.
