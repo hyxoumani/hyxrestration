@@ -3995,6 +3995,11 @@ def judge(
             )
         return UnitHealth(unit, "NEVER-RAN", "timer active but never triggered")
 
+    # "Last ran" is the newer of the timer's trigger and the service's own
+    # exit: a unit started by hand before its first slot has an exit and no
+    # trigger, and read `last ran never` beside an OK (hyxlab-econwatch,
+    # 2026-11-24 20:40Z).
+    last = max((t for t in (last, exited) if t is not None), default=None)
     if nxt is None:
         # (3) says an empty next elapse is normal WHILE RUNNING. This unit is idle,
         # so the manager has an active timer it has scheduled nothing for.

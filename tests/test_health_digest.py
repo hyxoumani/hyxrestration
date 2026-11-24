@@ -147,6 +147,21 @@ def test_a_scheduled_first_run_is_not_a_fault() -> None:
     assert not h.ok
 
 
+def test_a_unit_run_by_hand_before_its_first_slot_says_when_it_ran() -> None:
+    """`hyxlab-econwatch` on 2026-11-24: started by hand at 20:40Z, 7 h before
+    its first slot, so the timer had no trigger and the service had an exit.
+    The digest printed `OK ... last ran never` -- the timer's stamp under the
+    service's name."""
+    h = health.judge(
+        "hyxlab-econwatch.service",
+        svc(ExecMainExitTimestamp=f"@{int(NOW) - 120}", ExecMainStatus="0", ActiveState="inactive"),
+        timer(LastTriggerUSec="", NextElapseUSecRealtime=f"@{int(NOW) + 7 * 3600}"),
+        NOW,
+    )
+    assert h.state == "OK", h
+    assert "never" not in h.detail, h.detail
+
+
 def test_a_nonzero_status_on_a_unit_that_never_exited_is_not_a_failure() -> None:
     """The gate itself, exercised. Without it the reported failure would rest on
     a field that was never written by a run -- ExecMainStatus carries whatever
