@@ -1899,6 +1899,10 @@ ingestion behind a `FeatureView` as-of API.
 
 ## Signal feeds & backups (B4, 2026-07-11/12)
 
+- `hyxlab-econwatch.timer` (daily 03:52 UTC; since 2026-11-24): counts the
+  EconClaimsRW pre-registration's scorable and lost events on the newest
+  backup slot (`simulator.run_econ_claims --watch`; no replay, no PnL); red
+  for 8 days after an event loses its decision window (mistakes #241).
 - `hyxlab-atlas.timer` (weekly, Mon 02:48 UTC; since 2026-10-17): the
   calibration atlas (`simulator.atlas`) on the settled corpus of the
   collector's file. Replaces a ~6-day hand cadence (09-26, 10-07,

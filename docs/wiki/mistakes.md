@@ -5678,6 +5678,28 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+241. **2026-11-24 20:40Z -- the one live pre-registration's sample went 40
+    days uncounted behind "it accumulates on its own; nothing to run"**
+    (class: a series nobody differences, #169, on the strategy side). The
+    EconClaimsRW registration (10-15) scores once at 26 scorable events and
+    does not widen its ten-minute decision window, so an event with no
+    snapshot in [close-60min, close-50min] is gone for good and moves the
+    read a week; the 07-16/07-23/07-30 events were lost that way, three in
+    a row, to one recurring focus-tape hole. Since 10-15 the window moved
+    with the US fall-back (11:25Z -> 12:30Z), the host was down 26.4 h and
+    the disk filled, and nothing counted the sample across any of it.
+    Measured on the 11-24 slot: ICSA 16 of 26, 5 of 5 since 10-15; CCSA 5
+    of 26 -- no loss, by luck of the weekday rather than by any reading.
+    Fix: `simulator.run_econ_claims --watch` + `hyxlab-econwatch.timer`
+    (daily 03:52Z, backup slot, 5 s): count, lost events with the reason,
+    earliest read date; exit 1 for 8 days after a loss. It calls
+    `scorable_events` only -- a test replaces `Simulator` and `score` with
+    a raise -- so the watch cannot become a look at the result. **Rule:
+    "data-gated until date D" is a claim that every intervening event
+    lands; an accumulating sample whose members can be lost one at a time
+    gets a standing count the day it is registered, and the count's
+    failure condition is the loss, not the total.**
+
 240. **2026-11-24 14:20Z -- "the 06:10Z elapse lands on a running oneshot
     and is a no-op" was a prediction, and systemd QUEUED it** (class: a
     rule measured in one unit state carried to another). The 11-23 22:08Z

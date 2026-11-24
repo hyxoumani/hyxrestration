@@ -605,6 +605,16 @@ structure — see [venues](venues.md)).
    focus-tape hole and the window is NOT widened to admit them), CCSA 0
    (set begins 10-22). 26th ICSA event ~2027-01-28, CCSA ~2027-04-15.
    Until then it accumulates on its own; nothing to run.
+   **Sample watch, 2026-11-24 (mistakes #241):** "nothing to run" left the
+   sample uncounted for 40 days. `python -m simulator.run_econ_claims
+   --watch` (unit `hyxlab-econwatch`, daily 03:52Z, on the newest backup
+   slot) prints both pairs' scorable count, the events lost for good and
+   the earliest date of the registered read, from `scorable_events`
+   alone -- it never replays and prints no PnL at any count -- and exits
+   1 for 8 days after an event loses its decision window. First reading:
+   ICSA 16 of 26 (5 of 5 since 10-15), CCSA 5 of 26, no loss since the
+   sets began; reads open ~2027-01-27 and ~2027-04-14. After the US
+   fall-back the decision window is 12:30-12:40Z (11:25-11:35Z in EDT).
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
    splits leak adjacent-day regimes). New registration, not a rescue.
 4. **Cross-venue arb** — measurement framing; expect fee-wall null

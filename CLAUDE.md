@@ -76,6 +76,10 @@ SYSTEMD_UNIT_PATH=$PWD/scripts/systemd:/etc/systemd/user:/usr/lib/systemd/user \
 .venv/bin/python -m collector.collect --once
 .venv/bin/python -m simulator.run_backtest
 
+# Pre-registered econ-claims sample: scorable / lost events per pair. Count
+# gate only -- never replays, prints no PnL (mistakes #241).
+HYXLAB_BACKUP_DIR=/home/devs/hyx-backups .venv/bin/python -m simulator.run_econ_claims --watch
+
 # Interactive market-replay UI (paper trading; http://127.0.0.1:8877)
 .venv/bin/python -m simulator.simui
 ```
@@ -83,7 +87,8 @@ SYSTEMD_UNIT_PATH=$PWD/scripts/systemd:/etc/systemd/user:/usr/lib/systemd/user \
 Scheduled (systemd user units, run from the stable worktree; canonical
 files in `scripts/systemd/`, installed by `scripts/promote.sh`): timers
 `hyxlab-collect` (5 min), `hyxlab-poly-sweep` (04:15 UTC),
-`hyxlab-sweep` (06:10 UTC), `hyxlab-qa` (10:00 UTC), `hyxlab-atlas`
+`hyxlab-econwatch` (03:52 UTC, pre-reg sample count), `hyxlab-sweep`
+(06:10 UTC), `hyxlab-qa` (10:00 UTC), `hyxlab-atlas`
 (weekly Mon 02:48 UTC, both sweeps idle); daemons
 `hyxlab-stream` and `hyxlab-shadow`. DuckDB is single-writer — ad-hoc
 runs may need to wait seconds for the collector's flock.
