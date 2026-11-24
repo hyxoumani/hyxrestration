@@ -5722,6 +5722,17 @@ Format: what happened → root cause → error type → prevention tier
     price: a real step DOWN in traffic is read three days late, the
     conservative side. Red: `test_a_short_newest_day_does_not_set_the_
     raw_frame_rate` fails against the newest-day rate by construction.
+    **The same class sat in the model's other term, found the same pass:**
+    `_rotation_growth` is the first-to-last slot MEAN, `10.00 live ...
+    over 6.0d`, across the 26.4 h outage and 1.5 d of full disk; the
+    whole days in the same slots read 12.9, 10.9, 11.7, 12.3 GB/day
+    (stream) and the outage pair 2.9. The live term is now the busiest
+    slot-to-slot day when that exceeds the mean by 5% (pairs under 0.9 d
+    apart do not vote: the boot slot to 03:30Z read 13.3 across the
+    evening peak), printed with the mean beside it: 13.28 here, so the
+    model reads 13.28 + 0.89 + 16.98 = 31.2 GB/day against ~29 measured
+    for ours over 08:15-14:16Z (other tenants ~10 on top: the sibling's
+    12:00Z backup ~4 GB, its rfq sqlite 1.7, a 1.15 GB tar).
     **Rule:** when a handoff says an instrument "corrects itself
     tomorrow", ask whether the condition that broke it recurs with the
     thing it measures; if it does, that is a fix, not a wait.

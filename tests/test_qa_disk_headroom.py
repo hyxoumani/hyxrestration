@@ -715,3 +715,37 @@ def test_an_ordinary_newest_day_adds_no_note(tmp_path):
     assert qa._raw_short_day_note(qa._raw_rate_days(raw, now)) == ""
     assert qa._raw_short_day_note([("2026-11-24", 5 * GB)]) == ""
     assert qa._raw_short_day_note([]) == ""
+
+
+def test_an_outage_inside_the_rotation_does_not_lower_the_live_rate(tmp_path):
+    """Measured 2026-11-24: `10.00 live ... over 6.0d` across a 26.4 h host
+    outage and 1.5 d of full disk, where the whole days in the same slots
+    read 10.9-12.9 GB/day. The mean nets the dead hours in; the busiest
+    slot-to-slot day does not, and the line prints both (mistakes #239)."""
+    db = _live(tmp_path, "a", 5 * GB)
+    bdir = tmp_path / "backups"
+    # 2 GB/day, then two days down, then 2 GB/day again.
+    _rotation(bdir, "a", [1 * GB, 3 * GB, 3 * GB, 3 * GB, 5 * GB])
+    rate, _ = qa._rotation_growth([Path(db)], bdir)
+    assert rate == pytest.approx(1 * GB)
+    assert qa._rotation_peak_growth([Path(db)], bdir) == pytest.approx(2 * GB)
+
+    _, lines = _run(dbs=[db], backup_dir=bdir, min_days=1.0)
+    detail = "\n".join(lines)
+    assert "2.00 live (the busiest slot-to-slot day; 1.00 mean over 4.0d" in detail, detail
+
+
+def test_slots_closer_than_a_day_do_not_vote_on_the_peak(tmp_path):
+    """The 11-23 boot slot (17:41Z) and the 11-24 03:30Z one are 0.41 d
+    apart across the evening peak: 13.3 GB/day from a pair that is not a
+    day. With no pair a day apart there is no peak at all."""
+    bdir = tmp_path / "backups"
+    _rotation(bdir, "a", [1 * GB, 2 * GB])
+    late = bdir / "a.d9.duckdb"
+    late.write_bytes(b"")
+    os.truncate(late, 4 * GB)
+    os.utime(late, (1.0e9 + 86400 * 1.4, 1.0e9 + 86400 * 1.4))
+    db = Path(_live(tmp_path, "a", 4 * GB))
+    assert qa._rotation_peak_growth([db], bdir) == pytest.approx(1 * GB)
+    os.unlink(bdir / "a.d0.duckdb")
+    assert qa._rotation_peak_growth([db], bdir) is None

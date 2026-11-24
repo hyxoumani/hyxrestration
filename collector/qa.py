@@ -2343,6 +2343,43 @@ def _rotation_growth(live: list[Path], backup_dir: Path) -> tuple[float | None, 
     return total, span
 
 
+#: Two slots closer together than this are not a day's growth: the 11-23
+#: boot slot and the 11-24 03:30Z one are 0.41 d apart across the evening
+#: peak and read 13.3 GB/day where whole days read 10.9-12.9.
+ROTATION_PAIR_MIN_D = 0.9
+
+
+def _rotation_peak_growth(live: list[Path], backup_dir: Path) -> float | None:
+    """Bytes/day the live archives gain on their BUSIEST slot-to-slot day:
+    per archive, the largest rate between adjacent slots at least
+    `ROTATION_PAIR_MIN_D` apart, summed. None when any archive has no such
+    pair. The first-to-last mean of `_rotation_growth` nets every hour the
+    writer was down into the rate -- measured 2026-11-24, `10.00 live ...
+    over 6.0d` across the 26.4 h host outage and 1.5 d of full disk, where
+    the four whole days in the same slots read 10.9-12.9 (mistakes #239). An
+    outage can only LOWER a day's growth, so the busiest day is the sample
+    with the least outage in it."""
+    total = 0.0
+    for db in live:
+        slots = []
+        for p in backup_dir.glob(f"{db.stem}.*.duckdb"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            slots.append((st.st_mtime, st.st_size))
+        slots.sort()
+        rates = [
+            (b[1] - a[1]) / ((b[0] - a[0]) / 86400.0)
+            for a, b in zip(slots, slots[1:], strict=False)
+            if (b[0] - a[0]) / 86400.0 >= ROTATION_PAIR_MIN_D
+        ]
+        if not rates:
+            return None
+        total += max(rates)
+    return total
+
+
 def qa_disk_headroom(
     dbs: list[str] | None = None,
     backup_dir: str | Path | None = None,
@@ -2447,8 +2484,19 @@ def qa_disk_headroom(
                         f"{slots_rate / 1e9:.2f} backups"
                         f" (x{ROTATION_SLOTS} full copies, sharing unmeasured)"
                     )
-            model = rate + slots_rate + raw_rate
-            model_how = f"{rate / 1e9:.2f} live + {slots_how} + {raw_how}"
+            # The busiest slot-to-slot day outranks the mean when an outage
+            # sits inside the span (mistakes #239); a steady archive reads
+            # the same either way and keeps the plain label.
+            peak = _rotation_peak_growth(live, backup_dir)
+            live_rate, live_how = rate, f"{rate / 1e9:.2f} live"
+            if peak is not None and peak > rate * 1.05:
+                live_rate = peak
+                live_how = (
+                    f"{peak / 1e9:.2f} live (the busiest slot-to-slot day;"
+                    f" {rate / 1e9:.2f} mean over {span:.1f}d nets in any outage)"
+                )
+            model = live_rate + slots_rate + raw_rate
+            model_how = f"{live_how} + {slots_how} + {raw_how}"
 
         # The filesystem's own series outranks the model the moment it can
         # speak; the model is printed beside it so the two stay comparable.

@@ -1128,7 +1128,8 @@
   (11-24: catch-up sweep `Finished` 09:11:21Z, `Starting` 09:11:21Z; mistakes
   #240). The `stop-post` no-op above is a different state. Budget both walls.
 - QA's `raw_frames` burn term is the LARGEST of the newest 3 complete days
-  as written (`qa.RAW_RATE_DAYS`), because an outage or a disk yield shortens
+  as written (`qa.RAW_RATE_DAYS`) and its `live` term the busiest slot-to-slot
+  day (`_rotation_peak_growth`, mean printed beside it), because an outage or a disk yield shortens
   the newest day on exactly the mornings the horizon matters (11-24: `4 d to
   full` rated off a 1.54 GB day, ~1.1 d true; mistakes #239). The line says
   `the rate is <day>'s` when it substituted; "corrects itself tomorrow" on an
