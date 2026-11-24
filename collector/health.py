@@ -2041,6 +2041,9 @@ _SHADOWSEED_RE = re.compile(
 _SHADOWSTAT_RE = re.compile(
     r"python\[(\d+)\]: \[shadow\] \{'snapshots': (\d+), 'events': (\d+), 'polls': (\d+)\}"
 )
+#: The line every shadow process prints first. The seed line is printed only by
+#: a seed that FINISHED, so it cannot say which process is the running one.
+_SHADOWRUN_RE = re.compile(r"python\[(\d+)\]: \[shadow\] run (\S+) strategies=")
 
 
 @dataclass(frozen=True)
@@ -2058,9 +2061,18 @@ class ShadowSeed:
     #: its newest hour; None until the run has a pair of lines / a second hour.
     first_hour: tuple[int, int] | None
     last_hour: tuple[int, int] | None
+    #: False when the newest shadow START printed no seed line: the seed raised
+    #: or has not finished. `at` is then that start's time, the seed fields are
+    #: zeros that describe nothing, and `stale_seed_at` is the newest seed line
+    #: in the window -- another process's, a run that is over (mistakes #238:
+    #: for 14.6 h the row described a run dead since the 11-22 crash).
+    seeded: bool = True
+    stale_seed_at: datetime | None = None
 
     @property
     def verdict(self) -> str:
+        if not self.seeded:
+            return "NO-SEED"
         if self.top_states == 0 and self.events >= SHADOWSEED_MIN_EVENTS:
             return "BLIND"
         if (
@@ -2078,27 +2090,43 @@ class ShadowSeed:
 
 
 def parse_shadow_seed(lines: list[str] | str) -> ShadowSeed | None:
-    """The newest `seeded books` line and the stats lines the same process
-    printed after it. None when the window holds no seed line."""
+    """The newest shadow START's seed line and the stats lines the same
+    process printed after it. A start is a `[shadow] run` line; a window with
+    seed lines and no run line (a journal read before 2026-11-24 grepped none)
+    takes the newest seed line as the start, as it always did. None when the
+    window holds neither."""
     if isinstance(lines, str):
         lines = lines.splitlines()
     seed = None
+    start: tuple[datetime, str] | None = None  # newest run line with no seed line yet
     stats: list[tuple[datetime, int, int]] = []
     for line in lines:
         ts = _short_iso_ts(line)
         if ts is None:
             continue
+        m = _SHADOWRUN_RE.search(line)
+        if m:
+            start = (ts, m.group(1))
+            stats = []
+            continue
         m = _SHADOWSEED_RE.search(line)
+        if m and start is not None and m.group(1) == start[1]:
+            # This start's own seed: keep the lines it printed while seeding.
+            seed = (ts, m)
+            start = None
+            continue
+        if m and start is not None:
+            continue  # a dead process's seed line arriving after a newer start
         if m:
             seed = (ts, m)
             stats = []
             continue
         m = _SHADOWSTAT_RE.search(line)
-        if m and seed is not None and m.group(1) == seed[1].group(1):
+        pid = start[1] if start is not None else seed[1].group(1) if seed is not None else None
+        if m and m.group(1) == pid:
             stats.append((ts, int(m.group(2)), int(m.group(3))))
-    if seed is None:
+    if seed is None and start is None:
         return None
-    at, m = seed
 
     def _span(pairs: list[tuple[datetime, int, int]]) -> tuple[int, int] | None:
         if len(pairs) < 2:
@@ -2106,10 +2134,15 @@ def parse_shadow_seed(lines: list[str] | str) -> ShadowSeed | None:
         return pairs[-1][1] - pairs[0][1], pairs[-1][2] - pairs[0][2]
 
     hour = timedelta(hours=1)
+    at = start[0] if start is not None else seed[0]
     first = _span([x for x in stats if x[0] <= at + hour])
     last = None
     if stats and stats[-1][0] - at >= 2 * hour:
         last = _span([x for x in stats if x[0] >= stats[-1][0] - hour])
+    if start is not None:
+        stale = seed[0] if seed is not None else None
+        return ShadowSeed(at, 0, 0, None, None, (), first, last, False, stale)
+    m = seed[1]
     capped = tuple(int(x) for x in m.group(6).split(",") if x.strip()) if m.group(6) else ()
     return ShadowSeed(
         at,
@@ -2127,7 +2160,8 @@ def read_shadow_seed(
     unit: str = SHADOWHOLD_UNIT, hours: int = SHADOWSEED_WINDOW_H
 ) -> ShadowSeed | None | str:
     text = _journal_hourly(
-        ["-u", unit, "--utc", "--grep=seeded books|'snapshots'", "-o", "short-iso"], hours
+        ["-u", unit, "--utc", "--grep=seeded books|'snapshots'|shadow. run ", "-o", "short-iso"],
+        hours,
     )
     return "unreadable" if text is None else parse_shadow_seed(text)
 
@@ -2148,6 +2182,16 @@ def shadow_seed_line(seed: ShadowSeed | None | str, hours: int = SHADOWSEED_WIND
         f"started {seed.at:%m-%d %H:%M}Z: {seed.events:,} seed events -> "
         f"{seed.top_states:,} top states ({scope})"
     )
+    if not seed.seeded:
+        stale = (
+            f"the newest seed line is {seed.stale_seed_at:%m-%d %H:%M}Z, a run that is over"
+            if seed.stale_seed_at is not None
+            else "no seed line in the window"
+        )
+        head = (
+            f"started {seed.at:%m-%d %H:%M}Z and printed NO seed line (the seed raised or"
+            f" has not finished; grep its journal for `seed FAILED` / `poll FAILED`; {stale})"
+        )
     if seed.capped_shards:
         head += f", shard(s) {list(seed.capped_shards)} past the seed lookback"
 

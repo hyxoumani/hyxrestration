@@ -144,3 +144,56 @@ def test_a_thin_first_span_is_not_judged() -> None:
     lines = [NEW_WHOLE, _stat(at + timedelta(minutes=3), 949327, 0, 0)]
     lines.append(_stat(at + timedelta(minutes=8), 949327, 10, 20_000))  # 0.05%, 20k events
     assert health.parse_shadow_seed(lines).verdict == "ok"
+
+
+def _run_line(ts: datetime, pid: int) -> str:
+    return (
+        f"{ts:%Y-%m-%dT%H:%M:%S}+00:00 hyz python[{pid}]: [shadow] run {ts:%Y%m%dT%H%M%S}"
+        " strategies=probe latency=2.0s poll=60.0s (ledger-only; anchored at stream head)"
+    )
+
+
+def test_a_start_with_no_seed_line_is_the_subject_and_not_the_dead_runs_seed() -> None:
+    """Mistakes #238: 11-23 17:41Z the seed raised; for 14.6 h the row read
+    `started 11-18 03:59Z ... 1,003 top states`, the run the crash had ended."""
+    old = datetime(2026, 11, 14, 14, 55, 13, tzinfo=UTC)
+    new = datetime(2026, 11, 23, 17, 41, 12, tzinfo=UTC)
+    lines = [
+        _run_line(old - timedelta(seconds=18), 949327),
+        NEW_WHOLE,
+        *_stats(old, 949327, [0.10, 0.10, 0.10]),
+        _run_line(new, 8767),
+        *_stats(new, 8767, [0.07, 0.08, 0.09]),
+    ]
+    seed = health.parse_shadow_seed(lines)
+    assert (seed.seeded, seed.at, seed.stale_seed_at) == (False, new, old)
+    assert seed.verdict == "NO-SEED"
+    assert seed.first_hour == (7_700, 110_000)
+    line = health.shadow_seed_line(seed)
+    assert line.startswith("NO-SEED -- started 11-23 17:41Z and printed NO seed line")
+    assert "11-14 14:55Z, a run that is over" in line and "top states" not in line
+
+
+def test_a_start_followed_by_its_own_seed_line_reads_as_it_always_did() -> None:
+    at = datetime(2026, 11, 14, 14, 55, 13, tzinfo=UTC)
+    lines = [
+        _run_line(at - timedelta(seconds=18), 949327),
+        NEW_WHOLE,
+        *_stats(at, 949327, [0.10, 0.10, 0.10]),
+    ]
+    seed = health.parse_shadow_seed(lines)
+    assert (seed.seeded, seed.events, seed.verdict) == (True, 3898917, "ok")
+    assert seed.first_hour == (11_000, 110_000)
+
+
+def test_a_seedless_start_renders_its_own_fields() -> None:
+    base = health.ShadowSeed(T, 0, 0, None, None, (), (10, 1000), None, False, T)
+    line = health.shadow_seed_line(base)
+    for v in (
+        replace(base, at=T + timedelta(hours=1)),
+        replace(base, stale_seed_at=T - timedelta(days=1)),
+        replace(base, stale_seed_at=None),
+        replace(base, seeded=True),
+        replace(base, first_hour=(11, 1000)),
+    ):
+        assert health.shadow_seed_line(v) != line

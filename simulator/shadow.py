@@ -493,6 +493,87 @@ class ShadowRunner:
         except duckdb.Error:
             return None
 
+    def _seed(self, conn) -> None:
+        """Replay the archive since the seed floor into the replayer, up to
+        the anchor `self.cursor`; prints the seed line. Raises on any error
+        with the replayer possibly half-seeded -- the caller drops it."""
+        if self.cursor is None:
+            return
+        # The EARLIEST of each connection's last break, with
+        # the later breaks replayed inside the seed -- not the
+        # newest gap row, which since per-shard rows (11-02) is
+        # one connection's reconnect and leaves every other
+        # shard's books unknown until it too reconnects
+        # (`bookreplay.seed_floor`, mistakes #196).
+        sf = seed_floor(conn, self.cursor)
+        floor = sf.floor
+        self.ledger.set_anchor(self.run_id, self.cursor, floor)
+        # Seed through `bookreplay.stream_events` — THE ONE
+        # walk over book_events — rather than a fourth
+        # hand-rolled query. That module's docstring already
+        # says the duplication is why its memory fix reached
+        # only one caller, and this was the caller it missed:
+        # measured 2026-08-27 (EXP-1375) on the live archive,
+        # an UNSLICED sort of this shape DIES at a 24h window
+        # (10.4M rows) under the 512MiB DUCK_MEM limit, while
+        # the sliced walk does 72h / 26.0M rows spilling
+        # 45 MiB. The seed window is "since the last book
+        # gap", whose size is decided by a RACE: promote.sh
+        # restarts hyxlab-stream and hyxlab-shadow together,
+        # so if shadow reads the floor before stream writes
+        # its `daemon_start` gap row it seeds from the
+        # PREVIOUS break instead. Measured at the 2026-07-31
+        # 20:34 promote: 2,084,503 rows against the 21,419
+        # the winning ordering gives — a 97x swing on a race,
+        # kernel-OOM-killed at boot. 2.08M rows still fit;
+        # 10.4M do not, and nothing bounds which side of that
+        # the race lands on. Slicing removes the tail.
+        #
+        # BOUNDED ABOVE AT THE ANCHOR, which the hand-rolled
+        # query was not. `self.cursor` was read from a live
+        # archive a daemon is still writing, so rows can land
+        # between that read and this walk. An unbounded seed
+        # APPLIES them, and the first real poll (`recv_ts >
+        # cursor`) applies them AGAIN — a delta counted twice
+        # is a book that never existed. `stream_events` is
+        # half-open `(lo, hi]` and the poll is `> cursor`, so
+        # the row at exactly the anchor belongs to the seed
+        # and to nothing else.
+        #
+        # The floor is INCLUSIVE (see `lo_inclusive`): it is
+        # a gap's `ended_at`, and a seq_reset gap ends at the
+        # recv_ts of the reconnect image that re-seeds books.
+        n_rows = 0
+
+        def _seed_events():
+            nonlocal n_rows
+            for e in stream_events(
+                conn,
+                floor or datetime.min,
+                self.cursor,
+                series=self.series,
+                lo_inclusive=True,
+            ):
+                n_rows += 1
+                yield e
+
+        seeded = 0
+        for _ in replay_snapshots(_seed_events(), gaps=sf.gaps, replayer=self.replayer):
+            seeded += 1
+        capped = (
+            f"; shard(s) {list(sf.capped_shards)} last re-imaged over"
+            f" {SEED_MAX_LOOKBACK_H:g}h ago, unknown until they reconnect"
+            if sf.capped_shards
+            else ""
+        )
+        print(
+            f"[shadow] seeded books from {n_rows} archived events"
+            f" since {floor} ({seeded} top states, {sf.shards} shard(s),"
+            f" {len(sf.gaps)} gap row(s) replayed{capped};"
+            f" trading starts at {self.cursor})",
+            flush=True,
+        )
+
     def _read_new(self) -> tuple[list[BookEvent], list[tuple]]:
         with held_stream_conn(self.stream_db) as conn:
             if self.cursor is None:
@@ -505,81 +586,29 @@ class ShadowRunner:
                 # the sim — state derivation, not decision-making.
                 self.cursor = conn.execute("SELECT max(recv_ts) FROM book_events").fetchone()[0]
                 self.gap_cursor = self.cursor
-                if self.cursor is not None:
-                    # The EARLIEST of each connection's last break, with
-                    # the later breaks replayed inside the seed -- not the
-                    # newest gap row, which since per-shard rows (11-02) is
-                    # one connection's reconnect and leaves every other
-                    # shard's books unknown until it too reconnects
-                    # (`bookreplay.seed_floor`, mistakes #196).
-                    sf = seed_floor(conn, self.cursor)
-                    floor = sf.floor
-                    self.ledger.set_anchor(self.run_id, self.cursor, floor)
-                    # Seed through `bookreplay.stream_events` — THE ONE
-                    # walk over book_events — rather than a fourth
-                    # hand-rolled query. That module's docstring already
-                    # says the duplication is why its memory fix reached
-                    # only one caller, and this was the caller it missed:
-                    # measured 2026-08-27 (EXP-1375) on the live archive,
-                    # an UNSLICED sort of this shape DIES at a 24h window
-                    # (10.4M rows) under the 512MiB DUCK_MEM limit, while
-                    # the sliced walk does 72h / 26.0M rows spilling
-                    # 45 MiB. The seed window is "since the last book
-                    # gap", whose size is decided by a RACE: promote.sh
-                    # restarts hyxlab-stream and hyxlab-shadow together,
-                    # so if shadow reads the floor before stream writes
-                    # its `daemon_start` gap row it seeds from the
-                    # PREVIOUS break instead. Measured at the 2026-07-31
-                    # 20:34 promote: 2,084,503 rows against the 21,419
-                    # the winning ordering gives — a 97x swing on a race,
-                    # kernel-OOM-killed at boot. 2.08M rows still fit;
-                    # 10.4M do not, and nothing bounds which side of that
-                    # the race lands on. Slicing removes the tail.
-                    #
-                    # BOUNDED ABOVE AT THE ANCHOR, which the hand-rolled
-                    # query was not. `self.cursor` was read from a live
-                    # archive a daemon is still writing, so rows can land
-                    # between that read and this walk. An unbounded seed
-                    # APPLIES them, and the first real poll (`recv_ts >
-                    # cursor`) applies them AGAIN — a delta counted twice
-                    # is a book that never existed. `stream_events` is
-                    # half-open `(lo, hi]` and the poll is `> cursor`, so
-                    # the row at exactly the anchor belongs to the seed
-                    # and to nothing else.
-                    #
-                    # The floor is INCLUSIVE (see `lo_inclusive`): it is
-                    # a gap's `ended_at`, and a seq_reset gap ends at the
-                    # recv_ts of the reconnect image that re-seeds books.
-                    n_rows = 0
-
-                    def _seed_events():
-                        nonlocal n_rows
-                        for e in stream_events(
-                            conn,
-                            floor or datetime.min,
-                            self.cursor,
-                            series=self.series,
-                            lo_inclusive=True,
-                        ):
-                            n_rows += 1
-                            yield e
-
-                    seeded = 0
-                    for _ in replay_snapshots(_seed_events(), gaps=sf.gaps, replayer=self.replayer):
-                        seeded += 1
-                    capped = (
-                        f"; shard(s) {list(sf.capped_shards)} last re-imaged over"
-                        f" {SEED_MAX_LOOKBACK_H:g}h ago, unknown until they reconnect"
-                        if sf.capped_shards
-                        else ""
-                    )
+                try:
+                    self._seed(conn)
+                except BaseException:
+                    # A seed that raised has NOT seeded, and the cursor is
+                    # what says "first poll done": left set, the next poll
+                    # goes straight to trading deltas over books it never
+                    # imaged, for the life of the run, with no seed line
+                    # and one `poll FAILED` that reads as a lock refusal's
+                    # cousin. Measured 2026-11-23 17:41:14Z (mistakes #238):
+                    # a DuckDB INTERNAL error inside the seed walk at boot,
+                    # anchor and floor already in the ledger, and the run
+                    # traded on -- whole only because that window happened
+                    # to hold zero Kalshi book events. Forget the anchor and
+                    # any half-applied state; the next poll re-anchors.
+                    self.cursor = None
+                    self.gap_cursor = None
+                    self.replayer = BookReplayer()
                     print(
-                        f"[shadow] seeded books from {n_rows} archived events"
-                        f" since {floor} ({seeded} top states, {sf.shards} shard(s),"
-                        f" {len(sf.gaps)} gap row(s) replayed{capped};"
-                        f" trading starts at {self.cursor})",
+                        "[shadow] seed FAILED before it finished; anchor dropped,"
+                        " the next poll re-anchors and seeds again",
                         flush=True,
                     )
+                    raise
                 return [], []
             only = f" AND {SERIES_PREDICATE}" if self.series is not None else ""
             rows = conn.execute(

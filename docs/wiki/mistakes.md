@@ -5678,6 +5678,49 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+238. **2026-11-24 08:40Z -- a shadow seed that RAISED left the run trading
+    with no seed, and the digest described a dead run for 14.6 h** (class:
+    a "first time" flag set before the first-time work it guards; and an
+    instrument keyed on a line only the success path prints). At the
+    11-23 17:40Z boot the shadow's first poll died inside the seed walk
+    on a DuckDB `InternalException: Attempted to access index 0 within
+    vector of size 0` (cause not reproduced: the same seed against the
+    Mon and Tue backup slots with the stable venv walks clean; the live
+    file was seconds past crash recovery with the stream's first flush
+    landing). `_read_new` had already set `self.cursor` -- the thing that
+    says "the first poll is done" -- and `poll_once` swallows
+    `duckdb.Error`, so the next poll went straight to trading deltas:
+    no seed, no seed line, one `poll FAILED x1 (NOT a lock refusal...)`
+    and `recovered after 1 failed poll(s)`. The ledger carries an anchor
+    (17:41:05.33) and a floor (17:40:41.91) for a seed that never ran.
+    **It cost nothing this time, by luck that was measured, not assumed:**
+    the window (floor, anchor] holds ZERO Kalshi book events on the Tue
+    slot (the anchor was a poly row; all 304,113 `snap` rows of the boot
+    re-image land after it), so the run is whole. On a shadow-only
+    restart the same failure skips a seed of millions of rows -- the #196
+    blind start through a new door. `SHADOWSEED` meanwhile printed
+    `started 11-18 03:59Z: 27,149 seed events -> 1,003 top states ...
+    first hour 7.1%, newest hour 14.7%` -- every number the run the
+    11-22 crash ended, because the parser's subject was "the newest seed
+    line" and a failed seed prints none. Two digests and two closing
+    reads carried that row. Journal since 10-13: 15 starts, 2 with no
+    seed line (this, and the 11-02 02:34Z OOM kill mid-seed, which died).
+    Fixed: the seed is `ShadowRunner._seed`; on any exception the runner
+    drops the anchor, the gap cursor and the half-seeded replayer, prints
+    `[shadow] seed FAILED before it finished; anchor dropped, ...`, and
+    the next poll re-anchors and seeds (tests red against the reset
+    removed -- mutant diffed). `SHADOWSEED`'s subject is the newest
+    `[shadow] run` line; with no seed line from that process it prints
+    `NO-SEED -- started ... and printed NO seed line (...; the newest
+    seed line is <when>, a run that is over)` with that process's own
+    yield. **Rule: set the flag that says "initialised" AFTER the
+    initialisation returns, and on the way out of a failed one put back
+    everything it touched -- a caller that swallows the exception and
+    calls again must find the object as it was. And an instrument's
+    subject is the event that always happens (the start), never the line
+    only success prints: keyed on the success line, a failure renders as
+    the previous success.**
+
 237. **2026-11-24 02:25Z -- the pace clause was blind for the six hours
     after a cleanup, and a hand estimate filled the hole** (class: an
     instrument that declines to answer leaves the question to whoever

@@ -955,7 +955,10 @@
   replay shares. The digest's `SHADOWSEED` line does both readings
   (`BLIND`: a large seed with no top state; `BLIND-START`: a first hour
   under 2% snapshots per event, or under 0.4x the newest hour's; `CAPPED`:
-  shards past the lookback) -- replayed over the journal it flags all four
+  shards past the lookback; `NO-SEED`: the newest start printed no seed
+  line at all -- the seed raised, mistakes #238, and until 2026-11-24 the
+  run then traded unseeded while the row described the previous run)
+  -- replayed over the journal it flags all four
   blind starts of 11-03..11-14 and passes the fixed run. The shadow's poll is 60 s since 2026-11-14 (hold is a
   constant ~0.54 s per attach whatever the batch): on SHADOWHOLD, s/poll
   should not have moved and duty should be ~1/3.
