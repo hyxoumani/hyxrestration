@@ -5678,6 +5678,43 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+242. **2026-11-25 02:20Z -- HOSTNET printed seven outages the stream
+    received straight through, and handed them to STREAMFLOW as excuses**
+    (class: a proxy's state read as the resource's, #103's shape -- "the
+    probe failed" read as "the path was down"). The row's premise, written
+    11-20 on the day a cable really died, was `anything short of
+    CONNECTED_GLOBAL is a span the capture units could not have used`. On
+    the wired route since 11-23 that is false: seven `CONNECTED_SITE`
+    episodes of 3-51 s (11-24 12:31, 15:16, 17:22, 19:17, 23:18, 23:53Z,
+    11-25 00:29Z; `7 offline episode(s), 2.2 min`) with the stream's
+    `rx_gap` -- the longest stretch with no frame on ANY connection -- at
+    0.28-0.81 s in every period across them and no reconnect, timeout or
+    GAP line inside any. NetworkManager moves that state when its
+    connectivity PROBE (one HTTP fetch of a check URL) fails. The real
+    path losses in this journal are a different state, `CONNECTED_LOCAL`
+    (all 15 of 11-20/21). The 21:58Z pass read this by hand and left it as
+    a sentence; meanwhile `net_dead_spans` fed all seven to STREAMFLOW,
+    which would have annotated a thin round or dead tick near one as
+    `uplink had no path` -- an excuse channel fed by a false positive.
+    Fix (health only): `episode_alive_gap` -- a closed, non-reboot episode
+    (read from its leading roam when it has one) whose every second lies
+    inside chained `rx_gap` periods with the longest silence under both
+    2 s (the daemon's own counting bar) and the episode's length prints
+    `stream received throughout, longest silence N s`, the total says
+    `N of them (M min) ... NetworkManager's connectivity probe, not the
+    path`, and such an episode is no longer a no-path span. No covering
+    period (daemon down, restart hole, pre-#226 code) = no claim, the line
+    as NM wrote it. `parse_stream_rx` now carries the periods; the digest
+    reads the stream journal once for HOSTNET, STREAMFLOW and STREAMRX.
+    NOT covered: the opposite error -- the 11-24 19:51:40Z 11 s gateway
+    blink sits in no NM episode at all; STREAMRX is the instrument for
+    that. And the negative arm is fixture-only: every real path-loss
+    episode in the journal predates `rx_gap` (11-21 15:29Z). Rule: **a
+    connectivity manager's state is a verdict on its own probe; before a
+    row calls a span an outage, read it against a tenant that was using
+    the path, and never let an unverified span into an excuse channel.**
+    8 tests, 10 mutants red (each asserted to land). Suite 2953 -> 2962.
+
 241. **2026-11-24 20:40Z -- the one live pre-registration's sample went 40
     days uncounted behind "it accumulates on its own; nothing to run"**
     (class: a series nobody differences, #169, on the strategy side). The

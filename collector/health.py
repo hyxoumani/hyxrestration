@@ -1081,6 +1081,10 @@ def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
 #: on 11-21 15:32Z and 15:48Z, under the daemon's own 5 s line threshold),
 #: so the bar is 4 s; ordinary periods sit at 0.25-2.0.
 STREAMRX_STALL_S = 4.0
+#: The stats cadence, and the longest spacing still read as ONE period (the
+#: widest observed in 24h is 319 s; the loop sleeps 300 and then works).
+STREAMRX_PERIOD_S = 300.0
+STREAMRX_PERIOD_MAX_S = 360.0
 _STREAMRX_RE = re.compile(r" loop_lag=([0-9.]+)/(\d+) rx_gap=([0-9.]+)/(\d+) ")
 
 
@@ -1100,6 +1104,9 @@ class StreamRx:
     late_wakes_in_stalled: int
     #: Stalled periods per clock hour (UTC), busiest first is the caller's job.
     by_hour: tuple[tuple[datetime, int], ...]
+    #: Every carrying period as (start, end, longest silence), epoch seconds:
+    #: what HOSTNET reads an offline episode against (`episode_alive_gap`).
+    periods: tuple[tuple[float, float, float], ...] = ()
 
 
 def parse_stream_rx(lines: list[str] | str, stall_s: float = STREAMRX_STALL_S) -> StreamRx | None:
@@ -1110,16 +1117,25 @@ def parse_stream_rx(lines: list[str] | str, stall_s: float = STREAMRX_STALL_S) -
     n_lines = carrying = stalled = late = 0
     worst, worst_at, first_at, last_at = 0.0, None, None, None
     hours: dict[datetime, int] = {}
+    periods: list[tuple[float, float, float]] = []
+    prev: float | None = None
     for line in lines:
         ts = _short_iso_ts(line)
         if ts is None or not _STREAMFLOW_LINE_RE.search(line):
             continue
         n_lines += 1
+        end = ts.timestamp()
+        # A period opens at the previous stats line. One longer than the
+        # cadence allows is a restart (or a lost line): the counter knows
+        # only the nominal tail of it, and the rest is covered by nothing.
+        opened = prev if prev is not None and end - prev <= STREAMRX_PERIOD_MAX_S else None
+        prev = end
         m = _STREAMRX_RE.search(line)
         if not m:
             continue
         carrying += 1
         gap = float(m.group(3))
+        periods.append((end - STREAMRX_PERIOD_S if opened is None else opened, end, gap))
         if gap > worst:
             worst, worst_at = gap, ts
         if gap >= stall_s:
@@ -1141,6 +1157,7 @@ def parse_stream_rx(lines: list[str] | str, stall_s: float = STREAMRX_STALL_S) -
         worst_at,
         late,
         tuple(sorted(hours.items())),
+        tuple(periods),
     )
 
 
@@ -2637,6 +2654,19 @@ _LINK_RE = re.compile(r"^(\S+) \S+ kernel: .*?(\S+): Link is (Up|Down)\b")
 # starts within ROAM_LEAD_S of a roam is charged from the roam.
 _ROAM_RE = re.compile(r"^(\S+) \S+ kernel: (\S+): disconnect from AP (\S+) for new auth to (\S+)")
 ROAM_LEAD_S = 90.0
+# "Anything short of CONNECTED_GLOBAL is a span the capture units could not
+# have used" was the premise above, and on the wired route it is false:
+# measured 2026-11-24..25, seven `CONNECTED_SITE` episodes of 3-51 s
+# (12:31, 15:16, 17:22, 19:17, 23:18, 23:53, 00:29Z) while the stream's
+# `rx_gap` -- the longest stretch with no frame on ANY of its connections --
+# read 0.28-0.50 s in every period across them, with no reconnect, timeout or
+# GAP line inside any. NM moves that state when its connectivity PROBE (one
+# HTTP fetch of a check URL) fails; the path was carrying ~7,000 frames a
+# second. Printed as outages they also reached STREAMFLOW, which excuses a
+# thin round or a dead tick that falls near one. An episode the stream
+# received straight through is said so and is not a no-path span. The bar is
+# the daemon's own: it counts a silence at 2 s (`rx_gap`'s second term).
+HOSTNET_ALIVE_GAP_S = 2.0
 
 
 @dataclass(frozen=True)
@@ -2698,6 +2728,46 @@ def roam_before(roams: list[RoamEvent], start: float) -> RoamEvent | None:
         if start - ROAM_LEAD_S <= r.ts <= start and (best is None or r.ts > best.ts):
             best = r
     return best
+
+
+def episode_alive_gap(
+    rx_periods: tuple[tuple[float, float, float], ...] | None, a: float, b: float
+) -> float | None:
+    """The stream's longest frame-less stretch across [a, b] when that PROVES
+    the path carried frames throughout, else `None` (no claim). Pure.
+
+    Proof needs every second of the span inside a measured period -- periods
+    chained end to start with no hole, so a daemon that was down or on
+    pre-`rx_gap` code proves nothing -- and the longest silence in them under
+    both `HOSTNET_ALIVE_GAP_S` and the span's own length: a 3 s episode
+    beside a 3 s silence may be the same three seconds."""
+    if not rx_periods or b <= a:
+        return None
+    cover = sorted(p for p in rx_periods if p[1] > a and p[0] < b)
+    if not cover or cover[0][0] > a or cover[-1][1] < b:
+        return None
+    if any(nxt[0] > cur[1] for cur, nxt in zip(cover, cover[1:], strict=False)):
+        return None
+    gap = max(p[2] for p in cover)
+    return gap if gap < min(HOSTNET_ALIVE_GAP_S, b - a) else None
+
+
+def _episode_alive(
+    e: NetEpisode, hn: HostNet, rx_periods: tuple[tuple[float, float, float], ...] | None
+) -> float | None:
+    """`episode_alive_gap` for a CLOSED episode with a known start, read from
+    the roam that led it when there is one. A reboot span and an open one are
+    never called alive."""
+    if e.start is None or e.end is None or e.reboot:
+        return None
+    roam = roam_before(hn.roams or [], e.start)
+    return episode_alive_gap(rx_periods, roam.ts if roam is not None else e.start, e.end)
+
+
+def rx_periods_of(rx: object) -> tuple[tuple[float, float, float], ...] | None:
+    """The periods of a `read_stream_rx` reading; `None` when it is unreadable
+    or empty (no cross-reading, the line as NetworkManager wrote it)."""
+    return rx.periods if isinstance(rx, StreamRx) else None
 
 
 def parse_nm_states(stdout: str) -> list[tuple[float, str, bool]]:
@@ -2827,7 +2897,12 @@ def read_hostnet(hours: int = HOSTNET_WINDOW_H, sys_net: str = "/sys/class/net")
     )
 
 
-def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> str:
+def host_net_line(
+    hn: HostNet,
+    now: float,
+    window_h: int = HOSTNET_WINDOW_H,
+    rx_periods: tuple[tuple[float, float, float], ...] | None = None,
+) -> str:
     """What the uplink did in the window and what path the box is on. Pure.
 
     Episode half: NetworkManager's not-online spans, each with its length (a
@@ -2835,7 +2910,9 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
     total. Link half: per interface, the downs in the window and where its
     last event left it -- a Down with no Up after it is the wired path still
     gone. Standing half: the default route's interface and whether it is
-    WiFi, because a capture box that failed over reads different lag."""
+    WiFi, because a capture box that failed over reads different lag.
+    `rx_periods` is the stream's `rx_gap` series: an episode it received
+    straight through is NetworkManager's probe failing, not the path."""
 
     def z(ts: float) -> str:
         return datetime.fromtimestamp(ts, UTC).strftime("%m-%d %H:%M:%SZ")
@@ -2851,6 +2928,8 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
             parts = []
             total = 0.0
             led = 0.0
+            alive_n = 0
+            alive_s = 0.0
             for e in episodes:
                 a = e.start if e.start is not None else lo
                 b = e.end if e.end is not None else now
@@ -2865,6 +2944,11 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
                         f"; no path from a roam {a - roam.ts:.0f} s earlier"
                         f" = {(b - roam.ts) / 60:.1f} min"
                     )
+                alive = _episode_alive(e, hn, rx_periods)
+                if alive is not None:
+                    alive_n += 1
+                    alive_s += b - a
+                    span += f"; stream received throughout, longest silence {alive:.2f} s"
                 if e.start is None:
                     parts.append(f"..{z(b)} (>= {span}, began before the window)")
                 elif e.end is None:
@@ -2874,6 +2958,11 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
             tot = f"{total / 60:.1f} min"
             if led:
                 tot += f" by NetworkManager's state, {(total + led) / 60:.1f} min from the roams"
+            if alive_n:
+                tot += (
+                    f" -- {alive_n} of them ({alive_s / 60:.1f} min) with the stream receiving "
+                    "throughout: NetworkManager's connectivity probe, not the path"
+                )
             eps = f"{window_h}h: {len(episodes)} offline episode(s), {tot}: " + "; ".join(parts)
     if hn.links is None:
         links = "kernel journal UNREAD"
@@ -2901,23 +2990,32 @@ def host_net_line(hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H) -> 
 
 
 def net_dead_spans(
-    hn: HostNet, now: float, window_h: int = HOSTNET_WINDOW_H
+    hn: HostNet,
+    now: float,
+    window_h: int = HOSTNET_WINDOW_H,
+    rx_periods: tuple[tuple[float, float, float], ...] | None = None,
 ) -> list[tuple[float, float]]:
     """The spans the uplink had no path, as (start, end) epoch seconds: each
     offline episode, opened at the roam that led it when there is one, at the
     window's edge when it began before it, closed at `now` while open. The
-    same arithmetic `host_net_line` prints; STREAMFLOW cross-reads it. Pure."""
+    same arithmetic `host_net_line` prints; STREAMFLOW cross-reads it. An
+    episode the stream received straight through (`rx_periods`) is not one:
+    it can excuse nothing. Pure."""
     out = []
     for e in net_episodes(hn.states or []):
+        if _episode_alive(e, hn, rx_periods) is not None:
+            continue
         a = e.start if e.start is not None else now - window_h * 3600
         roam = roam_before(hn.roams or [], e.start) if e.start is not None else None
         out.append((roam.ts if roam is not None else a, e.end if e.end is not None else now))
     return out
 
 
-def _flow_net(hn: HostNet, now: float) -> list[tuple[float, float]] | None:
+def _flow_net(
+    hn: HostNet, now: float, rx_periods: tuple[tuple[float, float, float], ...] | None = None
+) -> list[tuple[float, float]] | None:
     """`None` when NetworkManager's journal was unread: no cross-reading."""
-    return None if hn.states is None else net_dead_spans(hn, now)
+    return None if hn.states is None else net_dead_spans(hn, now, rx_periods=rx_periods)
 
 
 def roam_clause(hn: HostNet) -> str:
@@ -5876,8 +5974,11 @@ def main() -> None:
         flush=True,
     )
     hostnet = read_hostnet()
+    stream_rx = read_stream_rx()
+    rx_periods = rx_periods_of(stream_rx)
     print(
-        f"{'HOSTNET':<10} {'(host)':<{width}}  {host_net_line(hostnet, now.timestamp())}",
+        f"{'HOSTNET':<10} {'(host)':<{width}}  "
+        f"{host_net_line(hostnet, now.timestamp(), rx_periods=rx_periods)}",
         flush=True,
     )
     hostfs = read_hostfs()
@@ -5902,7 +6003,7 @@ def main() -> None:
         flush=True,
     )
     print(
-        f"{'STREAMFLOW':<10} {STREAMFLOW_UNIT:<{width}}  {stream_flow_line(read_stream_flow(), net=_flow_net(hostnet, now.timestamp()))}",
+        f"{'STREAMFLOW':<10} {STREAMFLOW_UNIT:<{width}}  {stream_flow_line(read_stream_flow(), net=_flow_net(hostnet, now.timestamp(), rx_periods))}",
         flush=True,
     )
     print(
@@ -5910,7 +6011,7 @@ def main() -> None:
         flush=True,
     )
     print(
-        f"{'STREAMRX':<10} {STREAMFLOW_UNIT:<{width}}  {stream_rx_line(read_stream_rx())}",
+        f"{'STREAMRX':<10} {STREAMFLOW_UNIT:<{width}}  {stream_rx_line(stream_rx)}",
         flush=True,
     )
     print(

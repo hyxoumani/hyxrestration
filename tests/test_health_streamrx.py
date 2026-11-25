@@ -94,4 +94,17 @@ def test_the_digest_prints_the_row_and_the_bar_sits_under_the_daemons_line_thres
     import inspect
 
     assert health.STREAMRX_STALL_S == 4.0 < streamd.RX_SILENCE_LOG_S
-    assert "stream_rx_line(read_stream_rx())" in inspect.getsource(health)
+    assert "stream_rx_line(stream_rx)" in inspect.getsource(health)
+
+
+def test_periods_chain_from_the_previous_stats_line_and_a_restart_leaves_a_hole() -> None:
+    lines = [_line(0, (0.3, 0)), _line(1, (0.4, 0)), _line(5, (0.5, 0))]
+    got = health.parse_stream_rx(lines)
+    assert got is not None
+    t = lambda i: (T0 + timedelta(seconds=305 * i)).timestamp()  # noqa: E731
+    assert got.periods == (
+        (t(0) - health.STREAMRX_PERIOD_S, t(0), 0.3),  # no line before it: nominal
+        (t(0), t(1), 0.4),
+        # 1,220 s after the last line is a restart: only the nominal tail is measured.
+        (t(5) - health.STREAMRX_PERIOD_S, t(5), 0.5),
+    )

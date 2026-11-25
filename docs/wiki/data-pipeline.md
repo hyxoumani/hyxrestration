@@ -564,6 +564,15 @@ new lease): a dead episode or LOW round overlapping one ends `uplink had no
 path for N min of it (HOSTNET)`, and the dead-tick clause counts the
 instants within 15 s (one flush) of a span. No annotation = no overlap;
 with NetworkManager's journal unread nothing is cross-read.
+Since 2026-11-25 (mistakes #242) each closed episode is read against the
+stream's `rx_gap` periods (`health.episode_alive_gap`): wholly inside
+measured periods with the longest all-connection silence under 2 s and
+under its own length, it prints `stream received throughout, longest
+silence N s`, the total says `N of them (M min) with the stream receiving
+throughout: NetworkManager's connectivity probe, not the path`, and it is
+dropped from the spans STREAMFLOW cross-reads. First reading: 7 of 7
+(`CONNECTED_SITE`, 3-51 s, silences 0.28-0.81 s). An episode with no such
+clause is either a real loss or unmeasured (stream down / restart hole).
 
 **`ENOSPC`: failed writes, and whether the journal was there (since
 2026-11-21, mistakes #222).** One digest row under `HOSTFS`, two clauses.

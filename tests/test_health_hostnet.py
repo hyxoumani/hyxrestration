@@ -253,3 +253,104 @@ def test_the_no_path_spans_open_at_the_roam_and_close_at_the_new_lease() -> None
 def test_an_unread_manager_journal_is_no_cross_reading() -> None:
     assert health._flow_net(_hn(states=None), NOW) is None
     assert health._flow_net(_hn(), NOW) == health.net_dead_spans(_hn(), NOW)
+
+
+# --- probe episodes (2026-11-25): NM's own lines from the wired route, where
+# seven CONNECTED_SITE spans in 36 h sat inside periods the stream received
+# straight through (`rx_gap` 0.28-0.81 s).
+PROBE_NM = """\
+2026-11-24T17:22:08+00:00 hyz NetworkManager[699]: <info>  [1795540928.1] manager: NetworkManager state is now CONNECTED_SITE
+2026-11-24T17:22:59+00:00 hyz NetworkManager[699]: <info>  [1795540979.1] manager: NetworkManager state is now CONNECTED_GLOBAL
+2026-11-24T23:53:45+00:00 hyz NetworkManager[699]: <info>  [1795564425.1] manager: NetworkManager state is now CONNECTED_SITE
+2026-11-24T23:54:12+00:00 hyz NetworkManager[699]: <info>  [1795564452.1] manager: NetworkManager state is now CONNECTED_GLOBAL
+"""
+PROBE_NOW = _ts("2026-11-25T02:15:00")
+A1, B1 = _ts("2026-11-24T17:22:08"), _ts("2026-11-24T17:22:59")
+A2, B2 = _ts("2026-11-24T23:53:45"), _ts("2026-11-24T23:54:12")
+# The second episode straddles a stats line (23:53:59Z), as it did.
+PROBE_RX = (
+    (_ts("2026-11-24T17:18:47"), _ts("2026-11-24T17:23:58"), 0.30),
+    (_ts("2026-11-24T23:48:46"), _ts("2026-11-24T23:53:59"), 0.38),
+    (_ts("2026-11-24T23:53:59"), _ts("2026-11-24T23:59:12"), 0.81),
+)
+
+
+def _probe_hn(**kw) -> health.HostNet:
+    base = dict(
+        states=health.parse_nm_states(PROBE_NM), links=[], route_iface="enp7s0", route_wifi=False
+    )
+    base.update(kw)
+    return _hn(**base)
+
+
+def test_an_episode_the_stream_received_through_is_the_probe_not_the_path() -> None:
+    line = health.host_net_line(_probe_hn(), PROBE_NOW, rx_periods=PROBE_RX)
+    assert line.startswith(
+        "24h: 2 offline episode(s), 1.3 min -- 2 of them (1.3 min) with the stream receiving "
+        "throughout: NetworkManager's connectivity probe, not the path: "
+        "11-24 17:22:08Z..11-24 17:22:59Z (0.8 min; stream received throughout, "
+        "longest silence 0.30 s, CONNECTED_SITE); "
+        "11-24 23:53:45Z..11-24 23:54:12Z (0.5 min; stream received throughout, "
+        "longest silence 0.81 s, CONNECTED_SITE)"
+    )
+    assert health.net_dead_spans(_probe_hn(), PROBE_NOW, rx_periods=PROBE_RX) == []
+    assert health._flow_net(_probe_hn(), PROBE_NOW, PROBE_RX) == []
+
+
+def test_without_the_streams_series_the_line_and_the_spans_are_networkmanagers() -> None:
+    for rx in (None, ()):
+        line = health.host_net_line(_probe_hn(), PROBE_NOW, rx_periods=rx)
+        assert "stream receiv" not in line and "2 offline episode(s), 1.3 min: " in line
+        assert health.net_dead_spans(_probe_hn(), PROBE_NOW, rx_periods=rx) == [(A1, B1), (A2, B2)]
+
+
+def test_a_silence_at_the_bar_or_as_long_as_the_episode_proves_nothing() -> None:
+    gap = health.episode_alive_gap
+    per = lambda g: ((A1 - 200, B1 + 60, g),)  # noqa: E731
+    assert gap(per(1.99), A1, B1) == 1.99
+    assert gap(per(health.HOSTNET_ALIVE_GAP_S), A1, B1) is None
+    assert gap(per(11.08), A1, B1) is None  # the 19:52Z gateway blink's reading
+    # A 1.5 s episode beside a 1.5 s silence may be the same 1.5 s.
+    assert gap(per(1.5), A1, A1 + 1.5) is None and gap(per(1.4), A1, A1 + 1.5) == 1.4
+
+
+def test_a_span_not_wholly_inside_measured_periods_proves_nothing() -> None:
+    gap = health.episode_alive_gap
+    assert gap(((A1 + 1, B1 + 60, 0.3),), A1, B1) is None  # opens after the start
+    assert gap(((A1 - 200, B1 - 1, 0.3),), A1, B1) is None  # closes before the end
+    hole = ((A2 - 200, A2 + 5, 0.3), (A2 + 6, B2 + 60, 0.3))
+    assert gap(hole, A2, B2) is None  # a restart between two periods
+    assert gap(((A2 - 200, A2 + 5, 0.3), (A2 + 5, B2 + 60, 0.3)), A2, B2) == 0.3
+    assert gap(None, A1, B1) is None and gap((), A1, B1) is None
+
+
+def test_a_roam_led_episode_is_read_from_the_roam_and_a_reboot_never_alive() -> None:
+    # The stream was silent from the roam: a period covering only NM's 15 s
+    # cannot clear it, and one covering the roam carries the silence.
+    a, b = _ts("2026-11-20T16:26:22"), _ts("2026-11-20T16:26:37")
+    short = ((a - 5, b + 60, 0.3),)
+    assert "stream receiv" not in health.host_net_line(_roam_hn(), ROAM_NOW, rx_periods=short)
+    assert health.net_dead_spans(_roam_hn(), ROAM_NOW, rx_periods=short) == [(a - 45, b)]
+    wide = ((a - 200, b + 60, 0.3),)
+    assert "stream receiv" in health.host_net_line(_roam_hn(), ROAM_NOW, rx_periods=wide)
+    reboot = ((_ts("2026-11-18T03:50:00"), _ts("2026-11-18T03:56:00"), 0.3),)
+    line = health.host_net_line(_hn(), NOW, window_h=72, rx_periods=reboot)
+    assert "across a REBOOT" in line and "stream receiv" not in line
+
+
+def test_an_open_episode_is_never_called_alive() -> None:
+    hn = _probe_hn(states=health.parse_nm_states(PROBE_NM)[:1])
+    rx = ((A1 - 200, PROBE_NOW + 1, 0.3),)
+    line = health.host_net_line(hn, PROBE_NOW, rx_periods=rx)
+    assert "STILL OFFLINE" in line and "stream receiv" not in line
+    assert health.net_dead_spans(hn, PROBE_NOW, rx_periods=rx) == [(A1, PROBE_NOW)]
+
+
+def test_the_digest_hands_one_stream_reading_to_hostnet_streamflow_and_streamrx() -> None:
+    import inspect
+
+    src = inspect.getsource(health.main)
+    assert src.count("read_stream_rx()") == 1
+    assert "host_net_line(hostnet, now.timestamp(), rx_periods=rx_periods)" in src
+    assert "_flow_net(hostnet, now.timestamp(), rx_periods)" in src
+    assert health.rx_periods_of("unreadable") is None and health.rx_periods_of(None) is None

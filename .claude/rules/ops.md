@@ -714,6 +714,12 @@
   STREAMFLOW row the uplink explains now says so (`uplink had no path for N
   min of it (HOSTNET)`, dead ticks `N within 15 s of a HOSTNET no-path
   span`); chase the rows that carry no such clause.
+  An NM episode is a verdict on NM's own probe: since 2026-11-25 one the
+  stream received straight through prints `stream received throughout,
+  longest silence N s` and excuses nothing (mistakes #242; 7 of 7
+  `CONNECTED_SITE` blips on the wired route, real losses were
+  `CONNECTED_LOCAL`). Quote as outages only the episodes WITHOUT that
+  clause; a loss NM never sampled (11-24 19:51Z, 11 s) is on STREAMRX only.
 - A shared DISK has a tightest tenant too, and on this box it is the
   kubelet: `/` is one btrfs for the archive, the siblings' lakes, Steam and
   the kubelet's image store, and the kubelet evicts pods on
