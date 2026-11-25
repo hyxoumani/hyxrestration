@@ -5678,6 +5678,45 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+244. **2026-11-25 15:30Z -- every dev-tree suite run took production's
+    reconcile instance lock and overwrote its holder record** (class: a
+    path bound as a function DEFAULT, the third binding form after the
+    module constant (#218's guard) and the by-value import (#232)).
+    `hyxlab.lockid.instance_lock_path(job, data_dir=DATA_DIR)` evaluates
+    `"data"` at def time, and `test_sidecar_redirect_coverage` exempted
+    locks on the claim that "every site that opens it already resolves the
+    path at call time" -- true of `LOCK_FILE`, false here.
+    `test_deferred_work_keeps_the_run_incomplete` and
+    `test_max_markets_tail_is_unreached_work_not_a_finished_run` drive
+    `rec.main` past its guard with the repo as cwd, so each of the >=41
+    dev-tree full runs in the seven days to 11-25 (39 promotes plus the
+    passes' own) flocked `data/reconcile.instance.lock` -- the lock
+    hylshi-archive-reconcile takes through the stable symlink, daily
+    09:50-10:08Z -- and left `{"cmd": ".venv/bin/python -m pytest tests/
+    -q ..."}` as its last holder. Found by the sibling's audit-hook census
+    of all 195 files (EDG-314). No harm measured: the job's four phases
+    exited 0/2 on all seven days and its log has never held a refusal, and
+    it cannot be DOUBLED by this (nothing unlinks or replaces the lock
+    file, so the flock stays on one inode) -- but a test holding the flock
+    in the millisecond the job reaches `instance_lock_or_reason` would
+    have made that phase exit 75 and the job fail. The exemption's own
+    reason ("a test that took the production lock would stall the job, not
+    corrupt a record") was the reason to redirect, not to exempt. Fixed:
+    conftest `_redirect_instance_locks` repoints the default (and an
+    explicit `"data"`) into `tmp_path`, an explicit `data_dir` still wins,
+    and no exclusion test needed the real path (every one passes tmp_path
+    or chdirs, #111); `_lock_audit_hook` + `_no_lock_write_under_checkout_data`
+    fail any test that opens, removes or renames a `*.lock`/`*.lock.holder`
+    under the checkout's `data/` (in-process only: a subprocess or DuckDB's
+    C++ I/O is invisible to it); tests/test_instance_lock_isolation.py drives
+    both, with a stand-in-root arm so the detector is shown to fire. Red
+    with the redirect removed: the two reconcile tests fail at teardown
+    naming the lock. Rule: **a redirect list is complete only for the
+    binding forms it reads; a default argument is a constant the AST walk
+    of module attributes never sees. And an exemption justified by "the
+    harm would only be a stall" exempts the one resource a live job uses
+    to decide whether to run.**
+
 243. **2026-11-25 14:15Z -- the autoloop launcher's `git pull --rebase`
     rewrote commits `stable` already stood on** (class: a convenience
     default whose precondition -- "local history is linear and nothing

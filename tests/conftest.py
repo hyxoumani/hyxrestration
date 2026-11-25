@@ -6,6 +6,7 @@ this repo's `data/`, so the dev tree's sidecars are production's.
 """
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -114,6 +115,144 @@ def _redirect_qa_state(tmp_path, monkeypatch):
     from collector import qa
 
     monkeypatch.setattr(qa, "STATE", tmp_path / "reports" / "qa" / "sections.json")
+
+
+# --- Instance locks (mistakes #244) ----------------------------------------
+# `hyxlab.lockid.instance_lock_path(job, data_dir=DATA_DIR)` binds "data" at
+# DEF time: a default argument is a constant no module-attribute redirect can
+# reach, and `test_sidecar_redirect_coverage` exempts locks by name. Two
+# reconcile tests drive `rec.main` past its single-instance guard with the repo
+# as cwd, so every full suite run from the dev tree flocked PRODUCTION's
+# `data/reconcile.instance.lock` -- the lock hylshi-archive-reconcile takes
+# through the stable symlink -- and overwrote its holder record (EDG-314,
+# 2026-11-25). The exemption's reasoning ("a test that took a production lock
+# would stall the job, not corrupt a record") is the reason to REDIRECT it: a
+# test run must never be able to win, refuse or rewrite a lock a live job
+# takes. No test needs the real path -- every exclusion test passes tmp_path
+# or chdirs into it (#111) -- so the default is repointed for all of them.
+from hyxlab import lockid as _lockid  # noqa: E402
+
+#: The helper and its default AS SHIPPED, captured before any test patches
+#: them -- for tests whose subject is the shipped default itself.
+INSTANCE_LOCK_PATH_SHIPPED = _lockid.instance_lock_path
+INSTANCE_LOCK_DATA_DIR_SHIPPED = _lockid.DATA_DIR
+
+
+@pytest.fixture(autouse=True)
+def _redirect_instance_locks(tmp_path, monkeypatch):
+    """Point the instance-lock DEFAULT `data/` into this test's tmp_path.
+
+    Only the default moves: a test that passes its own `data_dir` keeps it.
+    An explicit `"data"` is the same production path from the dev tree, so
+    it is redirected too. `acquire_instance_lock` and
+    `instance_lock_or_reason` look the helper up as a `lockid` global at
+    call time, so patching that one name covers every job's `main`. A test
+    that imported the helper BY VALUE and chdirs into tmp_path
+    (tests/test_tradepass_instance_lock.py) resolves the same file: its
+    relative `data/<job>.instance.lock` is `tmp_path/data/<job>...`.
+    tests/test_instance_lock_isolation.py is the guard.
+    """
+    tmp_data = str(tmp_path / "data")
+
+    def _path(job: str, data_dir: str = INSTANCE_LOCK_DATA_DIR_SHIPPED) -> str:
+        if str(data_dir) == INSTANCE_LOCK_DATA_DIR_SHIPPED:
+            data_dir = tmp_data
+        return INSTANCE_LOCK_PATH_SHIPPED(job, data_dir)
+
+    monkeypatch.setattr(_lockid, "instance_lock_path", _path)
+
+
+# The detector for the class, not the member. Snapshotting `data/` cannot
+# work (the live jobs write their own lock holders from the other end of the
+# symlink, test_sidecar_redirect_coverage's docstring), so this watches THIS
+# process's own file events through an audit hook and attributes each one to
+# the running test. It sees in-process Python opens, removes and renames only:
+# a subprocess, or DuckDB's C++ I/O, is invisible to it.
+CHECKOUT_DATA_ROOTS: tuple[str, ...] = tuple(
+    dict.fromkeys((str(_REPO_ROOT / "data"), os.path.realpath(_REPO_ROOT / "data")))
+)
+LOCK_SUFFIXES: tuple[str, ...] = (".lock", ".lock.holder")
+#: (event, path, test) for every lock-shaped write under CHECKOUT_DATA_ROOTS.
+#: None outside a test, so collection and session hooks record nothing.
+_LOCK_WRITES: dict[str, list | None] = {"current": None}
+_LOCK_PATH_EVENTS: dict[str, tuple[int, ...]] = {
+    "os.remove": (0,),
+    "os.rename": (0, 1),
+    "os.truncate": (0,),
+}
+
+
+def lock_write_target(path: object, roots: tuple[str, ...] = CHECKOUT_DATA_ROOTS) -> str | None:
+    """The absolute path when `path` is a lock or holder file under `roots`.
+
+    Lexical AND resolved, so `hyxrestration-stable/data/...` (a symlink to this
+    `data/`) counts. A relative path resolves against the cwd at the moment of
+    the call, which is what the kernel does: a test that chdirs into tmp_path
+    and opens `data/x.lock` is outside the checkout and is not a finding.
+    """
+    if path is None or isinstance(path, int):
+        return None
+    p = os.fsdecode(path) if isinstance(path, bytes) else str(path)
+    if not p.endswith(LOCK_SUFFIXES):
+        return None
+    ap = os.path.abspath(p)
+    rp = os.path.join(os.path.realpath(os.path.dirname(ap)), os.path.basename(ap))
+    for cand in (ap, rp):
+        if any(cand.startswith(r + os.sep) for r in roots):
+            return cand
+    return None
+
+
+def _is_write_open(mode: object, flags: object) -> bool:
+    if isinstance(mode, str) and mode:
+        return any(c in mode for c in "wax+")
+    if isinstance(flags, int) and flags >= 0:
+        return bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC))
+    return False
+
+
+def _lock_audit_hook(event: str, args: tuple) -> None:
+    rec = _LOCK_WRITES["current"]
+    if rec is None:
+        return
+    try:
+        if event == "open":
+            path, mode, flags = args
+            if _is_write_open(mode, flags) and (hit := lock_write_target(path)):
+                rec.append((event, hit))
+        elif event in _LOCK_PATH_EVENTS:
+            # A bare name relative to a dir_fd is not relative to the cwd.
+            dir_fd = args[-1] if len(args) > 1 and isinstance(args[-1], int) else None
+            for i in _LOCK_PATH_EVENTS[event]:
+                target = args[i] if i < len(args) else None
+                if target is None or isinstance(target, int):
+                    continue
+                if dir_fd is not None and dir_fd >= 0 and not os.path.isabs(os.fsdecode(target)):
+                    continue
+                if hit := lock_write_target(target):
+                    rec.append((event, hit))
+    except Exception:  # noqa: BLE001 -- an audit hook must never break the run
+        pass
+
+
+sys.addaudithook(_lock_audit_hook)
+
+
+@pytest.fixture(autouse=True)
+def _no_lock_write_under_checkout_data():
+    """Fail the test that wrote, removed or renamed a `*.lock`/`*.lock.holder`
+    under the checkout's `data/` -- per test, so the failure names it."""
+    seen: list = []
+    _LOCK_WRITES["current"] = seen
+    try:
+        yield
+    finally:
+        _LOCK_WRITES["current"] = None
+    assert not seen, (
+        f"this test wrote lock state under the checkout's data/: {sorted(set(seen))}."
+        " From the dev tree that is PRODUCTION's lock (mistakes #244): pass a"
+        " tmp_path data_dir, patch the module's LOCK_FILE, or chdir(tmp_path)."
+    )
 
 
 @pytest.fixture(autouse=True)

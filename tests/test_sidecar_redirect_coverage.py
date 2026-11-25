@@ -31,6 +31,16 @@ The two exclusions are covered elsewhere and are not judgement calls:
 `data/writer.lock` by `hyxlab.lockid` -- a test that took the production
 writer lock would stall the collector, not corrupt a record, and every
 site that opens it already resolves the path at call time.
+
+That last clause was false for the INSTANCE locks (mistakes #244):
+`lockid.instance_lock_path(job, data_dir=DATA_DIR)` binds "data" as a
+default argument, which no module-constant walk sees, and two reconcile
+tests took production's `data/reconcile.instance.lock` on every dev-tree
+run. Locks are therefore REDIRECTED, not exempt: conftest
+`_redirect_instance_locks` repoints that default, and
+`_no_lock_write_under_checkout_data` fails any test that writes a
+`*.lock`/`*.lock.holder` under the checkout's `data/`
+(tests/test_instance_lock_isolation.py).
 """
 
 from __future__ import annotations
