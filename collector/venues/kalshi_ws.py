@@ -47,6 +47,7 @@ import base64
 import json
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -71,14 +72,126 @@ def sign_pss(private_key_pem: bytes, message: str) -> str:
     return base64.b64encode(sig).decode()
 
 
-def auth_headers(key_id: str, private_key_pem: bytes, ts_ms: int | None = None) -> dict[str, str]:
+def auth_headers(
+    key_id: str, private_key_pem: bytes, ts_ms: int | None = None, path: str = WS_PATH
+) -> dict[str, str]:
+    """The upgrade request's three auth headers. `path` is the signed request
+    path; the default is the general host's, as every caller before EDG-153
+    used (`sign_path_for` picks another host's)."""
     if ts_ms is None:
         ts_ms = int(datetime.now(UTC).timestamp() * 1000)
     return {
         "KALSHI-ACCESS-KEY": key_id,
         "KALSHI-ACCESS-TIMESTAMP": str(ts_ms),
-        "KALSHI-ACCESS-SIGNATURE": sign_pss(private_key_pem, f"{ts_ms}GET{WS_PATH}"),
+        "KALSHI-ACCESS-SIGNATURE": sign_pss(private_key_pem, f"{ts_ms}GET{path}"),
     }
+
+
+# -- hosts (EDG-153) ---------------------------------------------------------
+#
+# Read from the venue's changelog and websocket-connection page as reported
+# in hylshi `.autodev-edge/reports/EDG-151.md` (2026-11-24) and NOT probed
+# live -- the #9 lesson again: a documented host is a premise until a
+# connection confirms it, so every choice below has the general host behind
+# it and nothing changes unless a key names a host:
+# - market data: a dedicated WebSocket host since 2026-05-07; the
+#   websocket-connection page lists `wss://external-api-ws.kalshi.com/` as the
+#   production server. Whether its upgrade path (and so the signed path) is
+#   `/trade-api/ws/v2` or `/` is not in the report: `sign_path_for` signs the
+#   configured URL's own path unless told otherwise.
+# - own fills and orders (`fill`, `user_orders` only): "lower-latency user
+#   hosts" since 2026-11-12, e.g. `wss://user-ws.kalshi.com/trade-api/ws/v2`
+#   (the 10-29 `warp-ws` hosts are deprecated). This daemon subscribes to
+#   neither channel today, so `url_for_channel` routes them for a future
+#   connection and no current one.
+
+#: The general API host every connection used before EDG-153. Always the
+#: fallback.
+GENERAL_WS_URL = WS_URL
+#: The daemon's connection names (`streamd._kalshi_loop`'s `channel`) that
+#: carry public market data.
+MARKET_DATA_CHANNELS = frozenset({"trades", "ticker", "books", "lifecycle"})
+#: Wire channel names the venue serves from its user hosts.
+USER_CHANNELS = frozenset({"fill", "user_orders"})
+
+
+def url_for_channel(
+    channel: str,
+    md_url: str | None = None,
+    user_url: str | None = None,
+    md_channels: frozenset[str] = MARKET_DATA_CHANNELS,
+) -> str | None:
+    """The CONFIGURED host for `channel`, or None for the general host.
+
+    `channel` is a daemon connection name (`trades`, `books`, ...) or a wire
+    channel name (`fill`, `user_orders`). `md_channels` narrows the
+    market-data move to a subset, so a rollout can move one connection
+    first and read it against the others on the same box and clock."""
+    if channel in USER_CHANNELS:
+        return user_url or None
+    if channel in MARKET_DATA_CHANNELS and channel in md_channels:
+        return md_url or None
+    return None
+
+
+def sign_path_for(url: str, override: str | None = None) -> str:
+    """The path the RSA-PSS signature covers for an upgrade to `url`.
+
+    The general host keeps `WS_PATH` exactly (the 2026-07-06 live-verified
+    shape). Any other host signs `override` when given, else the URL's own
+    path (`/` for a bare host) -- the documented rule is "the path of the
+    request", and which path a new host expects is a live-test question."""
+    if url == GENERAL_WS_URL:
+        return WS_PATH
+    if override:
+        return override
+    return urlsplit(url).path or "/"
+
+
+def host_of(url: str) -> str:
+    """`wss://host/path` -> `host`, for log lines."""
+    return urlsplit(url).netloc or url
+
+
+class HostChooser:
+    """One connection's host: the configured one first, the general host on a
+    CONNECT failure, the configured one again `retry_s` later.
+
+    Only a failure to OPEN (DNS, TCP, TLS, a refused upgrade) counts: a
+    connection that opened and later dropped says nothing against its host,
+    and falling back on it would turn every ordinary reconnect into a host
+    change. With no configured host this is the general host forever and
+    every method is a no-op -- the pre-EDG-153 behaviour.
+
+    Pure: the caller passes its clock, so a test drives it with numbers."""
+
+    def __init__(self, primary: str | None, retry_s: float = 900.0) -> None:
+        self.primary = primary if primary and primary != GENERAL_WS_URL else None
+        self.retry_s = retry_s
+        self.fallback_since: float | None = None
+
+    @property
+    def configured(self) -> bool:
+        return self.primary is not None
+
+    def pick(self, now: float) -> str:
+        if self.primary is None:
+            return GENERAL_WS_URL
+        if self.fallback_since is not None and now - self.fallback_since < self.retry_s:
+            return GENERAL_WS_URL
+        return self.primary
+
+    def opened(self, url: str) -> None:
+        if url == self.primary:
+            self.fallback_since = None
+
+    def failed_to_open(self, url: str, now: float) -> bool:
+        """Record a connect failure on `url`; True when it moves the next
+        attempt to the general host (the caller logs that once)."""
+        if self.primary is None or url != self.primary:
+            return False
+        self.fallback_since = now
+        return True
 
 
 # -- subscribe payloads -----------------------------------------------------

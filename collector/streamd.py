@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import contextlib
 import json
 import os
@@ -56,6 +57,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import websockets
+import websockets.frames as ws_frames
 
 from collector.bookcov import SHARD_MAX, BookCoverage, Shard
 from collector.heartbeat import ConnBeat, HeartbeatBook
@@ -521,8 +523,14 @@ class RecvLagWatch:
     Takes no lock: every caller runs on the loop thread.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, partition: bool = False) -> None:
         self._lags: dict[str, array] = {}
+        #: EDG-153, HYXLAB_STREAM_RXLAG_PARTITION: pick the two order
+        #: statistics by numpy selection instead of a full `sorted()`. Same
+        #: values exactly (the same rank of the same samples); the sort is a C
+        #: call that holds the GIL on the loop thread for 0.09-0.29 s at the
+        #: 0.6-1.4M samples a busy period now carries.
+        self.partition = partition
 
     def note(self, channel: str, recv_ts: datetime, sending_ts_ms: object) -> None:
         """One parsed frame. A channel not watched, or a frame with no usable
@@ -543,9 +551,17 @@ class RecvLagWatch:
         taken, self._lags = self._lags, {}
         out: dict[str, tuple[float, float, int]] = {}
         for channel, lags in taken.items():
-            vals = sorted(lags)
-            n = len(vals)
-            out[channel] = (vals[min(n - 1, int(0.5 * n))], vals[min(n - 1, int(0.99 * n))], n)
+            n = len(lags)
+            i50, i99 = min(n - 1, int(0.5 * n)), min(n - 1, int(0.99 * n))
+            if self.partition:
+                import numpy as np  # only a daemon with the key on pays the import
+
+                vals = np.frombuffer(lags, dtype=np.float64).copy()
+                vals.partition([i50, i99])
+                out[channel] = (float(vals[i50]), float(vals[i99]), n)
+                continue
+            srt = sorted(lags)
+            out[channel] = (srt[i50], srt[i99], n)
         return out or None
 
 
@@ -554,6 +570,488 @@ def recv_lag_clause(lags: dict[str, tuple[float, float, int]]) -> str:
     return "rx_lag=" + ",".join(
         f"{c}:{lags[c][0]:.2f}/{lags[c][1]:.2f}/{lags[c][2]}" for c in sorted(lags)
     )
+
+
+# -- feed options (EDG-153) ----------------------------------------------------
+# Four changes, each OFF unless its environment key is set, so a merge alone
+# changes nothing: (1) the venue's dedicated market-data host with the general
+# host as fallback, (2) a timed websocket ping per connection, (3) a stamp at
+# frame ARRIVAL beside `recv_ts`, published as the hold between the two, and
+# (4) the stall instruments plus one blocking call taken off the loop. Every
+# reading goes to the stats line or the journal; no stored column, raw-frame
+# line or table changes meaning, and `recv_ts` is stamped where it always was.
+# Keys are read from the process environment, which `load_env` fills from the
+# unit's `.env` without overriding what systemd set (a drop-in's
+# `Environment=` wins).
+
+#: Seconds a ping waits for its pong before it is counted as a timeout. The
+#: connection itself is websockets' keepalive's to close (20 s + 20 s); this
+#: reading never closes anything.
+PING_WAIT_S = 10.0
+#: `rx_hold` histogram: 0.1 ms bins to 2 s, then one overflow bin (the exact
+#: maximum is kept beside it).
+RX_HOLD_BIN_S = 0.0001
+RX_HOLD_BINS = 20_000
+#: A gen-2 collection this long gets its own journal line, at its clock time.
+GC_PAUSE_LOG_S = 0.25
+#: The stall sampler's own wake period, and the least time between two of its
+#: journal lines (a stall storm prints one line per this many seconds).
+STALL_SAMPLE_TICK_S = 0.05
+STALL_SAMPLE_MIN_GAP_S = 10.0
+
+
+def _env_float(env, key: str, default: float, bad: list[str]) -> float:
+    raw = (env.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        bad.append(f"{key}={raw!r} is not a number; using {default:g}")
+        return default
+    if v < 0 or v != v:
+        bad.append(f"{key}={raw!r} is negative; using {default:g}")
+        return default
+    return v
+
+
+def _env_wss(env, key: str, bad: list[str]) -> str | None:
+    url = (env.get(key) or "").strip()
+    if not url:
+        return None
+    if not url.startswith("wss://"):
+        bad.append(f"{key}={url!r} is not a wss:// URL; ignored")
+        return None
+    return url
+
+
+def _env_flag(env, key: str, bad: list[str]) -> bool:
+    raw = (env.get(key) or "").strip().lower()
+    if raw in ("", "0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    bad.append(f"{key}={raw!r} is not a flag; off")
+    return False
+
+
+@dataclass(frozen=True)
+class FeedConfig:
+    """The EDG-153 keys. `FeedConfig()` is the pre-EDG-153 daemon exactly."""
+
+    #: HYXLAB_KALSHI_WS_MD_URL -- market-data host for trades/ticker/books/lifecycle.
+    md_url: str | None = None
+    #: HYXLAB_KALSHI_WS_MD_CHANNELS -- which of those four move (comma list).
+    md_channels: frozenset[str] = kalshi_ws.MARKET_DATA_CHANNELS
+    #: HYXLAB_KALSHI_WS_MD_SIGN_PATH -- the signed path on that host, when it
+    #: is not the URL's own path.
+    md_sign_path: str | None = None
+    #: HYXLAB_KALSHI_WS_USER_URL -- `fill`/`user_orders` host (no connection
+    #: of this daemon carries either channel today).
+    user_url: str | None = None
+    #: HYXLAB_KALSHI_WS_PRIMARY_RETRY_S -- after a fallback, seconds before a
+    #: reconnect tries the configured host again.
+    primary_retry_s: float = 900.0
+    #: HYXLAB_KALSHI_WS_PING_S -- seconds between timed pings per connection; 0 off.
+    ping_s: float = 0.0
+    #: HYXLAB_STREAM_ARRIVAL_STAMP -- stamp each message when its last byte
+    #: reaches the process; publish `rx_hold` (arrival -> recv_ts).
+    arrival_stamp: bool = False
+    #: HYXLAB_STREAM_GC_WATCH -- time every cyclic-GC collection.
+    gc_watch: bool = False
+    #: HYXLAB_STREAM_STALL_STACK_S -- loop silence (s) that makes the sampler
+    #: thread print where the main thread is; 0 off.
+    stall_stack_s: float = 0.0
+    #: HYXLAB_STREAM_RXLAG_PARTITION -- `rx_lag` quantiles by numpy selection
+    #: instead of a full sort ON THE LOOP (same values, ~20x less time).
+    rxlag_partition: bool = False
+
+    @classmethod
+    def from_env(cls, env=None) -> tuple[FeedConfig, list[str]]:
+        """(config, complaints). A bad value is the default plus a complaint,
+        never an exception: a typo in a drop-in must not stop the recorder."""
+        env = os.environ if env is None else env
+        bad: list[str] = []
+        md_url = _env_wss(env, "HYXLAB_KALSHI_WS_MD_URL", bad)
+        user_url = _env_wss(env, "HYXLAB_KALSHI_WS_USER_URL", bad)
+        chans_raw = (env.get("HYXLAB_KALSHI_WS_MD_CHANNELS") or "").strip()
+        md_channels = kalshi_ws.MARKET_DATA_CHANNELS
+        if chans_raw:
+            asked = {c.strip() for c in chans_raw.split(",") if c.strip()}
+            unknown = asked - kalshi_ws.MARKET_DATA_CHANNELS
+            if unknown:
+                bad.append(f"HYXLAB_KALSHI_WS_MD_CHANNELS names {sorted(unknown)}; ignored")
+            md_channels = frozenset(asked & kalshi_ws.MARKET_DATA_CHANNELS)
+        sign = (env.get("HYXLAB_KALSHI_WS_MD_SIGN_PATH") or "").strip() or None
+        if sign is not None and not sign.startswith("/"):
+            bad.append(f"HYXLAB_KALSHI_WS_MD_SIGN_PATH={sign!r} does not start with '/'; ignored")
+            sign = None
+        cfg = cls(
+            md_url=md_url,
+            md_channels=md_channels,
+            md_sign_path=sign,
+            user_url=user_url,
+            primary_retry_s=_env_float(env, "HYXLAB_KALSHI_WS_PRIMARY_RETRY_S", 900.0, bad),
+            ping_s=_env_float(env, "HYXLAB_KALSHI_WS_PING_S", 0.0, bad),
+            arrival_stamp=_env_flag(env, "HYXLAB_STREAM_ARRIVAL_STAMP", bad),
+            gc_watch=_env_flag(env, "HYXLAB_STREAM_GC_WATCH", bad),
+            stall_stack_s=_env_float(env, "HYXLAB_STREAM_STALL_STACK_S", 0.0, bad),
+            rxlag_partition=_env_flag(env, "HYXLAB_STREAM_RXLAG_PARTITION", bad),
+        )
+        return cfg, bad
+
+    def describe(self) -> str | None:
+        """One journal line of what is ON, or None for the default daemon."""
+        on = []
+        if self.md_url:
+            chans = ",".join(sorted(self.md_channels)) or "none"
+            on.append(f"md_host={kalshi_ws.host_of(self.md_url)} for {chans}")
+            if self.md_sign_path:
+                on.append(f"md_sign_path={self.md_sign_path}")
+            on.append(f"primary_retry_s={self.primary_retry_s:g}")
+        if self.user_url:
+            on.append(f"user_host={kalshi_ws.host_of(self.user_url)} (no connection uses it)")
+        if self.ping_s:
+            on.append(f"ping_s={self.ping_s:g}")
+        if self.arrival_stamp:
+            on.append("arrival_stamp")
+        if self.gc_watch:
+            on.append("gc_watch")
+        if self.stall_stack_s:
+            on.append(f"stall_stack_s={self.stall_stack_s:g}")
+        if self.rxlag_partition:
+            on.append("rxlag_partition")
+        return ("feed options (EDG-153): " + "; ".join(on)) if on else None
+
+
+class WsRttWatch:
+    """Websocket ping -> pong round trip per connection group and stats period:
+    `ws_rtt=<group>:<min>/<p50>/<max>/<pongs>/<timeouts>,...` in ms.
+
+    Why (hylshi EDG-150): `recv_ts - sending_ts_ms` mixes the path with this
+    box's clock error against the venue's, and that error moved 68 ms across
+    boots under a "synced" SNTP client -- the floor of every lag reading here is
+    a clock reading. A round trip needs one clock, ours, so half of it bounds
+    the one-way path with no clock in it. It does include this event loop: the
+    pong is timed when the transport hands its bytes over, so a stalled loop
+    lengthens it -- read `loop_lag` beside it, and the MINIMUM as the path.
+
+    Takes no lock: every caller runs on the loop thread."""
+
+    def __init__(self) -> None:
+        self._rtt: dict[str, list[float]] = {}
+        self._timeouts: dict[str, int] = {}
+
+    def note(self, group: str, rtt_s: float) -> None:
+        self._rtt.setdefault(group, []).append(rtt_s)
+
+    def timeout(self, group: str) -> None:
+        self._timeouts[group] = self._timeouts.get(group, 0) + 1
+
+    def take(self) -> dict[str, tuple[float, float, float, int, int]] | None:
+        """`{group: (min s, p50 s, max s, pongs, timeouts)}` since the last
+        call, and reset. None when no ping was answered or timed out -- an
+        unpinged period is unmeasured, never 0 ms (#91). A group with only
+        timeouts reads NaN for its three times."""
+        rtt, self._rtt = self._rtt, {}
+        tos, self._timeouts = self._timeouts, {}
+        out: dict[str, tuple[float, float, float, int, int]] = {}
+        for group in set(rtt) | set(tos):
+            vals = sorted(rtt.get(group, ()))
+            n = len(vals)
+            if n:
+                out[group] = (
+                    vals[0],
+                    vals[min(n - 1, int(0.5 * n))],
+                    vals[-1],
+                    n,
+                    tos.get(group, 0),
+                )
+            else:
+                nan = float("nan")
+                out[group] = (nan, nan, nan, 0, tos.get(group, 0))
+        return out or None
+
+
+def ws_rtt_clause(rtt: dict[str, tuple[float, float, float, int, int]]) -> str:
+    """`ws_rtt=<group>:<min ms>/<p50 ms>/<max ms>/<pongs>/<timeouts>,...`."""
+
+    def ms(v: float) -> str:
+        return "nan" if v != v else f"{v * 1000:.1f}"
+
+    return "ws_rtt=" + ",".join(
+        f"{g}:{ms(r[0])}/{ms(r[1])}/{ms(r[2])}/{r[3]}/{r[4]}" for g, r in sorted(rtt.items())
+    )
+
+
+class RxHoldWatch:
+    """Time from a message's ARRIVAL in this process to its `recv_ts` stamp,
+    over every Kalshi connection, per stats period: `rx_hold=<p50>/<p99>/<max>
+    /<frames>` in ms.
+
+    Arrival is the moment the transport handed the daemon the TCP chunk holding
+    the message's last byte (`StampedClientConnection.data_received`), before
+    websockets parsed, inflated and queued it. `recv_ts` is stamped after
+    `ws.recv()` returns (`_kalshi_loop`), so the difference is the inflate, the
+    queue and the loop's wait to get round to this connection: the part of
+    every lag reading that is THIS daemon. The kernel's socket buffer is still
+    before both stamps.
+
+    A fixed-bin histogram, not a sample list: ~7,000 frames a second would make
+    a sorted list the very kind of on-loop stall it is here to find.
+
+    Takes no lock: every caller runs on the loop thread."""
+
+    def __init__(self) -> None:
+        self._bins = array("L")
+        self._n = 0
+        self._max = 0.0
+        self._reset()
+
+    def _reset(self) -> None:
+        self._bins = array("L", [0]) * (RX_HOLD_BINS + 1)
+        self._n = 0
+        self._max = 0.0
+
+    def note(self, hold_s: float) -> None:
+        i = int(hold_s / RX_HOLD_BIN_S) if hold_s > 0 else 0
+        self._bins[i if i < RX_HOLD_BINS else RX_HOLD_BINS] += 1
+        self._n += 1
+        if hold_s > self._max:
+            self._max = hold_s
+
+    def take(self) -> tuple[float, float, float, int] | None:
+        """`(p50 s, p99 s, max s, frames)` since the last call, and reset. A
+        quantile is its bin's LOWER edge (0.1 ms resolution); past the last
+        bin it is the exact maximum. None when no frame was stamped."""
+        if not self._n:
+            return None
+        bins, n, worst = self._bins, self._n, self._max
+        self._reset()
+        out = []
+        for q in (0.5, 0.99):
+            rank = min(n - 1, int(q * n))
+            seen = 0
+            for i, c in enumerate(bins):
+                seen += c
+                if seen > rank:
+                    out.append(worst if i == RX_HOLD_BINS else i * RX_HOLD_BIN_S)
+                    break
+        return out[0], out[1], worst, n
+
+
+def rx_hold_clause(hold: tuple[float, float, float, int]) -> str:
+    """`rx_hold=<p50 ms>/<p99 ms>/<max ms>/<frames>`."""
+    p50, p99, worst, n = hold
+    return f"rx_hold={p50 * 1000:.1f}/{p99 * 1000:.1f}/{worst * 1000:.1f}/{n}"
+
+
+class GcPauseWatch:
+    """Every cyclic garbage collection, timed through `gc.callbacks`, per stats
+    period: `gc=<gen-2 collections>/<longest gen-2 s>/<all generations s>`.
+
+    Why: on this interpreter (CPython 3.14.5, thresholds (2000, 10, 10)) the
+    collector is generational and stop-the-world, and a gen-2 pass walks every
+    tracked object -- measured offline 2026-11-24, 90 ms at 0.5M tracked
+    objects and 232 ms at 2M. A collection holds the GIL whichever thread
+    triggered it, so a flush thread's collection stops the receive loop too,
+    and nothing else on the stats line can see one: `loop_lag` sees the stall,
+    not its cause.
+
+    The callback runs under the GIL on whichever thread collected, so the two
+    halves of one collection never interleave with another's."""
+
+    def __init__(self) -> None:
+        self._t0: float | None = None
+        self._n2 = 0
+        self._max2 = 0.0
+        self._total = 0.0
+        self._lines: list[str] = []
+        self._installed = False
+
+    def install(self) -> None:
+        if not self._installed:
+            import gc
+
+            gc.callbacks.append(self._cb)
+            self._installed = True
+
+    def uninstall(self) -> None:
+        if self._installed:
+            import gc
+
+            with contextlib.suppress(ValueError):
+                gc.callbacks.remove(self._cb)
+            self._installed = False
+
+    def _cb(self, phase: str, info: dict) -> None:
+        if phase == "start":
+            self._t0 = _time.perf_counter()
+            return
+        if self._t0 is None:
+            return
+        d = _time.perf_counter() - self._t0
+        self._t0 = None
+        self._total += d
+        if info.get("generation") == 2:
+            self._n2 += 1
+            self._max2 = max(self._max2, d)
+            if d >= GC_PAUSE_LOG_S:
+                # Buffered, not printed: a print here would run inside the
+                # collector's callback, on whatever thread collected.
+                self._lines.append(
+                    f"gc pause: a gen-2 collection held the interpreter {d:.2f}s"
+                    f" (collected {info.get('collected')}) -- read loop_lag"
+                )
+
+    def drain_lines(self) -> list[str]:
+        out, self._lines = self._lines, []
+        return out
+
+    def take(self) -> tuple[int, float, float] | None:
+        """`(gen-2 collections, longest gen-2 s, seconds in all collections)`
+        since the last call, and reset; None when not installed."""
+        if not self._installed:
+            return None
+        out = (self._n2, self._max2, self._total)
+        self._n2, self._max2, self._total = 0, 0.0, 0.0
+        return out
+
+
+def gc_clause(g: tuple[int, float, float]) -> str:
+    """`gc=<gen-2 n>/<longest gen-2 s>/<all-generation total s>`."""
+    return f"gc={g[0]}/{g[1]:.3f}/{g[2]:.2f}"
+
+
+class StallSampler:
+    """A watchdog THREAD that names what the event loop is doing while it is
+    late: when `loop_watch`'s heartbeat is `threshold_s` old, it prints the main
+    thread's Python stack and every other thread's innermost frame.
+
+    `loop_lag` says the loop stopped; this says where. Two shapes, told apart
+    by the sampler's OWN lateness, which the line carries: a coroutine running
+    Python for a long time leaves the GIL to this thread every switch interval,
+    so the sample lands mid-stall with a stack naming the coroutine and the
+    sampler is on time; a C call or a collection that HOLDS the GIL (a sort, a
+    gen-2 pass, a native library call) stops this thread too, so it wakes late
+    by about the stall, and the stack shows where the loop resumed -- read `gc=`
+    and the other threads' frames for the holder.
+
+    Never raises into the daemon: the thread is a daemon thread, every sample
+    is wrapped, and it stops when `stop()` is called or the process exits."""
+
+    def __init__(self, threshold_s: float, beat: Callable[[], float], log: Callable[[str], None]):
+        import threading
+
+        self.threshold_s = threshold_s
+        self._beat = beat
+        self._log = log
+        self._stop = threading.Event()
+        self._main = threading.main_thread().ident
+        self._thread = threading.Thread(target=self._run, name="stall-sampler", daemon=True)
+        self.samples = 0
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        last_beat: float | None = None
+        last_line = -1e9
+        while not self._stop.is_set():
+            asked = _time.monotonic()
+            if self._stop.wait(STALL_SAMPLE_TICK_S):
+                return
+            now = _time.monotonic()
+            late = max(0.0, now - asked - STALL_SAMPLE_TICK_S)
+            beat = self._beat()
+            age = now - beat
+            if (
+                age < self.threshold_s
+                or beat == last_beat
+                or now - last_line < STALL_SAMPLE_MIN_GAP_S
+            ):
+                continue
+            last_beat, last_line = beat, now
+            try:
+                self._log(self.sample_line(age, late))
+                self.samples += 1
+            except Exception as exc:  # an instrument must never be the failure
+                self._log(f"stall sample failed: {type(exc).__name__}: {exc}")
+
+    def sample_line(self, age: float, late: float) -> str:
+        import sys
+        import threading
+        import traceback
+
+        frames = sys._current_frames()
+        main = frames.get(self._main)
+        stack = traceback.extract_stack(main, limit=12) if main is not None else []
+        where = (
+            " < ".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}" for f in reversed(stack))
+            or "?"
+        )
+        others = []
+        names = {t.ident: t.name for t in threading.enumerate()}
+        for ident, fr in frames.items():
+            if ident in (self._main, threading.get_ident()):
+                continue
+            code = fr.f_code
+            others.append(
+                f"{names.get(ident, ident)}@{Path(code.co_filename).name}:{fr.f_lineno}:{code.co_name}"
+            )
+        shape = "GIL held (C call or GC)" if late >= 0.5 * age else "Python on the loop"
+        return (
+            f"stall sample: loop silent {age:.2f}s, sampler {late:.2f}s late ({shape});"
+            f" main {where}; threads {'; '.join(sorted(others)) or 'none'}"
+        )
+
+
+class StampedClientConnection(websockets.ClientConnection):
+    """A client connection that stamps each MESSAGE at arrival: the monotonic
+    time the transport delivered the chunk holding its final frame's last byte,
+    queued in arrival order for `_kalshi_loop` to pop beside `recv_ts`.
+
+    Only installed when HYXLAB_STREAM_ARRIVAL_STAMP is on (`create_connection=`
+    of `websockets.connect`). The queue pairs one stamp with one message
+    because websockets' assembler hands messages over in the order their final
+    frames were processed, and never drops one; a connection whose reader
+    stops reading pauses the transport at the queue's high-water mark, so the
+    stamps cannot outgrow the messages."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.arrivals: collections.deque[int] = collections.deque()
+        self._chunk_ns = 0
+
+    def data_received(self, data: bytes) -> None:
+        self._chunk_ns = _time.monotonic_ns()
+        super().data_received(data)
+
+    def process_event(self, event) -> None:
+        super().process_event(event)
+        if (
+            isinstance(event, ws_frames.Frame)
+            and event.fin
+            and event.opcode in ws_frames.DATA_OPCODES
+        ):
+            self.arrivals.append(self._chunk_ns)
+
+
+def feed_clauses(extra: dict) -> str:
+    """The EDG-153 stats clauses, in a fixed order, each with its leading
+    space: `ws_rtt=`, `rx_hold=`, `gc=`. A missing or None reading is no
+    clause."""
+    out = ""
+    if extra.get("rtt"):
+        out += f" {ws_rtt_clause(extra['rtt'])}"
+    if extra.get("hold"):
+        out += f" {rx_hold_clause(extra['hold'])}"
+    if extra.get("gc"):
+        out += f" {gc_clause(extra['gc'])}"
+    return out
 
 
 def stats_line(
@@ -566,6 +1064,7 @@ def stats_line(
     loop: tuple[float, int] | None = None,
     rx: tuple[float, int] | None = None,
     rxlag: dict[str, tuple[float, float, int]] | None = None,
+    extra: dict | None = None,
 ) -> str:
     """The daemon's periodic / shutdown stats line, rendered in ONE place.
 
@@ -596,13 +1095,17 @@ def stats_line(
     loop_s = "" if loop is None else f" {loop_lag_clause(loop)}"
     rx_s = "" if rx is None else f" {rx_gap_clause(rx)}"
     rxlag_s = "" if rxlag is None else f" {recv_lag_clause(rxlag)}"
+    # EDG-153 readings, each present only when its key is on and it measured
+    # something; after `rx_lag` and before the hold clauses for the reason
+    # given above (and `_STREAMRX_RE` needs `rx_gap=` followed by a space).
+    extra_s = "" if not extra else feed_clauses(extra)
     holds_s = "" if holds is None else f" {flush_holds_clause(holds)}"
     # Only beside the total it splits: steps without holds would be a
     # reading with nothing to be a share of.
     steps_s = "" if holds is None or steps is None else f" {flush_steps_clause(steps)}"
     return (
         f"{prefix}stats {stats}{flushed_s} rss_anon_mb={rss_s} arena_mb={arena_s}{sock_s}"
-        f"{loop_s}{rx_s}{rxlag_s}{holds_s}{steps_s}"
+        f"{loop_s}{rx_s}{rxlag_s}{extra_s}{holds_s}{steps_s}"
     )
 
 
@@ -1147,6 +1650,12 @@ class Daemon:
         self.stalls = FlushStalls()
         # Per-connection minute heartbeats + subscription log (EXP-2007).
         self._hb = HeartbeatBook(store)
+        # EDG-153 options: all off unless a key is set (`FeedConfig`).
+        self._feed, complaints = FeedConfig.from_env()
+        for c in complaints:
+            _log(f"feed options: {c}")
+        if (line := self._feed.describe()) is not None:
+            _log(line)
 
     def report_stats(self) -> dict:
         """The dict both stats publishers render: the daemon's counters plus
@@ -1169,8 +1678,96 @@ class Daemon:
         """Built on first use, like `rx_gap`, for the same `__new__` tests."""
         w = self.__dict__.get("_recv_lag")
         if w is None:
-            w = self._recv_lag = RecvLagWatch()
+            w = self._recv_lag = RecvLagWatch(partition=self.feed.rxlag_partition)
         return w
+
+    @property
+    def feed(self) -> FeedConfig:
+        """The EDG-153 options; the all-off default for `__new__` Daemons."""
+        f = self.__dict__.get("_feed")
+        if f is None:
+            f = self._feed = FeedConfig()
+        return f
+
+    @property
+    def ws_rtt(self) -> WsRttWatch:
+        w = self.__dict__.get("_ws_rtt")
+        if w is None:
+            w = self._ws_rtt = WsRttWatch()
+        return w
+
+    @property
+    def rx_hold(self) -> RxHoldWatch:
+        w = self.__dict__.get("_rx_hold")
+        if w is None:
+            w = self._rx_hold = RxHoldWatch()
+        return w
+
+    @property
+    def gc_watch(self) -> GcPauseWatch:
+        w = self.__dict__.get("_gc_watch")
+        if w is None:
+            w = self._gc_watch = GcPauseWatch()
+        return w
+
+    def feed_extras(self) -> dict | None:
+        """The EDG-153 stats readings for one period, handed over (each watch
+        resets). None when every option is off, so the line is the old one."""
+        f = self.feed
+        if not (f.ping_s or f.arrival_stamp or f.gc_watch):
+            return None
+        return {
+            "rtt": self.ws_rtt.take() if f.ping_s else None,
+            "hold": self.rx_hold.take() if f.arrival_stamp else None,
+            "gc": self.gc_watch.take() if f.gc_watch else None,
+        }
+
+    def _start_feed_watches(self) -> None:
+        """GC timing and the stall sampler, when their keys are on."""
+        f = self.feed
+        if f.gc_watch:
+            self.gc_watch.install()
+        if f.stall_stack_s:
+            self.loop_beat = _time.monotonic()
+            self._sampler = StallSampler(
+                f.stall_stack_s, lambda: self.__dict__.get("loop_beat", 0.0), _log
+            )
+            self._sampler.start()
+
+    def _stop_feed_watches(self) -> None:
+        if self.feed.gc_watch:
+            self.gc_watch.uninstall()
+        sampler = self.__dict__.get("_sampler")
+        if sampler is not None:
+            sampler.stop()
+
+    def _drain_feed_lines(self) -> None:
+        if self.feed.gc_watch:
+            for line in self.gc_watch.drain_lines():
+                _log(line)
+
+    async def _ws_pinger(self, ws, group: str, every_s: float) -> None:
+        """Ping `ws` every `every_s` and time each pong (`WsRttWatch`). An
+        unanswered ping is counted, never acted on; a closed connection ends
+        the task quietly -- the receive loop owns reconnects."""
+        while True:
+            await asyncio.sleep(every_s)
+            try:
+                waiter = await ws.ping()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return
+            try:
+                rtt = await asyncio.wait_for(asyncio.shield(waiter), timeout=PING_WAIT_S)
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                self.ws_rtt.timeout(group)
+                continue
+            except Exception:
+                return
+            self.ws_rtt.note(group, float(rtt))
 
     @property
     def rx_gap(self) -> RxSilenceWatch:
@@ -1580,12 +2177,43 @@ class Daemon:
                 )
             except Exception as exc:
                 _log(f"kalshi-{label}: last_recv_ts unavailable ({type(exc).__name__}: {exc})")
+        # EDG-153: which host, and what else rides on the connection. With no
+        # key set the chooser always answers the general host, the headers
+        # are signed exactly as before and `connect_kw` is empty, so the
+        # upgrade request is the pre-EDG-153 one byte for byte (no `**kwargs`
+        # into a connect call: tests/test_connect_discipline.py reads those as
+        # a hidden `read_only` forward).
+        feed = self.feed
+        chooser = kalshi_ws.HostChooser(
+            kalshi_ws.url_for_channel(channel, feed.md_url, feed.user_url, feed.md_channels),
+            feed.primary_retry_s,
+        )
+        hold = self.rx_hold if feed.arrival_stamp else None
         while True:
+            url = chooser.pick(_time.monotonic())
+            opened = False
+            pinger: asyncio.Task | None = None
             try:
-                headers = kalshi_ws.auth_headers(self.key_id, self.pem)
-                async with websockets.connect(
-                    kalshi_ws.WS_URL, additional_headers=headers, max_size=2**23
-                ) as ws:
+                if url == kalshi_ws.WS_URL:
+                    headers = kalshi_ws.auth_headers(self.key_id, self.pem)
+                else:
+                    headers = kalshi_ws.auth_headers(
+                        self.key_id,
+                        self.pem,
+                        path=kalshi_ws.sign_path_for(url, feed.md_sign_path),
+                    )
+                if hold is None:
+                    opening = websockets.connect(url, additional_headers=headers, max_size=2**23)
+                else:
+                    opening = websockets.connect(
+                        url,
+                        additional_headers=headers,
+                        max_size=2**23,
+                        create_connection=StampedClientConnection,
+                    )
+                async with opening as ws:
+                    opened = True
+                    chooser.opened(url)
                     if shard is not None:
                         shard.ws, shard.sid = ws, None
                         shard.subscribed = set(shard.assigned)
@@ -1605,6 +2233,17 @@ class Daemon:
                             self._wake_books()
                     first, backoff = False, 1.0
                     _log(f"kalshi-{label}: connected")
+                    if chooser.configured:
+                        kind = "configured" if url == chooser.primary else "general, fallback"
+                        _log(f"kalshi-{label}: host {kalshi_ws.host_of(url)} ({kind})")
+                    pinger = (
+                        asyncio.create_task(
+                            self._ws_pinger(ws, channel, feed.ping_s), name=f"ping-{label}"
+                        )
+                        if feed.ping_s
+                        else None
+                    )
+                    arrivals = getattr(ws, "arrivals", None) if hold is not None else None
                     tracker = kalshi_ws.SeqTracker()
                     seeded = False  # first frame of THIS connection not yet seen
                     mono = asyncio.get_event_loop().time
@@ -1650,6 +2289,8 @@ class Daemon:
                         last_frame, probe_due = mono(), None
                         self.rx_gap.frames += 1
                         recv_ts = datetime.now(UTC)
+                        if arrivals:
+                            hold.note((_time.monotonic_ns() - arrivals.popleft()) / 1e9)
                         if self.raw is not None:
                             self.raw.put(channel, label, recv_ts, raw)
                         if not seeded:
@@ -1713,12 +2354,20 @@ class Daemon:
             except Exception as exc:
                 note = _venue_clock_note(exc, datetime.now(UTC))
                 _log(f"kalshi-{label}: {type(exc).__name__}: {exc}{note}; retry in {backoff:.0f}s")
+                if not opened and chooser.failed_to_open(url, _time.monotonic()):
+                    _log(
+                        f"kalshi-{label}: could not open {kalshi_ws.host_of(url)};"
+                        f" falling back to {kalshi_ws.host_of(kalshi_ws.WS_URL)} for"
+                        f" {feed.primary_retry_s:.0f}s"
+                    )
                 if beat.up_since is not None:
                     self.hb.down(beat)
                     self.hb.sub(beat, "disconnect", _disconnect_reason(exc), _short_err(exc))
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, BACKOFF_MAX)
             finally:
+                if pinger is not None:
+                    pinger.cancel()
                 self.hb.down(beat)
                 if shard is not None:
                     shard.ws, shard.sid = None, None
@@ -1936,7 +2585,8 @@ class Daemon:
                 lag = self.loop_lag.take()
                 rx = self.rx_gap.take(now)
                 tail = (sock, holds, steps, lag, rx, self.recv_lag.take())
-                _log(stats_line("", self.report_stats(), out.rows, *tail))
+                extras = self.feed_extras()  # EDG-153; None with every key off
+                _log(stats_line("", self.report_stats(), out.rows, *tail, extras))
                 if throttled:
                     # Its own line, so a grep for the word finds the PERIOD
                     # it landed in, not every stats line ever printed.
@@ -1956,7 +2606,9 @@ class Daemon:
             asked = loop.time()
             await asyncio.sleep(LOOP_TICK_S)
             lag = max(0.0, loop.time() - asked - LOOP_TICK_S)
+            self.loop_beat = _time.monotonic()  # the stall sampler's heartbeat
             self.loop_lag.note(lag)
+            self._drain_feed_lines()
             if (line := loop_stall_line(lag)) is not None:
                 _log(line)
             if (line := rx_silence_line(self.rx_gap.note(loop.time()))) is not None:
@@ -2188,6 +2840,7 @@ class Daemon:
             _log(f"adopted {adopted} row(s) from shutdown snapshot(s) into the sidecar")
         self.store.mark_startup_gap()
         self.stalls.arm(datetime.now(UTC))
+        self._start_feed_watches()
         tasks = [
             asyncio.create_task(self.kalshi_trades(), name="kalshi-trades"),
             asyncio.create_task(self.kalshi_books(), name="kalshi-books"),
@@ -2236,7 +2889,10 @@ class Daemon:
             lag = self.loop_lag.take()
             rx = self.rx_gap.take(asyncio.get_running_loop().time())
             tail = (holds, steps, lag, rx, self.recv_lag.take())
-            _log(stats_line("shutdown; ", self.report_stats(), None, None, *tail))
+            extras = self.feed_extras()
+            _log(stats_line("shutdown; ", self.report_stats(), None, None, *tail, extras))
+            self._drain_feed_lines()
+            self._stop_feed_watches()
 
 
 def main() -> None:
