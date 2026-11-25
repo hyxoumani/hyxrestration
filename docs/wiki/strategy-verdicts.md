@@ -462,6 +462,55 @@ structure — see [venues](venues.md)).
    the archive 122-139 s (selection ~40 s + an unsorted copy-out of
    3.32M book rows) with the replay 5.2 s after the release, anon peak
    3,022 MB at a 1 GiB pool.
+   **Seventh reading (2026-11-25 08:21Z, `20261125T082159.json`, same
+   arguments, read on the Wed BACKUP SLOT -- window 11-11 03:30Z ..
+   11-25 03:30Z, nothing live held): the seventh consecutive econ null,
+   and the first since 10-07 with new units.** Taken a day ahead of the
+   "~11-26+" note because its stated condition was met: no OCT event is
+   in the window (KXPAYROLLS selected no market at all). 5,612 orders /
+   24 markets / 5 underlyings (KXCPIYOY 2,851, KXCPI 1,585, KXU3 643,
+   KXFED 533). Crossing 204 vs queue-pess 189 / opt 229;
+   `crossing_but_not_pess` 103 vs `pess_but_not_crossing` 88,
+   `inside_bracket` 3, `crossing_but_not_opt` 100. Market tier 14 over /
+   8 under / 2 tied, p 0.143 on floor and ceiling; underlying tier 1
+   over / 4 under / 0 tied, p 0.969 on both: 4 of 4 readings powered,
+   0 significant. Floor net +15 on abs 43, 67% of it one unit
+   (KXCPIYOY-26DEC +29; the other four are -7, -5, -1, -1) -- the
+   aggregate sign flipped from -28 on 11-13 and is again one event.
+   `independence.units`: 2 of 5 new against every prior (KXCPIYOY-26DEC,
+   KXU3-26NOV), 3 shared with 11-13; the one shared unit that leaned in
+   both (KXCPIYOY-26NOV) flipped sign. So the fresh units did not bring
+   a direction either: seven reads, no fill-model direction on econ at
+   either tier. Caveat the report prints itself: 11 of the window's 301
+   measured hours were received LATE (11-21 17Z..11-22 03Z, the saturated
+   WiFi path, worst p50 2.28 s) and 36 of 337 are unmeasured (the 11-22/23
+   outage) -- queue position in those hours is the path. Cost: held the
+   slot 164.9 s, anon peak 3,644 MB in a 6G unit, replay 2.6 s. The next
+   read with a majority of new units is after the NOV prints roll
+   (~12-20+).
+   **Weather, explicit-series reading ONE (2026-11-25 08:25Z,
+   `20261125T082529.json`, same slot and window): the 10-15 ceiling
+   significance did NOT repeat on 14 fresh underlyings.** The width-24
+   weather series was defined as the DEFAULT selection (no `--series`),
+   which stopped being weather when the 10-23 coverage expansion put
+   crypto at the top of the print counts; this reading names the 24
+   `KXHIGH*` series of `hyxlab/watchlist.json` instead (declared before
+   the run) and is the first of that definition, not a fourth of the old
+   one -- the old one also carried 305 KXCPIYOY orders on 10-15. 1,340
+   orders / 24 markets / 14 underlyings (KXHIGHNY 738, LAX 181, TSFO 178,
+   TSEA 99, DEN 53, AUS 47, CHI 44), 0 shared with any prior report.
+   Crossing 604 vs queue-pess 617 / opt 702; `crossing_but_not_pess` 125
+   vs `pess_but_not_crossing` 138, `inside_bracket` 24. Floor: markets
+   8 over / 11 under / 5 tied (p 0.32), underlyings 6 / 6 / 2 (p 0.61,
+   `min` 0.00024). Ceiling: markets 7 / 15 / 2 (p 0.067), underlyings
+   4 / 8 / 2 (p 0.19; 10-15 read 3 / 11, p 0.029). 4 of 4 powered, 0
+   significant. That is a fourth independent powered floor null on
+   weather, and the one ceiling reading at alpha .05 is now 1 of 2 on
+   independent samples with the same lean (under) both times -- not
+   confirmed, not gone; the next weather read is new by construction
+   (daily events) any time after 12-09. Same receive-lag caveat as the
+   econ read. Cost: held the slot 148.4 s, anon peak 3,839 MB, replay
+   14.4 s over 7.65M book rows.
 2. **Econ prints vs ALFRED vintages** — weekly claims cadence
    accumulates sample fast. Gated on: B4 signal layer (SHIPPED 07-11; gate open).
    **Coverage probe (2026-10-14, read on the 10-13 backup; no edge was
