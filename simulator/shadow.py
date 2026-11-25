@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
+from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -242,6 +244,175 @@ def held_stream_conn(path: str) -> Iterator[duckdb.DuckDBPyConnection]:
         yield conn
 
 
+#: EDG-164's key. Unset (or 0/false/off/no) is today's daemon, byte for byte:
+#: no aligner is built, no stat is taken, no line is printed.
+FLUSH_ALIGN_ENV = "HYXLAB_SHADOW_FLUSH_ALIGN"
+#: `collector.streamd.FLUSH_SECS`. The daemon sleeps this long after each
+#: flush RETURNS -- after the close that is the checkpoint -- so the archive
+#: is free for at least this long after the file's last write. Copied, not
+#: imported (simulator -> collector crosses the boundary); a test pins it.
+ALIGN_GAP_S = 15.0
+#: Wait this long past the file's last write before attaching: the close's
+#: final write is followed by the WAL's unlink and the lock's release, ~20 ms
+#: later on the live file (EDG-164, 150 s of `stat` samples).
+ALIGN_SETTLE_S = 0.25
+#: Slack between the end of our hold and the daemon's next open.
+ALIGN_MARGIN_S = 2.0
+#: Hold assumed before this run has measured one (the seed poll is excluded).
+ALIGN_DEFAULT_HOLD_S = 3.0
+#: The hold estimate is the longest of this many recent polls.
+ALIGN_HOLD_WINDOW = 8
+#: Never delay a poll by more than this; past it the poll goes ahead as it
+#: does today (fail open). Longer than one flush cycle (~16.8 s) plus settle.
+ALIGN_MAX_WAIT_S = 20.0
+#: A file whose newest write is older than this has no flush cycle to avoid
+#: (daemon stopped, or a WAL left by a crash): poll at once.
+ALIGN_STALE_S = 45.0
+ALIGN_STEP_S = 0.1
+
+
+class FlushAligner:
+    """Start each stream poll inside the daemon's quiet gap (EDG-164).
+
+    `collector.streamd` opens `hyxstream.duckdb` once per flush and closes it
+    again; the close is the checkpoint and the main file's last write, the
+    WAL exists only between the flush's first commit and that close, and the
+    daemon then sleeps `ALIGN_GAP_S` before its next open. So two `stat`
+    calls -- the file's mtime and whether `<file>.wal` exists -- say where in
+    the cycle we are, and no IPC is added and nothing is opened. Measured on
+    the live file (150 s, stat only): a write burst every 16.6-17.0 s, end to
+    end, ~0.6-0.8 s long, the WAL gone ~20 ms after the last write.
+
+    A poll starts at once when the WAL is absent and the last write is
+    between `settle_s` and `gap_s - margin_s - hold` seconds old, `hold` the
+    longest of this run's last `ALIGN_HOLD_WINDOW` stream holds; otherwise it
+    waits for the next flush to end. Fails open on every doubt: no file, a
+    stale file, or `max_wait_s` reached. When the hold no longer fits the gap
+    at all (`gap_s - margin_s - hold < settle_s`) no timing can avoid the next
+    open, so it polls as soon as no flush is running and counts a `misfit` --
+    the sign that the hold, not the timing, is the defect.
+
+    Only WHEN a poll runs moves, never what it reads: the sim runs on event
+    time (`test_where_the_poll_cuts_the_stream_does_not_change_a_fill`).
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        gap_s: float = ALIGN_GAP_S,
+        settle_s: float = ALIGN_SETTLE_S,
+        margin_s: float = ALIGN_MARGIN_S,
+        default_hold_s: float = ALIGN_DEFAULT_HOLD_S,
+        max_wait_s: float = ALIGN_MAX_WAIT_S,
+        stale_s: float = ALIGN_STALE_S,
+        step_s: float = ALIGN_STEP_S,
+        wall=time.time,
+        mono=time.monotonic,
+        sleep=time.sleep,
+        stat=os.stat,
+    ) -> None:
+        self.path = str(path)
+        self.wal = self.path + ".wal"
+        self.gap_s, self.settle_s, self.margin_s = gap_s, settle_s, margin_s
+        self.default_hold_s, self.max_wait_s = default_hold_s, max_wait_s
+        self.stale_s, self.step_s = stale_s, step_s
+        self._wall, self._mono, self._sleep, self._stat = wall, mono, sleep, stat
+        self._holds: deque[float] = deque(maxlen=ALIGN_HOLD_WINDOW)
+        self.stats = {
+            "n": 0,
+            "in_gap_n": 0,
+            "waited_n": 0,
+            "waited_s_total": 0.0,
+            "waited_s_max": 0.0,
+            "timeout_n": 0,
+            "misfit_n": 0,
+            "open_n": 0,
+        }
+
+    def note_hold(self, held_s: float) -> None:
+        self._holds.append(held_s)
+
+    def hold_estimate(self) -> float:
+        return max(self._holds) if self._holds else self.default_hold_s
+
+    def _mtime(self, path: str) -> float | None:
+        try:
+            return self._stat(path).st_mtime
+        except OSError:
+            return None
+
+    def wait(self) -> str:
+        """Block until a poll may attach; returns why it may (the outcome
+        counted in `stats`): in_gap, waited, timeout, misfit, open."""
+        self.stats["n"] += 1
+        t0 = self._mono()
+        hi = self.gap_s - self.margin_s - self.hold_estimate()
+        misfit = hi < self.settle_s
+        outcome = "in_gap"
+        while True:
+            main = self._mtime(self.path)
+            wal = self._mtime(self.wal)
+            if main is None:
+                outcome = "open"
+                break
+            now = self._wall()
+            age = now - main
+            newest_age = now - max(main, wal if wal is not None else main)
+            if newest_age > self.stale_s:
+                outcome = "open"
+                break
+            if wal is None and age >= self.settle_s and (misfit or age <= hi):
+                if misfit:
+                    outcome = "misfit"
+                break
+            waited = self._mono() - t0
+            if waited >= self.max_wait_s:
+                outcome = "timeout"
+                break
+            outcome = "waited"
+            self._sleep(min(self.step_s, self.max_wait_s - waited))
+        waited = self._mono() - t0
+        key = {"in_gap": "in_gap_n", "waited": "waited_n", "timeout": "timeout_n"}.get(
+            outcome, f"{outcome}_n"
+        )
+        self.stats[key] += 1
+        if outcome != "in_gap":
+            self.stats["waited_s_total"] += waited
+            self.stats["waited_s_max"] = max(self.stats["waited_s_max"], waited)
+        return outcome
+
+    def line(self) -> str:
+        s = dict(self.stats)
+        s["waited_s_total"] = round(s["waited_s_total"], 3)
+        s["waited_s_max"] = round(s["waited_s_max"], 3)
+        s["hold_est_s"] = round(self.hold_estimate(), 3)
+        return f"[shadow] flush_align {json.dumps(s)}"
+
+
+_ALIGN_ON = {"1", "true", "on", "yes"}
+_ALIGN_OFF = {"", "0", "false", "off", "no"}
+
+
+def flush_aligner_from_env(environ, path: str | Path) -> tuple[FlushAligner | None, str | None]:
+    """`(aligner or None, journal line or None)` from `FLUSH_ALIGN_ENV`.
+    Unset/off -> (None, None). A value it cannot read is OFF, said once;
+    it never raises (the daemon must start whatever the drop-in says)."""
+    raw = environ.get(FLUSH_ALIGN_ENV)
+    if raw is None:
+        return None, None
+    val = raw.strip().lower()
+    if val in _ALIGN_OFF:
+        return None, None
+    if val not in _ALIGN_ON:
+        return None, f"[shadow] flush align: {FLUSH_ALIGN_ENV}={raw!r} not understood; off"
+    return FlushAligner(path), (
+        f"[shadow] flush align (EDG-164): on -- polls start {ALIGN_SETTLE_S:g}s after"
+        f" a flush's last write, inside {ALIGN_GAP_S:g}s - {ALIGN_MARGIN_S:g}s - hold;"
+        f" at most {ALIGN_MAX_WAIT_S:g}s late"
+    )
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS shadow_runs (
     run_id     VARCHAR PRIMARY KEY,
@@ -440,8 +611,15 @@ class ShadowRunner:
         archive_db: str = "data/hyxlab.duckdb",
         ledger: ShadowLedger | None = None,
         series: list[str] | None = None,
+        aligner: FlushAligner | None = None,
     ) -> None:
         self.stream_db = stream_db
+        # EDG-164: None (the default) polls whenever the loop comes round, as
+        # before; an aligner moves the attach into the daemon's flush gap.
+        self.aligner = aligner
+        # Seconds the last tail poll held the stream file, open to close
+        # (None after a seed poll or a failure): the aligner's hold input.
+        self.last_hold_s: float | None = None
         # The Kalshi series whose books this runner reads -- pushed into
         # every book_events query (seed and poll) so rows of other series
         # are never fetched. None reads every series (the test harness's
@@ -575,7 +753,9 @@ class ShadowRunner:
         )
 
     def _read_new(self) -> tuple[list[BookEvent], list[tuple]]:
+        self.last_hold_s = None
         with held_stream_conn(self.stream_db) as conn:
+            t_open = time.monotonic()
             if self.cursor is None:
                 # First poll anchors at the newest archived event: shadow
                 # trades the FUTURE only. But book state must be SEEDED
@@ -622,6 +802,7 @@ class ShadowRunner:
                 f" WHERE ended_at > ? AND {BOOK_GAPS}",
                 [self.gap_cursor],
             ).fetchall()
+        self.last_hold_s = time.monotonic() - t_open
         if rows:
             self.cursor = rows[-1][2]
         if gaps:
@@ -640,6 +821,8 @@ class ShadowRunner:
                 self.sim.ctx._markets = markets  # Context holds its own ref
                 self._markets_loaded_at = now_mono
                 print(f"[shadow] market metadata loaded ({len(markets)})", flush=True)
+        if self.aligner is not None:
+            self.aligner.wait()
         try:
             events, gaps = self._read_new()
         except duckdb.Error as exc:
@@ -651,6 +834,8 @@ class ShadowRunner:
             return 0
         if (line := self.poll_failures.ok()) is not None:
             print(line, flush=True)
+        if self.aligner is not None and self.last_hold_s is not None:
+            self.aligner.note_hold(self.last_hold_s)
         n = 0
         for snap in replay_snapshots(events, gaps=gaps, replayer=self.replayer):
             self.sim.step(snap)
@@ -741,7 +926,12 @@ def main() -> None:
     # So the block describes THIS run's attaches and not an import's.
     reset_attach_waits()
     strategies = build_strategies(args.strategy.split(","))
-    runner = ShadowRunner(strategies, latency=args.latency, series=shadow_universe())
+    aligner, align_line = flush_aligner_from_env(os.environ, STREAM_DB)
+    if align_line is not None:
+        print(align_line, flush=True)
+    runner = ShadowRunner(
+        strategies, latency=args.latency, series=shadow_universe(), aligner=aligner
+    )
     print(
         f"[shadow] run {runner.run_id} strategies={args.strategy}"
         f" latency={args.latency}s poll={args.poll}s "
@@ -755,6 +945,8 @@ def main() -> None:
         if time.monotonic() - last_report >= 300:
             holds = stream_holds_block()
             print(stats_line("", runner.stats, len(runner.sim.result.fills), holds), flush=True)
+            if aligner is not None:
+                print(aligner.line(), flush=True)
             # Journals rotate; a daemon's bill for the archive must outlive
             # that. Declined exactly like `persist` -- an ad-hoc reader
             # writer-locking the ledger must never kill the run (the
