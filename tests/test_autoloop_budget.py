@@ -274,3 +274,65 @@ def test_long_running_shell_launchers_are_parsed_whole() -> None:
             f"line must be {PARSED_WHOLE_LAST_LINE!r}, got {lines[-1]!r}"
         )
         assert re.search(r"^main\(\) \{$", path.read_text(), re.M), f"{path}: no main() body"
+
+
+def _git(cwd: Path, *args: str) -> str:
+    env = dict(os.environ)
+    env.update(
+        GIT_AUTHOR_NAME="t",
+        GIT_AUTHOR_EMAIL="t@example.invalid",
+        GIT_COMMITTER_NAME="t",
+        GIT_COMMITTER_EMAIL="t@example.invalid",
+    )
+    return subprocess.run(
+        ["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _root_with_unpushed_merge(root: Path, tmp_path_factory: pytest.TempPathFactory) -> str:
+    """Give the throwaway root an origin and a local merge commit that is not
+    on it -- main as it stood on 2026-11-25 between the promote and the pull."""
+    origin = tmp_path_factory.mktemp("origin")
+    _git(origin, "init", "-q", "--bare")
+    _git(root, "checkout", "-q", "-b", "main")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(root, "remote", "add", "origin", str(origin))
+    _git(root, "push", "-q", "origin", "main")
+    _git(root, "checkout", "-q", "-b", "feature")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "feature work")
+    _git(root, "checkout", "-q", "main")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "main work")
+    _git(root, "merge", "-q", "--no-ff", "feature", "-m", "merge feature")
+    return _git(root, "rev-parse", "HEAD")
+
+
+def test_launcher_never_rewrites_unpushed_local_commits(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """The launcher's pull must leave a local merge that origin lacks exactly
+    as it is: promote.sh may already have moved `stable` onto it, and a
+    rewritten main can no longer be fast-forwarded to (mistakes #243)."""
+    head = _root_with_unpushed_merge(root, tmp_path_factory)
+    proc = _run(root, {"FAKE_MODE": "exit"})
+    assert proc.returncode == 0, proc.stderr
+    assert _git(root, "rev-parse", "HEAD") == head, (
+        "the launcher rewrote local history; `stable` is no longer an ancestor of main"
+    )
+
+
+def test_launcher_names_a_history_it_could_not_fast_forward(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Origin gaining a commit of its own beside the local merge is diverged:
+    the launcher leaves main alone and says so, and the pass still runs."""
+    head = _root_with_unpushed_merge(root, tmp_path_factory)
+    other = tmp_path_factory.mktemp("other")
+    _git(other, "clone", "-q", _git(root, "remote", "get-url", "origin"), ".")
+    _git(other, "checkout", "-q", "main")
+    _git(other, "commit", "-q", "--allow-empty", "-m", "remote work")
+    _git(other, "push", "-q", "origin", "main")
+    proc = _run(root, {"FAKE_MODE": "exit"})
+    assert proc.returncode == 0, proc.stderr
+    assert _git(root, "rev-parse", "HEAD") == head
+    assert "did not fast-forward" in proc.stdout
+    assert (root / "fake.out").exists(), "the pass must still run on a diverged main"

@@ -1140,3 +1140,12 @@
   full` rated off a 1.54 GB day, ~1.1 d true; mistakes #239). The line says
   `the rate is <day>'s` when it substituted; "corrects itself tomorrow" on an
   instrument whose fault recurs with its subject is a fix, not a wait.
+- Nothing automatic rewrites local commits: `scripts/autoloop.sh` pulls
+  `--ff-only`. Its old `pull --rebase` flattened two unpushed merge commits
+  that `promote.sh` had already moved `stable` onto (2026-11-25 14:15Z,
+  mistakes #243): same tree, new hashes, the next promote's `merge
+  --ff-only main` could only fail. If the launcher prints `origin/main did
+  not fast-forward`, reconcile with a MERGE, never a rebase, and check
+  `git merge-base --is-ancestor stable main` before promoting. Other
+  sessions work in this repo (worktrees under `/tmp/EDG-*-wt`): leave
+  their branches and worktrees alone, and push a promote the same turn.

@@ -59,7 +59,17 @@ main() {
   cd "$ROOT"
   exec 9>data/autoloop.lock
   flock -n 9 || { echo "[autoloop] another iteration or session holds the lock; skipping"; return 0; }
-  git pull --rebase --quiet origin main || true
+  # Fast-forward only, never a rebase. A rebase REWRITES every local commit
+  # that is not on origin, and a plain one flattens merges: on 2026-11-25
+  # 14:15:00Z this line replayed two unpushed merge commits that
+  # scripts/promote.sh had already moved `stable` onto (promoted 11:05Z,
+  # never pushed), so `stable` stopped being an ancestor of `main` and the
+  # next promote's `merge --ff-only main` could only fail (mistakes #243).
+  # `--rebase=merges` is not the fix either: it keeps the merges but still
+  # rewrites promoted commits the moment origin has one of its own. A
+  # history that cannot fast-forward is the pass's to read, so say so.
+  git pull --ff-only --quiet origin main \
+    || echo "[autoloop] origin/main did not fast-forward (diverged or unreachable); main left as it is -- the pass reconciles, the launcher never rewrites local commits"
 
   # 170 min + 5 min TERM->KILL grace = 175 min < the unit's 3h
   # (tests/test_autoloop_budget.py pins the sum against the unit file).

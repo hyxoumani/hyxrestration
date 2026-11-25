@@ -5678,6 +5678,41 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+243. **2026-11-25 14:15Z -- the autoloop launcher's `git pull --rebase`
+    rewrote commits `stable` already stood on** (class: a convenience
+    default whose precondition -- "local history is linear and nothing
+    else points at it" -- was true for every run until another session
+    used the repo, #94's shape). `scripts/autoloop.sh` opened every run
+    with `git pull --rebase --quiet origin main || true`. With main only
+    AHEAD of origin and linear, that is a no-op. At 10:31Z a second
+    session merged `edg-153-feed` and `edg-164-shadow-poll` into main as
+    two MERGE commits, committed the stream unit change (069a4ae),
+    promoted it (stream restarted 11:05Z) and did not push. At 14:15:00Z
+    the launcher's rebase replayed those six commits as four linear ones
+    (3f56c37): same tree (`b5f79775` both), different hashes. `stable`
+    was no longer an ancestor of `main`, so the next
+    `scripts/promote.sh` could only fail at `merge --ff-only main`; the
+    in-flight `edg-296-flush-staging` branch was left based on commits
+    main no longer had; and `|| true` plus `--quiet` printed nothing.
+    Found on cold-start only because the stable worktree's head hash
+    differed from main's under the same subject line. Reproduced in a
+    scratch repo: one unpushed merge, origin an ancestor -- `--rebase`
+    rewrites, `--rebase=merges` and `--ff-only` do not; with origin one
+    commit ahead as well, `--rebase=merges` rewrites the local commits
+    (merges kept, hashes changed) and `--ff-only` refuses. Only
+    `--ff-only` never rewrites a commit a promote may have published
+    locally. Fix: main moved back to 069a4ae (`reset --soft`, identical
+    tree, nothing lost; the rewritten four are in the reflog), pushed;
+    the launcher pulls `--ff-only` and prints `origin/main did not
+    fast-forward ... the pass reconciles` instead of swallowing it; two
+    tests run the REAL launcher in a throwaway root holding an unpushed
+    merge (ahead-only: head unchanged; diverged: head unchanged, line
+    printed, the pass still runs), both red against the old line.
+    Rule: **a branch another ref has been fast-forwarded to is
+    published, whether or not it was pushed -- nothing automatic may
+    rewrite it. And a ship is not done until `git status -sb` shows no
+    `[ahead N]`: the unpushed promote is what armed this.**
+
 242. **2026-11-25 02:20Z -- HOSTNET printed seven outages the stream
     received straight through, and handed them to STREAMFLOW as excuses**
     (class: a proxy's state read as the resource's, #103's shape -- "the
