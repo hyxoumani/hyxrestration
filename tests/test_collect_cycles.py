@@ -237,3 +237,20 @@ def test_cycle_line_renders_filesystem_free_bytes(tmp_path):
     free = collect.fs_free_bytes(str(db))
     assert isinstance(free, int) and free > 0
     assert collect.fs_free_bytes("/nonexistent-dir-for-sure/x.duckdb") is None
+
+
+def test_cycle_line_renders_host_io_stall(tmp_path):
+    """The HOSTIO digest row differences this field; bump it and the line moves."""
+    base = collect.cycle_line({"a": 1}, {"b": 2}, 0, {}, 1, 9001643239)
+    assert base.endswith("io_full_us=9001643239")
+    assert collect.cycle_line({"a": 1}, {"b": 2}, 0, {}, 1, 9001643240) != base
+    assert "io_full_us=None" in collect.cycle_line({}, {}, 0, {}, None, None)
+    psi = tmp_path / "io"
+    psi.write_text(
+        "some avg10=0.15 avg60=0.15 avg300=0.53 total=10582181923\n"
+        "full avg10=0.15 avg60=0.15 avg300=0.52 total=9001643239\n"
+    )
+    assert collect.io_full_us(str(psi)) == 9001643239
+    assert collect.io_full_us(str(tmp_path / "absent")) is None
+    psi.write_text("some avg10=0.00 total=5\n")  # a kernel without the `full` line
+    assert collect.io_full_us(str(psi)) is None

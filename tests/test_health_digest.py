@@ -2477,3 +2477,91 @@ def test_a_finished_or_failed_last_run_is_never_cut() -> None:
     assert health.cut_by_reset(raw, _forgotten(), _crash_jobs(), LIVE_BOOT) is raw
     failed = health.UnitHealth(POLY, "FAILED", "x")
     assert health.cut_by_reset(failed, _forgotten(), _crash_jobs(), LIVE_BOOT) is failed
+
+
+# --- HOSTIO: host IO stall by hour, from the collector's `io_full_us=` -------
+
+
+def _io_journal(samples):
+    return "\n".join(
+        json.dumps(
+            {"__REALTIME_TIMESTAMP": str(int(ts * 1e6)), "MESSAGE": f"[collect] x io_full_us={us}"}
+        )
+        for ts, us in samples
+    )
+
+
+def test_io_full_series_parses_and_skips_none():
+    text = _io_journal([(7200.0, 500), (6900.0, 100)]) + "\n" + _io_journal([(7500.0, None)])
+    assert health.parse_io_full_series(text) == [(6900.0, 100), (7200.0, 500)]
+
+
+def test_io_stall_splits_an_interval_across_the_hour_edge():
+    # 600 s interval, 60 s of stall, straddling 3600: 300 s each side.
+    by_hour = health.io_stall_by_hour([(3300.0, 0), (3900.0, 60_000_000)])
+    assert by_hour == {0: (30.0, 300.0), 1: (30.0, 300.0)}
+
+
+def test_io_stall_reboot_interval_is_unmeasured_not_negative():
+    by_hour = health.io_stall_by_hour([(0.0, 9_000_000), (300.0, 1_000_000), (600.0, 4_000_000)])
+    assert by_hour == {0: (3.0, 300.0)}
+
+
+def test_host_io_line_unmeasured_never_reads_as_quiet():
+    assert "journal unreadable" in health.host_io_line(None)
+    for samples in ([], [(0.0, 5)]):
+        line = health.host_io_line(samples)
+        assert "UNMEASURED" in line and "%" not in line
+
+
+def _hourly_io(shares):
+    """5-min samples over len(shares) clock hours with the given stall share."""
+    samples, us, t = [(0.0, 0)], 0, 0.0
+    for share in shares:
+        for _ in range(12):
+            t += 300.0
+            us += int(share * 300 * 1e6)
+            samples.append((t, us))
+    return samples
+
+
+def test_host_io_line_names_pressured_hours_and_prices_the_stream_hold():
+    samples = _hourly_io([0.005, 0.10, 0.004])
+    hold = health.StreamHold(
+        3,
+        3,
+        60,
+        0.0,
+        0.0,
+        None,
+        0,
+        0.0,
+        None,
+        by_hour={0: (20, 30.0), 1: (20, 60.0), 2: (20, 32.0)},
+    )
+    line = health.host_io_line(samples, hold)
+    assert "PRESSURED: 1 of 3 judged hour(s) at or over 3%: 01-01 01Z 10%" in line
+    assert "busiest hour 01-01 01Z 10.0%" in line
+    assert "stream flush hold 3.00 s/flush in those hour(s), 1.55 in the other judged hours" in line
+    # Perturbation: a quieter hour 1 takes the flag AND the stream clause away.
+    calm = health.host_io_line(_hourly_io([0.005, 0.02, 0.004]), hold)
+    assert "PRESSURED" not in calm and "stream flush hold" not in calm
+    assert "no hour at or over 3% of 3 judged" in calm
+
+
+def test_host_io_line_does_not_judge_an_hour_on_one_interval():
+    line = health.host_io_line([(3300.0, 0), (3900.0, 300_000_000)])
+    assert "50.00%" in line and "no clock hour with 15 min measured yet" in line
+
+
+def test_stream_hold_files_each_line_under_its_periods_hour():
+    lines = [
+        # stamped 2 min into 11Z: the period's middle is in 10Z
+        "2026-11-25T11:02:00+00:00 hyz python[1]: [stream] stats {} (last flush 5 rows)"
+        " flush_hold=20/60.0/4.0",
+        "2026-11-25T11:07:00+00:00 hyz python[1]: [stream] stats {} (last flush 5 rows)"
+        " flush_hold=20/30.0/2.0",
+    ]
+    hold = health.parse_stream_hold(lines)
+    h11 = int(datetime(2026, 11, 25, 11, tzinfo=UTC).timestamp()) // 3600
+    assert hold.by_hour == {h11 - 1: (20, 60.0), h11: (20, 30.0)}

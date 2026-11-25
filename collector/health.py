@@ -105,7 +105,7 @@ import re
 import subprocess
 import sys
 import time as _time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1009,6 +1009,10 @@ class StreamHold:
     steps_s: tuple[float, float, float, float] | None = None
     steps_flushes: int = 0
     steps_held_s: float = 0.0
+    #: epoch hour -> (flushes, held seconds), each line filed under the hour
+    #: its period's MIDDLE fell in (a line's stamp is the period's end). The
+    #: HOSTIO row prices the hold in the disk's pressured hours against it.
+    by_hour: dict[int, tuple[int, float]] = field(default_factory=dict)
 
 
 def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
@@ -1021,6 +1025,7 @@ def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
     worst_at = long_worst_at = None
     steps: list[float] | None = None
     steps_flushes, steps_held = 0, 0.0
+    by_hour: dict[int, tuple[int, float]] = {}
     for line in lines:
         ts = _short_iso_ts(line)
         if ts is None:
@@ -1040,6 +1045,9 @@ def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
         carrying += 1
         flushes += int(m.group(1))
         held += float(m.group(2))
+        hour = int(ts.timestamp() - STREAMFLOW_PERIOD_S / 2) // 3600
+        hf, hh = by_hour.get(hour, (0, 0.0))
+        by_hour[hour] = (hf + int(m.group(1)), hh + float(m.group(2)))
         if float(m.group(3)) > worst:
             worst, worst_at = float(m.group(3)), ts
         if m.group(4) is not None:
@@ -1062,6 +1070,7 @@ def parse_stream_hold(lines: list[str] | str) -> StreamHold | None:
         None if steps is None else (steps[0], steps[1], steps[2], steps[3]),
         steps_flushes,
         steps_held,
+        by_hour,
     )
 
 
@@ -3422,6 +3431,143 @@ def read_fs_free_series(hours: int = FS_PACE_WINDOW_H) -> list[tuple[float, int]
         hours,
     )
     return parse_fs_free_series(text) if text is not None else None
+
+
+# --- HOSTIO: the shared disk's stall, from the collector's `io_full_us=` -----
+# The stream's flush hold is DuckDB's commit and checkpoint, i.e. fsync, and
+# it tracks the HOST's IO pressure whoever causes it: 2026-11-25 11:10-14:16Z
+# read 3.02 s/flush against 1.5-1.6 either side (commit 0.32 -> 0.70, close
+# 1.07 -> 2.22) while a sibling's job spilled 8 GB and our own test suite ran,
+# and the shadow's hold flagged `BEYOND THE ARCHIVE` over the same hours. Both
+# were attributed by hand from `/proc/pressure/io`, which keeps no history.
+# The collector now prints the kernel's lifetime `full total=` on its 5-min
+# line; this row differences it by clock hour and prices the stream's own
+# flush hold inside the pressured hours against the rest.
+#
+# The bar is a share of wall time every non-idle task was stalled on IO.
+# Hand readings that day: `avg300` 0.30-0.60% on the quiet disk, 9.5% in the
+# hump. 3% is 5x the quiet ceiling and a third of the one hump measured --
+# a bar from two readings, to be re-set from the row's own first week.
+HOSTIO_WINDOW_H = 24
+HOSTIO_PRESSURED_SHARE = 0.03
+#: An hour is judged only on this much measured span: one 5-min interval
+#: straddling an hour's edge is not that hour's reading.
+HOSTIO_MIN_HOUR_S = 900.0
+HOSTIO_NAMED_HOURS = 6
+_IO_FULL_RE = re.compile(r"io_full_us=(\d+)")
+
+
+def parse_io_full_series(stdout: str) -> list[tuple[float, int]]:
+    """(epoch_s, lifetime stall us) per collector cycle line carrying
+    `io_full_us=N`, oldest first. `io_full_us=None` is skipped."""
+    out = []
+    for ts, rec in _journal_json(stdout):
+        msg = rec.get("MESSAGE")
+        m = _IO_FULL_RE.search(msg) if isinstance(msg, str) else None
+        if m is not None:
+            out.append((ts, int(m.group(1))))
+    return sorted(out)
+
+
+def read_io_full_series(hours: int = HOSTIO_WINDOW_H) -> list[tuple[float, int]] | None:
+    text = _journal_hourly(
+        [
+            "-u",
+            COLLECT_UNIT,
+            "--grep=io_full_us=",
+            "-o",
+            "json",
+            "--output-fields=MESSAGE,__REALTIME_TIMESTAMP",
+        ],
+        hours,
+    )
+    return parse_io_full_series(text) if text is not None else None
+
+
+def io_stall_by_hour(samples: list[tuple[float, int]]) -> dict[int, tuple[float, float]]:
+    """epoch hour -> (stalled s, measured span s). Each pair of consecutive
+    samples is one interval, its stall spread evenly over the clock hours it
+    crosses. A counter that went DOWN is a reboot: that interval is unmeasured
+    (neither stall nor span), never a negative share. Pure."""
+    out: dict[int, tuple[float, float]] = {}
+    for (t0, u0), (t1, u1) in zip(samples, samples[1:], strict=False):
+        if u1 < u0 or t1 <= t0:
+            continue
+        rate = (u1 - u0) / 1e6 / (t1 - t0)
+        t = t0
+        while t < t1:
+            hour = int(t) // 3600
+            end = min(t1, (hour + 1) * 3600.0)
+            stall, span = out.get(hour, (0.0, 0.0))
+            out[hour] = (stall + rate * (end - t), span + (end - t))
+            t = end
+    return out
+
+
+def host_io_line(
+    samples: list[tuple[float, int]] | None,
+    hold: StreamHold | None | str = None,
+    hours: int = HOSTIO_WINDOW_H,
+    bar: float = HOSTIO_PRESSURED_SHARE,
+) -> str:
+    """Render the window. Unmeasured is said, never printed as a quiet disk:
+    a collector on code from before the field prints no sample at all."""
+    if samples is None:
+        return f"{hours}h: journal unreadable"
+    by_hour = io_stall_by_hour(samples)
+    span = sum(sp for _, sp in by_hour.values())
+    if span <= 0:
+        return (
+            f"{hours}h: host IO stall UNMEASURED -- {len(samples)} collector cycle line(s) carry "
+            "io_full_us (two are one interval; the collector prints it from the promote that "
+            "shipped it)"
+        )
+    stall = sum(st for st, _ in by_hour.values())
+    judged = {h: st / sp for h, (st, sp) in by_hour.items() if sp >= HOSTIO_MIN_HOUR_S}
+    head = (
+        f"{hours}h: every task stalled on IO for {stall:,.0f} s of {span / 3600:.1f} h measured "
+        f"({stall / span:.2%})"
+    )
+    if not judged:
+        return f"{head} | no clock hour with {HOSTIO_MIN_HOUR_S / 60:.0f} min measured yet"
+
+    def hh(h: int) -> str:
+        return f"{datetime.fromtimestamp(h * 3600, UTC):%m-%d %HZ}"
+
+    top = max(judged, key=lambda h: judged[h])
+    busiest = f"busiest hour {hh(top)} {judged[top]:.1%}"
+    hot = sorted(h for h, share in judged.items() if share >= bar)
+    if not hot:
+        return f"{head} | {busiest} | no hour at or over {bar:.0%} of {len(judged)} judged"
+    named = ", ".join(f"{hh(h)} {judged[h]:.0%}" for h in hot[:HOSTIO_NAMED_HOURS])
+    more = f" (+{len(hot) - HOSTIO_NAMED_HOURS} more)" if len(hot) > HOSTIO_NAMED_HOURS else ""
+    pressured = (
+        f"PRESSURED: {len(hot)} of {len(judged)} judged hour(s) at or over {bar:.0%}: {named}{more}"
+    )
+    return f"{head} | {busiest} | {pressured}{_io_stream_hold(hold, set(hot), set(judged))}"
+
+
+def _io_stream_hold(hold: StreamHold | None | str, hot: set[int], judged: set[int]) -> str:
+    """` | stream flush hold ...`: the daemon's seconds per flush inside the
+    pressured hours against the other JUDGED hours -- an hour the disk was
+    not measured in votes on neither side. Empty when either side is."""
+    if not isinstance(hold, StreamHold):
+        return ""
+
+    def per_flush(hs: set[int]) -> float | None:
+        n = sum(hold.by_hour[h][0] for h in hs if h in hold.by_hour)
+        s = sum(hold.by_hour[h][1] for h in hs if h in hold.by_hour)
+        return s / n if n else None
+
+    inside, outside = per_flush(hot), per_flush(judged - hot)
+    if inside is None or outside is None:
+        return ""
+    return (
+        f" | stream flush hold {inside:.2f} s/flush in those hour(s), {outside:.2f} in the "
+        f"other judged hours (x{inside / outside:.2f})"
+        if outside > 0
+        else ""
+    )
 
 
 def hourly_ceilings(samples: list[tuple[float, int]]) -> list[tuple[float, int]]:
@@ -6006,8 +6152,13 @@ def main() -> None:
         f"{'STREAMFLOW':<10} {STREAMFLOW_UNIT:<{width}}  {stream_flow_line(read_stream_flow(), net=_flow_net(hostnet, now.timestamp(), rx_periods))}",
         flush=True,
     )
+    stream_hold = read_stream_hold()
     print(
-        f"{'STREAMHOLD':<10} {STREAMFLOW_UNIT:<{width}}  {stream_hold_line(read_stream_hold())}",
+        f"{'STREAMHOLD':<10} {STREAMFLOW_UNIT:<{width}}  {stream_hold_line(stream_hold)}",
+        flush=True,
+    )
+    print(
+        f"{'HOSTIO':<10} {'(host)':<{width}}  {host_io_line(read_io_full_series(), stream_hold)}",
         flush=True,
     )
     print(

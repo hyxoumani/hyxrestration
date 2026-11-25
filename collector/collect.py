@@ -23,6 +23,7 @@ import contextlib
 import fcntl
 import functools
 import json
+import re
 import shutil
 import sys
 import time
@@ -366,14 +367,44 @@ def fs_free_bytes(db: str) -> int | None:
         return None
 
 
-def cycle_line(counts, db_counts, drained: int, timings: dict, fs_free_b: int | None) -> str:
+IO_PRESSURE = "/proc/pressure/io"
+
+
+def io_full_us(path: str = IO_PRESSURE) -> int | None:
+    """The host's lifetime IO stall, microseconds: `full ... total=` of
+    `/proc/pressure/io` (every non-idle task stalled on IO at once), or `None`
+    when it cannot be read. A counter, not a rate: the digest differences two
+    cycles' readings (`collector.health` HOSTIO), so the share over any span
+    of cycles is exact where the kernel's `avg300` is one window nobody kept.
+    2026-11-25: the stream's flush hold doubled for 3.5 h and the shadow's
+    hold flagged `BEYOND THE ARCHIVE` under a sibling's disk load, and both
+    were attributed by hand because no line of ours carried this."""
+    try:
+        with open(path) as f:
+            for line in f:
+                if line.startswith("full "):
+                    m = re.search(r" total=(\d+)", line)
+                    return int(m.group(1)) if m else None
+    except OSError:
+        return None
+    return None
+
+
+def cycle_line(
+    counts,
+    db_counts,
+    drained: int,
+    timings: dict,
+    fs_free_b: int | None,
+    io_full: int | None = None,
+) -> str:
     """The one cycle summary line; everything the journal knows about a cycle
     is rendered HERE (#95: one renderer per block). `spooled=` prints every
     cycle, zeros included: a recovery mechanism that only speaks when it fires
     is one nobody can tell apart from a dead one (#46)."""
     return (
         f"[collect] {datetime.now(UTC).isoformat()} {counts} db={db_counts} "
-        f"spooled={drained} timings={timings} fs_free_b={fs_free_b}"
+        f"spooled={drained} timings={timings} fs_free_b={fs_free_b} io_full_us={io_full}"
     )
 
 
@@ -502,7 +533,7 @@ def main() -> None:
             "close_s": round(time.monotonic() - t_close, 1),
             "total_s": round(time.monotonic() - t0, 1),
         }
-        print(cycle_line(counts, db_counts, drained, timings, fs_free_bytes(args.db)))
+        print(cycle_line(counts, db_counts, drained, timings, fs_free_bytes(args.db), io_full_us()))
         # After the cycle's own line and outside every lock: the as-written
         # size of each closed raw frame file, before the sibling's
         # recompressor rewrites it in place (mistakes #188). A stat and six

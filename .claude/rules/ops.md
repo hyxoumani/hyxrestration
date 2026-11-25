@@ -1149,3 +1149,14 @@
   `git merge-base --is-ancestor stable main` before promoting. Other
   sessions work in this repo (worktrees under `/tmp/EDG-*-wt`): leave
   their branches and worktrees alone, and push a promote the same turn.
+- The stream's flush hold and the shadow's per-poll hold track the HOST's
+  IO pressure through DuckDB's commit and checkpoint, whoever causes it
+  (11-25 11:10-14:16Z: 3.02 s/flush against 1.5-1.6 either side under a
+  sibling's 8 GB spill and our own test suite). Since 2026-11-25 the
+  collector's 5-min line carries `io_full_us=` (the kernel's lifetime
+  `full total=` of `/proc/pressure/io`) and the digest's `HOSTIO` row
+  differences it by clock hour: `PRESSURED` names the hours at or over 3%
+  and prices the stream's s/flush inside them against the rest. Read that
+  row before chasing a STREAMHOLD step or a SHADOWHOLD `BEYOND THE
+  ARCHIVE`; `UNMEASURED` hours are not quiet hours, and a full suite run
+  (~15 min) is itself a disk tenant the stream pays for.
