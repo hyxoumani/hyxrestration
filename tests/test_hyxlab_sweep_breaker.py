@@ -38,7 +38,24 @@ def _wire(monkeypatch, sweep_series_fn):
     monkeypatch.setattr(sweep_mod, "refresh_series", lambda store, sess, series=None: targets)
     monkeypatch.setattr(sweep_mod, "writer_burst", fake_burst)
     monkeypatch.setattr(sweep_mod, "sweep_series", sweep_series_fn)
+    # The error pace runs on a fake clock that only its own waits advance.
+    now = {"t": 0.0}
+    store.waits = []
+    monkeypatch.setattr(sweep_mod, "_pace_clock", lambda: now["t"])
+
+    def fake_sleep(s):
+        store.waits.append(s)
+        now["t"] += s
+
+    monkeypatch.setattr(sweep_mod, "_pace_sleep", fake_sleep)
     return store
+
+
+#: Series attempted before a SUSTAINED outage aborts: the unpaced failures,
+#: then one per ERROR_PACE_S until the run has lasted ABORT_CONSEC_MIN_S.
+def _attempts_to_abort():
+    paced = -(-sweep_mod.ABORT_CONSEC_MIN_S // sweep_mod.ERROR_PACE_S)
+    return max(sweep_mod.ABORT_CONSEC_ERRORS, sweep_mod.ERROR_PACE_AFTER + int(paced))
 
 
 def test_unbroken_error_run_aborts_at_threshold(monkeypatch):
@@ -51,14 +68,58 @@ def test_unbroken_error_run_aborts_at_threshold(monkeypatch):
     store = _wire(monkeypatch, always_down)
     totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
 
+    n = _attempts_to_abort()
+    assert n == 35  # 5 fast, then one every 30 s for 15 min
     assert totals["aborted"] is True
-    assert totals["errors"] == sweep_mod.ABORT_CONSEC_ERRORS
-    # The remaining 75 series were never requested — that is the point:
+    assert totals["errors"] == n
+    # The remaining series were never requested — that is the point:
     # stop hammering a venue that is refusing service.
-    assert len(attempted) == sweep_mod.ABORT_CONSEC_ERRORS
+    assert len(attempted) == n
     # Every failure still landed in sweep_log before the abort.
-    assert len(store.logged) == sweep_mod.ABORT_CONSEC_ERRORS
+    assert len(store.logged) == n
     assert all(row[5] == "error" for row in store.logged)
+    # The run of errors lasted the floor, and the done line says what it cost.
+    assert sum(store.waits) == sweep_mod.ABORT_CONSEC_MIN_S == totals["error_pace_s"]
+
+
+def test_a_half_minute_burst_of_errors_is_ridden_out_not_aborted(monkeypatch):
+    """2026-11-26 08:16Z: 25 series failed in ~30 s on HTTP 500s inside the
+    venue's maintenance window and the count alone aborted an 11 h sweep 900
+    series in; the venue answered 200 minutes later (mistakes #247)."""
+    burst = sweep_mod.ABORT_CONSEC_ERRORS + 5
+    calls = {"n": 0}
+
+    def blip(db, ticker, days, sess, max_markets):
+        calls["n"] += 1
+        if calls["n"] <= burst:
+            raise requests.RequestException("500 Server Error: Internal Server Error")
+        return 1, 1, False
+
+    store = _wire(monkeypatch, blip)
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+
+    assert totals["aborted"] is False
+    assert totals["errors"] == burst
+    assert calls["n"] == 100  # every series behind the burst still ran
+    # Paced from the 5th consecutive error on, and only inside the burst.
+    assert len(store.waits) == burst - sweep_mod.ERROR_PACE_AFTER + 1
+    assert totals["error_pace_s"] == sum(store.waits)
+
+
+def test_slow_failures_abort_on_the_count_once_the_run_is_long(monkeypatch):
+    """The 08-06 shape: each failure is itself minutes of 429 ladder, so the
+    duration floor is met long before the count and the count decides."""
+    attempted = []
+
+    def storm(db, ticker, days, sess, max_markets):
+        attempted.append(ticker)
+        sweep_mod._pace_sleep(120.0)  # the request's own retry ladder
+        raise requests.RequestException("429 Too Many Requests")
+
+    _wire(monkeypatch, storm)
+    totals = sweep_mod.run_sweep("unused.duckdb", 2, ["Test"])
+    assert totals["aborted"] is True
+    assert len(attempted) == sweep_mod.ABORT_CONSEC_ERRORS
 
 
 def test_scattered_errors_never_trip_the_breaker(monkeypatch):

@@ -165,6 +165,24 @@ EXCLUDED_SERIES_PREFIXES: tuple[str, ...] = ("KXMVE",)
 # every unfinished watermark untouched, so the next timer firing resumes
 # exactly where this one stopped: a delayed sweep, never a lost one.
 ABORT_CONSEC_ERRORS = 25
+# ... and the count alone is not "a long unbroken error run". A failing
+# series fails FAST (~1.2 s each in the small class), so 25 of them is half a
+# minute: on 2026-11-26 08:16Z a burst of HTTP 500s from `/markets` inside
+# Kalshi's Thursday maintenance window tripped the count in ~30 s, 900 series
+# into 4,791, and deferred 81% of the day's sweep (~7.5 h of fetching) to a
+# venue that was answering 200 again minutes later (500s recurred in ones and
+# twos until 08:32Z; mistakes #247). The fuse's premise is a DURATION, so it
+# now has one: the unbroken run must also have lasted ABORT_CONSEC_MIN_S.
+# From the ERROR_PACE_AFTER-th consecutive error the loop waits ERROR_PACE_S
+# before the next series, so riding out a blip costs the venue one series'
+# first request every 30 s -- a sustained outage is 5 fast failures + ~30
+# paced ones before the abort, against the 2,569 this fuse was built to stop.
+ABORT_CONSEC_MIN_S = 900.0
+ERROR_PACE_AFTER = 5
+ERROR_PACE_S = 30.0
+# Seams for the pace (tests drive a fake clock through them).
+_pace_sleep = time.sleep
+_pace_clock = time.monotonic
 # Lock contention is not venue degradation and gets its own, much shorter
 # fuse: every lock skip has ALREADY burned the full BURST_OPEN_RETRIES *
 # BURST_OPEN_DELAY_S budget (300s) waiting, so 5 unbroken skips is 25
@@ -992,6 +1010,10 @@ def run_sweep(
         # lock fuse, and absent from `lock_wait` (nothing queued).
         "disk_full_skips": 0,
         "disk_full_wait_s": 0.0,
+        # Seconds spent pacing an unbroken run of series errors (see
+        # ABORT_CONSEC_MIN_S): nonzero means the venue erred in a burst
+        # and the run rode it out or aborted after it.
+        "error_pace_s": 0.0,
         # Tickers behind `lock_skips`, popped by main and written to
         # sweep_log in the CLOSING burst. A skip cannot log itself -- the
         # burst it needs is the one that just failed -- but by the end of
@@ -1008,6 +1030,7 @@ def run_sweep(
     t0 = time.monotonic()
     pause = OutagePause([urlparse(kalshi.BASE).hostname or ""], tag="sweep")
     consec_errors = 0
+    consec_since = 0.0  # _pace_clock() at the first error of the current run
     consec_lock_skips = 0
     consec_disk_full = 0
     # ticker -> (wall seconds, markets). The run's budget (`qa.BATCH_RUN_BUDGET_H`,
@@ -1131,6 +1154,8 @@ def run_sweep(
         except requests.RequestException as e:
             totals["errors"] += 1
             consec_errors += 1
+            if consec_errors == 1:
+                consec_since = _pace_clock()
             try:
                 with writer_burst(db) as store:
                     store.log_sweep(ticker, None, None, 0, 0, "error", str(e)[:200])
@@ -1139,15 +1164,28 @@ def run_sweep(
                 # busy: losing the audit row is worse than not counting
                 # this failure, but letting the open kill the run is worst.
                 totals["lock_skips"] += 1
-            if consec_errors >= ABORT_CONSEC_ERRORS:
+            run_s = _pace_clock() - consec_since
+            if consec_errors >= ABORT_CONSEC_ERRORS and run_s >= ABORT_CONSEC_MIN_S:
                 totals["aborted"] = True
                 print(
                     f"[sweep] ABORT after {consec_errors} consecutive series"
-                    f" errors at {ticker} ({str(e)[:120]}) — venue degraded;"
-                    f" watermarks intact, next run resumes",
+                    f" errors over {run_s:.0f}s at {ticker} ({str(e)[:120]}) — venue"
+                    f" degraded; watermarks intact, next run resumes",
                     flush=True,
                 )
                 break
+            if consec_errors >= ERROR_PACE_AFTER:
+                print(
+                    f"[sweep] {consec_errors} consecutive series errors over {run_s:.0f}s"
+                    f" at {ticker} ({str(e)[:120]}); waiting {ERROR_PACE_S:.0f}s before"
+                    f" the next series (abort at {ABORT_CONSEC_ERRORS} errors AND"
+                    f" {ABORT_CONSEC_MIN_S:.0f}s unbroken)",
+                    flush=True,
+                )
+                w0 = time.monotonic()
+                _pace_sleep(ERROR_PACE_S)
+                s0 += time.monotonic() - w0  # the wait is the venue's, not this series' wall
+                totals["error_pace_s"] = round(totals["error_pace_s"] + ERROR_PACE_S, 1)
         series_wall[ticker] = (time.monotonic() - s0, n_m)
         if (i + 1) % PROGRESS_EVERY == 0:
             eta_min, eta_tag = eta_minutes(

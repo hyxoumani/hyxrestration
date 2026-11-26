@@ -1814,7 +1814,12 @@ as unreadable; neither is a zero. First live read 2026-10-28 08:50Z:
   75 so systemd records the failure; watermarks stay untouched, so the
   next timer firing resumes exactly where the aborted run stopped.
   One success resets the count — scattered organic errors never trip
-  it (`tests/test_hyxlab_sweep_breaker.py`). An outage run is a
+  it (`tests/test_hyxlab_sweep_breaker.py`). Since 2026-11-26 the abort
+  also needs the unbroken run to have lasted `ABORT_CONSEC_MIN_S`
+  (900 s), and from the 5th consecutive error the loop waits 30 s
+  before the next series (`error_pace_s` on the done line): 25 fast
+  failures are ~30 s, and a 500 burst that short aborted the 11-26
+  sweep 900 series in (mistakes #247). An outage run is a
   DELAYED sweep, never a lost one; the recovery signal is the next
   run's larger-than-usual market count, not any repair action.
 - **A full disk has its own branch in that loop** (2026-11-21, mistakes

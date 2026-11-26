@@ -5678,6 +5678,38 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+247. **2026-11-26 08:16Z -- a breaker whose premise is a duration counted
+    events, and half a minute of HTTP 500s deferred 81% of a sweep** (class:
+    a threshold calibrated on one incident's SHAPE, expressed in a unit that
+    shrinks when the unit of work gets faster). `ABORT_CONSEC_ERRORS = 25`
+    was written for the 2026-08-06 outage (2,569 consecutive series errors,
+    an hour-long storm) with the comment "a long unbroken error run is a
+    venue-side outage". A failing series fails fast -- ~1.2 s each in the
+    small class -- so 25 of them is ~30 s. At 08:16Z, inside Kalshi's
+    Thursday maintenance window (08-10Z EST), `/markets` answered 500 in a
+    burst: the sweep went from 12 errors at its 08:16:18Z progress line to
+    `ABORT after 25 consecutive series errors at KXBTCEVENT` at 08:16:33Z,
+    900 of 4,791 series and 126.4 min in, ~449 min of work left, exit 75.
+    The venue was answering 200 again minutes later; the 5-min collector and
+    breadth saw the 500s recur in ones and twos until 08:32Z and nothing
+    after. The three previous post-fall-back Thursdays (11-05, 11-12, 11-19)
+    ran through the same window with 0-1 errors, so this is the venue's
+    burst, not the closure itself. Fixed: the abort also needs the unbroken
+    run to have lasted `ABORT_CONSEC_MIN_S` (900 s), and from the 5th
+    consecutive error the loop waits 30 s before the next series, so a blip
+    is ridden out at one series' first request per 30 s and a sustained
+    outage still aborts after 5 fast + ~30 paced failures (35 attempts,
+    against the 2,569 the fuse exists to stop). The done line carries
+    `error_pace_s`. The series that fail inside a ridden-out burst are
+    still deferred to the next run, as any organic error is. 2 new tests, 1
+    rewritten (fake clock); the mutant without the duration floor is red on
+    two. Today's sweep was restarted by hand after the promote (#195 rule:
+    its next slot was 21 h away against ~7.5 h of work). **Rule: when a
+    fuse's comment says "long", "sustained" or "persistent", its condition
+    must contain a clock. A count stands in for a duration only while the
+    per-event time is fixed, and the fast path of a failure is the one
+    nobody measured.**
+
 246. **2026-11-26 08:50Z -- the watch called an event `pending` for six days
     after its own listing said the registration would exclude it** (class:
     a forecast left to the reader's calendar when the archive already holds
