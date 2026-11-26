@@ -365,3 +365,77 @@ def test_the_digest_hands_one_stream_reading_to_hostnet_streamflow_and_streamrx(
     assert "host_net_line(hostnet, now.timestamp(), rx_periods=rx_periods)" in src
     assert "_flow_net(hostnet, now.timestamp(), rx_periods)" in src
     assert health.rx_periods_of("unreadable") is None and health.rx_periods_of(None) is None
+
+
+# --- association losses (2026-11-26): NetworkManager's own lines from 12:46Z,
+# when the WiFi leg dropped off its access point while the default route was
+# wired and every stream connection went silent for 18.7 s.
+ASSOC_NM = """\
+2026-11-26T12:46:15+00:00 hyz NetworkManager[703]: <info>  [1795697175.1193] dhcp4 (wlp6s0): state changed no lease
+2026-11-26T12:46:15+00:00 hyz NetworkManager[703]: <info>  [1795697175.2256] device (wlp6s0): supplicant interface state: completed -> disconnected
+2026-11-26T12:46:15+00:00 hyz NetworkManager[703]: <info>  [1795697175.2262] device (p2p-dev-wlp6s0): supplicant management interface state: completed -> disconnected
+2026-11-26T12:46:15+00:00 hyz NetworkManager[703]: <info>  [1795697175.3187] device (wlp6s0): supplicant interface state: disconnected -> scanning
+2026-11-26T12:46:21+00:00 hyz NetworkManager[703]: <info>  [1795697181.7696] device (wlp6s0): supplicant interface state: 4way_handshake -> completed
+"""
+ASSOC_NOW = _ts("2026-11-26T14:15:00")
+ASSOC_TS = _ts("2026-11-26T12:46:15")
+ASSOC_RX = (
+    (_ts("2026-11-26T12:37:50"), _ts("2026-11-26T12:42:57"), 0.31),
+    (_ts("2026-11-26T12:42:57"), _ts("2026-11-26T12:48:02"), 18.7),
+    (_ts("2026-11-26T12:48:02"), _ts("2026-11-26T12:53:09"), 0.28),
+)
+
+
+def _assoc_hn(**kw) -> health.HostNet:
+    base = dict(
+        states=[],
+        links=[],
+        route_iface="enp7s0",
+        route_wifi=False,
+        assoc_losses=health.parse_assoc_losses(ASSOC_NM),
+    )
+    base.update(kw)
+    return _hn(**base)
+
+
+def test_an_association_loss_is_parsed_once_and_a_reassociation_is_not_one() -> None:
+    assert health.parse_assoc_losses(ASSOC_NM) == [(ASSOC_TS, "wlp6s0")]
+    assert health.parse_assoc_losses("-- No entries --\n") == []
+    # A roam leaves `completed` for `authenticating`, never `disconnected`.
+    roam = ASSOC_NM.replace("completed -> disconnected", "completed -> authenticating")
+    assert health.parse_assoc_losses(roam) == []
+
+
+def test_a_loss_beside_a_whole_path_silence_on_the_wired_route_is_named() -> None:
+    line = health.host_net_line(_assoc_hn(), ASSOC_NOW, rx_periods=ASSOC_RX)
+    assert (
+        "1 wifi association loss(es) (not roams), 1 with every stream connection silent "
+        "4 s or more in the same period (11-26 12:46:15Z 18.7 s)"
+    ) in line
+    assert "the default route is WIRED" in line and "not the WiFi leg" in line
+    # On the WiFi route the loss IS the path: no shared-gear reading.
+    wifi = health.host_net_line(_assoc_hn(route_wifi=True), ASSOC_NOW, rx_periods=ASSOC_RX)
+    assert "18.7 s" in wifi and "WIRED" not in wifi
+
+
+def test_a_loss_the_stream_received_through_charges_nothing() -> None:
+    quiet = tuple((a, b, 0.4) for a, b, _ in ASSOC_RX)
+    line = health.host_net_line(_assoc_hn(), ASSOC_NOW, rx_periods=quiet)
+    assert "1 wifi association loss(es) (not roams), 0 beside a stream silence" in line
+    assert "WIRED" not in line
+    # The silence has to be NEAR the loss: the same 18.7 s an hour away is not it.
+    far = tuple((a + 3600, b + 3600, g) for a, b, g in ASSOC_RX)
+    assert "0 beside" in health.host_net_line(_assoc_hn(), ASSOC_NOW, rx_periods=far)
+    # A silence in the period that ENDED just before the loss still counts
+    # inside the margin, and stops counting past it.
+    edge = ((ASSOC_TS - 300, ASSOC_TS - health.ASSOC_LOSS_NEAR_S, 9.0),)
+    assert "9.0 s" in health.host_net_line(_assoc_hn(), ASSOC_NOW, rx_periods=edge)
+    past = ((ASSOC_TS - 300, ASSOC_TS - health.ASSOC_LOSS_NEAR_S - 1, 9.0),)
+    assert "0 beside" in health.host_net_line(_assoc_hn(), ASSOC_NOW, rx_periods=past)
+
+
+def test_no_rx_series_counts_the_loss_and_claims_nothing() -> None:
+    line = health.host_net_line(_assoc_hn(), ASSOC_NOW)
+    assert "1 wifi association loss(es) (not roams), stream silences unread" in line
+    assert "association" not in health.host_net_line(_assoc_hn(assoc_losses=[]), ASSOC_NOW)
+    assert "association" not in health.host_net_line(_assoc_hn(assoc_losses=None), ASSOC_NOW)

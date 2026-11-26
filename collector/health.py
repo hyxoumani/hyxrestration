@@ -2663,6 +2663,23 @@ _LINK_RE = re.compile(r"^(\S+) \S+ kernel: .*?(\S+): Link is (Up|Down)\b")
 # starts within ROAM_LEAD_S of a roam is charged from the roam.
 _ROAM_RE = re.compile(r"^(\S+) \S+ kernel: (\S+): disconnect from AP (\S+) for new auth to (\S+)")
 ROAM_LEAD_S = 90.0
+# The WiFi leg LOSING its association (wpa_supplicant `completed ->
+# disconnected`), which a roam is not: a roam goes `completed ->
+# authenticating`. On the wired route the WiFi leg carries nothing (measured
+# 2026-11-26: 6 kB against 18 MB in 20 s), so its losses should be free --
+# and 2 of the 3 since 11-23 sat inside the only two whole-path silences the
+# stream logged in those days (11-24 19:51:47Z beside an 11.1 s silence ending
+# 19:51:51Z; 11-26 12:46:15Z beside 18.7 s ending 12:46:21Z, with 12
+# connections timing out and DNS failing at 12:46:22Z). No link event on
+# `enp7s0` either time. Both legs meet at one mesh node (`ip neigh` lists four
+# wired neighbours behind `16:4a:95:2d:8f:9f`, the node the radio associates
+# to as `10:5a:95:2d:8f:9e/9f`), so the reading is that node stalling, which
+# NetworkManager's probe never sampled. Counted here so the next silence is
+# read against it instead of re-traced; the gear is the USER's.
+_ASSOC_LOSS_RE = re.compile(
+    r"^(\S+) .*device \((\S+)\): supplicant interface state: completed -> disconnected\s*$"
+)
+ASSOC_LOSS_NEAR_S = 30.0
 # "Anything short of CONNECTED_GLOBAL is a span the capture units could not
 # have used" was the premise above, and on the wired route it is false:
 # measured 2026-11-24..25, seven `CONNECTED_SITE` episodes of 3-51 s
@@ -2727,6 +2744,60 @@ def parse_roam_events(stdout: str) -> list[RoamEvent]:
         ts = _iso_ts(m.group(1))
         if ts is not None:
             out.append(RoamEvent(ts, m.group(2), m.group(3), m.group(4)))
+    return out
+
+
+def parse_assoc_losses(stdout: str) -> list[tuple[float, str]]:
+    """`(epoch, iface)` per WiFi association loss in a NetworkManager journal
+    read. The `p2p-dev-*` shadow device's twin line says `supplicant
+    MANAGEMENT interface state` and does not match. Pure."""
+    out: list[tuple[float, str]] = []
+    for line in stdout.splitlines():
+        m = _ASSOC_LOSS_RE.match(line)
+        if not m:
+            continue
+        ts = _iso_ts(m.group(1))
+        if ts is not None:
+            out.append((ts, m.group(2)))
+    return out
+
+
+def assoc_loss_clause(
+    hn: HostNet, rx_periods: tuple[tuple[float, float, float], ...] | None = None
+) -> str:
+    """WiFi association losses in the window and how many sat beside a
+    whole-path stream silence. Empty when there were none; with no `rx_gap`
+    series the count stands alone and claims nothing about the path. Pure."""
+    if not hn.assoc_losses:
+        return ""
+    n = len(hn.assoc_losses)
+    out = f"; {n} wifi association loss(es) (not roams)"
+    if not rx_periods:
+        return out + ", stream silences unread"
+    hits = []
+    for ts, _iface in hn.assoc_losses:
+        near = [
+            p[2]
+            for p in rx_periods
+            if p[0] <= ts + ASSOC_LOSS_NEAR_S and p[1] >= ts - ASSOC_LOSS_NEAR_S
+        ]
+        if near and max(near) >= STREAMRX_STALL_S:
+            hits.append((ts, max(near)))
+    if not hits:
+        return out + f", 0 beside a stream silence of {STREAMRX_STALL_S:.0f} s or more"
+    when = ", ".join(
+        f"{datetime.fromtimestamp(ts, UTC).strftime('%m-%d %H:%M:%SZ')} {gap:.1f} s"
+        for ts, gap in hits
+    )
+    out += (
+        f", {len(hits)} with every stream connection silent {STREAMRX_STALL_S:.0f} s or more "
+        f"in the same period ({when})"
+    )
+    if hn.route_wifi is False:
+        out += (
+            " -- the default route is WIRED: if it was then, that is the gear both legs "
+            "share stalling, not the WiFi leg"
+        )
     return out
 
 
@@ -2871,6 +2942,7 @@ class HostNet:
     route_read: bool
     route_wifi: bool | None
     roams: list[RoamEvent] | None = None
+    assoc_losses: list[tuple[float, str]] | None = None
 
 
 def _journal_window(args: list[str], hours: int) -> str | None:
@@ -2900,6 +2972,7 @@ def read_hostnet(hours: int = HOSTNET_WINDOW_H, sys_net: str = "/sys/class/net")
         states=parse_nm_states(nm) if nm is not None else None,
         links=parse_link_events(kern) if kern is not None else None,
         roams=parse_roam_events(kern) if kern is not None else None,
+        assoc_losses=parse_assoc_losses(nm) if nm is not None else None,
         route_iface=iface,
         route_read=route is not None,
         route_wifi=wifi,
@@ -3006,7 +3079,7 @@ def host_net_line(
     else:
         kind = {True: "WIFI", False: "wired", None: "kind unread"}[hn.route_wifi]
         route = f"default route via {hn.route_iface} ({kind})"
-    return f"{eps} | link: {links}{roam_clause(hn)} | {route}"
+    return f"{eps} | link: {links}{roam_clause(hn)}{assoc_loss_clause(hn, rx_periods)} | {route}"
 
 
 def net_dead_spans(

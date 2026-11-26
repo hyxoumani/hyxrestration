@@ -722,6 +722,11 @@
   (`N of them ... (longest silence N s in the one at ..., newest ...)`);
   quote as outages only the episodes the row SPELLS OUT (after `-- the
   rest:`); a loss NM never sampled (11-24 19:51Z, 11 s) is on STREAMRX only.
+  Since 2026-11-26 the row's `N wifi association loss(es) (not roams), M
+  with every stream connection silent ...` clause places such a loss: on
+  the WIRED route it is the mesh node both legs plug into stalling (2 of 2
+  silences 11-24..11-26, 11-19 s, ~12 connections reconnecting each) --
+  the USER's gear, not a route, a venue or the daemon; do not re-trace it.
 - A shared DISK has a tightest tenant too, and on this box it is the
   kubelet: `/` is one btrfs for the archive, the siblings' lakes, Steam and
   the kubelet's image store, and the kubelet evicts pods on

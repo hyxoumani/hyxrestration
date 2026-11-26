@@ -564,6 +564,21 @@ new lease): a dead episode or LOW round overlapping one ends `uplink had no
 path for N min of it (HOSTNET)`, and the dead-tick clause counts the
 instants within 15 s (one flush) of a span. No annotation = no overlap;
 with NetworkManager's journal unread nothing is cross-read.
+Since 2026-11-26 the NetworkManager read also counts WiFi ASSOCIATION
+LOSSES (`device (<iface>): supplicant interface state: completed ->
+disconnected`; a roam goes `completed -> authenticating` and is not one)
+and reads each against the stream's `rx_gap` periods within 30 s
+(`health.assoc_loss_clause`): `1 wifi association loss(es) (not roams), 1
+with every stream connection silent 4 s or more in the same period (11-26
+12:46:15Z 18.7 s) -- the default route is WIRED: if it was then, that is
+the gear both legs share stalling, not the WiFi leg`. Measured: on the
+wired route the WiFi leg carries nothing (6 kB against 18 MB in 20 s), yet
+2 of the 3 losses since 11-23 sit inside the only two whole-path silences
+of those days (11-24 19:51Z 11.1 s, 11-26 12:46Z 18.7 s; the 11-24 09:24Z
+loss cost nothing, `rx_gap` 0.47 s), with no `enp7s0` link event and no
+NetworkManager episode either time. Both legs meet at one mesh node (`ip
+neigh`: four wired neighbours behind `16:4a:95:2d:8f:9f`; the radio
+associates to `10:5a:95:2d:8f:9e/9f`). The gear is the USER's.
 Since 2026-11-25 (mistakes #242) each closed episode is read against the
 stream's `rx_gap` periods (`health.episode_alive_gap`): wholly inside
 measured periods with the longest all-connection silence under 2 s and
