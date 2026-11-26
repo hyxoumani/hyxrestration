@@ -3677,6 +3677,16 @@ def _io_stream_hold(hold: StreamHold | None | str, hot: set[int], judged: set[in
 # for, so the row has no lossy hour to be set from (quiet readings 20:17-20Z:
 # 0.7% out of order, 0 data resends). It names the worst hour of each reading
 # against the window's median hour; set a bar from the first episode it sees.
+#
+# That both shares answer to loss was rehearsed the day it shipped, in a
+# private network namespace (`unshare -Urn`, `tc ... netem loss` on lo, a
+# 210 MB transfer, three runs a rate): out of order / data resent read
+# 0.000% / 0.000% at no loss on 3 of 3, then medians 0.12 / 0.06% at 0.1%
+# loss, 1.15 / 0.37% at 0.5%, 3.56 / 1.92% at 2%, 6.76 / 4.25% at 5%. They
+# are DETECTORS, not gauges: single runs at one rate differ x8, and loopback
+# counts offloaded super-segments. A quiet 0.87% out of order on the real
+# path is therefore this path's own floor (reordering or standing loss), and
+# the reading is the hour against the median, never the share alone.
 HOSTTCP_WINDOW_H = 24
 _NET_RE = re.compile(r" net=([^/\s]+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)(?!/)")
 

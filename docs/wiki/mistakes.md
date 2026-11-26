@@ -5704,7 +5704,12 @@ Format: what happened → root cause → error type → prevention tier
     carried because the daemons here receive. No bar: the one lossy window
     predates the field. The cause of the window itself is NOT established
     (upstream of this box, or a neighbour on the LAN; this host's own
-    traffic is unmeasured for it). 9 tests, 7 mutants red. **Rule: before a
+    traffic is unmeasured for it). That the two shares answer to loss at
+    all was then rehearsed in a private network namespace (`unshare -Urn`,
+    netem loss on lo, 210 MB, 3 runs a rate): 0 / 0 at no loss, medians
+    0.12 / 0.06% at 0.1% loss, 1.15 / 0.37% at 0.5%, 3.56 / 1.92% at 2%,
+    6.76 / 4.25% at 5% -- detectors, not gauges (single runs differ x8).
+    9 tests, 7 mutants red. **Rule: before a
     host-wide counter is named for one cause, difference EVERY sibling
     counter over a quiet minute and see which one is moving it.**
 
