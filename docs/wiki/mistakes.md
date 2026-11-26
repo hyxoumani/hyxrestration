@@ -5678,6 +5678,30 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+249. **2026-11-26 15:08Z -- a run boundary was a 2 h pause, so a restart or a
+    chain inside it was priced as one run and the ETA sat still for six
+    hours** (class: the fix for a symptom left the definition that produced
+    it; #248 resized the run and kept the split). `sweep._prior_run` split
+    `sweep_log` only at a gap over `ETA_RUN_GAP_S`. A chained catch-up
+    (#240, 0 s pause) or a hand restart after an abort (11-26, 40 min) is
+    then ONE run: `prior_series_wall` zips consecutive rows, so every
+    repeated series keeps the LAST pass's wall and the restart's first
+    series is charged the whole pause. Today's prior was the 11-24 chain's
+    second pass (09:11 -> 15:57Z, 6.8 h, a re-walk hours after a 15.5 h
+    catch-up): the progress line read `~146 min left` at 09:04Z, `~251` at
+    11:04Z and `~243` at 15:00Z, its scale climbing x0.38 -> x1.49, and the
+    08:58Z status entry forecast a close at 16-17Z from it (true ~19Z).
+    #248 moves tomorrow's pick to the newest run -- which is today's abort
+    plus restart, the same shape with a 40 min pause on series one. Fixed:
+    a series coming round again starts a new run (a run sweeps each series
+    once: 3,600 and 4,601 rows, 0 repeats on 11-22 and 11-25; the chain's
+    first repeat is row 4,513, 5 s after the last series). Replayed on the
+    Thursday slot the pick is unchanged (the 11-25 run, 11.29 h of walls).
+    2 tests, both red without the split. Advisory only. **Rule: when a fix
+    changes how a thing is MEASURED, re-read how it is DELIMITED -- a size
+    in the right unit over the wrong span is still the wrong run; and a
+    forecast copied from an estimate inherits the estimate's prior.**
+
 248. **2026-11-26 09:05Z -- "the largest run" was measured in rows, and two
     runs chained back to back made the next complete run look like an abort**
     (class: a completeness test in a unit that double-counts under a state

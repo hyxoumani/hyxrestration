@@ -91,6 +91,44 @@ def test_two_chained_runs_do_not_make_the_next_complete_run_look_like_an_abort(t
     assert run[0][1] == T0
 
 
+def test_a_restart_inside_the_run_gap_is_its_own_run_and_charges_no_pause(tmp_path):
+    """2026-11-26: the 06:10Z run aborted at 08:16Z and was restarted by hand
+    at 08:56Z -- 40 min, inside `ETA_RUN_GAP_S`. As one run the restart's
+    first series would be charged the whole pause as its wall, and the walls
+    would mix two passes. A series coming round again starts a new run
+    (mistakes #249)."""
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        _log(store, "A", T0)  # the abort: two series
+        _log(store, "B", T0 + timedelta(seconds=90))
+        restart = T0 + timedelta(minutes=40)
+        for s, off in (("A", 0), ("B", 60), ("C", 2760), ("D", 2761), ("E", 2800)):
+            _log(store, s, restart + timedelta(seconds=off))
+        now = T0 + timedelta(hours=24)
+        run = sweep_mod._prior_run(store, now=now)
+        prior = prior_series_wall(store, now=now)
+    finally:
+        store.close()
+    assert [(s, at) for s, at in run][0] == ("A", restart)
+    assert len(run) == 5
+    # A opens the run and has no wall -- not 40 minutes of one.
+    assert prior == {"B": 60.0, "C": 2700.0, "D": 1.0, "E": 39.0}
+
+
+def test_a_chain_is_priced_by_its_last_pass_alone_when_it_is_the_prior(tmp_path):
+    """The 11-23/24 chain as the ONLY candidate: the second lap is the run,
+    and its first series is not charged the first lap's tail."""
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        for lap in (0, 1):
+            for i, s in enumerate("ABCDE"):
+                _log(store, s, T0 + timedelta(minutes=10 * lap, seconds=60 * i * (2 - lap)))
+        prior = prior_series_wall(store, now=T0 + timedelta(hours=24))
+    finally:
+        store.close()
+    assert prior == {"B": 60.0, "C": 60.0, "D": 60.0, "E": 60.0}
+
+
 def test_prior_falls_back_to_the_largest_run_when_every_run_in_the_window_is_short(tmp_path):
     store = Store(str(tmp_path / "t.duckdb"))
     try:

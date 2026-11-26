@@ -366,7 +366,8 @@ PROGRESS_EVERY = 100
 
 def _prior_run(store, now: datetime | None = None) -> list[tuple[str, datetime]]:
     """`(series, swept_at)` rows of the previous COMPLETE run: the latest run
-    of `sweep_log` rows in the lookback (split at `ETA_RUN_GAP_S`) that is at
+    of `sweep_log` rows in the lookback (split at `ETA_RUN_GAP_S` or at a
+    series coming round again) that is at
     least `ETA_PRIOR_COMPLETE_FRAC` of the largest run there, else the
     largest. Advisory: any read failure returns [], and the readers below
     treat [] as "no prior" rather than as a run that swept nothing."""
@@ -382,25 +383,38 @@ def _prior_run(store, now: datetime | None = None) -> list[tuple[str, datetime]]
         ).fetchall()
     except duckdb.Error:
         return []
+    # A run sweeps each series ONCE (measured on the 11-22 and 11-25 runs:
+    # 3,600 and 4,601 rows, 0 repeats), so a series coming round again is a
+    # new run however short the pause -- the gap alone cannot see a chained
+    # catch-up (0 s, mistakes #240) or a hand restart after an abort (40 min
+    # on 11-26). Left as one run, the walls are the LAST pass's with the
+    # first series charged the whole pause: on 11-26 the prior was the
+    # 11-24 chain's quick second pass (6.8 h after a 15.5 h catch-up) and
+    # the progress line read `~146 min left` at 09:04Z and `~243 min left`
+    # at 15:00Z, its scale climbing x0.38 -> x1.49 (mistakes #249).
     runs: list[list[tuple[str, datetime]]] = []
     cur: list[tuple[str, datetime]] = []
+    seen: set[str] = set()
     for series, at in rows:
-        if cur and (at - cur[-1][1]).total_seconds() > ETA_RUN_GAP_S:
+        if cur and ((at - cur[-1][1]).total_seconds() > ETA_RUN_GAP_S or series in seen):
             runs.append(cur)
             cur = []
+            seen = set()
         cur.append((series, at))
+        seen.add(series)
     if cur:
         runs.append(cur)
     if not runs:
         return []
 
-    # A run's size is the SERIES it covered, not its rows. Two runs chained
-    # back to back (a catch-up that overran its next slot starts again the
-    # second it finishes, mistakes #240) split as ONE run with every series
-    # twice: the 11-23 17:41Z -> 11-24 15:57Z chain was 9,031 rows over 4,518
-    # series, so the row floor was 7,225 and the complete 11-25 run (4,601)
-    # read as an abort -- three starts printed `vs 4518 swept last run (ended
-    # 11-24 15:57Z)` and today's `+273 new` was about 190 (mistakes #248).
+    # A run's size is the SERIES it covered, not its rows. Before the split
+    # above knew a repeat, two runs chained back to back (mistakes #240) were
+    # ONE run with every series twice: the 11-23 17:41Z -> 11-24 15:57Z chain
+    # was 9,031 rows over 4,518 series, so the row floor was 7,225 and the
+    # complete 11-25 run (4,601) read as an abort -- three starts printed `vs
+    # 4518 swept last run (ended 11-24 15:57Z)` and today's `+273 new` was
+    # about 190 (mistakes #248). Kept: rows and series are the same number
+    # only while the split holds.
     def size(r: list[tuple[str, datetime]]) -> int:
         return len({s for s, _ in r})
 
