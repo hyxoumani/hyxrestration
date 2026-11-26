@@ -242,7 +242,7 @@ def test_cycle_line_renders_filesystem_free_bytes(tmp_path):
 def test_cycle_line_renders_host_io_stall(tmp_path):
     """The HOSTIO digest row differences this field; bump it and the line moves."""
     base = collect.cycle_line({"a": 1}, {"b": 2}, 0, {}, 1, 9001643239)
-    assert base.endswith("io_full_us=9001643239")
+    assert "io_full_us=9001643239 " in base
     assert collect.cycle_line({"a": 1}, {"b": 2}, 0, {}, 1, 9001643240) != base
     assert "io_full_us=None" in collect.cycle_line({}, {}, 0, {}, None, None)
     psi = tmp_path / "io"
@@ -254,3 +254,50 @@ def test_cycle_line_renders_host_io_stall(tmp_path):
     assert collect.io_full_us(str(tmp_path / "absent")) is None
     psi.write_text("some avg10=0.00 total=5\n")  # a kernel without the `full` line
     assert collect.io_full_us(str(psi)) is None
+
+
+def test_cycle_line_renders_net_counters(tmp_path):
+    """The HOSTTCP digest row differences this field (#95: bump it and the
+    line moves), and the helper reads the lowest-metric default route."""
+    args = ({"a": 1}, {"b": 2}, 0, {}, 1, 2)
+    base = collect.cycle_line(*args, "enp7s0/10/20/30/4/3/50/6")
+    assert base.endswith(" net=enp7s0/10/20/30/4/3/50/6")
+    assert collect.cycle_line(*args, "enp7s0/10/20/30/5/3/50/6") != base
+    assert collect.cycle_line(*args).endswith(" net=None")
+
+    route = tmp_path / "route"
+    head = "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+    route.write_text(
+        head
+        + "wlp6s0\t00000000\tFEFEA8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n"
+        + "enp7s0\t00000000\tFEFEA8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+        + "enp7s0\t00FEA8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
+    )
+    assert collect.default_route_iface(str(route)) == "enp7s0"
+    snmp = tmp_path / "snmp"
+    snmp.write_text(
+        "Ip: Forwarding DefaultTTL\nIp: 1 64\n"
+        "Tcp: RtoAlgorithm InSegs OutSegs RetransSegs\nTcp: 1 520244353 374883073 673770\n"
+    )
+    netstat = tmp_path / "netstat"
+    netstat.write_text(
+        "TcpExt: SyncookiesSent TCPOFOQueue TCPSynRetrans\nTcpExt: 0 4759932 666889\n"
+        "IpExt: InNoRoutes\nIpExt: 0\n"
+    )
+    stats = tmp_path / "net" / "enp7s0" / "statistics"
+    stats.mkdir(parents=True)
+    (stats / "rx_bytes").write_text("178215346943\n")
+    (stats / "tx_bytes").write_text("26956192752\n")
+    paths = (str(snmp), str(route), str(tmp_path / "net"), str(netstat))
+    got = collect.net_counters(*paths)
+    assert got == "enp7s0/178215346943/26956192752/374883073/673770/666889/520244353/4759932"
+    # A kernel without the SYN-retry counter, no default route, or an
+    # interface with no counters: None, never zeros.
+    netstat.write_text("TcpExt: TCPOFOQueue\nTcpExt: 5\n")
+    assert collect.net_counters(*paths) is None
+    netstat.write_text("TcpExt: TCPOFOQueue TCPSynRetrans\nTcpExt: 5 6\n")
+    assert collect.net_counters(*paths) is not None
+    route.write_text(head)
+    assert collect.net_counters(*paths) is None
+    route.write_text(head + "tun0\t00000000\t0\t3\t0\t0\t50\t00000000\t0\t0\t0\n")
+    assert collect.net_counters(*paths) is None

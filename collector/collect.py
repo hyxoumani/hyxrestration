@@ -390,6 +390,79 @@ def io_full_us(path: str = IO_PRESSURE) -> int | None:
     return None
 
 
+NET_SNMP = "/proc/net/snmp"
+NET_ROUTE = "/proc/net/route"
+NET_NETSTAT = "/proc/net/netstat"
+NET_SYS = "/sys/class/net"
+
+
+def default_route_iface(route: str = NET_ROUTE) -> str | None:
+    """The interface of the default route with the lowest metric (the one the
+    kernel sends new traffic through), or `None`."""
+    best: tuple[int, str] | None = None
+    try:
+        with open(route) as f:
+            for line in f.readlines()[1:]:
+                p = line.split()
+                if len(p) >= 8 and p[1] == "00000000" and p[7] == "00000000":
+                    cand = (int(p[6]), p[0])
+                    if best is None or cand < best:
+                        best = cand
+    except (OSError, ValueError):
+        return None
+    return best[1] if best else None
+
+
+def _proc_net_table(path: str, prefix: str) -> dict[str, int]:
+    """One `Prefix: names` / `Prefix: values` pair of a /proc/net file."""
+    with open(path) as f:
+        rows = [line.split() for line in f if line.startswith(prefix)]
+    return {k: int(v) for k, v in zip(rows[0][1:], rows[1][1:], strict=True)}
+
+
+def net_counters(
+    snmp: str = NET_SNMP,
+    route: str = NET_ROUTE,
+    sysnet: str = NET_SYS,
+    netstat: str = NET_NETSTAT,
+) -> str | None:
+    """`<iface>/<rx bytes>/<tx bytes>/<segments sent>/<resent>/<SYN retries>/
+    <segments received>/<received out of order>`: the default route's
+    interface with its lifetime byte counters and the host's lifetime TCP
+    counters (`OutSegs`, `RetransSegs`, `TCPSynRetrans`, `InSegs`,
+    `TCPOFOQueue`), or `None` when any part cannot be read. Counters, not
+    rates: the digest differences two cycles (`collector.health` HOSTTCP), as
+    it does `io_full_us`.
+
+    2026-11-26 16:30-18:22Z: 45 keepalive timeouts on 20 stream connections
+    of BOTH venues and a receive-lag p99 of 3-30 s with the median untouched,
+    on the wired route, with no link event and the event loop on time. "The
+    path was lossy" was an inference from who timed out; nothing on this box
+    had kept the numbers that say it. The interface is named because a route
+    change makes two series.
+
+    SYN retries ride apart because `RetransSegs` alone is not the path:
+    measured the same day on a quiet path, 104 of 104 resends in 45 s were
+    SYNs to a peer that never answers (the kubelet dialling a control plane
+    that is down, ~140 a minute), which is a constant, not a loss. And the
+    daemons here RECEIVE for a living, so the inbound side is the out-of-order
+    count: a segment lost on the way in queues every one behind it."""
+    iface = default_route_iface(route)
+    if iface is None:
+        return None
+    try:
+        rx = int(Path(sysnet, iface, "statistics", "rx_bytes").read_text())
+        tx = int(Path(sysnet, iface, "statistics", "tx_bytes").read_text())
+        tcp = _proc_net_table(snmp, "Tcp:")
+        ext = _proc_net_table(netstat, "TcpExt:")
+        return (
+            f"{iface}/{rx}/{tx}/{tcp['OutSegs']}/{tcp['RetransSegs']}/{ext['TCPSynRetrans']}"
+            f"/{tcp['InSegs']}/{ext['TCPOFOQueue']}"
+        )
+    except (OSError, ValueError, KeyError, IndexError):
+        return None
+
+
 def cycle_line(
     counts,
     db_counts,
@@ -397,6 +470,7 @@ def cycle_line(
     timings: dict,
     fs_free_b: int | None,
     io_full: int | None = None,
+    net: str | None = None,
 ) -> str:
     """The one cycle summary line; everything the journal knows about a cycle
     is rendered HERE (#95: one renderer per block). `spooled=` prints every
@@ -404,7 +478,8 @@ def cycle_line(
     is one nobody can tell apart from a dead one (#46)."""
     return (
         f"[collect] {datetime.now(UTC).isoformat()} {counts} db={db_counts} "
-        f"spooled={drained} timings={timings} fs_free_b={fs_free_b} io_full_us={io_full}"
+        f"spooled={drained} timings={timings} fs_free_b={fs_free_b} io_full_us={io_full} "
+        f"net={net}"
     )
 
 
@@ -533,7 +608,17 @@ def main() -> None:
             "close_s": round(time.monotonic() - t_close, 1),
             "total_s": round(time.monotonic() - t0, 1),
         }
-        print(cycle_line(counts, db_counts, drained, timings, fs_free_bytes(args.db), io_full_us()))
+        print(
+            cycle_line(
+                counts,
+                db_counts,
+                drained,
+                timings,
+                fs_free_bytes(args.db),
+                io_full_us(),
+                net_counters(),
+            )
+        )
         # After the cycle's own line and outside every lock: the as-written
         # size of each closed raw frame file, before the sibling's
         # recompressor rewrites it in place (mistakes #188). A stat and six

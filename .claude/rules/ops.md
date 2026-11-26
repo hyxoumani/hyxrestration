@@ -1167,3 +1167,18 @@
   row before chasing a STREAMHOLD step or a SHADOWHOLD `BEYOND THE
   ARCHIVE`; `UNMEASURED` hours are not quiet hours, and a full suite run
   (~15 min) is itself a disk tenant the stream pays for.
+- A stall on SOME connections with the median lag untouched (STREAMPING
+  timeouts on many connections of both venues, STREAMLAG `stalled tail`,
+  STREAMRX clean, `loop_lag` on time) is loss on the path, and since
+  2026-11-26 the digest's `HOSTTCP` row carries the host's side of it by
+  clock hour from the collector's `net=` field: arrivals out of order over
+  segments received (inbound; 0.87% on a quiet path), data segments resent
+  over segments sent, and the interface's MB/s (a tenant of THIS box
+  saturating the link shows there). SYN retries are printed apart and are
+  not loss: ~140 a minute are the kubelet dialling the dead control plane
+  (mistakes #250). No bar is set -- the 11-26 16:30-18:22Z window predates
+  the field; set one from the first lossy hour the row sees. An interval
+  across a route change is dropped, and the row names both interfaces.
+  NetworkManager's `CONNECTED_SITE/LOCAL` blips flip the default route to
+  WiFi for 3-51 s and back; 34 of 38 in 72 h cost no timeout -- do not
+  re-trace the flip as a cause.

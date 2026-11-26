@@ -3654,6 +3654,166 @@ def _io_stream_hold(hold: StreamHold | None | str, hot: set[int], judged: set[in
     )
 
 
+# --- HOSTTCP: the path's loss, from the collector's `net=` ---------------------
+# 2026-11-26 16:30-18:22Z: 45 keepalive timeouts on 20 stream connections of
+# both venues, receive-lag p99 3-30 s with the median untouched, on the wired
+# route with no link event, the loop on time, no whole-path silence (STREAMRX
+# clean) and NetworkManager's four probe blips of those hours no different in
+# kind from the 30 before them that cost nothing. Every row said what the loss
+# was not. The collector now prints the default route's interface with its
+# byte counters and the host's TCP counters on its 5-min line; this row
+# differences them by clock hour into three readings:
+#   - arrivals out of order, as a share of segments received: the inbound
+#     side, which is the side daemons that receive for a living lose on;
+#   - segments resent that were NOT SYN retries, as a share of segments sent;
+#   - SYN retries, counted apart: a peer that never answers (measured that
+#     day: the kubelet dialling a dead control plane, 104 of 104 resends in a
+#     quiet 45 s) is a constant, and folded in it would have been the row;
+# and the bytes the interface carried meanwhile (a tenant of this box
+# saturating the link shows there; a neighbour on the LAN does not). The
+# counters are the HOST's, every tenant's connections together.
+#
+# No verdict bar: the field shipped after the one lossy window it was built
+# for, so the row has no lossy hour to be set from (quiet readings 20:17-20Z:
+# 0.7% out of order, 0 data resends). It names the worst hour of each reading
+# against the window's median hour; set a bar from the first episode it sees.
+HOSTTCP_WINDOW_H = 24
+_NET_RE = re.compile(r" net=([^/\s]+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)(?!/)")
+
+#: (epoch_s, iface, rx bytes, tx bytes, segments sent, resent, SYN retries,
+#: segments received, received out of order) -- lifetime counters.
+NetSample = tuple[float, str, int, int, int, int, int, int, int]
+
+
+@dataclass(frozen=True)
+class NetHour:
+    """One clock hour's share of the intervals that crossed it."""
+
+    sent: float = 0.0
+    data_resent: float = 0.0
+    syn_retries: float = 0.0
+    received: float = 0.0
+    out_of_order: float = 0.0
+    rx_bytes: float = 0.0
+    span_s: float = 0.0
+
+
+def parse_net_series(stdout: str) -> list[NetSample]:
+    """One sample per collector cycle line carrying `net=<iface>/...`, oldest
+    first. `net=None` is skipped."""
+    out: list[NetSample] = []
+    for ts, rec in _journal_json(stdout):
+        msg = rec.get("MESSAGE")
+        m = _NET_RE.search(msg) if isinstance(msg, str) else None
+        if m is not None:
+            out.append((ts, m.group(1), *(int(g) for g in m.groups()[1:])))
+    return sorted(out)
+
+
+def read_net_series(hours: int = HOSTTCP_WINDOW_H) -> list[NetSample] | None:
+    text = _journal_hourly(
+        [
+            "-u",
+            COLLECT_UNIT,
+            "--grep= net=",
+            "-o",
+            "json",
+            "--output-fields=MESSAGE,__REALTIME_TIMESTAMP",
+        ],
+        hours,
+    )
+    return parse_net_series(text) if text is not None else None
+
+
+def net_by_hour(samples: list[NetSample]) -> dict[int, NetHour]:
+    """epoch hour -> that hour's counts, each interval spread evenly over the
+    clock hours it crosses. An interval whose interface changed, or in which
+    any counter went DOWN (a reboot, an interface re-created), is unmeasured:
+    two paths are not one series. Pure."""
+    out: dict[int, NetHour] = {}
+    for a, b in zip(samples, samples[1:], strict=False):
+        t0, t1 = a[0], b[0]
+        if t1 <= t0 or a[1] != b[1] or any(y < x for x, y in zip(a[2:], b[2:], strict=True)):
+            continue
+        rx, _tx, sent, resent, syn, recv, ofo = (y - x for x, y in zip(a[2:], b[2:], strict=True))
+        t = t0
+        while t < t1:
+            hour = int(t) // 3600
+            end = min(t1, (hour + 1) * 3600.0)
+            f = (end - t) / (t1 - t0)
+            h = out.get(hour, NetHour())
+            out[hour] = NetHour(
+                h.sent + sent * f,
+                h.data_resent + max(0, resent - syn) * f,
+                h.syn_retries + syn * f,
+                h.received + recv * f,
+                h.out_of_order + ofo * f,
+                h.rx_bytes + rx * f,
+                h.span_s + (end - t),
+            )
+            t = end
+    return out
+
+
+def _worst_vs_median(by_hour: dict[int, float], unit: str) -> str:
+    """`worst hour <when> <share> <unit> (xN the median hour's <share>)`."""
+    vals = sorted(by_hour.values())
+    med = vals[len(vals) // 2]
+    top = max(by_hour, key=lambda h: by_hour[h])
+    times = f"x{by_hour[top] / med:.1f} the median hour's {med:.3%}" if med > 0 else "median 0"
+    when = f"{datetime.fromtimestamp(top * 3600, UTC):%m-%d %HZ}"
+    return f"worst hour {when} {by_hour[top]:.3%} {unit} ({times})"
+
+
+def host_tcp_line(samples: list[NetSample] | None, hours: int = HOSTTCP_WINDOW_H) -> str:
+    """Render the window. Unmeasured is said, never printed as a clean path."""
+    if samples is None:
+        return f"{hours}h: journal unreadable"
+    by_hour = net_by_hour(samples)
+    span = sum(h.span_s for h in by_hour.values())
+    sent = sum(h.sent for h in by_hour.values())
+    recv = sum(h.received for h in by_hour.values())
+    if span <= 0 or sent <= 0 or recv <= 0:
+        return (
+            f"{hours}h: host TCP loss UNMEASURED -- {len(samples)} collector cycle line(s) "
+            "carry net= (two on one interface are one interval; the collector prints it from "
+            "the promote that shipped it)"
+        )
+    ofo = sum(h.out_of_order for h in by_hour.values())
+    resent = sum(h.data_resent for h in by_hour.values())
+    syn = sum(h.syn_retries for h in by_hour.values())
+    ifaces = sorted({s[1] for s in samples})
+    route = (
+        f"on {ifaces[0]}"
+        if len(ifaces) == 1
+        else f"on {', '.join(ifaces)} (the route CHANGED: the hours are not one path)"
+    )
+    head = (
+        f"{hours}h, {span / 3600:.1f} h measured {route}: {ofo:,.0f} of {recv:,.0f} TCP "
+        f"segments received arrived out of order ({ofo / recv:.3%}); {resent:,.0f} of "
+        f"{sent:,.0f} sent were resent ({resent / sent:.3%}), SYN retries apart "
+        f"({syn:,.0f} = {syn / span * 60:.0f}/min to a peer that did not answer: not path loss)"
+    )
+    judged = {
+        k: h
+        for k, h in by_hour.items()
+        if h.span_s >= HOSTIO_MIN_HOUR_S and h.sent > 0 and h.received > 0
+    }
+    if len(judged) < 2:
+        return f"{head} | under 2 clock hours with {HOSTIO_MIN_HOUR_S / 60:.0f} min measured yet"
+    rates = {k: h.rx_bytes / h.span_s / 1e6 for k, h in judged.items()}
+    med_rx = sorted(rates.values())[len(rates) // 2]
+    worst_in = max(judged, key=lambda k: judged[k].out_of_order / judged[k].received)
+    return (
+        f"{head} | inbound: "
+        f"{_worst_vs_median({k: h.out_of_order / h.received for k, h in judged.items()}, 'out of order')}"
+        f" at {rates[worst_in]:.2f} MB/s received against a median {med_rx:.2f} | outbound: "
+        f"{_worst_vs_median({k: h.data_resent / h.sent for k, h in judged.items()}, 'resent')}"
+        f" | {len(judged)} hour(s) judged, no bar set: every tenant's connections together, "
+        "and no lossy hour has been measured yet"
+    )
+
+
 def hourly_ceilings(samples: list[tuple[float, int]]) -> list[tuple[float, int]]:
     """Each clock hour's MAXIMUM free reading with the instant it was taken,
     oldest first: the sample with the fewest temporaries present. Pure."""
@@ -6243,6 +6403,10 @@ def main() -> None:
     )
     print(
         f"{'HOSTIO':<10} {'(host)':<{width}}  {host_io_line(read_io_full_series(), stream_hold)}",
+        flush=True,
+    )
+    print(
+        f"{'HOSTTCP':<10} {'(host)':<{width}}  {host_tcp_line(read_net_series())}",
         flush=True,
     )
     print(

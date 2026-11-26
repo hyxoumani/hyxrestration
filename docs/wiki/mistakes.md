@@ -5678,6 +5678,36 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+250. **2026-11-26 20:32Z -- two hours of per-connection stream stalls on the
+    wired route had no row that said what they WERE, and the first counter
+    picked for one measured a dead peer** (class: an instrument named for a
+    quantity and fed a counter that sums two populations, #94's shape; caught
+    by a quiet baseline before the ship). 16:30-18:22Z: 45 keepalive
+    timeouts on 20 connections of both venues (`kalshi-ticker` 17),
+    `rx_lag` p99 3-30 s with the median at 0.02-0.04 s, `rx_gap` never past
+    3.76 s, `loop_lag` under 0.5 s, no link event. HOSTNET filed the four
+    NetworkManager blips inside it as probe noise -- correctly: tabulated
+    over 72 h, 34 of 38 such episodes (each one a default-route flip to
+    WiFi and back, 3-51 s) carried 0 timeouts, and the four that carried
+    any sit inside this window with timeouts before and after them too. So
+    every row said what the loss was not, and "the path was lossy" stayed
+    an inference from who timed out. The collector's 5-min line now carries
+    `net=<iface>/<rx b>/<tx b>/<OutSegs>/<RetransSegs>/<TCPSynRetrans>/
+    <InSegs>/<TCPOFOQueue>` and the digest's `HOSTTCP` row differences it by
+    clock hour. The first cut shipped `RetransSegs / OutSegs` alone; a
+    45 s read of every kernel TCP counter on the quiet path showed 104 of
+    104 resends were SYN retries (`TCPSynRetrans`) to `192.168.1.50:6443`,
+    the kubelet dialling a control plane that is down (#193) -- ~140 a
+    minute, 666,889 of the boot's 674,390 resends. Folded in, the row would
+    have been that constant. So SYN retries ride apart, and the inbound
+    side (out-of-order arrivals over segments received; 0.87% quiet) is
+    carried because the daemons here receive. No bar: the one lossy window
+    predates the field. The cause of the window itself is NOT established
+    (upstream of this box, or a neighbour on the LAN; this host's own
+    traffic is unmeasured for it). 9 tests, 7 mutants red. **Rule: before a
+    host-wide counter is named for one cause, difference EVERY sibling
+    counter over a quiet minute and see which one is moving it.**
+
 249. **2026-11-26 15:08Z -- a run boundary was a 2 h pause, so a restart or a
     chain inside it was priced as one run and the ETA sat still for six
     hours** (class: the fix for a symptom left the definition that produced

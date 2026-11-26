@@ -2554,6 +2554,114 @@ def test_host_io_line_does_not_judge_an_hour_on_one_interval():
     assert "50.00%" in line and "no clock hour with 15 min measured yet" in line
 
 
+# --- HOSTTCP: host TCP loss by hour, from the collector's `net=` -------------
+# sample: (ts, iface, rx_b, tx_b, sent, resent, syn retries, received, out of order)
+
+
+def _net_journal(samples):
+    return "\n".join(
+        json.dumps(
+            {
+                "__REALTIME_TIMESTAMP": str(int(s[0] * 1e6)),
+                "MESSAGE": f"[collect] x io_full_us=5 net={'/'.join(str(v) for v in s[1:])}",
+            }
+        )
+        for s in samples
+    )
+
+
+def test_net_series_parses_and_skips_none_and_other_shapes():
+    a, b = (6900.0, "enp7s0", 1, 2, 3, 4, 5, 6, 7), (7200.0, "enp7s0", 9, 8, 7, 6, 5, 6, 7)
+    text = _net_journal([b, a])
+    for msg in (
+        "[collect] x net=None",
+        "[collect] x net=enp7s0/1/2/3/4",
+        "x net=e/1/2/3/4/5/6/7/8",
+    ):
+        text += "\n" + json.dumps({"__REALTIME_TIMESTAMP": "1", "MESSAGE": msg})
+    assert health.parse_net_series(text) == [a, b]
+
+
+def test_net_by_hour_splits_at_the_hour_edge_and_takes_syn_retries_out():
+    by_hour = health.net_by_hour(
+        [(3300.0, "e", 0, 0, 0, 0, 0, 0, 0), (3900.0, "e", 6000, 0, 1000, 50, 40, 2000, 20)]
+    )
+    half = health.NetHour(500.0, 5.0, 20.0, 1000.0, 10.0, 3000.0, 300.0)
+    assert by_hour == {0: half, 1: half}
+
+
+def test_net_by_hour_drops_route_changes_and_resets():
+    # The route moved to WiFi and back, then the box rebooted: only an
+    # interval on one interface with rising counters is one path's reading.
+    by_hour = health.net_by_hour(
+        [
+            (0.0, "e", 100, 0, 100, 1, 0, 100, 0),
+            (300.0, "w", 900, 0, 200, 2, 0, 200, 0),
+            (600.0, "w", 1900, 0, 300, 4, 1, 400, 8),
+            (900.0, "e", 5000, 0, 400, 5, 1, 500, 9),
+            (1200.0, "e", 5, 0, 3, 0, 0, 2, 0),
+        ]
+    )
+    assert by_hour == {0: health.NetHour(100.0, 1.0, 1.0, 200.0, 8.0, 1000.0, 300.0)}
+
+
+def test_host_tcp_line_unmeasured_never_reads_as_clean():
+    one = (0.0, "e", 1, 1, 1, 1, 0, 1, 0)
+    assert "journal unreadable" in health.host_tcp_line(None)
+    for samples in ([], [one], [one, (300.0, "w", 2, 2, 2, 2, 0, 2, 0)]):
+        line = health.host_tcp_line(samples)
+        assert "UNMEASURED" in line and "%" not in line
+
+
+def _hourly_net(ofo_shares, resent_shares=None, iface="enp7s0", syn=700):
+    """5-min samples over len(shares) clock hours: per interval 100k segments
+    sent, 200k received, 600 MB in, `syn` SYN retries, the given shares
+    received out of order / resent (SYN retries on top)."""
+    resent_shares = resent_shares or [0.0] * len(ofo_shares)
+    s = [0.0, iface, 0, 0, 0, 0, 0, 0, 0]
+    samples = [tuple(s)]
+    for ofo, res in zip(ofo_shares, resent_shares, strict=True):
+        for _ in range(12):
+            s[0] += 300.0
+            s[2] += 600_000_000
+            s[4] += 100_000
+            s[5] += int(res * 100_000) + syn
+            s[6] += syn
+            s[7] += 200_000
+            s[8] += int(ofo * 200_000)
+            samples.append(tuple(s))
+    return samples
+
+
+def test_host_tcp_line_names_the_worst_hour_of_each_side_against_the_median():
+    line = health.host_tcp_line(_hourly_net([0.007, 0.05, 0.007], [0.0001, 0.0001, 0.003]))
+    assert "3.0 h measured on enp7s0" in line
+    assert "153,600 of 7,200,000 TCP segments received arrived out of order (2.133%)" in line
+    assert "3,840 of 3,600,000 sent were resent (0.107%), SYN retries apart" in line
+    assert "(25,200 = 140/min to a peer that did not answer: not path loss)" in line
+    assert (
+        "inbound: worst hour 01-01 01Z 5.000% out of order (x7.1 the median hour's 0.700%)" in line
+    )
+    assert "at 2.00 MB/s received against a median 2.00" in line
+    assert "outbound: worst hour 01-01 02Z 0.300% resent (x30.0 the median hour's 0.010%)" in line
+    # Perturbation: a clean hour moves each side's figure, and the SYN
+    # retries alone never read as resends.
+    calm = health.host_tcp_line(_hourly_net([0.007] * 3))
+    assert "5.000%" not in calm and "0 of 3,600,000 sent were resent (0.000%)" in calm
+    assert "0.000% resent (median 0)" in calm
+    assert health.host_tcp_line(_hourly_net([0.007] * 3, syn=0)) != calm
+    # A window that crossed a route change says the hours are two paths.
+    mixed = _hourly_net([0.007, 0.007]) + [
+        (s[0] + 7200.0, *s[1:]) for s in _hourly_net([0.03, 0.03], iface="wlp6s0")
+    ]
+    assert "on enp7s0, wlp6s0 (the route CHANGED" in health.host_tcp_line(mixed)
+
+
+def test_host_tcp_line_does_not_judge_on_one_hour():
+    line = health.host_tcp_line(_hourly_net([0.01]))
+    assert "under 2 clock hours with 15 min measured yet" in line and "worst hour" not in line
+
+
 def test_stream_hold_files_each_line_under_its_periods_hour():
     lines = [
         # stamped 2 min into 11Z: the period's middle is in 10Z
