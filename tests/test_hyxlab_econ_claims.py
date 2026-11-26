@@ -366,3 +366,18 @@ def test_watch_exits_1_on_a_recent_loss_and_never_replays(monkeypatch, capsys):
     # The same sample a fortnight on: the loss stands in the count, the unit is green.
     assert rec.watch("nope.duckdb", today=date(2026, 12, 8)) == 0
     assert "1 lost for good" in capsys.readouterr().out
+
+
+def test_loss_advice_sends_only_a_missing_snapshot_to_the_collector():
+    # 2026-11-26 03:52Z: both 11-25 events (a Wednesday close for Thanksgiving)
+    # were lost to the registered anchor date and the line blamed the collector,
+    # which had captured the window.
+    from simulator.run_econ_claims import NO_SNAPSHOT, loss_advice
+
+    wed, thu = date(2026, 11, 25), date(2026, 11, 19)
+    assert "5-min collector out of" in loss_advice(thu, NO_SNAPSHOT)
+    shifted = loss_advice(wed, "anchor obs 2026-11-14 != 2026-11-13")
+    assert "NOT the collector" in shifted and "closed on a Wednesday" in shifted
+    stale = loss_advice(thu, "anchor obs 2026-10-31 != 2026-11-07")
+    assert "NOT the collector" in stale and "Wednesday" not in stale and "holiday" not in stale
+    assert "NOT the collector" in loss_advice(thu, "history 12 < 53")

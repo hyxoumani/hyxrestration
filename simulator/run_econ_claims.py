@@ -110,7 +110,7 @@ def scorable_events(
             out[ev] = {"scorable": False, "why": "not settled"}
             continue
         if not quoted:
-            out[ev] = {"scorable": False, "why": "no snapshot in decision window"}
+            out[ev] = {"scorable": False, "why": NO_SNAPSHOT}
             continue
         ts = min(in_window[(i.venue, i.market_id)] for i in quoted)
         model, why = fit_model(fv.econ_series_asof(pair.series_id, ts, HIST_N), ev, pair)
@@ -274,6 +274,26 @@ def watch_line(name: str, w: dict) -> str:
     return f"[econ-claims] watch {name}: {'; '.join(parts)}; {tail}"
 
 
+NO_SNAPSHOT = "no snapshot in decision window"
+
+
+def loss_advice(ev: date, why: str) -> str:
+    """Where to look for a loss, by its REASON. Only a missing snapshot is
+    the collector's; until 2026-11-26 every loss was sent there, including
+    the 11-25 pair, which the collector captured and the registered anchor
+    rule excluded (a Wednesday close for Thanksgiving: `D - offset - 7d` is
+    a Friday, the prior print's week ends on the Saturday)."""
+    if why == NO_SNAPSHOT:
+        return "find what kept the 5-min collector out of [close-60min, close-50min]"
+    if why.startswith("anchor obs") and ev.weekday() != 3:
+        return (
+            f"NOT the collector: the event closed on a {ev:%A}, not the usual Thursday (a "
+            "holiday-shifted release), and the registered anchor date is exact -- lost by the "
+            "registration, no rescue"
+        )
+    return "NOT the collector: the reason is in the vintage table or the registered rule, read it"
+
+
 def watch(db: str, today: date | None = None) -> int:
     """Both pairs' sample; 1 while a loss is younger than RECENT_LOSS_DAYS."""
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -298,7 +318,7 @@ def watch(db: str, today: date | None = None) -> int:
         for ev, why in w["recent_lost"]:
             lost_lines.append(
                 f"[econ-claims] LOST {name} {ev}: {why} -- unrecoverable, the registered read "
-                "slips a week; find what kept the 5-min collector out of [close-60min, close-50min]"
+                f"slips a week; {loss_advice(ev, why)}"
             )
     print(attach_wait_line(attach_wait_block(db=Path(src).name), prefix="[econ-claims]"))
     for line in lines + lost_lines:  # a loss is the unit's LAST line: the digest quotes it
