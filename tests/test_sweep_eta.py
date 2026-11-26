@@ -71,6 +71,26 @@ def test_prior_is_the_latest_complete_run_not_yesterdays_abort(tmp_path):
     assert sweep_mod.ETA_PRIOR_LOOKBACK_H >= 72  # three daily slots, not one
 
 
+def test_two_chained_runs_do_not_make_the_next_complete_run_look_like_an_abort(tmp_path):
+    """2026-11-23/24: a catch-up run and the slot it overran ran back to back
+    (no 2 h gap), 9,031 rows over 4,518 series; by rows the 4,601-series 11-25
+    run was under 80% of "the largest" and the stale chain stayed the prior
+    for three starts (mistakes #248)."""
+    store = Store(str(tmp_path / "t.duckdb"))
+    try:
+        chain = T0 - timedelta(hours=30)
+        for lap in (0, 1):  # the same five series twice, 10 min apart
+            for i, s in enumerate("ABCDE"):
+                _log(store, s, chain + timedelta(minutes=10 * lap, seconds=60 * i))
+        for i, s in enumerate("ABCDE"):  # yesterday: one complete run
+            _log(store, s, T0 + timedelta(seconds=60 * i))
+        run = sweep_mod._prior_run(store, now=T0 + timedelta(hours=24))
+    finally:
+        store.close()
+    assert [s for s, _ in run] == list("ABCDE")
+    assert run[0][1] == T0
+
+
 def test_prior_falls_back_to_the_largest_run_when_every_run_in_the_window_is_short(tmp_path):
     store = Store(str(tmp_path / "t.duckdb"))
     try:

@@ -5678,6 +5678,27 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+248. **2026-11-26 09:05Z -- "the largest run" was measured in rows, and two
+    runs chained back to back made the next complete run look like an abort**
+    (class: a completeness test in a unit that double-counts under a state
+    another fix created). `sweep._prior_run` (#135) splits `sweep_log` at a
+    2 h gap and takes the latest run at least 80% of the largest. On
+    11-23/24 the disk-full catch-up overran its slot and the next run began
+    the second it finished (#240), so the split saw ONE run: 9,031 rows over
+    4,518 series, 11-23 17:41Z -> 11-24 15:57Z. The row floor became 7,225,
+    the complete 11-25 run (4,601 series) fell under it, and three starts
+    (11-25 06:10Z, 11-26 06:10Z and 08:56Z) printed `vs 4518 swept last run
+    (ended 11-24 15:57Z)`: today's `+273 new` was about 190, and the ETA was
+    priced on a catch-up day's walls. It would have healed when the chain
+    left the 78 h lookback (11-27 21:57Z) and returned with the next chain.
+    Fixed: a run's size is its DISTINCT series. Replayed on the Thursday
+    slot the pick is the 11-25 run (4,601 rows, 06:10 -> 17:27Z). 1 test,
+    red without the fix. Advisory only -- no capture was affected. Found by
+    reading the first line of a restarted unit instead of its last. **Rule:
+    a "largest / complete" comparison names the thing that makes a run
+    complete (series covered), never a row count that a retry, a chain or a
+    re-walk inflates.**
+
 247. **2026-11-26 08:16Z -- a breaker whose premise is a duration counted
     events, and half a minute of HTTP 500s deferred 81% of a sweep** (class:
     a threshold calibrated on one incident's SHAPE, expressed in a unit that

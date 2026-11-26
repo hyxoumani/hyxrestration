@@ -393,9 +393,20 @@ def _prior_run(store, now: datetime | None = None) -> list[tuple[str, datetime]]
         runs.append(cur)
     if not runs:
         return []
-    floor = ETA_PRIOR_COMPLETE_FRAC * max(len(r) for r in runs)
-    complete = [r for r in runs if len(r) >= floor]
-    return complete[-1] if complete else max(runs, key=len)
+
+    # A run's size is the SERIES it covered, not its rows. Two runs chained
+    # back to back (a catch-up that overran its next slot starts again the
+    # second it finishes, mistakes #240) split as ONE run with every series
+    # twice: the 11-23 17:41Z -> 11-24 15:57Z chain was 9,031 rows over 4,518
+    # series, so the row floor was 7,225 and the complete 11-25 run (4,601)
+    # read as an abort -- three starts printed `vs 4518 swept last run (ended
+    # 11-24 15:57Z)` and today's `+273 new` was about 190 (mistakes #248).
+    def size(r: list[tuple[str, datetime]]) -> int:
+        return len({s for s, _ in r})
+
+    floor = ETA_PRIOR_COMPLETE_FRAC * max(size(r) for r in runs)
+    complete = [r for r in runs if size(r) >= floor]
+    return complete[-1] if complete else max(runs, key=size)
 
 
 def prior_series_wall(
