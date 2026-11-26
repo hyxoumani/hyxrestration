@@ -718,8 +718,10 @@
   stream received straight through prints `stream received throughout,
   longest silence N s` and excuses nothing (mistakes #242; 7 of 7
   `CONNECTED_SITE` blips on the wired route, real losses were
-  `CONNECTED_LOCAL`). Quote as outages only the episodes WITHOUT that
-  clause; a loss NM never sampled (11-24 19:51Z, 11 s) is on STREAMRX only.
+  `CONNECTED_LOCAL`). Since 2026-11-26 those are counted, not listed
+  (`N of them ... (longest silence N s in the one at ..., newest ...)`);
+  quote as outages only the episodes the row SPELLS OUT (after `-- the
+  rest:`); a loss NM never sampled (11-24 19:51Z, 11 s) is on STREAMRX only.
 - A shared DISK has a tightest tenant too, and on this box it is the
   kubelet: `/` is one btrfs for the archive, the siblings' lakes, Steam and
   the kubelet's image store, and the kubelet evicts pods on

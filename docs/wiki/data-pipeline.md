@@ -573,6 +573,11 @@ throughout: NetworkManager's connectivity probe, not the path`, and it is
 dropped from the spans STREAMFLOW cross-reads. First reading: 7 of 7
 (`CONNECTED_SITE`, 3-51 s, silences 0.28-0.81 s). An episode with no such
 clause is either a real loss or unmeasured (stream down / restart hole).
+Since 2026-11-26 those episodes are COUNTED and no longer listed (15 of 15
+on 11-26 02:15Z printed 2.4k characters of non-outages): the count clause
+carries `(longest silence N s in the one at <when>, newest <when>)` and
+only the others follow, after `-- the rest:`. Every episode the row spells
+out is now one to chase.
 
 **`ENOSPC`: failed writes, and whether the journal was there (since
 2026-11-21, mistakes #222).** One digest row under `HOSTFS`, two clauses.

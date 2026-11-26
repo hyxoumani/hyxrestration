@@ -2939,6 +2939,8 @@ def host_net_line(
             led = 0.0
             alive_n = 0
             alive_s = 0.0
+            alive_worst: tuple[float, float] | None = None
+            alive_last = 0.0
             for e in episodes:
                 a = e.start if e.start is not None else lo
                 b = e.end if e.end is not None else now
@@ -2955,9 +2957,14 @@ def host_net_line(
                     )
                 alive = _episode_alive(e, hn, rx_periods)
                 if alive is not None:
+                    # Counted, not listed: fifteen of these a day buried the
+                    # row's subject, the episode WITHOUT this reading.
                     alive_n += 1
                     alive_s += b - a
-                    span += f"; stream received throughout, longest silence {alive:.2f} s"
+                    if alive_worst is None or alive > alive_worst[0]:
+                        alive_worst = (alive, a)
+                    alive_last = a
+                    continue
                 if e.start is None:
                     parts.append(f"..{z(b)} (>= {span}, began before the window)")
                 elif e.end is None:
@@ -2967,12 +2974,16 @@ def host_net_line(
             tot = f"{total / 60:.1f} min"
             if led:
                 tot += f" by NetworkManager's state, {(total + led) / 60:.1f} min from the roams"
-            if alive_n:
+            if alive_n and alive_worst is not None:
                 tot += (
                     f" -- {alive_n} of them ({alive_s / 60:.1f} min) with the stream receiving "
-                    "throughout: NetworkManager's connectivity probe, not the path"
+                    "throughout: NetworkManager's connectivity probe, not the path (longest "
+                    f"silence {alive_worst[0]:.2f} s in the one at {z(alive_worst[1])}, "
+                    f"newest {z(alive_last)})"
                 )
-            eps = f"{window_h}h: {len(episodes)} offline episode(s), {tot}: " + "; ".join(parts)
+            eps = f"{window_h}h: {len(episodes)} offline episode(s), {tot}"
+            if parts:
+                eps += (" -- the rest: " if alive_n else ": ") + "; ".join(parts)
     if hn.links is None:
         links = "kernel journal UNREAD"
     elif not hn.links:

@@ -287,14 +287,25 @@ def test_an_episode_the_stream_received_through_is_the_probe_not_the_path() -> N
     line = health.host_net_line(_probe_hn(), PROBE_NOW, rx_periods=PROBE_RX)
     assert line.startswith(
         "24h: 2 offline episode(s), 1.3 min -- 2 of them (1.3 min) with the stream receiving "
-        "throughout: NetworkManager's connectivity probe, not the path: "
-        "11-24 17:22:08Z..11-24 17:22:59Z (0.8 min; stream received throughout, "
-        "longest silence 0.30 s, CONNECTED_SITE); "
-        "11-24 23:53:45Z..11-24 23:54:12Z (0.5 min; stream received throughout, "
-        "longest silence 0.81 s, CONNECTED_SITE)"
+        "throughout: NetworkManager's connectivity probe, not the path (longest silence "
+        "0.81 s in the one at 11-24 23:53:45Z, newest 11-24 23:53:45Z) | link: "
     )
     assert health.net_dead_spans(_probe_hn(), PROBE_NOW, rx_periods=PROBE_RX) == []
     assert health._flow_net(_probe_hn(), PROBE_NOW, PROBE_RX) == []
+
+
+def test_probe_episodes_are_counted_and_only_the_rest_are_listed() -> None:
+    # 2026-11-26 02:15Z: fifteen probe episodes printed in full, 2.4k characters
+    # of non-outages. Only the first episode is covered by the stream's series
+    # here, so the second is the one the row must still spell out.
+    line = health.host_net_line(_probe_hn(), PROBE_NOW, rx_periods=PROBE_RX[:1])
+    assert line.startswith(
+        "24h: 2 offline episode(s), 1.3 min -- 1 of them (0.8 min) with the stream receiving "
+        "throughout: NetworkManager's connectivity probe, not the path (longest silence "
+        "0.30 s in the one at 11-24 17:22:08Z, newest 11-24 17:22:08Z) -- the rest: "
+        "11-24 23:53:45Z..11-24 23:54:12Z (0.5 min, CONNECTED_SITE) | link: "
+    )
+    assert "17:22:59Z" not in line
 
 
 def test_without_the_streams_series_the_line_and_the_spans_are_networkmanagers() -> None:
