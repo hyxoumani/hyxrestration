@@ -323,6 +323,7 @@ def test_watch_line_carries_every_field_of_the_summary():
         "lost": [(date(2026, 7, 30), "no snapshot in decision window")],
         "recent_lost": [],
         "pending": [date(2026, 11, 25)],
+        "doomed": [],
         "opens": date(2027, 1, 27),
     }
     line = watch_line("ICSA", base)
@@ -332,6 +333,7 @@ def test_watch_line_carries_every_field_of_the_summary():
         "need": 40,
         "lost": [(date(2026, 8, 6), "history 0 < 53")],
         "pending": [],
+        "doomed": [(date(2026, 11, 25), "closes on a Wednesday")],
         "opens": date(2027, 2, 3),
     }
     for k, v in bumps.items():
@@ -381,3 +383,52 @@ def test_loss_advice_sends_only_a_missing_snapshot_to_the_collector():
     stale = loss_advice(thu, "anchor obs 2026-10-31 != 2026-11-07")
     assert "NOT the collector" in stale and "Wednesday" not in stale and "holiday" not in stale
     assert "NOT the collector" in loss_advice(thu, "history 12 < 53")
+
+
+def test_a_pending_event_closing_off_thursday_is_named_lost_before_it_closes():
+    """The 11-25 pair was listed 11-19 with a Wednesday close; the watch read
+    `1 pending` and dated the read as if it would count (mistakes #246)."""
+    from simulator.run_econ_claims import doomed_by_anchor, watch_line, watch_summary
+    from strategies.econ_claims import CCSA, ICSA, fit_model
+
+    wed, thu = date(2026, 11, 25), date(2026, 12, 3)
+    for pair in (ICSA, CCSA):
+        assert doomed_by_anchor(thu, pair) is None
+        why = doomed_by_anchor(wed, pair)
+        assert why and "Wednesday" in why and "Friday" in why
+        # The forecast is fit_model's own refusal: a perfect Saturday history
+        # ending at the newest print knowable is refused on the anchor.
+        newest = wed - timedelta(days=pair.obs_offset_days + 6)
+        assert newest.weekday() == 5
+        obs = sorted(_vintages(anchor_obs=newest), key=lambda v: v.obs_date, reverse=True)
+        assert obs[0].obs_date == newest
+        model, reason = fit_model(obs, wed, pair)
+        assert model is None and reason.startswith("anchor obs")
+
+    events = {
+        date(2026, 11, 12): _ev(strikes=11),
+        date(2026, 11, 19): _ev(strikes=11),
+        wed: _ev(why="not settled", doomed=doomed_by_anchor(wed, ICSA)),
+    }
+    w = watch_summary(events, date(2026, 11, 24), need=5)
+    assert w["pending"] == [wed] and w["doomed"] == [(wed, events[wed]["doomed"])]
+    # 3 more needed and the pending one will not be one of them: three weeks past it.
+    assert w["opens"] == date(2026, 12, 16)
+    line = watch_line("ICSA", w)
+    assert "1 of them ALREADY LOST" in line and "2026-11-25 closes on a Wednesday" in line
+
+
+def test_scorable_events_marks_an_unsettled_off_thursday_event_doomed(tmp_path):
+    from simulator.run_econ_claims import scorable_events
+    from strategies.econ_claims import ICSA, EconClaimsRW
+
+    def info(mid, close):
+        return MarketInfo("kalshi", mid, series="KXJOBLESSCLAIMS", close_time=close)
+
+    markets = {
+        ("kalshi", "W"): info("W", datetime(2026, 11, 25, 13, 29)),
+        ("kalshi", "T"): info("T", datetime(2026, 12, 3, 13, 29)),
+    }
+    out = scorable_events(markets, [], None, ICSA, EconClaimsRW(pair=ICSA))
+    assert "Wednesday" in out[date(2026, 11, 25)]["doomed"]
+    assert "doomed" not in out[date(2026, 12, 3)]

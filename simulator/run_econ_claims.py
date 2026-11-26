@@ -79,6 +79,26 @@ def decision_window(info: MarketInfo, strat: EconClaimsRW) -> tuple[datetime, da
     return info.close_time - strat.window[0], info.close_time - strat.window[1]
 
 
+#: Every ICSA / CCSA observation date is a week-ending Saturday (3,124 and
+#: 3,123 of the archived obs dates, 2026-11-26), so an anchor date that is not
+#: one can never be matched by `fit_model`.
+OBS_WEEKDAY = 5
+
+
+def doomed_by_anchor(ev: date, pair: ClaimsPair) -> str | None:
+    """Why an event closing on `ev` is ALREADY lost to the registered anchor
+    rule, or None. A date test on the listing alone: the 11-25 pair was
+    listed on 11-19 with a Wednesday close (Thanksgiving) and the watch said
+    `1 pending` for it until the morning after it was lost (mistakes #246)."""
+    want = ev - timedelta(days=pair.obs_offset_days + 7)
+    if want.weekday() == OBS_WEEKDAY:
+        return None
+    return (
+        f"closes on a {ev:%A}, so the registered anchor date {want} is a {want:%A} "
+        "and every print's week ends on a Saturday"
+    )
+
+
 def scorable_events(
     markets: dict[tuple[str, str], MarketInfo],
     snapshots: list[Snapshot],
@@ -108,6 +128,9 @@ def scorable_events(
         quoted = [i for i in infos if (i.venue, i.market_id) in in_window]
         if not settled:
             out[ev] = {"scorable": False, "why": "not settled"}
+            doomed = doomed_by_anchor(ev, pair)
+            if doomed:
+                out[ev]["doomed"] = doomed
             continue
         if not quoted:
             out[ev] = {"scorable": False, "why": NO_SNAPSHOT}
@@ -222,30 +245,36 @@ def watch_summary(events: dict[date, dict], today: date, need: int = MIN_EVENTS)
     never become scorable -- the reason is in the data (no snapshot in the
     window, no vintage history) or the settlement is overdue past
     `SETTLE_GRACE_DAYS`. `opens` assumes one event a week from the newest
-    listed one and no further loss; each new loss moves it a week.
+    listed one and no further loss; each new loss moves it a week. A pending
+    event the anchor rule has already excluded (`doomed`) is still pending --
+    it is lost the day it settles -- but it does not count toward `opens`.
     """
     n = sum(1 for e in events.values() if e["scorable"])
     lost: list[tuple[date, str]] = []
     pending: list[date] = []
+    doomed: list[tuple[date, str]] = []
     grace = today - timedelta(days=SETTLE_GRACE_DAYS)
     for ev, e in sorted(events.items()):
         if e["scorable"]:
             continue
         if e["why"] == "not settled" and ev >= grace:
             pending.append(ev)
+            if e.get("doomed"):
+                doomed.append((ev, e["doomed"]))
         else:
             lost.append((ev, e["why"]))
     recent = [x for x in lost if x[0] >= today - timedelta(days=RECENT_LOSS_DAYS)]
     remaining = max(0, need - n)
     opens = None
     if remaining and events:
-        opens = max(events) + timedelta(days=7 * max(0, remaining - len(pending)))
+        opens = max(events) + timedelta(days=7 * max(0, remaining - (len(pending) - len(doomed))))
     return {
         "scorable": n,
         "need": need,
         "lost": lost,
         "recent_lost": recent,
         "pending": pending,
+        "doomed": doomed,
         "opens": opens,
     }
 
@@ -260,6 +289,12 @@ def watch_line(name: str, w: dict) -> str:
         parts.append("0 lost")
     if w["pending"]:
         parts.append(f"{len(w['pending'])} pending ({', '.join(map(str, w['pending']))})")
+        if w["doomed"]:
+            ev, why = w["doomed"][-1]
+            parts.append(
+                f"{len(w['doomed'])} of them ALREADY LOST to the registration, no rescue "
+                f"({ev} {why})"
+            )
     else:
         parts.append("0 pending")
     if w["scorable"] >= w["need"]:

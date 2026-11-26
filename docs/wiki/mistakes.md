@@ -5678,6 +5678,35 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+246. **2026-11-26 08:50Z -- the watch called an event `pending` for six days
+    after its own listing said the registration would exclude it** (class:
+    a forecast left to the reader's calendar when the archive already holds
+    the deciding fact). #245's rule ended "check the calendar". The archive
+    is the calendar: Kalshi listed the 11-25 claims pair on 11-19 16:15Z /
+    16:30Z with a WEDNESDAY close, and the anchor gate is a pure date test
+    -- `D - offset - 7d` must be an observation date, and all 3,124 ICSA /
+    3,123 CCSA observation dates archived are Saturdays -- so the loss was
+    decided, and readable, six days before it happened. The watch (live
+    since 11-24) printed `1 pending (2026-11-25)` and dated the read as if
+    the event would count; a pass then predicted 17 / 6. Fixed:
+    `run_econ_claims.doomed_by_anchor` marks an unsettled event whose
+    anchor date is not a Saturday, `watch_summary` keeps it pending but out
+    of `opens`, and the line says `1 of them ALREADY LOST to the
+    registration, no rescue (2026-11-25 closes on a Wednesday, so the
+    registered anchor date 2026-11-13 is a Friday ...)`. Replayed on the
+    11-21 slot it prints exactly that for both pairs; on today's slot the
+    12-03 events (Thursday) print as plain pending. The unit still exits 0
+    on a forecast -- it fails for 8 days from the loss itself, as before.
+    Count-only as before: a date test on the listing, no price, no outcome.
+    2 tests, two mutants diffed and red. Christmas and New Year 2026: 12-24
+    and 12-31 are both Thursdays and neither is a federal holiday, so no
+    shift is scheduled by the calendar; a DOL schedule change would show in
+    the listing ~6 days ahead, and the watch now reads it. **Rule: when a
+    rule says "check X before predicting", ask whether the instrument that
+    makes the prediction already holds X -- a gate that is a pure function
+    of data already archived belongs in the instrument's own line, at the
+    moment the data arrives, not in the reader's memory.**
+
 245. **2026-11-26 03:52Z -- a sample loss was predicted away by checking the
     one cause the watch's own line named** (class: an instrument's advice
     hard-codes one cause, and the reader verifies that cause and calls the

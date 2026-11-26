@@ -659,6 +659,9 @@ structure — see [venues](venues.md)).
    Count ICSA 16 / CCSA 5 of 26; the read opens no earlier than
    ~2027-02-04 / ~2027-04-22. Any non-Thursday release week loses its
    event the same way.
+   Since 2026-11-26 the watch names such an event while it is still
+   pending (`N of them ALREADY LOST to the registration`, from the listed
+   close date alone; mistakes #246) and leaves it out of the read date.
    Until then it accumulates on its own; nothing to run.
    **Sample watch, 2026-11-24 (mistakes #241):** "nothing to run" left the
    sample uncounted for 40 days. `python -m simulator.run_econ_claims
