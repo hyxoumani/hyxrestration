@@ -5678,6 +5678,33 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+245. **2026-11-26 03:52Z -- a sample loss was predicted away by checking the
+    one cause the watch's own line named** (class: an instrument's advice
+    hard-codes one cause, and the reader verifies that cause and calls the
+    event safe). The 11-25 12:45Z closing read confirmed the collector ran
+    clean cycles through the claims decision window and predicted the next
+    econwatch line as ICSA 17 / CCSA 6. It read ICSA 16 / CCSA 5 with both
+    11-25 events LOST: `anchor obs 2026-11-14 != 2026-11-13` (CCSA
+    `2026-11-07 != 2026-11-06`). The release moved to Wednesday for
+    Thanksgiving; the registered anchor date is exactly `D - offset - 7d`,
+    which from a Wednesday close is a Friday, and the prior print's week
+    ends on the Saturday. The collector captured the window; the
+    REGISTRATION excludes the event, and it stays excluded (no rescue: an
+    anchor rule relaxed after seeing which event it admits is a parameter
+    chosen on the data). The LOST line still ended `find what kept the
+    5-min collector out of [close-60min, close-50min]`, because that was
+    the only loss the line's author had seen. Fixed (eeeb74c):
+    `run_econ_claims.loss_advice` branches on the reason -- only `no
+    snapshot in decision window` is sent to the collector; an anchor
+    mismatch on a non-Thursday close says holiday-shifted release, lost by
+    the registration. The read slips a week on both pairs (ICSA
+    ~2027-02-04, CCSA ~2027-04-22). **Rule: a scorable event has several
+    gates (settled, quoted in the window, anchor date, history); before
+    predicting a count, walk every gate for the coming event, not the one
+    that failed last time. Any week whose release is not a Thursday fails
+    the anchor gate by construction -- check the calendar (next candidates:
+    the Christmas and New Year weeks).**
+
 244. **2026-11-25 15:30Z -- every dev-tree suite run took production's
     reconcile instance lock and overwrote its holder record** (class: a
     path bound as a function DEFAULT, the third binding form after the

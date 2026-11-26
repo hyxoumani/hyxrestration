@@ -653,6 +653,12 @@ structure — see [venues](venues.md)).
    (08-06..10-15; the 07-16/07-23/07-30 events have a 11:10-11:40Z
    focus-tape hole and the window is NOT widened to admit them), CCSA 0
    (set begins 10-22). 26th ICSA event ~2027-01-28, CCSA ~2027-04-15.
+   **2026-11-26: the 11-25 events are LOST on both pairs by the registered
+   anchor date** (Wednesday close for Thanksgiving; `D - offset - 7d` is a
+   Friday; mistakes #245) -- not a collector miss and not to be rescued.
+   Count ICSA 16 / CCSA 5 of 26; the read opens no earlier than
+   ~2027-02-04 / ~2027-04-22. Any non-Thursday release week loses its
+   event the same way.
    Until then it accumulates on its own; nothing to run.
    **Sample watch, 2026-11-24 (mistakes #241):** "nothing to run" left the
    sample uncounted for 40 days. `python -m simulator.run_econ_claims
