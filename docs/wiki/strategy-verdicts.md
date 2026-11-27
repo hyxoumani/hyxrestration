@@ -730,6 +730,16 @@ structure — see [venues](venues.md)).
    source; the first common close is India 12-04, then Australia /
    New Zealand 12-07..08 and the Fed 12-09 -- forward Polymarket books
    exist only from the day a pair enters `watchlist.json`.
+   **Outcome agreement on settled meetings, 2026-11-27 (results only, no
+   price; `docs/hyxpredict/research/central_bank_pair_outcomes.md`):**
+   36 past meetings of 15 central banks are settled on both venues; of
+   118 Polymarket markets, 115 resolved as Kalshi's mapped bucket did, 2
+   have no Kalshi bucket, and the 1 that disagrees is an abandoned
+   duplicate Polymarket listing of the September Fed "no change" market
+   ($12.8k, no trade after 05-11; the live $56.4M listing agrees). Every
+   move in the sample was 25 bps, so the bucket EDGES (Kalshi "1-25bps"
+   vs "25 bps", ">25bps" vs "50+ bps") are untested and remain the
+   user's rule check. A pair is a pair of condition ids, never titles.
 5. **News-lag event studies** — pattern first (B4+atlas), strategy only
    if one shows at daily horizons (GDELT honesty caps sub-daily).
 
