@@ -99,6 +99,33 @@ five cities, and ROI = PnL / settled cost:
 4. One run. If the run aborts on the validity gate or a bug, the fix
    and the reason are logged in an addendum BEFORE the rerun, as in v1.
 
+## Addendum 1 (2026-11-27, before any PnL was read)
+
+The runner plumbing shipped the same day: `--forecast-since` and
+`--target-from/--target-to` on `simulator.run_backtest`
+(`tests/test_run_backtest_scope.py`, 9 tests, 8 mutants red). It adds
+a scope line and a settled-PnL breakdown by half of the target window
+(the R3 split, first half through 2026-09-16); strategy, simulator and
+fee model are untouched.
+
+Rehearsed once on the 11-27 03:30Z slot, chosen BECAUSE it must abort:
+that slot's observed highs end 2026-07-06, so the validity gate has no
+station to judge and the runner stops before the replay. It did --
+`4230 markets, 4230 settled, 4164 with usable candles, 1342859 forecast
+rows`, empty diagnostic, `ABORT`, 3 s wall, 2.4 s hold on the slot, no
+fill and no PnL computed. The counts match the registration. This is
+not the registered run and not a clause-4 abort.
+
+The registered run, once, on the first slot taken after 11-27 09:04Z:
+
+    .venv/bin/python -m simulator.run_backtest \
+      --db /home/devs/hyx-backups/hyxlab.Sat.duckdb \
+      --forecast-since 2026-07-06T19:36:00 \
+      --target-from 2026-07-08 --target-to 2026-11-25
+
+(check the slot's mtime is 2026-11-28 before running: the Sat slot is
+last week's until 03:30Z.)
+
 ## Results (appended after the run -- do not edit above this line)
 
 _Not run yet._

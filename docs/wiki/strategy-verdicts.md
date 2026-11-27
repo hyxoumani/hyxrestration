@@ -698,9 +698,10 @@ structure — see [venues](venues.md)).
    parameters unchanged, gridpoint forecasts only (`fetched_at >=
    2026-07-06 19:36Z`), 4,230 settled markets with target dates
    07-08..11-25, v1's thresholds. Expected FAIL (stated there); a FAIL
-   closes this item with no per-city variant permitted. Needs a
-   forecast bound and a target window on `simulator.run_backtest`
-   (plumbing, with tests) and a backup slot taken after 11-27 09:04Z.
+   closes this item with no per-city variant permitted. The runner
+   bounds shipped 11-27 (Addendum 1 there carries the one command); it
+   waits only on a backup slot taken after 11-27 09:04Z (Sat, 11-28
+   03:30Z).
 4. **Cross-venue arb** — measurement framing; expect fee-wall null
    (~3¢/share taker-taker at mid). Gated on: hand-verified pairs +
    forward Polymarket book collection.

@@ -1846,17 +1846,39 @@ class Store:
             for r in rows
         ]
 
-    def forecasts(self) -> list[Forecast]:
+    def forecasts(
+        self,
+        since: datetime | None = None,
+        target_from: date | None = None,
+        target_to: date | None = None,
+    ) -> list[Forecast]:
+        """Forecast pulls in fetch order. `since` bounds `fetched_at` from
+        below -- the table holds two SOURCES (backfilled MEX MOS, then the
+        live gridpoint pull from 2026-07-06 19:36Z), and a run registered
+        on one must not be served the other. The target bounds are
+        inclusive and keep a windowed replay from loading every pull."""
+        clauses, params = [], []
+        if since is not None:
+            clauses.append("fetched_at >= ?")
+            params.append(_naive_utc(since))
+        if target_from is not None:
+            clauses.append("target_date >= ?")
+            params.append(target_from)
+        if target_to is not None:
+            clauses.append("target_date <= ?")
+            params.append(target_to)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self.conn.execute(
             "SELECT station, fetched_at, target_date, high_f, short"
-            " FROM nws_forecasts ORDER BY fetched_at"
+            f" FROM nws_forecasts{where} ORDER BY fetched_at",
+            params,
         ).fetchall()
         return [
             Forecast(station=r[0], fetched_at=r[1], target_date=r[2], high_f=r[3], short=r[4] or "")
             for r in rows
         ]
 
-    def candles_as_snapshots(self) -> list[Snapshot]:
+    def candles_as_snapshots(self, market_ids: Iterable[str] | None = None) -> list[Snapshot]:
         """Synthesize Tier-1 snapshots from historical candle closes.
 
         NO-side quotes are the binary complement of the YES book
@@ -1870,13 +1892,20 @@ class Store:
         # carry empty-book sentinels (ask=1 with bid=0) — verified sums
         # ranged 0.11–2.00. Filling at such phantom quotes is fiction, so
         # they are excluded from replay.
+        # `market_ids` restricts the load to a known id set (the empty set
+        # is the empty load, as in `markets`); the quote gate is unchanged.
+        scope, params = "", []
+        if market_ids is not None:
+            scope = " AND market_id = ANY(?::VARCHAR[])"
+            params.append(list(market_ids))
         rows = self.conn.execute(
             "SELECT venue, market_id, end_ts, yes_bid_close, yes_ask_close,"
             " price_close, volume, open_interest FROM candles"
-            " WHERE yes_bid_close IS NULL OR yes_ask_close IS NULL"
+            " WHERE (yes_bid_close IS NULL OR yes_ask_close IS NULL"
             "    OR (yes_bid_close <= yes_ask_close"
-            "        AND NOT (yes_ask_close >= 0.999 AND yes_bid_close <= 0.001))"
-            " ORDER BY end_ts, venue, market_id"
+            f"        AND NOT (yes_ask_close >= 0.999 AND yes_bid_close <= 0.001))){scope}"
+            " ORDER BY end_ts, venue, market_id",
+            params,
         ).fetchall()
         inf = float("inf")
         out: list[Snapshot] = []
