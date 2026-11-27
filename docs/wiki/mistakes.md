@@ -5678,7 +5678,7 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
-252. **2026-11-27 20:40Z -- the test suite wrote 91.6 GB a run to the disk
+252. **2026-11-27 20:36Z -- the test suite wrote 91.6 GB a run to the disk
     the stream flushes to, 86.3 GB of it zeros nobody read** (class: a
     tenant of a shared resource that was never enumerated because it is
     ours and "only tests" -- the #187/#152 rule, enumerate every tenant
