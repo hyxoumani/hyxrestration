@@ -42,7 +42,7 @@ def test_pair_candidates_prints_its_hold_and_writes_the_lead_list(tmp_path, caps
     out = capsys.readouterr().out
     lines = _attach_lines(out, "[pairs]")
     assert len(lines) == 1 and "held 1 for" in lines[0] and "0 unmeasured" in lines[0], out
-    assert "[pairs] 0 candidates" in out
+    assert "[pairs] 0 candidate pair(s) over 0 Kalshi event(s)" in out
     assert len(list(out_dir.glob("*.json"))) == 1 and len(list(out_dir.glob("*.md"))) == 1
 
 

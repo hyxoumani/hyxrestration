@@ -705,6 +705,31 @@ structure — see [venues](venues.md)).
 4. **Cross-venue arb** — measurement framing; expect fee-wall null
    (~3¢/share taker-taker at mid). Gated on: hand-verified pairs +
    forward Polymarket book collection.
+   **Lead list re-read 2026-11-27 (titles and close times only; no price
+   read; `reports/pairs/20261127T203927.md`, 11-27 03:30Z slot):** the
+   July report's one class is gone and a better one replaced it. (a) The
+   07-11 "hot lead" -- `KXFED-26DEC-T*` against Polymarket's "upper
+   bound of the target federal funds rate be X% at the end of 2026" --
+   no longer pairs: the Polymarket leg now closes 2027-01-01 (22 d after
+   Kalshi's 12-09) and it was never the same question (Kalshi's strike is
+   cumulative, "above X%"; Polymarket's is one exact bucket of sixteen).
+   (b) **Central-bank DECISION events are listed on both venues as the
+   same partition with the same close day:** `KXFEDDECISION-26DEC`
+   (closes 12-09 18:59Z) against "Will the Fed decrease / increase
+   interest rates by 25 bps / 50+ bps / no change after the December
+   2026 meeting?" (12-09 23:59Z), and the same shape for the Jan, Mar
+   and Apr 2027 Fed meetings and the December meetings of Chile, India,
+   Japan, Switzerland, New Zealand, Mexico, Australia and Canada. The
+   matcher could not see any of it until 11-27 (the Fed pair scored 0.29
+   against a 0.4 floor: "Federal Reserve Cut ... 25bps" vs "Fed decrease
+   ... 25 bps"); it folds the two vocabularies now and reports one row
+   per Kalshi event (2,490 pairs over 93 events; before the fold 1,677
+   over 55 series, the ranked top 100 naming 5 of them). Still leads
+   only. What the USER verifies per pair is the bucket edges (Kalshi's
+   ">25bps" vs Polymarket's "50+ bps"; an inter-meeting move) and the
+   source; the first common close is India 12-04, then Australia /
+   New Zealand 12-07..08 and the Fed 12-09 -- forward Polymarket books
+   exist only from the day a pair enters `watchlist.json`.
 5. **News-lag event studies** — pattern first (B4+atlas), strategy only
    if one shows at daily horizons (GDELT honesty caps sub-daily).
 
