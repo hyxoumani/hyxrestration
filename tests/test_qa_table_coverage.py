@@ -72,12 +72,6 @@ UNREAD: dict[str, str] = {
         "its liveness witness; a missing or empty table costs an ETA tag, "
         "never a row of archive, so there is no verdict for QA to reach."
     ),
-    "observations": (
-        "NO LIVE WRITER. Only collector/backfill.py writes it and that is a "
-        "hand-run tool; measured 2026-09-04 the newest row is 2026-07-06 "
-        "(1,827 rows total). A freshness check here would fail forever about "
-        "a table nothing is supposed to be filling."
-    ),
 }
 
 _RECENCY_HELPERS = ("_check_freshness", "_check_continuity")

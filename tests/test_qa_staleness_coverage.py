@@ -64,7 +64,9 @@ STAMP: dict[str, str | None] = {
     "collect_cycles": "ts",
     "nws_forecasts": "fetched_at",
     "candles": None,  # end_ts is the candle's period end, not its ingest
-    "observations": None,  # obs_date is the observation's day
+    # A daily series with a live daily writer since 2026-11-27 (mistakes #251):
+    # the newest observed day IS its ingest clock, one row per station per day.
+    "observations": "obs_date",
     "trades": None,  # ts is the exchange print time; ingest is trades_swept
     "trades_swept": "swept_at",
     "poly_prices": "ts",
@@ -121,12 +123,6 @@ WITNESS: dict[str, str] = {
         "run). Watched instead through the writer's own log, which does "
         "carry one: 'candle ingest landing (36h)' sums sweep_log.n_candles "
         "over the same window as 'sweep ran in last 36h'."
-    ),
-    "observations": (
-        "NO LIVE WRITER — hand-run collector/backfill.py only; newest row "
-        "2026-07-06, 1,827 rows (measured 2026-09-04). Already declared "
-        "UNREAD in tests/test_qa_table_coverage.py for the same reason: a "
-        "freshness check would fail forever about a table nothing fills."
     ),
     "trades": (
         "No ingest stamp (ts is the exchange print time; a backfill of an "

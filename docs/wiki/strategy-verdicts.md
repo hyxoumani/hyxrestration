@@ -675,6 +675,12 @@ structure — see [venues](venues.md)).
    fall-back the decision window is 12:30-12:40Z (11:25-11:35Z in EDT).
 3. **WeatherNWS v2** — per-city bias/sigma, purged walk-forward (naive
    splits leak adjacent-day regimes). New registration, not a rescue.
+   Data note (2026-11-27, mistakes #251): the observed highs it would be
+   fit on had no writer from 07-06 to 11-27; `hyxlab-signals` now pulls
+   them daily and the gap was recoverable from IEM. The live NWS
+   gridpoint forecasts (5-min pulls, 5 stations) start 2026-07-06 19:36Z; before
+   that the table holds backfilled GFS MEX MOS -- two forecast SOURCES in
+   one table, which a registration must name and split on.
 4. **Cross-venue arb** — measurement framing; expect fee-wall null
    (~3¢/share taker-taker at mid). Gated on: hand-verified pairs +
    forward Polymarket book collection.

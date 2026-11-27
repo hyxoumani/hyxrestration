@@ -34,7 +34,7 @@ from collector.backup import DBS, backup_one
 from collector.poly_sweep import TAIL_STOP_CLASSES
 from collector.rawframes import RETAIN_DAYS as RAW_RETAIN_DAYS
 from collector.rawframes import held_day_dirs as raw_held_day_dirs
-from collector.venues import alfred
+from collector.venues import alfred, iem
 from hyxlab.atomicio import write_text_atomic
 from hyxlab.reportdir import shared_reports
 from hyxlab.shadowruns import latest_complete_run, run_completed_at
@@ -2682,6 +2682,51 @@ def _check_nws_stations(conn, now: datetime) -> None:
     )
 
 
+#: Days the newest observed high may trail today (UTC) before QA fails. The
+#: daily pull (`collector.signals`, 04:40Z) stores through today - 2
+#: (`signals.CLI_SETTLE_DAYS`: the final climate report for local day D is
+#: issued ~06:30Z on D+1, measured 2026-11-27), so a healthy 10:00Z read is
+#: 2, one missed pull is 3, and 4 is two pulls in a row with no row.
+OBS_HIGH_MAX_AGE_DAYS = 3
+
+
+def _check_observed_highs(conn, now: datetime, stations: tuple[str, ...] | None = None) -> None:
+    """Per-station age of the settlement truth for the weather series.
+
+    `observations` had no live writer from 2026-07-06 to 2026-11-27: the
+    5-min collector archived forecasts for 144 days with no observed high
+    to score one against, and both coverage tests carried the table as a
+    DECLARED exemption ("a freshness check would fail forever about a
+    table nothing fills") for twelve weeks -- a correct description of a
+    debt, standing in for the writer (mistakes #251).
+
+    The owed set is the station map the pull walks (`iem.STATION_ICAO`),
+    not the stations that happen to have rows: a station that never
+    landed a row is named `never`, not absent (#98's rule). Per station,
+    never pooled -- one max() over five stations reports the freshest.
+    """
+    owed = stations if stations is not None else tuple(iem.STATION_ICAO)
+    newest = dict(
+        conn.execute(
+            "SELECT station, max(obs_date) FROM observations"
+            " WHERE high_f IS NOT NULL GROUP BY station"
+        ).fetchall()
+    )
+    today = now.date()
+    ages = {st: ((today - newest[st]).days if st in newest else None) for st in owed}
+    stale = [st for st, age in ages.items() if age is None or age > OBS_HIGH_MAX_AGE_DAYS]
+    check(
+        f"observed highs each fresh (<= {OBS_HIGH_MAX_AGE_DAYS} d old)",
+        not stale and bool(owed),
+        f"{len(owed)} station(s) owed: "
+        + ", ".join(
+            f"{st} never" if age is None else f"{st} {newest[st]:%m-%d} ({age} d)"
+            for st, age in sorted(ages.items())
+        )
+        + (f" -- STALE {', '.join(sorted(stale))}" if stale else ""),
+    )
+
+
 def _downtime_phrase(gap_s: float, cadence_s: float) -> str:
     """`downtime >= N min` for a gap of `gap_s`, or the reason there is no such
     number.
@@ -2925,6 +2970,7 @@ def _archive_checks(conn, hours: float, now: datetime) -> int | None:
             CYCLE_CADENCE_S,
         )
         _check_nws_stations(conn, now)
+        _check_observed_highs(conn, now)
 
     ok_sweeps = conn.execute(
         "SELECT count(*) FROM sweep_log WHERE status='ok' AND swept_at > ? - INTERVAL 36 HOUR",

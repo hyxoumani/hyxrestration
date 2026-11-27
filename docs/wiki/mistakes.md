@@ -5678,6 +5678,47 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+251. **2026-11-27 08:20Z -- the weather series' settlement truth had no
+    writer for 144 days, and two tests said so in a sentence instead of
+    failing** (class: a declared exemption standing in for the work it
+    describes -- "a limit written into a docstring is documentation, not
+    a deadline", reaching a carve-out that was itself the enumerated,
+    asserted kind). `observations` -- the NWS climate-report daily high
+    each KXHIGH* series settles on -- was written once, by the hand-run
+    `collector.backfill` on 2026-07-06 (1,827 rows, 5 stations x 365 d).
+    The 5-min collector went on archiving the same five stations'
+    forecasts (1.41M rows by 11-27) with nothing to score one against.
+    On 2026-09-04 both QA coverage derivations met the table and each
+    recorded it truthfully: `UNREAD` / `WITNESS` -- "NO LIVE WRITER ... a
+    freshness check would fail forever about a table nothing is supposed
+    to be filling". That is a correct reason not to add a CHECK and no
+    reason not to add the WRITER; the entry made the hole legible and
+    permanent in the same line, and `data-pipeline.md` repeated it
+    twice. Found only when a pass opened the strategy queue's item 3
+    (WeatherNWS v2, per-city bias/sigma) and asked what it would be fit
+    on: nothing after July. **Cost: none permanent, measured** -- IEM
+    keeps the report archive, and all five stations served 143 of 143
+    missing days (07-07..11-26) on 2026-11-27 08:20Z. It was luck of the
+    source, not of the design: the forecasts beside it are the table the
+    wiki calls unrecoverable. Fixed: `collector.signals` (daily 04:40Z)
+    pulls the highs per station from that station's newest stored day,
+    re-reads a trailing 7 days so a corrected report replaces its row,
+    and stops at today - 2 (the final report for local day D is issued
+    ~06:30Z on D+1 -- KNYC's for 11-26 was `202611270630` -- so at 04:40Z
+    the newest row can be the afternoon's preliminary reading); a failing
+    station is named on the `[signals] cli highs` line and never fails
+    the ALFRED/GDELT pull. QA: `observed highs each fresh (<= 3 d old)`,
+    per station, owed set = the pull's station map (a station with no row
+    prints `never`). Both exemptions DELETED, `STAMP["observations"]` is
+    `obs_date`. 12 tests; 7 mutants red, each asserted to land. **Rule:
+    when a coverage test forces you to write down why a table, unit or
+    site needs no watcher, read the reason back as a question -- "nothing
+    fills it" asks whether something should. An exemption whose reason
+    is an absence (no writer, no reader, no owner) is a backlog item
+    with a test protecting it; file it where the queue is read, with the
+    consumer that will need it named, and re-ask it whenever a queue
+    item first touches the table.**
+
 250. **2026-11-26 20:32Z -- two hours of per-connection stream stalls on the
     wired route had no row that said what they WERE, and the first counter
     picked for one measured a dead peer** (class: an instrument named for a

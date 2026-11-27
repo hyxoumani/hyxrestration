@@ -126,7 +126,7 @@ def test_main_measures_both_holds_on_the_collectors_file(tmp_path, monkeypatch, 
     monkeypatch.setattr(signals, "LOCK_FILE", str(tmp_path / "writer.lock"))
     monkeypatch.setattr(signals, "fetch_alfred", lambda sess, today=None: ({}, {}))
     monkeypatch.setattr(signals, "record_fetch", lambda *a, **k: None)
-    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt"])
+    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt", "--skip-cli"])
     signals.main()
     out = capsys.readouterr().out
     lines = [ln for ln in out.splitlines() if ln.startswith("[signals] attach_wait:")]
@@ -156,7 +156,7 @@ def test_main_reads_the_watermark_inside_the_writer_flock(tmp_path, monkeypatch)
     monkeypatch.setattr(signals, "LOCK_FILE", str(lock_file))
     monkeypatch.setattr(signals, "fetch_alfred", lambda sess, today=None: ({}, {}))
     monkeypatch.setattr(signals, "record_fetch", lambda *a, **k: None)
-    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt"])
+    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt", "--skip-cli"])
 
     real_held_open = signals.held_open
     flocked_at_open: list[bool] = []
@@ -203,7 +203,7 @@ def test_main_prints_its_writer_lock_queue_waits(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(signals, "LOCK_FILE", str(lock_file))
     monkeypatch.setattr(signals, "fetch_alfred", lambda sess, today=None: ({}, {}))
     monkeypatch.setattr(signals, "record_fetch", lambda *a, **k: None)
-    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt"])
+    monkeypatch.setattr("sys.argv", ["signals", "--db", str(db), "--skip-gdelt", "--skip-cli"])
 
     hold_s = 0.6
     holder = os.open(lock_file, os.O_WRONLY | os.O_APPEND)  # a second open-file description

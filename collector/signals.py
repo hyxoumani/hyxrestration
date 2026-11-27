@@ -1,4 +1,5 @@
-"""Daily signal-feed pull: ALFRED econ vintages + GDELT news (B4/C1).
+"""Daily signal-feed pull: ALFRED econ vintages + GDELT news (B4/C1) +
+NWS climate-report highs (the weather markets' settlement truth).
 
     python -m collector.signals [--db data/hyxlab.duckdb] [--gdelt-hours 25]
 
@@ -29,6 +30,18 @@ FRED API key; standing user item.)
 
 GDELT: resumes from the stored news watermark (max knowable_at), else
 the trailing --gdelt-hours; missing quarter-hour files are skipped.
+
+CLI HIGHS (mistakes #251). `observations` -- the daily high each Kalshi
+KXHIGH* series settles on -- had ONE writer, the hand-run
+`collector.backfill`, last run 2026-07-06; the 5-min collector kept
+archiving forecasts for 144 days with no truth to score them against.
+This pull is its live writer: per station, resume from that station's
+newest stored high, re-read a trailing `CLI_REFETCH_DAYS` (a corrected
+report replaces its row) and stop `CLI_SETTLE_DAYS` short of today
+(measured 2026-11-27: the final report for local day D is issued ~06:30Z
+on D+1, and this unit runs 04:40Z, when the archive's newest row for D-1
+can still be the afternoon's preliminary reading). A station that fails
+is named and skipped; it never fails the ALFRED/GDELT pull.
 """
 
 from __future__ import annotations
@@ -43,7 +56,7 @@ from pathlib import Path
 import duckdb
 import requests
 
-from collector.venues import alfred, gdelt
+from collector.venues import alfred, gdelt, iem
 from hyxlab.lockid import note_holder
 from hyxlab.models import EconVintage, NewsItem
 from hyxlab.store import Store, attach_wait_block, attach_wait_line, held_open, reset_attach_waits
@@ -55,6 +68,15 @@ GKG_PAUSE_S = 0.2
 # the archive is locked or unopenable, which is exactly when the pull is
 # most likely to be failing. Same rationale as `data/collect_skips.jsonl`.
 FETCH_LOG = "data/signals_fetch.jsonl"
+#: Days of already-stored highs re-read on every pull, so a corrected
+#: climate report replaces its row (`INSERT OR REPLACE` on station, day).
+CLI_REFETCH_DAYS = 7
+#: The newest day stored is `today - CLI_SETTLE_DAYS` (UTC): one day back
+#: is the US local day still in progress at 04:40Z, whose only report is
+#: the preliminary one.
+CLI_SETTLE_DAYS = 2
+#: With no stored high for a station, how far back the first pull reaches.
+CLI_COLD_START_DAYS = 365
 
 
 def fetch_alfred(session: requests.Session, today=None) -> dict[str, list[EconVintage]]:
@@ -90,6 +112,72 @@ def fetch_alfred(session: requests.Session, today=None) -> dict[str, list[EconVi
         )
         time.sleep(2)
     return out, outcomes
+
+
+def fetch_cli_highs(
+    session: requests.Session, today: date, newest: dict[str, date]
+) -> tuple[list[tuple[str, date, int]], dict[str, dict]]:
+    """Observed daily highs to upsert, and a per-station outcome.
+
+    `newest` is each station's newest stored day WITH a high. Rows come
+    back for `(newest - CLI_REFETCH_DAYS, today - CLI_SETTLE_DAYS]`; a day
+    the archive serves without a high is left out (it is re-read while it
+    sits inside the trailing window, and a hole older than that is what
+    QA's per-station check and a hand `collector.backfill` are for).
+    Never raises: one station's failure is its outcome, not the pull's."""
+    last = today - timedelta(days=CLI_SETTLE_DAYS)
+    rows: list[tuple[str, date, int]] = []
+    outcomes: dict[str, dict] = {}
+    for station in iem.STATION_ICAO:
+        have = newest.get(station)
+        since = (
+            have - timedelta(days=CLI_REFETCH_DAYS)
+            if have is not None
+            else today - timedelta(days=CLI_COLD_START_DAYS)
+        )
+        got: list[tuple[str, date, int]] = []
+        err: str | None = None
+        for attempt in range(2):
+            try:
+                got = [
+                    (st, d, high)
+                    for year in range(since.year, last.year + 1)
+                    for st, d, high in iem.get_observed_highs(station, year, session=session)
+                    if since < d <= last and high is not None
+                ]
+                err = None
+                break
+            except Exception as exc:
+                err = type(exc).__name__
+                print(f"[signals] cli {station} attempt {attempt + 1}: {err}", flush=True)
+                time.sleep(5)
+        rows.extend(got)
+        outcomes[station] = {
+            "ok": err is None,
+            "rows": len(got),
+            "newest": max((d for _st, d, _h in got), default=None),
+            "error": err,
+        }
+        time.sleep(1)
+    return rows, outcomes
+
+
+def cli_line(outcomes: dict[str, dict], today: date) -> str:
+    """One line for the day's climate-report pull: rows and newest day per
+    station, failures named. A station that answered with nothing new is
+    printed as such -- it is not a failure and not a success with rows."""
+    parts = []
+    for station, o in sorted(outcomes.items()):
+        if not o["ok"]:
+            parts.append(f"{station} FAILED ({o['error']})")
+        elif o["rows"]:
+            parts.append(f"{station} {o['rows']} row(s) through {o['newest']:%m-%d}")
+        else:
+            parts.append(f"{station} nothing in the window")
+    return (
+        f"[signals] cli highs (through {today - timedelta(days=CLI_SETTLE_DAYS):%m-%d} at most): "
+        + ("; ".join(parts) if parts else "skipped")
+    )
 
 
 def record_fetch(
@@ -153,6 +241,7 @@ def main() -> None:
     ap.add_argument("--db", default="data/hyxlab.duckdb")
     ap.add_argument("--gdelt-hours", type=float, default=25.0, help="cold-start window")
     ap.add_argument("--skip-gdelt", action="store_true")
+    ap.add_argument("--skip-cli", action="store_true", help="no climate-report highs pull")
     args = ap.parse_args()
     sess = requests.Session()
     sess.headers["User-Agent"] = "hyxlab-research"
@@ -193,6 +282,15 @@ def main() -> None:
                     ).fetchone()[0]
                 except duckdb.CatalogException:
                     last_news = None
+                try:
+                    newest_high: dict[str, date] = dict(
+                        store.conn.execute(
+                            "SELECT station, max(obs_date) FROM observations"
+                            " WHERE high_f IS NOT NULL GROUP BY station"
+                        ).fetchall()
+                    )
+                except duckdb.CatalogException:
+                    newest_high = {}
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -208,6 +306,10 @@ def main() -> None:
             else now - timedelta(hours=args.gdelt_hours)
         )
         items, missing = fetch_gdelt(sess, start, now)
+    highs: list[tuple[str, date, int]] = []
+    cli_outcomes: dict[str, dict] = {}
+    if not args.skip_cli:
+        highs, cli_outcomes = fetch_cli_highs(sess, vintage_date, newest_high)
 
     with open(LOCK_FILE, "a") as lock:
         t_l = time.monotonic()
@@ -219,6 +321,8 @@ def main() -> None:
                 new_vintages = diff_vintages(store, fetched)
                 nv = store.insert_vintages(new_vintages)
                 nn = store.insert_news(items)
+                if highs:
+                    store.upsert_observations(highs)
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
     failed = sorted(k for k, v in outcomes.items() if not v["ok"])
@@ -229,6 +333,7 @@ def main() -> None:
         + (f"; FAILED {', '.join(failed)}" if failed else ""),
         flush=True,
     )
+    print(cli_line(cli_outcomes, vintage_date), flush=True)
     # After the release: `held_s` is charged by the close. ONE renderer
     # (#95), never a format string over the block's keys.
     print(

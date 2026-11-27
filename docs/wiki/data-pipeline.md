@@ -13,7 +13,9 @@ Append-only facts: `candles` (hourly price+bid/ask OHLC, volume, OI),
 time; 5 watchlist stations on the collect cycle, 580k rows, the ground
 truth `strategies.WeatherNWS` trades against — and unrecoverable, since
 NWS publishes only the CURRENT forecast), `observations` (climate-report
-highs; no live writer since 2026-07-06). Reference: `markets`
+highs, the KXHIGH* settlement truth; written daily by `hyxlab-signals`
+since 2026-11-27 -- through today - 2 UTC, trailing 7 days re-read for
+corrected reports -- after 144 days with no live writer, mistakes #251). Reference: `markets`
 (metadata + settlement result), `series` (category/fee metadata),
 `sweep_log`, `watermarks`, `schema_meta`.
 
@@ -25,10 +27,12 @@ and a table QA never reads fails the suite unless it is declared in
 `breadth_snapshots` went unread for a month, and the derivation's first
 run immediately found the second one, `nws_forecasts` (580,270 rows,
 written in the same 5-min cycle as `snapshots`, never named in qa.py).
-Four tables are declared unread today — `series` and `watermarks` (sweep
-bookkeeping, witnessed by "sweep ran in last 36h"), `trades` (watched
-harder, per-market, through `trades_swept`), and `observations` (no live
-writer; newest row 2026-07-06). **Per-WRITER attribution is not
+Three tables are declared unread today — `series` and `watermarks` (sweep
+bookkeeping, witnessed by "sweep ran in last 36h") and `trades` (watched
+harder, per-market, through `trades_swept`). `observations` was the
+fourth until 2026-11-27 ("no live writer"): it now has one and QA's
+`observed highs each fresh (<= 3 d old)` reads it per station, the owed
+set being the pull's own station map (mistakes #251). **Per-WRITER attribution is not
 derivable**, and that is pinned rather than assumed: every archive write
 goes through `store.py`, so all 8 unit import closures contain it and
 closure attribution would assign all 16 tables to all 8 writers. What the
@@ -202,7 +206,7 @@ under the `run` key of `reports/qa/sections.json`; an unparseable or
 older-format one reads as "no prior run" rather than failing on the day
 the check ships.
 
-Four tables have no ingest stamp (`candles`, `trades`, `observations`,
+Three tables have no ingest stamp (`candles`, `trades`,
 `watermarks`, plus `schema_meta` which has no time column at all) and
 four carry a witness rather than their own check: `markets` (written in
 the SAME transaction from the SAME fetch as the snapshots that witness it
