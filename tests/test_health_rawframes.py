@@ -23,13 +23,24 @@ NOW = datetime(2026, 11, 9, 8, 15, tzinfo=UTC)
 CHANNELS = ("books", "ticker", "trades", "lifecycle")
 
 
+def _sized(path: Path, n: int, head: bytes = b"") -> None:
+    """A file of `n` bytes that costs the disk only `head`. The reader takes a
+    file's size from `stat` and reads six header bytes, so the rest is a HOLE:
+    written out as zeros this file was 86.3 of the suite's 91.6 GB of writes
+    (measured per test from `/proc/self/io`, 2026-11-27; mistakes #252), on a
+    disk the stream daemon's flush shares."""
+    with path.open("wb") as fh:
+        fh.write(head)
+        fh.truncate(n)
+
+
 def _day(root: Path, day: str, per_hour: dict[str, int], hours: int = 24) -> None:
     """Write `hours` hour files per channel, each `per_hour[channel]` bytes."""
     d = root / day
     d.mkdir(parents=True, exist_ok=True)
     for hh in range(hours):
         for ch, n in per_hour.items():
-            (d / f"{hh:02d}-{ch}.jsonl.zst").write_bytes(b"\0" * n)
+            _sized(d / f"{hh:02d}-{ch}.jsonl.zst", n)
 
 
 def _week(root: Path, ticker_mb: int = 10, books_mb: int = 20) -> None:
@@ -159,13 +170,13 @@ def test_every_byte_the_reader_stats_moves_the_line(tmp_path: Path) -> None:
     for group in ([tmp_path / "2026-11-08"], [tmp_path / "2026-11-09"], baseline):
         for ch in ("books", "ticker", "trades"):
             files = [d / f"01-{ch}.jsonl.zst" for d in group]
-            originals = [f.read_bytes() for f in files]
+            originals = [f.stat().st_size for f in files]
             for f, o in zip(files, originals, strict=True):
-                f.write_bytes(o + b"\0" * 10**9)
+                _sized(f, o + 10**9)
             bumped = health.raw_frames_line(health.read_raw_frames(tmp_path), NOW)
             assert bumped != base, ([d.name for d in group], ch)
             for f, o in zip(files, originals, strict=True):
-                f.write_bytes(o)
+                _sized(f, o)
     assert health.raw_frames_line(health.read_raw_frames(tmp_path), NOW) == base
     # The window and the drift fraction are terms too.
     assert health.raw_frames_line(health.read_raw_frames(tmp_path), NOW, baseline_days=3) != base
@@ -205,7 +216,7 @@ def _rewrite(root: Path, day: str, shrink: float = 0.5, hours: range = range(24)
     for f in (root / day).iterdir():
         if int(f.name[:2]) in hours:
             n = int(f.stat().st_size * shrink)
-            f.write_bytes(_HDR_LONG27 + b"\0" * (n - 6))
+            _sized(f, n, head=_HDR_LONG27)
 
 
 def test_the_window_log_is_read_from_the_frame_header(tmp_path: Path) -> None:

@@ -331,6 +331,50 @@ def pytest_sessionfinish(session, exitstatus):
     verdict_audit.report(session, exitstatus)
 
 
+# --- Write budget ---------------------------------------------------------
+# The suite is a tenant of the disk the stream daemon flushes to, and its
+# bytes were never counted: measured per test from `/proc/self/io` on
+# 2026-11-27, one run wrote 91.6 GB in 473 s, 86.3 GB of it from ONE file
+# whose fixtures spelled out GB-scale files of zeros for a reader that only
+# `stat`s them (mistakes #252). Alone in a quiet hour those bytes cost the
+# host 0.5 s of IO stall; the 11-27 08Z run shared a sibling's nightly spill
+# and three stream flushes of 16-30 s. The largest honest writer is the EXP-1373
+# shared-spill test at 0.74 GB, so the budget is ~2.7x that; a fixture that
+# needs a SIZE asks for a hole (`truncate`), not for the bytes.
+WRITE_BUDGET_BYTES = 2 * 1024**3
+
+
+def proc_write_bytes() -> int | None:
+    """Bytes this process (and the children it has reaped) caused to be sent
+    to storage, from the kernel's own account; None where it is unreadable."""
+    try:
+        for line in Path("/proc/self/io").read_text().splitlines():
+            if line.startswith("write_bytes:"):
+                return int(line.split(":")[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def write_budget_breach(before: int | None, after: int | None, budget: int) -> str | None:
+    if before is None or after is None or after - before <= budget:
+        return None
+    return (
+        f"this test wrote {(after - before) / 1e9:.2f} GB to disk against a budget of"
+        f" {budget / 1e9:.2f} GB (tests/conftest.py WRITE_BUDGET_BYTES): the suite shares"
+        " the disk with the stream daemon's flush -- size a fixture file with truncate()"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _write_budget():
+    before = proc_write_bytes()
+    yield
+    breach = write_budget_breach(before, proc_write_bytes(), WRITE_BUDGET_BYTES)
+    if breach:
+        pytest.fail(breach)
+
+
 @pytest.fixture(autouse=True)
 def _venues_reachable(monkeypatch):
     """`netwait.OutagePause` probes the venue (a TCP handshake) when a sweep's

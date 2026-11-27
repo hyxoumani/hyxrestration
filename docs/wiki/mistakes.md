@@ -5678,6 +5678,48 @@ Format: what happened → root cause → error type → prevention tier
     useful finding is the class whose count exceeds its stated keep, or
     whose per-day size left the figure the keep was sized on.**
 
+252. **2026-11-27 20:40Z -- the test suite wrote 91.6 GB a run to the disk
+    the stream flushes to, 86.3 GB of it zeros nobody read** (class: a
+    tenant of a shared resource that was never enumerated because it is
+    ours and "only tests" -- the #187/#152 rule, enumerate every tenant
+    before attributing, reaching the one tenant every pass starts by
+    hand). The 08:15Z pass had the total (`87 GB of writes in 21 min`
+    beside a 40% IO `full` hour and three stream flushes of 16-30 s) and
+    wrote a scheduling note -- run the suite once, not before ~09Z --
+    without asking which tests wrote it. Measured this pass with a
+    throwaway pytest plugin differencing `/proc/self/io` per test (it
+    counts reaped children): 3,081 tests, 91.6 GB `write_bytes` in 473 s;
+    `tests/test_health_rawframes.py` 86.3 GB in 12 tests, one test 34.1 GB
+    (the #95 perturbation: 27 files rewritten at +1 GB each, then written
+    back); the next file 1.27 GB, the largest honest test 0.74 GB (the
+    EXP-1373 shared spill). The fixtures built GB-scale hour files as
+    `b"\0" * n` for a reader that takes `st_size` from `stat` and reads
+    six header bytes. In the file since 2026-11-09 (1542dcf), ~18 days at
+    several suite runs a day. **Cost, measured and bounded:** alone in a
+    quiet hour (20:17-20:34Z, both runs) the stream's flush hold did not
+    move (1.6-1.8 s/flush across the periods of both the 91.6 GB and the
+    5.2 GB run), and the old file by itself cost the host 0.5 s of IO
+    `full` stall against 5 ms for the new one. So the bytes are cheap
+    alone and were one of two tenants in the 08Z hour, unseparated from
+    the sibling's spill there; the standing cost was 86 GB of NVMe writes
+    and ~30 s per run, on a disk 1.2 d from ENOSPC. Peak footprint was
+    never the risk (free space moved 0.3 GB across the run: files are
+    rewritten in place and deleted). Fixed: the fixtures size files with
+    `truncate` (a hole; same `st_size`, same header bytes) -- the file
+    12 tests 86.3 GB / 35 s -> 3.9 MB / 2 s, the suite 91.6 -> 5.2 GB,
+    473 -> 445 s; every asserted string unchanged. Guard:
+    `tests/conftest.py` `_write_budget`, autouse, fails any test whose
+    `write_bytes` delta passes 2 GiB (~2.7x the largest honest writer);
+    `tests/test_write_budget.py` pins that the counter sees real bytes
+    and not a hole. Mutants, each asserted to land: fixture back to
+    zeros -> 8 tests ERROR on the budget; the perturbation's bump made a
+    no-op -> its test FAILS (the sparse bump still moves the line).
+    **Rule: when a pass measures a total on a shared resource and the
+    tenant is our own, split it by unit of work before writing a
+    scheduling rule around it -- a "run it less, run it later" note is
+    what an unattributed number produces. And a fixture that needs a
+    SIZE asks the filesystem for a size, not for the bytes.**
+
 251. **2026-11-27 08:20Z -- the weather series' settlement truth had no
     writer for 144 days, and two tests said so in a sentence instead of
     failing** (class: a declared exemption standing in for the work it
