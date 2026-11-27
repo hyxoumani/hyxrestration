@@ -1176,9 +1176,16 @@
   over segments sent, and the interface's MB/s (a tenant of THIS box
   saturating the link shows there). SYN retries are printed apart and are
   not loss: ~140 a minute are the kubelet dialling the dead control plane
-  (mistakes #250). No bar is set -- the 11-26 16:30-18:22Z window predates
-  the field; set one from the first lossy hour the row sees. An interval
-  across a route change is dropped, and the row names both interfaces.
+  (mistakes #250). No bar on the HOUR; since 2026-11-27 the row's `by
+  collector interval` clause counts 5-min intervals at or over 5% out of
+  order (median 1.19% over the first 64; the four over it, 23:26Z-02:10Z,
+  were each followed by a `keepalive ping timeout` within 6 min while their
+  hours read x1.7-x3.8 the median) -- a detector, not a clearance: four
+  timeouts at 21:09Z sat in an interval at 1.65%, 41 s after a WiFi-leg
+  roam on the wired route (HOSTNET's clause, not this one). An interval across a
+  route change is dropped; `the route CHANGED` is printed only when two
+  interfaces each carried a measured interval, and a lone sample taken
+  inside a probe blip prints as `N sample(s) on wlp6s0 closed no interval`.
   NetworkManager's `CONNECTED_SITE/LOCAL` blips flip the default route to
   WiFi for 3-51 s and back; 34 of 38 in 72 h cost no timeout -- do not
   re-trace the flip as a cause.

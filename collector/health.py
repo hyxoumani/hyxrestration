@@ -3673,7 +3673,8 @@ def _io_stream_hold(hold: StreamHold | None | str, hot: set[int], judged: set[in
 # saturating the link shows there; a neighbour on the LAN does not). The
 # counters are the HOST's, every tenant's connections together.
 #
-# No verdict bar: the field shipped after the one lossy window it was built
+# No verdict bar ON THE HOUR (the interval clause has one, see
+# HOSTTCP_OOO_INTERVAL_BAR): the field shipped after the one lossy window it was built
 # for, so the row has no lossy hour to be set from (quiet readings 20:17-20Z:
 # 0.7% out of order, 0 data resends). It names the worst hour of each reading
 # against the window's median hour; set a bar from the first episode it sees.
@@ -3735,16 +3736,94 @@ def read_net_series(hours: int = HOSTTCP_WINDOW_H) -> list[NetSample] | None:
     return parse_net_series(text) if text is not None else None
 
 
+def _net_intervals(samples: list[NetSample]) -> list[tuple[NetSample, NetSample]]:
+    """The consecutive pairs that are one path's reading: same interface,
+    time moving forward, no counter going down."""
+    return [
+        (a, b)
+        for a, b in zip(samples, samples[1:], strict=False)
+        if b[0] > a[0] and a[1] == b[1] and all(y >= x for x, y in zip(a[2:], b[2:], strict=True))
+    ]
+
+
+def net_route_clause(samples: list[NetSample]) -> str:
+    """`on <iface>` for the interfaces the MEASURED intervals ran on. The
+    route is said to have changed only when two interfaces each carried a
+    measured interval; an interface seen in samples that close no interval
+    (2026-11-26 21:45Z: ONE collector cycle landed inside a NetworkManager
+    probe blip, default route on WiFi for 3-51 s, and `the route CHANGED: the
+    hours are not one path` rode the whole 24 h window over hours that were
+    all one path) is named with its sample count and what it cost. Pure."""
+    measured = sorted({a[1] for a, _b in _net_intervals(samples)})
+    stray = sorted({s[1] for s in samples} - set(measured))
+    route = f"on {', '.join(measured)}"
+    if len(measured) > 1:
+        route += " (the route CHANGED: the hours are not one path)"
+    if stray:
+        n = sum(1 for s in samples if s[1] in stray)
+        route += (
+            f" ({n} sample(s) on {', '.join(stray)} closed no interval -- the route was "
+            "elsewhere for under two collector cycles; the intervals touching them are dropped)"
+        )
+    return route
+
+
+#: A collector interval at or over this share of segments received out of
+#: order is counted and named. Measured 2026-11-26 20:45Z..11-27 02:15Z, the
+#: row's first 64 intervals on the wired route: median 1.19%, p90 2.76%, and
+#: the four at or over 5% (23:26Z 6.5%, 23:45Z 10.5%, 02:00Z 5.1%, 02:10Z
+#: 10.4%) were each followed by a stream `keepalive ping timeout` within
+#: 6 min -- 7 of the window's 11. The HOUR dilutes it: 23Z read 2.4%, x1.7
+#: its median. It is a detector's bar, not a clearance: the other 4 timeouts
+#: (21:09:15-27Z, four connections in 12 s) sat in an interval at 1.65%,
+#: 41-53 s after the WiFi leg roamed (21:08:34Z) with the route wired -- the
+#: shared-gear stall HOSTNET's roam clause carries, which reorders nothing.
+HOSTTCP_OOO_INTERVAL_BAR = 0.05
+#: An interval shorter than this is two samples of one cycle, not a reading.
+HOSTTCP_MIN_INTERVAL_S = 120.0
+
+
+def net_interval_clause(samples: list[NetSample], bar: float = HOSTTCP_OOO_INTERVAL_BAR) -> str:
+    """The inbound share at the collector's own cadence: the worst interval
+    against the median interval, and the ones at or over `bar`. Pure."""
+    shares = {
+        a[0]: (b[8] - a[8]) / (b[7] - a[7])
+        for a, b in _net_intervals(samples)
+        if b[0] - a[0] >= HOSTTCP_MIN_INTERVAL_S and b[7] > a[7]
+    }
+    if not shares:
+        return "by collector interval: none measured"
+    vals = sorted(shares.values())
+    med = vals[len(vals) // 2]
+    top = max(shares, key=lambda t: shares[t])
+
+    def stamp(t: float) -> str:
+        return f"{datetime.fromtimestamp(t, UTC):%m-%d %H:%MZ}"
+
+    times = f"x{shares[top] / med:.1f} the median interval's {med:.3%}" if med > 0 else "median 0"
+    over = sorted(t for t, v in shares.items() if v >= bar)
+    head = (
+        f"by collector interval (starts): worst {stamp(top)} {shares[top]:.3%} out of order "
+        f"({times}); {len(over)} of {len(shares)} at or over {bar:.0%}"
+    )
+    if not over:
+        return head
+    shown = over[-4:]
+    more = f"{len(over) - len(shown)} earlier, then " if len(over) > len(shown) else ""
+    return (
+        f"{head}: {more}{', '.join(f'{stamp(t)} {shares[t]:.1%}' for t in shown)} -- read "
+        "STREAMPING's timeouts in the 6 min after each"
+    )
+
+
 def net_by_hour(samples: list[NetSample]) -> dict[int, NetHour]:
     """epoch hour -> that hour's counts, each interval spread evenly over the
     clock hours it crosses. An interval whose interface changed, or in which
     any counter went DOWN (a reboot, an interface re-created), is unmeasured:
     two paths are not one series. Pure."""
     out: dict[int, NetHour] = {}
-    for a, b in zip(samples, samples[1:], strict=False):
+    for a, b in _net_intervals(samples):
         t0, t1 = a[0], b[0]
-        if t1 <= t0 or a[1] != b[1] or any(y < x for x, y in zip(a[2:], b[2:], strict=True)):
-            continue
         rx, _tx, sent, resent, syn, recv, ofo = (y - x for x, y in zip(a[2:], b[2:], strict=True))
         t = t0
         while t < t1:
@@ -3792,12 +3871,7 @@ def host_tcp_line(samples: list[NetSample] | None, hours: int = HOSTTCP_WINDOW_H
     ofo = sum(h.out_of_order for h in by_hour.values())
     resent = sum(h.data_resent for h in by_hour.values())
     syn = sum(h.syn_retries for h in by_hour.values())
-    ifaces = sorted({s[1] for s in samples})
-    route = (
-        f"on {ifaces[0]}"
-        if len(ifaces) == 1
-        else f"on {', '.join(ifaces)} (the route CHANGED: the hours are not one path)"
-    )
+    route = net_route_clause(samples)
     head = (
         f"{hours}h, {span / 3600:.1f} h measured {route}: {ofo:,.0f} of {recv:,.0f} TCP "
         f"segments received arrived out of order ({ofo / recv:.3%}); {resent:,.0f} of "
@@ -3819,8 +3893,9 @@ def host_tcp_line(samples: list[NetSample] | None, hours: int = HOSTTCP_WINDOW_H
         f"{_worst_vs_median({k: h.out_of_order / h.received for k, h in judged.items()}, 'out of order')}"
         f" at {rates[worst_in]:.2f} MB/s received against a median {med_rx:.2f} | outbound: "
         f"{_worst_vs_median({k: h.data_resent / h.sent for k, h in judged.items()}, 'resent')}"
-        f" | {len(judged)} hour(s) judged, no bar set: every tenant's connections together, "
-        "and no lossy hour has been measured yet"
+        f" | {net_interval_clause(samples)}"
+        f" | {len(judged)} hour(s) judged, no bar set on the hour: every tenant's connections "
+        "together"
     )
 
 

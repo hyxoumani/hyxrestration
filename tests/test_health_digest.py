@@ -2655,6 +2655,60 @@ def test_host_tcp_line_names_the_worst_hour_of_each_side_against_the_median():
         (s[0] + 7200.0, *s[1:]) for s in _hourly_net([0.03, 0.03], iface="wlp6s0")
     ]
     assert "on enp7s0, wlp6s0 (the route CHANGED" in health.host_tcp_line(mixed)
+    assert "closed no interval" not in health.host_tcp_line(mixed)
+
+
+def test_host_tcp_line_one_stray_sample_is_not_a_route_change():
+    # 2026-11-26 21:45Z: one collector cycle sampled inside a NetworkManager
+    # probe blip (default route on WiFi for seconds). Every measured interval
+    # was on the wired interface; the row said the route CHANGED for 24 h.
+    base = _hourly_net([0.007, 0.007, 0.007])
+    blip = ((base[12][0] + base[13][0]) / 2, "wlp6s0", 5, 5, 5, 0, 0, 5, 0)
+    line = health.host_tcp_line(sorted([*base, blip]))
+    assert "measured on enp7s0 (1 sample(s) on wlp6s0 closed no interval" in line
+    assert "CHANGED" not in line
+    # The two intervals touching it are dropped: the measured span says so.
+    assert "2.9 h measured" in line and "3.0 h measured" in health.host_tcp_line(base)
+    # Two such samples in a row DO close an interval: that is a route.
+    stay = (blip[0] + 60.0, "wlp6s0", 6, 6, 6, 0, 0, 6, 0)
+    assert "on enp7s0, wlp6s0 (the route CHANGED" in health.host_tcp_line(
+        sorted([*base, blip, stay])
+    )
+
+
+def test_host_tcp_interval_clause_names_what_the_hour_dilutes():
+    # 2026-11-26 23Z: two 5-min intervals at 6.5% and 10.5% out of order, each
+    # followed by stream timeouts, inside an hour that read 2.4% (x1.7).
+    base = _hourly_net([0.01, 0.01, 0.01])
+    assert health.net_interval_clause(base) == (
+        "by collector interval (starts): worst 01-01 00:00Z 1.000% out of order "
+        "(x1.0 the median interval's 1.000%); 0 of 36 at or over 5%"
+    )
+
+    def lossy(samples, i, extra):
+        # interval i (0-based) gets `extra` more out-of-order arrivals
+        return [(*s[:8], s[8] + (extra if k > i else 0)) for k, s in enumerate(samples)]
+
+    one = lossy(base, 15, 18_000)  # 2,000 + 18,000 of 200,000 = 10%
+    clause = health.net_interval_clause(one)
+    assert "worst 01-01 01:15Z 10.000% out of order (x10.0 the median interval's 1.000%)" in clause
+    assert "1 of 36 at or over 5%: 01-01 01:15Z 10.0% -- read STREAMPING" in clause
+    assert clause in health.host_tcp_line(one)
+    # The hour it sits in is diluted to under 2%: the clause is the reading.
+    assert "worst hour 01-01 01Z 1.750% out of order" in health.host_tcp_line(one)
+    # At the bar counts, under it does not; five over name the newest four.
+    assert "1 of 36 at or over 5%" in health.net_interval_clause(lossy(base, 3, 8_000))
+    assert "0 of 36 at or over 5%" in health.net_interval_clause(lossy(base, 3, 7_999))
+    five = base
+    for i in (2, 5, 8, 20, 30):
+        five = lossy(five, i, 10_000)
+    assert "5 of 36 at or over 5%: 1 earlier, then 01-01 00:25Z 6.0%, " in (
+        health.net_interval_clause(five)
+    )
+    # A dropped interval (route flip) and a sub-cycle pair are not readings.
+    assert health.net_interval_clause(base[:1]) == "by collector interval: none measured"
+    twin = [base[0], (base[0][0] + 5.0, *base[1][1:]), *base[2:]]
+    assert "of 35 at or over" in health.net_interval_clause(twin)
 
 
 def test_host_tcp_line_does_not_judge_on_one_hour():
