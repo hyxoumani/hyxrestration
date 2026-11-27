@@ -681,6 +681,18 @@ structure — see [venues](venues.md)).
    gridpoint forecasts (5-min pulls, 5 stations) start 2026-07-06 19:36Z; before
    that the table holds backfilled GFS MEX MOS -- two forecast SOURCES in
    one table, which a registration must name and split on.
+   **Forecast-error probe, 2026-11-27 (descriptive, no prices, no PnL;
+   `docs/hyxpredict/research/weather_forecast_error_probe.md`):** on
+   141 days x 5 stations the live gridpoint forecast at D-1 12Z is sd
+   2.39 F / MAE 1.80 / bias -0.09 pooled (MEX, same season a year
+   earlier: 3.01 / 2.41 / +1.10). A per-city (bias, sigma) fitted
+   walk-forward did NOT calibrate better than v1's fixed (0, 2.7) in
+   any of three windows (mean log-likelihood -1.431 / -1.422 / -1.408
+   against -1.392 / -1.404 / -1.404); only MIA's narrower sigma held.
+   So the premise as worded above is unsupported at this sample; what
+   changed since v1 is the forecast SOURCE. Whether the brackets
+   already price that forecast is the open question and needs a
+   registration; this probe is prior data contact to disclose in one.
 4. **Cross-venue arb** — measurement framing; expect fee-wall null
    (~3¢/share taker-taker at mid). Gated on: hand-verified pairs +
    forward Polymarket book collection.
