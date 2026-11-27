@@ -693,6 +693,14 @@ structure — see [venues](venues.md)).
    changed since v1 is the forecast SOURCE. Whether the brackets
    already price that forecast is the open question and needs a
    registration; this probe is prior data contact to disclose in one.
+   **REGISTERED 2026-11-27, not yet run:**
+   `docs/hyxpredict/prereg_weather_v2_backtest.md` -- v1's strategy and
+   parameters unchanged, gridpoint forecasts only (`fetched_at >=
+   2026-07-06 19:36Z`), 4,230 settled markets with target dates
+   07-08..11-25, v1's thresholds. Expected FAIL (stated there); a FAIL
+   closes this item with no per-city variant permitted. Needs a
+   forecast bound and a target window on `simulator.run_backtest`
+   (plumbing, with tests) and a backup slot taken after 11-27 09:04Z.
 4. **Cross-venue arb** — measurement framing; expect fee-wall null
    (~3¢/share taker-taker at mid). Gated on: hand-verified pairs +
    forward Polymarket book collection.
